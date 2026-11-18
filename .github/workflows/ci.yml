@@ -29,6 +29,19 @@ jobs:
             echo "::error::contract/ is out of date. Run 'pnpm gen' and commit the result."
             exit 1
           }
+      - name: Migrations come from the Drizzle schema
+        run: |
+          node scripts/check-migrations.mjs
+          if [ ! -f apps/server/src/db/schema.ts ]; then
+            echo "No Drizzle schema yet, so there is nothing to compare."
+            exit 0
+          fi
+          pnpm db:generate
+          if [ -n "$(git status --porcelain -- db/migrations)" ]; then
+            git status --porcelain -- db/migrations
+            echo "::error::db/migrations/ does not match apps/server/src/db/schema.ts. Run 'pnpm db:generate' and commit the result. Don't write migrations by hand."
+            exit 1
+          fi
 
   test:
     name: Unit and Postgres tests
