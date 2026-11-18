@@ -6,6 +6,7 @@
     "dev": "pnpm --parallel --filter @orrery/server --filter @orrery/web dev",
     "build": "pnpm --filter @orrery/web build",
     "gen": "pnpm --filter @orrery/server gen",
+    "db:generate": "pnpm --filter @orrery/server db:generate",
     "check": "oxfmt --check && oxlint --type-aware && pnpm -r typecheck",
     "fix": "oxfmt && oxlint --type-aware --fix",
     "test": "node --test scripts/*.test.mjs && pnpm --filter !@orrery/e2e -r test",

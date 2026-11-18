@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
+import { startupWarnings } from "./features/accounts/index.ts";
 import { createFeatures } from "./features/index.ts";
 import { loadConfig } from "./platform/config.ts";
 import { createDb } from "./platform/db.ts";
@@ -16,10 +17,19 @@ const migrationsDir = fileURLToPath(new URL("../../../db/migrations", import.met
 const applied = await migrate(database.sql, migrationsDir);
 if (applied.length > 0) log.info("migrations applied", { applied });
 
+// The accounts feature decides what to warn about at startup; main only reports it.
+for (const warning of await startupWarnings({
+  db: database.db,
+  setupSecret: config.BOOTSTRAP_SECRET,
+})) {
+  log.warn(warning);
+}
+
 const app = createApp({
-  features: createFeatures(database),
+  features: createFeatures(database, config),
   publicUrl: config.PUBLIC_URL,
   webDist: config.WEB_DIST,
+  log,
 });
 
 const server = serve({ fetch: app.fetch, port: config.PORT }, (info) => {

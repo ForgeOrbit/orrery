@@ -4,10 +4,11 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc -p .",
-    "test": "vitest run"
+    "test": "node -e \"require('node:fs').rmSync('.secrets-used', { force: true })\" && vitest run && playwright test"
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "^2.4.0",
+    "@playwright/test": "^1.65.1",
     "@types/node": "26.6.6",
     "vitest": "^5.1.0"
   }

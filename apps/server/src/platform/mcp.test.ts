@@ -3,6 +3,7 @@ import { request as httpRequest } from "node:http";
 import { type ServerType, serve } from "@hono/node-server";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "./http.ts";
+import { createLogger } from "./log.ts";
 
 // MCP checks the Host header, which fetch() won't let us set, so these tests use a real server.
 describe("mcp", () => {
@@ -11,7 +12,11 @@ describe("mcp", () => {
 
   beforeAll(async () => {
     server = serve({
-      fetch: createApp({ features: [], publicUrl: "http://orrery.test" }).fetch,
+      fetch: createApp({
+        features: [],
+        publicUrl: "http://orrery.test",
+        log: createLogger("error"),
+      }).fetch,
       port: 0,
     });
     await once(server, "listening");

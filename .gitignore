@@ -2,6 +2,11 @@
 node_modules/
 dist/
 coverage/
+.vitest/
+test-results/
+playwright-report/
+# Written by every e2e run; the log check reads it afterwards.
+tests/e2e/.secrets-used
 *.tsbuildinfo
 .vite/
 npm-debug.log*

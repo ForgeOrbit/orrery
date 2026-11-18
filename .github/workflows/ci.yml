@@ -29,6 +29,19 @@ jobs:
             echo "::error::contract/ is out of date. Run 'pnpm gen' and commit the result."
             exit 1
           }
+      - name: Migrations come from the Drizzle schema
+        run: |
+          node scripts/check-migrations.mjs
+          if [ ! -f apps/server/src/db/schema.ts ]; then
+            echo "No Drizzle schema yet, so there is nothing to compare."
+            exit 0
+          fi
+          pnpm db:generate
+          if [ -n "$(git status --porcelain -- db/migrations)" ]; then
+            git status --porcelain -- db/migrations
+            echo "::error::db/migrations/ does not match apps/server/src/db/schema.ts. Run 'pnpm db:generate' and commit the result. Don't write migrations by hand."
+            exit 1
+          fi
 
   test:
     name: Unit and Postgres tests
@@ -49,6 +62,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       POSTGRES_PASSWORD: ci
+      # The stack's one-time setup secret (at least 32 characters); the tests must know it
+      # to drive bootstrap.
+      BOOTSTRAP_SECRET: ci-bootstrap-secret-0123456789abcdef
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
@@ -58,7 +74,20 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: docker compose up -d --build --wait
-      - run: ORRERY_URL=http://localhost:8080 pnpm test:e2e
+      - name: Install the browser for the Playwright specs
+        run: pnpm --filter @orrery/e2e exec playwright install --with-deps chromium
+      - name: REST and browser checks, including a restart
+        run: >
+          ORRERY_URL=http://localhost:8080
+          ORRERY_SETUP_SECRET=ci-bootstrap-secret-0123456789abcdef
+          ORRERY_RESTART_CMD="docker compose -f $GITHUB_WORKSPACE/compose.yaml restart orrery"
+          pnpm test:e2e
+      # The e2e suites record every secret they use or receive in
+      # tests/e2e/.secrets-used; the log check fails if the stack's logs (orrery and
+      # postgres) contain any of them, and never prints the values.
+      - name: The stack's logs contain no secrets
+        if: always()
+        run: node scripts/check-e2e-logs.mjs
       - if: failure()
         run: docker compose logs
 
