@@ -1,0 +1,77 @@
+# Orrery
+
+Orrery tracks work by humans and agents. These terms describe the planned identity model.
+
+## Language
+
+**Installation**:
+One self-hosted Orrery server and its accounts, workspaces, and data.
+_Avoid_: Workspace, organization
+
+**Human**:
+A person's account within an installation. A human has a personal workspace and can belong to multiple shared workspaces.
+_Avoid_: Workspace, agent
+
+**System administrator**:
+A human with authority to manage the installation and its instance settings. This role alone grants no access to workspace projects.
+_Avoid_: Workspace owner
+
+**Workspace**:
+A container that owns projects. A workspace is either personal or shared.
+_Avoid_: Installation, project
+
+**Personal workspace**:
+A human's private workspace. Its projects are accessible to that human and their authorized agents.
+_Avoid_: Private shared workspace
+
+**Shared workspace**:
+A workspace in which invited members collaborate through granted permissions.
+_Avoid_: Personal workspace, team
+
+**Workspace owner**:
+A member with full authority over a shared workspace and all of its projects. A shared workspace has at least one owner.
+_Avoid_: System administrator, project creator
+
+**Member**:
+A human who belongs to a shared workspace. Membership alone does not grant access to its projects.
+_Avoid_: Owner, collaborator
+
+**Permission manager**:
+A member whom the workspace owner authorizes to manage member permissions. A permission manager can delegate only access they hold.
+_Avoid_: System administrator, workspace owner
+
+**Project manager**:
+A human with Manage access to a project. This grants project authority, not workspace-wide permission management.
+_Avoid_: Permission manager, manager
+
+**Project**:
+A collection of issues and knowledge owned by one workspace. Its creator manages the project but does not personally own a shared workspace's project.
+_Avoid_: Repository, workspace
+
+**Invitation**:
+An offer to register on the installation or join a shared workspace. It identifies the recipient and the access being offered.
+_Avoid_: Membership, email verification
+
+**Agent**:
+A registered worker identity owned by a human. Multiple runs can act as the same agent, regardless of their harness or model.
+_Avoid_: Bot, API key, run
+
+**API key**:
+A secret credential that authenticates requests as one registered agent within one workspace. All callers that use the same API key act as that agent.
+_Avoid_: Agent token, personal access token
+
+**Run**:
+A record of a registered agent's conversation within a harness, including resumed execution. Concurrent runs are distinct, and a run can change models.
+_Avoid_: Agent, MCP connection, work session
+
+**Harness**:
+The software that hosts an agent run, such as Claude Code CLI or Codex CLI.
+_Avoid_: Model, agent
+
+**Work session**:
+An attempt to work on one issue, coordinated within a run. A work session can include subagents, and an issue has at most one active work session.
+_Avoid_: Run, agent
+
+**Claim**:
+The temporary reservation of an issue by its active work session.
+_Avoid_: Assignment, ownership
