@@ -7,6 +7,12 @@ const Env = z.object({
   DATABASE_URL: z.url(),
   // The URL people and agents use to reach this server. Its host is the only Host header MCP accepts.
   PUBLIC_URL: z.url().default("http://localhost:8080"),
+  // The one-time secret that protects initial setup (issue #21). An unset or empty value
+  // means no secret is configured, and setup cannot create the administrator.
+  BOOTSTRAP_SECRET: z
+    .string()
+    .optional()
+    .transform((value) => (value !== undefined && value.trim() === "" ? undefined : value)),
   // Directory with the built web app. Unset in development, where Vite serves it.
   WEB_DIST: z.string().optional(),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),

@@ -17,9 +17,10 @@ const applied = await migrate(database.sql, migrationsDir);
 if (applied.length > 0) log.info("migrations applied", { applied });
 
 const app = createApp({
-  features: createFeatures(database),
+  features: createFeatures(database, config),
   publicUrl: config.PUBLIC_URL,
   webDist: config.WEB_DIST,
+  log,
 });
 
 const server = serve({ fetch: app.fetch, port: config.PORT }, (info) => {
