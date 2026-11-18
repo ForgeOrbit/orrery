@@ -1,0 +1,11 @@
+packages:
+  - apps/*
+  - packages/*
+  - tests/*
+
+# Dependencies allowed to run install scripts. Everything else is blocked.
+allowBuilds:
+  esbuild: true
+  cpu-features: false
+  protobufjs: false
+  ssh2: false
