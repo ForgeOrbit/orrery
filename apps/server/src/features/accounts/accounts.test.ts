@@ -6,6 +6,7 @@ import { sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { browserSessions, humans, instanceSetup, workspaces } from "../../db/schema.ts";
 import { createDb, type Database } from "../../platform/db.ts";
+import { rootCause } from "../../platform/errors.ts";
 import { createApp } from "../../platform/http.ts";
 import type { Logger } from "../../platform/log.ts";
 import { createLogger } from "../../platform/log.ts";
@@ -41,7 +42,7 @@ const sessionCookie = (res: Response) =>
 
 const problemBody = async (res: Response) => Problem.parse(await res.json());
 
-// Drizzle wraps the driver's error; the deepest message (the PostgresError's) names the
+// Drizzle wraps the driver's error; the root's message (the PostgresError's) names the
 // violated constraint. Resolves with that message, or the stringified error.
 async function rejectionMessage(promise: Promise<unknown>): Promise<string> {
   const error = await promise.then(
@@ -50,14 +51,7 @@ async function rejectionMessage(promise: Promise<unknown>): Promise<string> {
     },
     (cause: unknown) => cause,
   );
-  let current: unknown = error;
-  let message: string | undefined;
-  for (let depth = 0; current !== null && typeof current === "object" && depth < 3; depth++) {
-    const candidate = current as { message?: unknown; cause?: unknown };
-    if (typeof candidate.message === "string") message = candidate.message;
-    current = candidate.cause;
-  }
-  return message ?? String(error);
+  return rootCause(error)?.message ?? String(error);
 }
 
 describe("accounts", () => {

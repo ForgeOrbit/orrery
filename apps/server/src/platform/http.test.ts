@@ -26,6 +26,34 @@ const wrappedErrorFeature: Feature = {
   }),
 };
 
+// Shaped like a driver error: it carries a SQLSTATE, and its message quotes the input
+// that broke the query.
+class PostgresShapedError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "PostgresError";
+    this.code = code;
+  }
+}
+
+const quoting = createRoute({
+  method: "get",
+  path: "/quoting",
+  responses: { 200: { description: "Never reached" } },
+});
+
+const quotingErrorFeature: Feature = {
+  name: "quotingError",
+  rest: new OpenAPIHono().openapi(quoting, () => {
+    throw new PostgresShapedError(
+      "22P02",
+      'invalid input syntax for type uuid: "the-value-that-must-not-leak"',
+    );
+  }),
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
@@ -138,6 +166,35 @@ describe("createApp error handling", () => {
       });
       // The wrapper's message carried the parameters; they must not reach the log.
       expect(lines.join("\n")).not.toContain("the-password-hash");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("logs a database error's name and SQLSTATE, never its message", async () => {
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      lines.push(args.join(" "));
+    });
+    try {
+      const log: Logger = createLogger("info");
+      const app = createApp({
+        features: [quotingErrorFeature],
+        publicUrl: "http://orrery.test",
+        log,
+      });
+      const res = await app.request("/quoting");
+      expect(res.status).toBe(500);
+
+      const unhandled = unhandledErrorLines(lines);
+      expect(unhandled).toHaveLength(1);
+      expect(unhandled[0]).toMatchObject({ error: "PostgresError", code: "22P02" });
+      // A SQLSTATE error logs without a message, so the value it would quote never
+      // reaches the log.
+      expect(Object.keys(unhandled[0] ?? {}).toSorted()).toEqual(
+        ["time", "level", "msg", "error", "code", "method", "path"].toSorted(),
+      );
+      expect(lines.join("\n")).not.toContain("the-value-that-must-not-leak");
     } finally {
       spy.mockRestore();
     }
