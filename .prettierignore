@@ -1,6 +1,7 @@
 # Read by oxfmt (along with .gitignore).
 # Generated files keep the generator's formatting.
 contract/
+apps/web/src/routeTree.gen.ts
 pnpm-lock.yaml
 # Prose is wrapped by hand and published to the website; don't reformat it.
 *.md

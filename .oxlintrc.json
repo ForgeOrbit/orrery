@@ -17,5 +17,5 @@
     "react/react-in-jsx-scope": "off",
     "no-await-in-loop": "off"
   },
-  "ignorePatterns": ["**/dist/**", "contract/**"]
+  "ignorePatterns": ["**/dist/**", "contract/**", "**/routeTree.gen.ts"]
 }

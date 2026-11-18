@@ -46,3 +46,17 @@ Run from the repo root. Node 26 (`.node-version`) and pnpm 12 (`packageManager`)
 - **Await every promise.** `no-floating-promises` is an error, because a dropped database call is a
   silent race.
 - **Test against real Postgres** for anything touching claims, leases or migrations. No database mocks.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on forge-orbit/orrery, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default roles, each label named after its role: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
