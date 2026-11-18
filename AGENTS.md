@@ -32,6 +32,24 @@ Run from the repo root. Node 26 (`.node-version`) and pnpm 12 (`packageManager`)
 | `pnpm db:generate` | Generate a migration in `db/migrations/` from the Drizzle schema. Run after changing the schema, and commit the result. |
 | `docker compose up -d --build --wait` then `ORRERY_URL=http://localhost:8080 pnpm test:e2e` | Black-box tests against the real image. |
 
+## Stack
+
+Use these. Don't add an alternative; the lint bans the common ones (`.oxlintrc.json`).
+
+| Concern | Use | Not |
+| --- | --- | --- |
+| HTTP server | Hono with `@hono/zod-openapi`, served by `@hono/node-server` | Express, Fastify, Koa |
+| REST routes | `createRoute` plus `app.openapi`, and add the route to the feature's exported `routes` (listed in `features/index.ts`). A test fails if a mounted route is missing from the contract. | plain `app.get` or `app.post` |
+| Database | Drizzle (`drizzle-orm`, `drizzle-kit`) on postgres.js, from `platform/db.ts` | `pg`, Knex, Kysely, Prisma |
+| Migrations | `pnpm db:generate` from `apps/server/src/db/schema.ts` | hand-written `.sql` |
+| Validation and schemas | Zod 4, shared through `packages/contract/` | Zod 3 APIs, `zod/v3` |
+| MCP | `@modelcontextprotocol/server` (server), `@modelcontextprotocol/client` (e2e). Tool contracts in `packages/contract/src/mcp-tools.ts`. | |
+| Logging | `platform/log.ts` (JSON lines). `console` is a lint error in `apps/server/src/`. | pino, winston |
+| Web app | React, Vite, TanStack Router (file-based; `routeTree.gen.ts` is generated, don't edit it) | React Router |
+| Web data | TanStack Query with `fetch`. No `useEffect` (lint error): load data with a query, derive values during render, react to events in handlers. | axios, SWR, fetching in `useEffect` |
+| Tests | Vitest in `apps/`, `packages/` and `tests/`; Testcontainers for Postgres. `node:test` only in root `scripts/`. | Jest, Mocha |
+| Format and lint | oxfmt and Oxlint (`pnpm check`, `pnpm fix`) | Prettier, ESLint, Biome |
+
 ## Layout
 
 Code is organized by feature. One feature lives in one folder, on the server and in the web app.

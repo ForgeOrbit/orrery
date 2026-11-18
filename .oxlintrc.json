@@ -15,16 +15,360 @@
     "typescript/consistent-type-imports": "error",
     "import/no-cycle": "error",
     "react/react-in-jsx-scope": "off",
-    "no-await-in-loop": "off"
+    "no-await-in-loop": "off",
+    "no-restricted-imports": [
+      "error",
+      {
+        "paths": [
+          {
+            "name": "express",
+            "message": "The HTTP layer is Hono (@hono/zod-openapi). See Stack in AGENTS.md."
+          },
+          {
+            "name": "koa",
+            "message": "The HTTP layer is Hono (@hono/zod-openapi). See Stack in AGENTS.md."
+          },
+          {
+            "name": "fastify",
+            "message": "The HTTP layer is Hono (@hono/zod-openapi). See Stack in AGENTS.md."
+          },
+          {
+            "name": "pg",
+            "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+          },
+          {
+            "name": "pg-promise",
+            "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+          },
+          {
+            "name": "knex",
+            "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+          },
+          {
+            "name": "kysely",
+            "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+          },
+          {
+            "name": "@prisma/client",
+            "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+          },
+          {
+            "name": "typeorm",
+            "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+          },
+          {
+            "name": "sequelize",
+            "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+          },
+          {
+            "name": "mysql2",
+            "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+          },
+          {
+            "name": "pino",
+            "message": "Log through apps/server/src/platform/log.ts, the one JSON logger. See Stack in AGENTS.md."
+          },
+          {
+            "name": "winston",
+            "message": "Log through apps/server/src/platform/log.ts, the one JSON logger. See Stack in AGENTS.md."
+          },
+          {
+            "name": "bunyan",
+            "message": "Log through apps/server/src/platform/log.ts, the one JSON logger. See Stack in AGENTS.md."
+          },
+          {
+            "name": "loglevel",
+            "message": "Log through apps/server/src/platform/log.ts, the one JSON logger. See Stack in AGENTS.md."
+          },
+          {
+            "name": "jest",
+            "message": "Tests use Vitest. See Stack in AGENTS.md."
+          },
+          {
+            "name": "@jest/globals",
+            "message": "Tests use Vitest. See Stack in AGENTS.md."
+          },
+          {
+            "name": "mocha",
+            "message": "Tests use Vitest. See Stack in AGENTS.md."
+          },
+          {
+            "name": "chai",
+            "message": "Tests use Vitest. See Stack in AGENTS.md."
+          },
+          {
+            "name": "sinon",
+            "message": "Tests use Vitest. See Stack in AGENTS.md."
+          },
+          {
+            "name": "zod/v3",
+            "message": "Use Zod 4 (import from \"zod\")."
+          },
+          {
+            "name": "axios",
+            "message": "Fetch with the Web fetch API; in the web app, load server data with TanStack Query."
+          },
+          {
+            "name": "swr",
+            "message": "Fetch with the Web fetch API; in the web app, load server data with TanStack Query."
+          },
+          {
+            "name": "react-router",
+            "message": "Pages use TanStack Router (file-based, apps/web/src/routes/)."
+          },
+          {
+            "name": "react-router-dom",
+            "message": "Pages use TanStack Router (file-based, apps/web/src/routes/)."
+          },
+          {
+            "name": "react",
+            "importNames": ["useEffect", "useLayoutEffect"],
+            "message": "Don't use useEffect in the web app. Load server data with TanStack Query, derive values during render, and handle events in event handlers. See Stack in AGENTS.md."
+          }
+        ]
+      }
+    ]
   },
   "ignorePatterns": ["**/dist/**", "contract/**", "**/routeTree.gen.ts"],
   "overrides": [
+    {
+      "files": ["apps/**", "packages/**", "tests/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "express",
+                "message": "The HTTP layer is Hono (@hono/zod-openapi). See Stack in AGENTS.md."
+              },
+              {
+                "name": "koa",
+                "message": "The HTTP layer is Hono (@hono/zod-openapi). See Stack in AGENTS.md."
+              },
+              {
+                "name": "fastify",
+                "message": "The HTTP layer is Hono (@hono/zod-openapi). See Stack in AGENTS.md."
+              },
+              {
+                "name": "pg",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "pg-promise",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "knex",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "kysely",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "@prisma/client",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "typeorm",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "sequelize",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "mysql2",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "pino",
+                "message": "Log through apps/server/src/platform/log.ts, the one JSON logger. See Stack in AGENTS.md."
+              },
+              {
+                "name": "winston",
+                "message": "Log through apps/server/src/platform/log.ts, the one JSON logger. See Stack in AGENTS.md."
+              },
+              {
+                "name": "bunyan",
+                "message": "Log through apps/server/src/platform/log.ts, the one JSON logger. See Stack in AGENTS.md."
+              },
+              {
+                "name": "loglevel",
+                "message": "Log through apps/server/src/platform/log.ts, the one JSON logger. See Stack in AGENTS.md."
+              },
+              {
+                "name": "jest",
+                "message": "Tests use Vitest. See Stack in AGENTS.md."
+              },
+              {
+                "name": "@jest/globals",
+                "message": "Tests use Vitest. See Stack in AGENTS.md."
+              },
+              {
+                "name": "mocha",
+                "message": "Tests use Vitest. See Stack in AGENTS.md."
+              },
+              {
+                "name": "chai",
+                "message": "Tests use Vitest. See Stack in AGENTS.md."
+              },
+              {
+                "name": "sinon",
+                "message": "Tests use Vitest. See Stack in AGENTS.md."
+              },
+              {
+                "name": "zod/v3",
+                "message": "Use Zod 4 (import from \"zod\")."
+              },
+              {
+                "name": "axios",
+                "message": "Fetch with the Web fetch API; in the web app, load server data with TanStack Query."
+              },
+              {
+                "name": "swr",
+                "message": "Fetch with the Web fetch API; in the web app, load server data with TanStack Query."
+              },
+              {
+                "name": "react-router",
+                "message": "Pages use TanStack Router (file-based, apps/web/src/routes/)."
+              },
+              {
+                "name": "react-router-dom",
+                "message": "Pages use TanStack Router (file-based, apps/web/src/routes/)."
+              },
+              {
+                "name": "node:test",
+                "message": "Tests in apps/, packages/ and tests/ use Vitest. node:test is only for scripts/."
+              },
+              {
+                "name": "react",
+                "importNames": ["useEffect", "useLayoutEffect"],
+                "message": "Don't use useEffect in the web app. Load server data with TanStack Query, derive values during render, and handle events in event handlers. See Stack in AGENTS.md."
+              }
+            ]
+          }
+        ]
+      }
+    },
     {
       "files": ["apps/server/src/features/**", "apps/web/src/features/**"],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
+            "paths": [
+              {
+                "name": "express",
+                "message": "The HTTP layer is Hono (@hono/zod-openapi). See Stack in AGENTS.md."
+              },
+              {
+                "name": "koa",
+                "message": "The HTTP layer is Hono (@hono/zod-openapi). See Stack in AGENTS.md."
+              },
+              {
+                "name": "fastify",
+                "message": "The HTTP layer is Hono (@hono/zod-openapi). See Stack in AGENTS.md."
+              },
+              {
+                "name": "pg",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "pg-promise",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "knex",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "kysely",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "@prisma/client",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "typeorm",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "sequelize",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "mysql2",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "pino",
+                "message": "Log through apps/server/src/platform/log.ts, the one JSON logger. See Stack in AGENTS.md."
+              },
+              {
+                "name": "winston",
+                "message": "Log through apps/server/src/platform/log.ts, the one JSON logger. See Stack in AGENTS.md."
+              },
+              {
+                "name": "bunyan",
+                "message": "Log through apps/server/src/platform/log.ts, the one JSON logger. See Stack in AGENTS.md."
+              },
+              {
+                "name": "loglevel",
+                "message": "Log through apps/server/src/platform/log.ts, the one JSON logger. See Stack in AGENTS.md."
+              },
+              {
+                "name": "jest",
+                "message": "Tests use Vitest. See Stack in AGENTS.md."
+              },
+              {
+                "name": "@jest/globals",
+                "message": "Tests use Vitest. See Stack in AGENTS.md."
+              },
+              {
+                "name": "mocha",
+                "message": "Tests use Vitest. See Stack in AGENTS.md."
+              },
+              {
+                "name": "chai",
+                "message": "Tests use Vitest. See Stack in AGENTS.md."
+              },
+              {
+                "name": "sinon",
+                "message": "Tests use Vitest. See Stack in AGENTS.md."
+              },
+              {
+                "name": "zod/v3",
+                "message": "Use Zod 4 (import from \"zod\")."
+              },
+              {
+                "name": "axios",
+                "message": "Fetch with the Web fetch API; in the web app, load server data with TanStack Query."
+              },
+              {
+                "name": "swr",
+                "message": "Fetch with the Web fetch API; in the web app, load server data with TanStack Query."
+              },
+              {
+                "name": "react-router",
+                "message": "Pages use TanStack Router (file-based, apps/web/src/routes/)."
+              },
+              {
+                "name": "react-router-dom",
+                "message": "Pages use TanStack Router (file-based, apps/web/src/routes/)."
+              },
+              {
+                "name": "node:test",
+                "message": "Tests in apps/, packages/ and tests/ use Vitest. node:test is only for scripts/."
+              },
+              {
+                "name": "react",
+                "importNames": ["useEffect", "useLayoutEffect"],
+                "message": "Don't use useEffect in the web app. Load server data with TanStack Query, derive values during render, and handle events in event handlers. See Stack in AGENTS.md."
+              }
+            ],
             "patterns": [
               {
                 "group": ["../*/*", "!../*/index.ts", "!../platform/**"],
@@ -41,6 +385,117 @@
         "no-restricted-imports": [
           "error",
           {
+            "paths": [
+              {
+                "name": "express",
+                "message": "The HTTP layer is Hono (@hono/zod-openapi). See Stack in AGENTS.md."
+              },
+              {
+                "name": "koa",
+                "message": "The HTTP layer is Hono (@hono/zod-openapi). See Stack in AGENTS.md."
+              },
+              {
+                "name": "fastify",
+                "message": "The HTTP layer is Hono (@hono/zod-openapi). See Stack in AGENTS.md."
+              },
+              {
+                "name": "pg",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "pg-promise",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "knex",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "kysely",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "@prisma/client",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "typeorm",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "sequelize",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "mysql2",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "pino",
+                "message": "Log through apps/server/src/platform/log.ts, the one JSON logger. See Stack in AGENTS.md."
+              },
+              {
+                "name": "winston",
+                "message": "Log through apps/server/src/platform/log.ts, the one JSON logger. See Stack in AGENTS.md."
+              },
+              {
+                "name": "bunyan",
+                "message": "Log through apps/server/src/platform/log.ts, the one JSON logger. See Stack in AGENTS.md."
+              },
+              {
+                "name": "loglevel",
+                "message": "Log through apps/server/src/platform/log.ts, the one JSON logger. See Stack in AGENTS.md."
+              },
+              {
+                "name": "jest",
+                "message": "Tests use Vitest. See Stack in AGENTS.md."
+              },
+              {
+                "name": "@jest/globals",
+                "message": "Tests use Vitest. See Stack in AGENTS.md."
+              },
+              {
+                "name": "mocha",
+                "message": "Tests use Vitest. See Stack in AGENTS.md."
+              },
+              {
+                "name": "chai",
+                "message": "Tests use Vitest. See Stack in AGENTS.md."
+              },
+              {
+                "name": "sinon",
+                "message": "Tests use Vitest. See Stack in AGENTS.md."
+              },
+              {
+                "name": "zod/v3",
+                "message": "Use Zod 4 (import from \"zod\")."
+              },
+              {
+                "name": "axios",
+                "message": "Fetch with the Web fetch API; in the web app, load server data with TanStack Query."
+              },
+              {
+                "name": "swr",
+                "message": "Fetch with the Web fetch API; in the web app, load server data with TanStack Query."
+              },
+              {
+                "name": "react-router",
+                "message": "Pages use TanStack Router (file-based, apps/web/src/routes/)."
+              },
+              {
+                "name": "react-router-dom",
+                "message": "Pages use TanStack Router (file-based, apps/web/src/routes/)."
+              },
+              {
+                "name": "node:test",
+                "message": "Tests in apps/, packages/ and tests/ use Vitest. node:test is only for scripts/."
+              },
+              {
+                "name": "react",
+                "importNames": ["useEffect", "useLayoutEffect"],
+                "message": "Don't use useEffect in the web app. Load server data with TanStack Query, derive values during render, and handle events in event handlers. See Stack in AGENTS.md."
+              }
+            ],
             "patterns": [
               {
                 "group": ["**/features/**", "../features", "../features/*"],
@@ -57,6 +512,117 @@
         "no-restricted-imports": [
           "error",
           {
+            "paths": [
+              {
+                "name": "express",
+                "message": "The HTTP layer is Hono (@hono/zod-openapi). See Stack in AGENTS.md."
+              },
+              {
+                "name": "koa",
+                "message": "The HTTP layer is Hono (@hono/zod-openapi). See Stack in AGENTS.md."
+              },
+              {
+                "name": "fastify",
+                "message": "The HTTP layer is Hono (@hono/zod-openapi). See Stack in AGENTS.md."
+              },
+              {
+                "name": "pg",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "pg-promise",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "knex",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "kysely",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "@prisma/client",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "typeorm",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "sequelize",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "mysql2",
+                "message": "The database layer is Drizzle on postgres.js (apps/server/src/platform/db.ts). See Stack in AGENTS.md."
+              },
+              {
+                "name": "pino",
+                "message": "Log through apps/server/src/platform/log.ts, the one JSON logger. See Stack in AGENTS.md."
+              },
+              {
+                "name": "winston",
+                "message": "Log through apps/server/src/platform/log.ts, the one JSON logger. See Stack in AGENTS.md."
+              },
+              {
+                "name": "bunyan",
+                "message": "Log through apps/server/src/platform/log.ts, the one JSON logger. See Stack in AGENTS.md."
+              },
+              {
+                "name": "loglevel",
+                "message": "Log through apps/server/src/platform/log.ts, the one JSON logger. See Stack in AGENTS.md."
+              },
+              {
+                "name": "jest",
+                "message": "Tests use Vitest. See Stack in AGENTS.md."
+              },
+              {
+                "name": "@jest/globals",
+                "message": "Tests use Vitest. See Stack in AGENTS.md."
+              },
+              {
+                "name": "mocha",
+                "message": "Tests use Vitest. See Stack in AGENTS.md."
+              },
+              {
+                "name": "chai",
+                "message": "Tests use Vitest. See Stack in AGENTS.md."
+              },
+              {
+                "name": "sinon",
+                "message": "Tests use Vitest. See Stack in AGENTS.md."
+              },
+              {
+                "name": "zod/v3",
+                "message": "Use Zod 4 (import from \"zod\")."
+              },
+              {
+                "name": "axios",
+                "message": "Fetch with the Web fetch API; in the web app, load server data with TanStack Query."
+              },
+              {
+                "name": "swr",
+                "message": "Fetch with the Web fetch API; in the web app, load server data with TanStack Query."
+              },
+              {
+                "name": "react-router",
+                "message": "Pages use TanStack Router (file-based, apps/web/src/routes/)."
+              },
+              {
+                "name": "react-router-dom",
+                "message": "Pages use TanStack Router (file-based, apps/web/src/routes/)."
+              },
+              {
+                "name": "node:test",
+                "message": "Tests in apps/, packages/ and tests/ use Vitest. node:test is only for scripts/."
+              },
+              {
+                "name": "react",
+                "importNames": ["useEffect", "useLayoutEffect"],
+                "message": "Don't use useEffect in the web app. Load server data with TanStack Query, derive values during render, and handle events in event handlers. See Stack in AGENTS.md."
+              }
+            ],
             "patterns": [
               {
                 "group": ["**/features/*/*", "!**/features/*/index.ts"],
@@ -65,6 +631,18 @@
             ]
           }
         ]
+      }
+    },
+    {
+      "files": ["apps/server/src/**"],
+      "rules": {
+        "no-console": "error"
+      }
+    },
+    {
+      "files": ["apps/server/src/platform/log.ts"],
+      "rules": {
+        "no-console": "off"
       }
     }
   ]
