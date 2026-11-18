@@ -1,23 +1,23 @@
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
-import { createApp } from "./app.ts";
-import { loadConfig } from "./config.ts";
-import { createDb } from "./db/client.ts";
-import { migrate } from "./db/migrate.ts";
-import { createLogger } from "./log.ts";
-import { createSystemService } from "./service/system.ts";
-import { version } from "./version.ts";
+import { createFeatures } from "./features/index.ts";
+import { loadConfig } from "./platform/config.ts";
+import { createDb } from "./platform/db.ts";
+import { createApp } from "./platform/http.ts";
+import { createLogger } from "./platform/log.ts";
+import { migrate } from "./platform/migrate.ts";
+import { version } from "./platform/version.ts";
 
 const config = loadConfig();
 const log = createLogger(config.LOG_LEVEL);
-const { sql } = createDb(config.DATABASE_URL);
+const database = createDb(config.DATABASE_URL);
 
 const migrationsDir = fileURLToPath(new URL("../../../db/migrations", import.meta.url));
-const applied = await migrate(sql, migrationsDir);
+const applied = await migrate(database.sql, migrationsDir);
 if (applied.length > 0) log.info("migrations applied", { applied });
 
 const app = createApp({
-  services: { system: createSystemService(sql) },
+  features: createFeatures(database),
   publicUrl: config.PUBLIC_URL,
   webDist: config.WEB_DIST,
 });
@@ -29,7 +29,7 @@ const server = serve({ fetch: app.fetch, port: config.PORT }, (info) => {
 async function shutdown(signal: string) {
   log.info("shutting down", { signal });
   server.close();
-  await sql.end({ timeout: 5 });
+  await database.sql.end({ timeout: 5 });
   process.exit(0);
 }
 process.on("SIGTERM", () => void shutdown("SIGTERM"));

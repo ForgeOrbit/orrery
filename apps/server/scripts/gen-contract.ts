@@ -4,12 +4,13 @@ import { writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { tools } from "@orrery/contract";
 import { z } from "zod";
-import { openApiDocument } from "../src/transport/rest/index.ts";
+import { routes } from "../src/features/index.ts";
+import { openApiDocument } from "../src/platform/openapi.ts";
 
 const out = (name: string) => fileURLToPath(new URL(`../../../contract/${name}`, import.meta.url));
 const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
 
-await writeFile(out("openapi.json"), json(openApiDocument()));
+await writeFile(out("openapi.json"), json(openApiDocument(routes)));
 await writeFile(
   out("mcp-tools.json"),
   json(

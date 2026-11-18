@@ -2,33 +2,7 @@ import { once } from "node:events";
 import { request as httpRequest } from "node:http";
 import { type ServerType, serve } from "@hono/node-server";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createApp } from "./app.ts";
-import type { Services } from "./service/index.ts";
-
-const publicUrl = "http://orrery.test";
-
-function appWith(ready: "ok" | "degraded") {
-  const services: Services = {
-    system: {
-      health: () => ({ status: "ok", version: "test" }),
-      ready: async () => ({ status: ready, version: "test" }),
-    },
-  };
-  return createApp({ services, publicUrl });
-}
-
-describe("health", () => {
-  it("reports liveness", async () => {
-    const res = await appWith("ok").request("/healthz");
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ status: "ok", version: "test" });
-  });
-
-  it("returns 503 when the database is unreachable", async () => {
-    const res = await appWith("degraded").request("/readyz");
-    expect(res.status).toBe(503);
-  });
-});
+import { createApp } from "./http.ts";
 
 // MCP checks the Host header, which fetch() won't let us set, so these tests use a real server.
 describe("mcp", () => {
@@ -36,7 +10,10 @@ describe("mcp", () => {
   let port: number;
 
   beforeAll(async () => {
-    server = serve({ fetch: appWith("ok").fetch, port: 0 });
+    server = serve({
+      fetch: createApp({ features: [], publicUrl: "http://orrery.test" }).fetch,
+      port: 0,
+    });
     await once(server, "listening");
     const address = server.address();
     if (address === null || typeof address === "string") throw new Error("expected a TCP address");

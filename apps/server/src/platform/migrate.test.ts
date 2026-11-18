@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createDb, type Sql } from "./client.ts";
+import { createDb, type Sql } from "./db.ts";
 import { migrate } from "./migrate.ts";
 
 // Runs against a real Postgres: migrations and claim races must never be tested against mocks.

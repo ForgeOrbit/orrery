@@ -1,7 +1,7 @@
 import { Health } from "@orrery/contract";
 import { queryOptions } from "@tanstack/react-query";
 
-// Query definitions live next to the API they call, so routes and components share one cache key.
+// Query definitions for this feature, shared by routes and components so they use one cache key.
 // Responses are parsed with the contract's zod schemas, so a server change can't slip through.
 export const readinessQuery = queryOptions({
   queryKey: ["readyz"],

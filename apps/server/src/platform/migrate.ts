@@ -1,6 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Sql } from "./client.ts";
+import type { Sql } from "./db.ts";
 
 // Applies the plain .sql files in /db/migrations in file-name order, all in one transaction, so a
 // failing migration leaves the database unchanged. Applied files are recorded in schema_migrations. An advisory lock makes this safe when several

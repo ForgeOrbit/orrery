@@ -1,6 +1,6 @@
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { readinessQuery } from "../api/health.ts";
+import { readinessQuery } from "../features/system/index.ts";
 
 // Placeholder home page: shows that the web app, the server and the shared contract are wired up.
 export const Route = createFileRoute("/")({

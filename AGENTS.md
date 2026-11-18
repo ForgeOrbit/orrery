@@ -1,3 +1,15 @@
+<!-- intent-skills:start -->
+## Skill Loading
+
+Use the repository’s installed Intent. If it is unavailable, report the missing dependency instead of downloading a replacement.
+Before editing files for a substantial task:
+- Run `pnpm exec intent list` from the workspace root to see available local skills.
+- If a listed skill matches the task, run `pnpm exec intent load <package>#<skill>` before changing files.
+- Use the loaded `SKILL.md` guidance while making the change.
+- Monorepos: when working across packages, run the skill check from the workspace root and prefer the local skill for the package being changed.
+- Multiple matches: prefer the most specific local skill for the package or concern you are changing; load additional skills only when the task spans multiple packages or concerns.
+<!-- intent-skills:end -->
+
 # Orrery: notes for agents and contributors
 
 Self-hosted project management for teams of humans and AI agents. Plans and decisions live in GitHub
@@ -21,24 +33,32 @@ Run from the repo root. Node 26 (`.node-version`) and pnpm 12 (`packageManager`)
 
 ## Layout
 
+Code is organized by feature. One feature lives in one folder, on the server and in the web app.
+
 | Path | What |
 | --- | --- |
-| `apps/server/src/service/` | Business rules. The only layer that decides anything. |
-| `apps/server/src/transport/rest/` | REST routes: validate, call a service, map the result. No rules. |
-| `apps/server/src/transport/mcp/` | MCP tools: same as REST, for agents. |
-| `apps/server/src/db/` | Postgres client and the migration runner. |
-| `apps/web/` | React SPA (Vite). Talks to the server over HTTP only. |
+| `apps/server/src/features/<name>/` | One feature: `service.ts` (the only file that decides anything), `rest.ts` and `mcp.ts` (thin: validate, call the service, map the result), `*.test.ts`, and `index.ts`, its public interface. |
+| `apps/server/src/features/index.ts` | The feature registry. Add every new feature here. |
+| `apps/server/src/platform/` | Shared infrastructure: config, logging, database, migrations, HTTP app, MCP endpoint, OpenAPI. Knows nothing about features. |
+| `apps/web/src/routes/` | Pages, one file per route (TanStack Router, file-based). |
+| `apps/web/src/features/<name>/` | Queries and components a feature's pages share, with an `index.ts`. |
 | `packages/contract/` | zod schemas shared by REST, MCP and web. MCP tool contracts live in `mcp-tools.ts`. |
 | `contract/` | Generated OpenAPI 3.1 and MCP tool JSON Schemas. Don't edit by hand. |
 | `db/migrations/` | Plain `.sql` files, applied in name order at startup. Never edit an applied file; add a new one. |
 | `tests/e2e/` | Tests against a running server. They never import server code. |
 
+**Adding a feature:** copy the structure of an existing feature in `apps/server/src/features/`, then
+register it in `features/index.ts`. Put its schemas in `packages/contract/src/<name>.ts`.
+
 ## Rules
 
+- **Feature boundaries** (enforced by Oxlint): import another feature only through its `index.ts`,
+  never its internal files. `platform/` never imports a feature. Routes import features through
+  `index.ts` too.
 - **Portability.** The server may be rewritten in Go or Rust later. Keep these language-neutral:
   the generated contract, SQL migrations, data rules as Postgres constraints, env var names, port 8080,
   `/healthz` and `/readyz`, and the e2e tests.
-- **Runtime contract.** Configuration only through env vars (`apps/server/src/config.ts`). Logs are JSON
+- **Runtime contract.** Configuration only through env vars (`apps/server/src/platform/config.ts`). Logs are JSON
   lines on stdout.
 - **TypeScript runs directly in Node** (type stripping). Only erasable syntax: no `enum`, no
   `namespace`, no parameter properties. Import local files with their `.ts` extension.

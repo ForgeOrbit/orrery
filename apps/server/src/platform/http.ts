@@ -2,22 +2,21 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
-import type { Services } from "./service/index.ts";
-import { createMcpApp } from "./transport/mcp/index.ts";
-import { createRestApp } from "./transport/rest/index.ts";
+import type { Feature } from "./feature.ts";
+import { createMcpApp } from "./mcp.ts";
 
 export interface AppOptions {
-  services: Services;
+  features: readonly Feature[];
   publicUrl: string;
   webDist?: string | undefined;
 }
 
 // One process serves the web app, the REST API and MCP.
-export function createApp({ services, publicUrl, webDist }: AppOptions) {
+export function createApp({ features, publicUrl, webDist }: AppOptions) {
   const app = new Hono();
 
-  app.route("/", createRestApp(services));
-  app.route("/mcp", createMcpApp(services, publicUrl));
+  for (const feature of features) if (feature.rest) app.route("/", feature.rest);
+  app.route("/mcp", createMcpApp(features, publicUrl));
 
   if (webDist) {
     app.use("/*", serveStatic({ root: webDist }));
