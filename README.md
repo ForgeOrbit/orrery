@@ -146,4 +146,4 @@ MIT. See [LICENSE](LICENSE).
 
 ---
 
-<p align="center">Built by <a href="https://github.com/forge-orbit">ForgeOrbit</a></p>
+<p align="center">Built by <a href="https://github.com/forge-orbit">Forge Orbit</a></p>
