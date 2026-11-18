@@ -106,12 +106,30 @@ describe("accounts", () => {
       const app = makeApp(undefined);
       const res = await postJson(app, "/api/setup/admin", setupBody);
       expect(res.status).toBe(403);
+      expect(res.headers.get("content-type")).toBe("application/problem+json");
       expect(await res.json()).toEqual({
-        message:
-          "Initial setup is not available. Set BOOTSTRAP_SECRET in the server's environment.",
+        type: "urn:orrery:problem:setup_unavailable",
+        title: "Initial setup is not available. Set BOOTSTRAP_SECRET in the server's environment.",
+        status: 403,
+        code: "setup_unavailable",
       });
       expect(await database.db.select().from(humans)).toHaveLength(0);
       expect(await database.db.select().from(instanceSetup)).toHaveLength(0);
+    });
+
+    it("answers an invalid setup body with a validation_failed Problem per field", async () => {
+      const app = makeApp(SECRET);
+      const res = await postJson(app, "/api/setup/admin", {
+        ...setupBody,
+        email: "nope",
+        secret: "",
+      });
+      expect(res.status).toBe(400);
+      expect(res.headers.get("content-type")).toBe("application/problem+json");
+      const body = await problemBody(res);
+      expect(body.code).toBe("validation_failed");
+      expect(body.errors?.map((e) => e.pointer).toSorted()).toEqual(["/email", "/secret"]);
+      expect(JSON.stringify(body)).not.toContain(PASSWORD);
     });
 
     it("refuses an invalid secret without closing setup", async () => {
@@ -122,8 +140,8 @@ describe("accounts", () => {
       });
       expect(res.status).toBe(401);
       const body = await problemBody(res);
-      expect(body.message).toBe("Invalid setup secret.");
-      expect(body.message).not.toContain(PASSWORD);
+      expect(body).toMatchObject({ code: "invalid_secret", title: "Invalid setup secret." });
+      expect(JSON.stringify(body)).not.toContain(PASSWORD);
 
       const status = await app.request("/api/setup/status");
       expect(await status.json()).toEqual({ setupComplete: false });
@@ -176,7 +194,11 @@ describe("accounts", () => {
         email: "other@example.com",
       });
       expect(res.status).toBe(409);
-      expect(await res.json()).toEqual({ message: "Initial setup is already complete." });
+      expect(await res.json()).toMatchObject({
+        status: 409,
+        code: "setup_complete",
+        title: "Initial setup is already complete.",
+      });
       expect(await database.db.select().from(humans)).toHaveLength(1);
     });
 

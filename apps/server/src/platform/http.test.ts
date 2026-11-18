@@ -104,7 +104,13 @@ describe("createApp error handling", () => {
       const app = createApp({ features: [throwingFeature], publicUrl: "http://orrery.test", log });
       const res = await app.request("/boom");
       expect(res.status).toBe(500);
-      expect(await res.json()).toEqual({ message: "Internal server error." });
+      expect(res.headers.get("content-type")).toBe("application/problem+json");
+      expect(await res.json()).toEqual({
+        type: "urn:orrery:problem:internal_error",
+        title: "Internal server error.",
+        status: 500,
+        code: "internal_error",
+      });
 
       const unhandled = unhandledErrorLines(lines);
       expect(unhandled).toHaveLength(1);
@@ -225,7 +231,19 @@ describe("a request body that is not JSON", () => {
       body: "{not json",
     });
     expect(res.status).toBe(400);
-    expect(res.headers.get("content-type")).toContain("application/json");
-    expect(await res.json()).toEqual({ message: expect.any(String) });
+    expect(res.headers.get("content-type")).toBe("application/problem+json");
+    expect(await res.json()).toMatchObject({ status: 400, code: "bad_request" });
+  });
+
+  it("answers an unknown route with a not_found Problem", async () => {
+    const app = createApp({
+      features: [],
+      publicUrl: "http://orrery.test",
+      log: createLogger("error"),
+    });
+    const res = await app.request("/api/nothing-here", { method: "POST" });
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toBe("application/problem+json");
+    expect(await res.json()).toMatchObject({ status: 404, code: "not_found" });
   });
 });

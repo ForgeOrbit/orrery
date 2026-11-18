@@ -43,6 +43,7 @@ Use these. Don't add an alternative; the lint bans the common ones (`.oxlintrc.j
 | Database | Drizzle (`drizzle-orm`, `drizzle-kit`) on postgres.js, from `platform/db.ts` | `pg`, Knex, Kysely, Prisma |
 | Migrations | `pnpm db:generate` from `apps/server/src/db/schema.ts` | hand-written `.sql` |
 | Validation and schemas | Zod 4, shared through `packages/contract/` | Zod 3 APIs, `zod/v3` |
+| Error responses | RFC 9457 Problem Details (`application/problem+json`) with a stable `code`, built only through `platform/problem.ts`; successes return the resource itself ([ADR-0003](docs/adr/0003-problem-details-for-errors.md)). A test fails if an API route declares an error that isn't a Problem. | JSend or other envelopes, ad-hoc `{ message }` bodies, `c.json` for errors |
 | MCP | `@modelcontextprotocol/server` (server), `@modelcontextprotocol/client` (e2e). Tool contracts in `packages/contract/src/mcp-tools.ts`. | |
 | Logging | `platform/log.ts` (JSON lines). `console` is a lint error in `apps/server/src/`. | pino, winston |
 | Web app | React, Vite, TanStack Router (file-based; `routeTree.gen.ts` is generated, don't edit it) | React Router |
