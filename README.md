@@ -121,6 +121,10 @@ Users need to sign in with GitHub.
 Orrery is in its design phase. Ideas and discussion are welcome in
 [Issues](https://github.com/ForgeOrbit/orrery/issues).
 
+## License
+
+MIT. See [LICENSE](LICENSE).
+
 ---
 
 <p align="center">Built by <a href="https://github.com/ForgeOrbit">ForgeOrbit</a></p>
