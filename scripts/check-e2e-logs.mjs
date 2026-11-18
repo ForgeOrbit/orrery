@@ -8,6 +8,9 @@
 //   node scripts/check-e2e-logs.mjs [needles-file]
 //
 // Never prints a needle's value: on failure it reports the needle file's line numbers.
+//
+// The e2e tests stay language-neutral, so the one server-specific needle lives here: the
+// prefix of the stored password hash. Update it if the server changes its hash format.
 import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 
@@ -19,6 +22,8 @@ export function leakedNeedleLines(logs, needles) {
   }
   return lines;
 }
+
+export const SERVER_NEEDLES = ["scrypt$"];
 
 function readNeedles(text) {
   return text
@@ -45,13 +50,15 @@ export async function checkLogs({ logs, needlesFile }) {
   }
 
   const leaked = leakedNeedleLines(logs, needles);
-  if (leaked.length > 0) {
-    return {
-      ok: false,
-      reason: `stack logs contain values from ${needlesFile} lines ${leaked.join(", ")}`,
-    };
+  const leakedServer = leakedNeedleLines(logs, SERVER_NEEDLES);
+  if (leaked.length > 0 || leakedServer.length > 0) {
+    const parts = [];
+    if (leaked.length > 0) parts.push(`values from ${needlesFile} lines ${leaked.join(", ")}`);
+    if (leakedServer.length > 0) parts.push(`built-in needles ${leakedServer.join(", ")}`);
+    return { ok: false, reason: `stack logs contain ${parts.join(" and ")}` };
   }
-  return { ok: true, reason: `stack logs are clean of ${needles.length} checked value(s)` };
+  const total = needles.length + SERVER_NEEDLES.length;
+  return { ok: true, reason: `stack logs are clean of ${total} checked value(s)` };
 }
 
 if (import.meta.main) {

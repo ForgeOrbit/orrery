@@ -25,8 +25,7 @@ const password = "browser-checked-admin-password";
 
 // Every secret this suite sends or receives, recorded for the post-run log check
 // (scripts/check-e2e-logs.mjs): the bootstrap secret, the passwords, and the session
-// cookies the server hands back, plus the stored-hash pattern Postgres DETAIL lines
-// would carry.
+// cookies the server hands back. test:e2e empties the file before each run.
 const secretsUsed = new URL("./.secrets-used", import.meta.url).pathname;
 const recordSecret = (value: string) => appendFile(secretsUsed, `${value}\n`, "utf8");
 
@@ -34,7 +33,6 @@ test.beforeAll(async () => {
   await recordSecret(setupSecret);
   await recordSecret(password);
   await recordSecret("definitely-not-the-secret");
-  await recordSecret("scrypt$");
 });
 
 async function fillSetupForm(page: Page, secret: string) {

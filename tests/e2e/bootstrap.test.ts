@@ -20,12 +20,12 @@ if (!baseUrl)
 const refusedWith = process.env.ORRERY_SETUP_SECRET === undefined ? 403 : 401;
 
 // Every secret this suite sends or knows, recorded for the post-run log check
-// (scripts/check-e2e-logs.mjs): the stack's secret when known, the refusal bodies, and
-// the stored-hash pattern Postgres DETAIL lines would carry.
+// (scripts/check-e2e-logs.mjs): the stack's secret when known, and the refusal bodies.
+// test:e2e empties the file before each run.
 const secretsUsed = new URL("./.secrets-used", import.meta.url).pathname;
 
 beforeAll(async () => {
-  const values = ["definitely-not-the-secret", "a-valid-password", "scrypt$"];
+  const values = ["definitely-not-the-secret", "a-valid-password"];
   const setupSecret = process.env.ORRERY_SETUP_SECRET;
   if (setupSecret !== undefined) values.push(setupSecret);
   await appendFile(secretsUsed, `${values.join("\n")}\n`, "utf8");

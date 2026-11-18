@@ -54,3 +54,20 @@ test("an empty needle file fails", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("the built-in hash-format needle fails without echoing it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "orrery-logcheck-"));
+  try {
+    const file = join(dir, "needles");
+    await writeFile(file, "one-secret\n");
+    const result = await checkLogs({
+      logs: "DETAIL: Failing row contains (x, scrypt$16384$8$1$salt$hash)",
+      needlesFile: file,
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /built-in needles 1/);
+    assert.doesNotMatch(result.reason, /scrypt/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
