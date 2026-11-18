@@ -21,7 +21,6 @@ if (applied.length > 0) log.info("migrations applied", { applied });
 for (const warning of await startupWarnings({
   db: database.db,
   setupSecret: config.BOOTSTRAP_SECRET,
-  publicUrl: config.PUBLIC_URL,
 })) {
   log.warn(warning);
 }

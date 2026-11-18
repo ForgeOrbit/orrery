@@ -9,7 +9,12 @@ import {
   SetupStatus,
 } from "@orrery/contract";
 import { getCookie, setCookie } from "hono/cookie";
-import { AccountsError, type AccountsErrorKind, type AccountsService } from "./service.ts";
+import {
+  AccountsError,
+  type AccountsErrorKind,
+  type AccountsService,
+  rejectLogin,
+} from "./service.ts";
 
 const problem = (description: string) => ({
   description,
@@ -60,6 +65,7 @@ const login = createRoute({
       description: "Signed in; the session cookie is set",
       content: { "application/json": { schema: LoginResponse } },
     },
+    400: problem("The request body is not JSON"),
     401: problem("Wrong, unknown, or malformed email or password"),
   },
 });
@@ -135,12 +141,10 @@ export function createAccountsRest(service: AccountsService) {
         throw error;
       }
     },
-    // Login validation failures are wrong credentials too: a malformed or overlong
-    // attempt never reaches the handler and answers the same uniform 401.
+    // The service decides that a malformed or overlong attempt is wrong credentials too.
     (result, c) => {
       if (result.success) return undefined;
-      const invalid = new AccountsError("invalid_credentials");
-      return c.json({ message: invalid.message }, statusFor["invalid_credentials"]);
+      return c.json({ message: rejectLogin().message }, statusFor.invalid_credentials);
     },
   );
 

@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from "node:crypto";
 import type { ScryptOptions } from "node:crypto";
+import { WorkspaceKind } from "@orrery/contract";
 import type {
   LoginRequest,
   SessionResponse,
@@ -9,13 +10,7 @@ import type {
 } from "@orrery/contract";
 import { and, eq, gt, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import {
-  browserSessions,
-  humans,
-  instanceSetup,
-  personalKind,
-  workspaces,
-} from "../../db/schema.ts";
+import { browserSessions, humans, instanceSetup, workspaces } from "../../db/schema.ts";
 
 // The service is the only file in a feature that decides anything. rest.ts and mcp.ts call it.
 
@@ -130,6 +125,12 @@ export class AccountsError extends Error {
   }
 }
 
+// Login input that fails validation (malformed or overlong) counts as wrong credentials,
+// so every failed sign-in looks the same to the caller.
+export function rejectLogin(): AccountsError {
+  return new AccountsError("invalid_credentials");
+}
+
 // What the service decides about browser sessions: how long they last, and whether the
 // deployment's public URL makes cookies Secure. The cookie's transport attributes are
 // rest.ts's business.
@@ -189,7 +190,7 @@ export function createAccountsService({
             .values({ id: humanId, email: input.email, passwordHash, isSystemAdministrator: true });
           await tx.insert(workspaces).values({
             id: randomUUID(),
-            kind: personalKind,
+            kind: WorkspaceKind.enum.personal,
             name: "Personal",
             personalOwnerHumanId: humanId,
           });
@@ -255,7 +256,10 @@ export function createAccountsService({
 // The one startup warning accounts owns: a fresh installation with no bootstrap secret
 // can never be set up, and the installer should learn that before trying. main.ts
 // reports whatever this returns; the decision stays here.
-export async function startupWarnings({ db, setupSecret }: AccountsDeps): Promise<string[]> {
+export async function startupWarnings({
+  db,
+  setupSecret,
+}: Pick<AccountsDeps, "db" | "setupSecret">): Promise<string[]> {
   if (setupSecret !== undefined) return [];
   const rows = await db.select({ id: instanceSetup.id }).from(instanceSetup).limit(1);
   return rows.length > 0 ? [] : ["initial setup cannot run until BOOTSTRAP_SECRET is set"];

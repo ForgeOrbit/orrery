@@ -1,4 +1,4 @@
-import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
+import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { createDb } from "./db.ts";
@@ -198,5 +198,34 @@ describe("createApp error handling", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe("a request body that is not JSON", () => {
+  const echo = createRoute({
+    method: "post",
+    path: "/echo",
+    request: { body: { content: { "application/json": { schema: z.object({}) } } } },
+    responses: { 200: { description: "Echoed" } },
+  });
+  const echoFeature: Feature = {
+    name: "echo",
+    rest: new OpenAPIHono().openapi(echo, (c) => c.json({}, 200)),
+  };
+
+  it("answers 400 with a Problem, like every other error", async () => {
+    const app = createApp({
+      features: [echoFeature],
+      publicUrl: "http://orrery.test",
+      log: createLogger("error"),
+    });
+    const res = await app.request("/echo", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{not json",
+    });
+    expect(res.status).toBe(400);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(await res.json()).toEqual({ message: expect.any(String) });
   });
 });

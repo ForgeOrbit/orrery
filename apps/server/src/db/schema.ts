@@ -25,14 +25,11 @@ export const humans = pgTable(
 // A container that owns projects: one personal workspace per human, or a shared one.
 // The allowed kinds come from the contract's WorkspaceKind enum.
 
-// The kind of a human's own workspace, typed against the contract enum so code, types,
-// and the database cannot drift apart.
-export const personalKind: WorkspaceKind = "personal";
-
 // A CHECK constraint is DDL: it cannot carry bound parameters, so the kind list must be
 // raw SQL text. That is safe here because the values come from the WorkspaceKind enum,
 // never from input.
 const kindList = WorkspaceKind.options.map((kind) => `'${kind}'`).join(", ");
+const personalKindSql = sql.raw(`'${WorkspaceKind.enum.personal}'`);
 
 export const workspaces = pgTable(
   "workspaces",
@@ -49,12 +46,12 @@ export const workspaces = pgTable(
     // enum value, raw for the same DDL reason as the kind list above.
     check(
       "workspace_owner_matches_kind",
-      sql`(${t.kind} = ${sql.raw(`'${personalKind}'`)}) = (${t.personalOwnerHumanId} is not null)`,
+      sql`(${t.kind} = ${personalKindSql}) = (${t.personalOwnerHumanId} is not null)`,
     ),
-    // One personal workspace per human; the literal comes from the enum value above.
+    // One personal workspace per human.
     uniqueIndex("one_personal_workspace_per_human")
       .on(t.personalOwnerHumanId)
-      .where(sql`${t.kind} = ${sql.raw(`'${personalKind}'`)}`),
+      .where(sql`${t.kind} = ${personalKindSql}`),
   ],
 );
 

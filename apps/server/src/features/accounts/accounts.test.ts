@@ -23,12 +23,7 @@ const PASSWORD = "first-admin-password";
 const PUBLIC_URL = "http://orrery.test";
 
 // The request log goes to the console; tests that don't capture it stay quiet.
-const silentLogger: Logger = {
-  debug: () => undefined,
-  info: () => undefined,
-  warn: () => undefined,
-  error: () => undefined,
-};
+const silentLogger: Logger = createLogger("error");
 
 const postJson = (app: Hono, path: string, body: unknown) =>
   app.request(path, {

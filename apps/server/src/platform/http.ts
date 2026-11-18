@@ -23,9 +23,13 @@ export function createApp({ features, publicUrl, log, webDist }: AppOptions) {
   // An unhandled error becomes one JSON log line and a 500 Problem. The line carries
   // the error summary (see errors.ts: name and code for database errors, name and
   // message for the rest), the method, and the path only: never parameters, headers,
-  // cookies, or bodies. HTTPException keeps its own response.
+  // cookies, or bodies.
   app.onError((error, c) => {
-    if (error instanceof HTTPException) return error.getResponse();
+    if (error instanceof HTTPException) {
+      // Hono's own errors (for example a body that is not JSON) answer as a Problem too.
+      if (error.res !== undefined) return error.getResponse();
+      return c.json(Problem.parse({ message: error.message || "Bad request." }), error.status);
+    }
     log.error("unhandled error", {
       ...errorSummary(error),
       method: c.req.method,

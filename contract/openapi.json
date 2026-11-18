@@ -292,6 +292,16 @@
               }
             }
           },
+          "400": {
+            "description": "The request body is not JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "401": {
             "description": "Wrong, unknown, or malformed email or password",
             "content": {
