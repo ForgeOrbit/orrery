@@ -6,6 +6,7 @@ packages:
 # Dependencies allowed to run install scripts. Everything else is blocked.
 allowBuilds:
   esbuild: true
+  lefthook: true
   cpu-features: false
   protobufjs: false
   ssh2: false

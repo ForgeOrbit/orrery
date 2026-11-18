@@ -22,7 +22,7 @@ Run from the repo root. Node 26 (`.node-version`) and pnpm 12 (`packageManager`)
 
 | Command | Does |
 | --- | --- |
-| `pnpm install` | Install everything. Never use npm, yarn or bun to install. |
+| `pnpm install` | Install everything, and the git hooks (lefthook). Never use npm, yarn or bun to install. |
 | `docker compose up -d postgres` | Start Postgres for development (needs `.env`, see `.env.example`). |
 | `pnpm dev` | Server on :8080 (reloads on change) and web on :5173. |
 | `pnpm check` | Format check, lint (type-aware), typecheck. Must pass before a commit. |
@@ -52,6 +52,8 @@ register it in `features/index.ts`. Put its schemas in `packages/contract/src/<n
 
 ## Rules
 
+- **Git hooks** (`lefthook.yml`): pre-commit formats and lints the staged files and re-stages the fixes;
+  pre-push runs `pnpm check`. Don't skip them with `--no-verify`. If a hook fails, fix the cause.
 - **Feature boundaries** (enforced by Oxlint): import another feature only through its `index.ts`,
   never its internal files. `platform/` never imports a feature. Routes import features through
   `index.ts` too.
