@@ -60,8 +60,10 @@ register it in `features/index.ts`. Put its schemas in `packages/contract/src/<n
 - **Portability.** The server may be rewritten in Go or Rust later. Keep these language-neutral:
   the generated contract, SQL migrations, data rules as Postgres constraints, env var names, port 8080,
   `/healthz` and `/readyz`, and the e2e tests.
-- **Runtime contract.** Configuration only through env vars (`apps/server/src/platform/config.ts`). Logs are JSON
-  lines on stdout.
+- **Runtime contract.** Deployment configuration uses env vars (`apps/server/src/platform/config.ts`).
+  System administrators manage persistent instance settings, including SMTP, through the app.
+  For bootstrap or instance settings, read [ADR-0001](docs/adr/0001-bootstrap-and-instance-settings.md).
+  Logs are JSON lines on stdout.
 - **TypeScript runs directly in Node** (type stripping). Only erasable syntax: no `enum`, no
   `namespace`, no parameter properties. Import local files with their `.ts` extension.
 - **No Bun-only or framework magic:** no decorators, no DI containers. Use Web-standard APIs where possible.
