@@ -8,7 +8,8 @@
 //
 // When the stack was started with BOOTSTRAP_SECRET, pass the same value as
 // ORRERY_SETUP_SECRET so each refusal can expect its exact status.
-import { describe, expect, it } from "vitest";
+import { appendFile } from "node:fs/promises";
+import { beforeAll, describe, expect, it } from "vitest";
 
 const baseUrl = process.env.ORRERY_URL;
 if (!baseUrl)
@@ -17,6 +18,18 @@ if (!baseUrl)
 // Set when the tests know the stack's bootstrap secret. Unset means the stack runs
 // without one, so setup is unavailable (403) rather than secret-checked (401).
 const refusedWith = process.env.ORRERY_SETUP_SECRET === undefined ? 403 : 401;
+
+// Every secret this suite sends or knows, recorded for the post-run log check
+// (scripts/check-e2e-logs.mjs): the stack's secret when known, the refusal bodies, and
+// the stored-hash pattern Postgres DETAIL lines would carry.
+const secretsUsed = new URL("./.secrets-used", import.meta.url).pathname;
+
+beforeAll(async () => {
+  const values = ["definitely-not-the-secret", "a-valid-password", "scrypt$"];
+  const setupSecret = process.env.ORRERY_SETUP_SECRET;
+  if (setupSecret !== undefined) values.push(setupSecret);
+  await appendFile(secretsUsed, `${values.join("\n")}\n`, "utf8");
+});
 
 const postJson = (path: string, body: unknown) =>
   fetch(new URL(path, baseUrl), {

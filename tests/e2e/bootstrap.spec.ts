@@ -8,6 +8,7 @@
 //   ORRERY_RESTART_CMD    optional; a command that restarts the server, for example
 //                         docker compose -f <repo>/compose.yaml restart orrery
 import { exec as execCallback } from "node:child_process";
+import { appendFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { expect, test, type Page } from "@playwright/test";
 
@@ -21,6 +22,20 @@ test.skip(!setupSecret, "Set ORRERY_SETUP_SECRET to the instance's BOOTSTRAP_SEC
 
 const email = "admin@orrery.test";
 const password = "browser-checked-admin-password";
+
+// Every secret this suite sends or receives, recorded for the post-run log check
+// (scripts/check-e2e-logs.mjs): the bootstrap secret, the passwords, and the session
+// cookies the server hands back, plus the stored-hash pattern Postgres DETAIL lines
+// would carry.
+const secretsUsed = new URL("./.secrets-used", import.meta.url).pathname;
+const recordSecret = (value: string) => appendFile(secretsUsed, `${value}\n`, "utf8");
+
+test.beforeAll(async () => {
+  await recordSecret(setupSecret);
+  await recordSecret(password);
+  await recordSecret("definitely-not-the-secret");
+  await recordSecret("scrypt$");
+});
 
 async function fillSetupForm(page: Page, secret: string) {
   await page.goto("/setup");
@@ -37,6 +52,10 @@ async function signIn(page: Page) {
   await page.getByLabel("Password").fill(password);
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByText(`Signed in as ${email}.`)).toBeVisible();
+  // The cookies the server just set are secrets the logs must never contain.
+  for (const cookie of await page.context().cookies()) {
+    await recordSecret(cookie.value);
+  }
 }
 
 test("refuses a wrong setup secret in the browser", async ({ page }) => {

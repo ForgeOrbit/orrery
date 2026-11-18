@@ -1,34 +1,67 @@
-// Fails when the running stack's logs contain a value they must never contain: the
-// bootstrap secret, test passwords, or a session cookie. The e2e job runs this after the
-// tests, so a leak fails CI even when every request succeeded.
+// Fails when the running stack's logs contain a secret value they must never contain:
+// the bootstrap secret, passwords, session cookies, or a stored password hash (Postgres
+// "Failing row contains (…)" DETAIL lines carry the hash). The needles live in one
+// per-run file (tests/e2e/.secrets-used) that the e2e suites append every secret they
+// use or receive to, so the check covers the real values, not hand-made copies. Fails
+// when that file is missing or empty: no needles, no check.
 //
-//   node scripts/check-e2e-logs.mjs "bootstrap-secret=$BOOTSTRAP_SECRET" "password=..." ...
+//   node scripts/check-e2e-logs.mjs [needles-file]
 //
-// Each argument is `label=value` (or a bare value, labeled "secret"). Only the label is
-// printed on failure, never the value.
+// Never prints a needle's value: on failure it reports the needle file's line numbers.
 import { execFileSync } from "node:child_process";
+import { readFile } from "node:fs/promises";
 
-const needles = process.argv.slice(2).map((arg) => {
-  const separator = arg.indexOf("=");
-  return separator === -1
-    ? { label: "secret", value: arg }
-    : { label: arg.slice(0, separator), value: arg.slice(separator + 1) };
-});
-if (needles.length === 0) {
-  console.error("usage: node scripts/check-e2e-logs.mjs <label=value>...");
-  process.exit(2);
+// The 1-based line numbers (in the needles file) whose values appear in the logs.
+export function leakedNeedleLines(logs, needles) {
+  const lines = [];
+  for (const [index, needle] of needles.entries()) {
+    if (needle.length > 0 && logs.includes(needle)) lines.push(index + 1);
+  }
+  return lines;
 }
 
-const logs = execFileSync("docker", ["compose", "logs", "--no-color", "orrery"], {
-  encoding: "utf8",
-  maxBuffer: 64 * 1024 * 1024,
-});
-
-const leaked = needles.filter((needle) => needle.value.length > 0 && logs.includes(needle.value));
-if (leaked.length > 0) {
-  console.error(
-    `e2e logs contain values they must never contain: ${leaked.map((n) => n.label).join(", ")}`,
-  );
-  process.exit(1);
+function readNeedles(text) {
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
 }
-console.log(`e2e logs are clean of ${needles.length} checked value(s)`);
+
+export async function checkLogs({ logs, needlesFile }) {
+  let text;
+  try {
+    text = await readFile(needlesFile, "utf8");
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    return { ok: false, reason: `missing needle file ${needlesFile}: run the e2e suites first` };
+  }
+
+  const needles = readNeedles(text);
+  if (needles.length === 0) {
+    return {
+      ok: false,
+      reason: `empty needle file ${needlesFile}: the e2e suites record the values they use`,
+    };
+  }
+
+  const leaked = leakedNeedleLines(logs, needles);
+  if (leaked.length > 0) {
+    return {
+      ok: false,
+      reason: `stack logs contain values from ${needlesFile} lines ${leaked.join(", ")}`,
+    };
+  }
+  return { ok: true, reason: `stack logs are clean of ${needles.length} checked value(s)` };
+}
+
+if (import.meta.main) {
+  const needlesFile = process.argv[2] ?? "tests/e2e/.secrets-used";
+  const logs = execFileSync("docker", ["compose", "logs", "--no-color", "orrery", "postgres"], {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  const result = await checkLogs({ logs, needlesFile });
+  if (result.ok) console.log(result.reason);
+  else console.error(result.reason);
+  process.exit(result.ok ? 0 : 1);
+}

@@ -82,16 +82,12 @@ jobs:
           ORRERY_SETUP_SECRET=ci-bootstrap-secret-0123456789abcdef
           ORRERY_RESTART_CMD="docker compose -f $GITHUB_WORKSPACE/compose.yaml restart orrery"
           pnpm test:e2e
-      # The session-cookie needle is a proxy: any logged cookie value would carry the
-      # cookie's name with it.
+      # The e2e suites record every secret they use or receive in
+      # tests/e2e/.secrets-used; the log check fails if the stack's logs (orrery and
+      # postgres) contain any of them, and never prints the values.
       - name: The stack's logs contain no secrets
         if: always()
-        run: >
-          node scripts/check-e2e-logs.mjs
-          "bootstrap-secret=$BOOTSTRAP_SECRET"
-          "spec-password=browser-checked-admin-password"
-          "rest-password=a-valid-password"
-          "session-cookie=orrery_session"
+        run: node scripts/check-e2e-logs.mjs
       - if: failure()
         run: docker compose logs
 
