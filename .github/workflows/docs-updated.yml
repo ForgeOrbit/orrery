@@ -1,10 +1,10 @@
 name: Docs updated
 
-# Tells the website (ForgeOrbit/orrery-site) to rebuild when docs/ changes on main,
+# Tells the website (forge-orbit/orrery-site) to rebuild when docs/ changes on main,
 # so the published docs match this repo.
 #
 # Needs a repository secret SITE_DISPATCH_TOKEN: a fine-grained personal access token
-# (resource owner: ForgeOrbit) with access to ForgeOrbit/orrery-site only and the
+# (resource owner: forge-orbit) with access to forge-orbit/orrery-site only and the
 # "Contents: Read and write" permission. Without the secret, this workflow skips the step
 # and warns.
 
@@ -28,7 +28,7 @@ jobs:
             echo "::warning::SITE_DISPATCH_TOKEN is not set, so the website was not rebuilt."
             exit 0
           fi
-          gh api repos/ForgeOrbit/orrery-site/dispatches \
+          gh api repos/forge-orbit/orrery-site/dispatches \
             -f event_type=docs-updated \
             -f "client_payload[sha]=${GITHUB_SHA}"
-          echo "Asked ForgeOrbit/orrery-site to rebuild for ${GITHUB_SHA}."
+          echo "Asked forge-orbit/orrery-site to rebuild for ${GITHUB_SHA}."

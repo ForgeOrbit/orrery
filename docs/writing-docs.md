@@ -3,9 +3,9 @@
 Orrery's docs live here, in `docs/`, next to the code they describe. Change them in the same pull
 request as the code, so a released version and its docs always match.
 
-The website ([ForgeOrbit/orrery-site](https://github.com/ForgeOrbit/orrery-site)) copies this
+The website ([forge-orbit/orrery-site](https://github.com/forge-orbit/orrery-site)) copies this
 folder when it builds and publishes it at
-<https://forgeorbit.github.io/orrery-site/docs/>. You don't need to touch the website to change
+<https://forge-orbit.github.io/orrery-site/docs/>. You don't need to touch the website to change
 the docs.
 
 ## Conventions
@@ -36,7 +36,7 @@ sidebar:
 ## When the website updates
 
 Every push to `main` that changes `docs/` runs
-[`docs-updated.yml`](https://github.com/ForgeOrbit/orrery/blob/main/.github/workflows/docs-updated.yml), which tells the website to rebuild.
+[`docs-updated.yml`](https://github.com/forge-orbit/orrery/blob/main/.github/workflows/docs-updated.yml), which tells the website to rebuild.
 The new pages are usually live within a couple of minutes.
 
 To preview your changes on the website before merging, check out `orrery-site` next to this repo
