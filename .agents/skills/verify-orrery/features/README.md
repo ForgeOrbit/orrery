@@ -23,6 +23,8 @@ The maintained source for verifying Orrery's user-facing behavior. Read this ind
 
 ## Features
 
+- [Bootstrap and sign-in](./accounts.md): creating the first administrator at `/setup`
+  with the deployment secret, first sign-in, and setup staying closed.
 - [Home status page](./home-status.md): the web app's `/` page showing server readiness and version, and the not-found page.
 - [Health endpoints](./health.md): `/healthz` liveness and `/readyz` database readiness, including the degraded state.
 - [MCP endpoint](./mcp.md): the agent connection at `/mcp`: handshake and Host-header protection.
