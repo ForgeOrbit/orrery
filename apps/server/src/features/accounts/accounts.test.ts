@@ -353,6 +353,29 @@ describe("accounts", () => {
       expect(await database.db.select().from(browserSessions)).toHaveLength(0);
     });
 
+    it("answers a malformed email and overlong input like any other wrong credentials", async () => {
+      const app = makeApp(SECRET);
+      await bootstrapAdmin(app);
+
+      const wrong = await postJson(app, "/api/auth/login", {
+        email: EMAIL,
+        password: "not-the-password",
+      });
+      const expected = await problemBody(wrong);
+      const attempts = [
+        { email: "not-an-email", password: PASSWORD },
+        { email: "x".repeat(2048), password: PASSWORD },
+        { email: EMAIL, password: "x".repeat(2048) },
+        { email: "  Nobody@Example.COM  ", password: "not-the-password" },
+      ];
+      for (const body of attempts) {
+        const res = await postJson(app, "/api/auth/login", body);
+        expect(res.status).toBe(401);
+        expect(await res.json()).toEqual(expected);
+      }
+      expect(await database.db.select().from(browserSessions)).toHaveLength(0);
+    });
+
     it("keeps setup closed and sign-in working for a fresh service instance over the same database", async () => {
       const first = makeApp(SECRET);
       await bootstrapAdmin(first);

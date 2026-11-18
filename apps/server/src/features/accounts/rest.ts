@@ -55,7 +55,8 @@ const login = createRoute({
   method: "post",
   path: "/api/auth/login",
   summary: "Sign in with email and password",
-  description: "On success, sets the HttpOnly session cookie named by the session policy.",
+  description:
+    "Accepts any non-empty email string and password by shape, and checks them against what is stored; wrong, unknown, or malformed credentials all answer the same 401. On success, sets the session cookie.",
   request: {
     body: { required: true, content: { "application/json": { schema: LoginRequest } } },
   },
@@ -64,8 +65,7 @@ const login = createRoute({
       description: "Signed in; the session cookie is set",
       content: { "application/json": { schema: LoginResponse } },
     },
-    400: problem("Invalid email or password shape"),
-    401: problem("Wrong email or password"),
+    401: problem("Wrong, unknown, or malformed email or password"),
   },
 });
 
@@ -109,26 +109,36 @@ export function createAccountsRest(service: AccountsService) {
     }
   });
 
-  app.openapi(login, async (c) => {
-    try {
-      const { token, email } = await service.login(c.req.valid("json"));
-      setCookie(c, cookie.name, token, {
-        httpOnly: cookie.httpOnly,
-        sameSite: cookie.sameSite,
-        path: cookie.path,
-        secure: cookie.secure,
-        maxAge: cookie.maxAgeSeconds,
-      });
-      return c.json({ email }, 200);
-    } catch (error) {
-      // The service decides that login failures are uniform: whatever went wrong, the
-      // only error kind login can produce is invalid_credentials.
-      if (error instanceof AccountsError && error.kind === "invalid_credentials") {
-        return c.json({ message: error.message }, statusForKind(error.kind));
+  app.openapi(
+    login,
+    async (c) => {
+      try {
+        const { token, email } = await service.login(c.req.valid("json"));
+        setCookie(c, cookie.name, token, {
+          httpOnly: cookie.httpOnly,
+          sameSite: cookie.sameSite,
+          path: cookie.path,
+          secure: cookie.secure,
+          maxAge: cookie.maxAgeSeconds,
+        });
+        return c.json({ email }, 200);
+      } catch (error) {
+        // The service decides that login failures are uniform: whatever went wrong, the
+        // only error kind login can produce is invalid_credentials.
+        if (error instanceof AccountsError && error.kind === "invalid_credentials") {
+          return c.json({ message: error.message }, statusForKind(error.kind));
+        }
+        throw error;
       }
-      throw error;
-    }
-  });
+    },
+    // Login validation failures are wrong credentials too: a malformed or overlong
+    // attempt never reaches the handler and answers the same uniform 401.
+    (result, c) => {
+      if (result.success) return undefined;
+      const invalid = new AccountsError("invalid_credentials");
+      return c.json({ message: invalid.message }, statusFor["invalid_credentials"]);
+    },
+  );
 
   app.openapi(session, async (c) => {
     const token = getCookie(c, cookie.name);

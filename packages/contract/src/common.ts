@@ -13,12 +13,23 @@ export const NewPassword = z
   .meta({ id: "NewPassword" });
 export type NewPassword = z.infer<typeof NewPassword>;
 
-// Login accepts any non-empty password: a stored password may predate today's rules,
-// and a wrong one simply fails authentication.
+// Login accepts any non-empty email string and password: the credentials are simply
+// checked against what is stored, so a malformed or overlong attempt falls through to
+// the same uniform "invalid credentials" answer as a wrong one. The caps only bound
+// the work of parsing; the request's body-size limit is the real guard.
+export const LoginEmail = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .min(1)
+  .max(1024)
+  .meta({ id: "LoginEmail" });
+export type LoginEmail = z.infer<typeof LoginEmail>;
+
 export const LoginPassword = z
   .string()
   .min(1)
-  .max(256)
+  .max(1024)
   .meta({ id: "LoginPassword" });
 export type LoginPassword = z.infer<typeof LoginPassword>;
 
