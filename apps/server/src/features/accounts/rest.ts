@@ -9,12 +9,7 @@ import {
   SetupStatus,
 } from "@orrery/contract";
 import { getCookie, setCookie } from "hono/cookie";
-import {
-  AccountsError,
-  statusFor,
-  type AccountsErrorKind,
-  type AccountsService,
-} from "./service.ts";
+import { AccountsError, type AccountsErrorKind, type AccountsService } from "./service.ts";
 
 const problem = (description: string) => ({
   description,
@@ -82,12 +77,21 @@ const session = createRoute({
 // Route definitions, for the generated OpenAPI document.
 export const routes = [setupStatus, setupAdmin, login, session];
 
-// The status for an error kind comes from the service's map, never from here.
-const statusForKind = <K extends AccountsErrorKind>(kind: K) => statusFor[kind];
+// Transport details rest.ts owns: the session cookie's name and its fixed attributes
+// (the service decides lifetime and Secure), and every error kind's HTTP status.
+const SESSION_COOKIE = "orrery_session";
+const fixedCookieAttributes = { httpOnly: true, sameSite: "Lax", path: "/" } as const;
+
+const statusFor = {
+  setup_unavailable: 403,
+  invalid_secret: 401,
+  setup_complete: 409,
+  invalid_credentials: 401,
+} as const satisfies Record<AccountsErrorKind, number>;
 
 // Thin: call the service, map the result to HTTP. No rules here.
 export function createAccountsRest(service: AccountsService) {
-  const cookie = service.sessionPolicy();
+  const policy = service.sessionPolicy();
 
   const app = new OpenAPIHono({
     // Turn validation failures into the same Problem shape as every other error.
@@ -103,8 +107,10 @@ export function createAccountsRest(service: AccountsService) {
     try {
       return c.json(await service.setupAdmin(c.req.valid("json")), 201);
     } catch (error) {
-      if (error instanceof AccountsError)
-        return c.json({ message: error.message }, statusForKind(error.kind));
+      // The service only throws the three setup kinds here; anything else is a bug.
+      if (error instanceof AccountsError && error.kind !== "invalid_credentials") {
+        return c.json({ message: error.message }, statusFor[error.kind]);
+      }
       throw error;
     }
   });
@@ -114,19 +120,17 @@ export function createAccountsRest(service: AccountsService) {
     async (c) => {
       try {
         const { token, email } = await service.login(c.req.valid("json"));
-        setCookie(c, cookie.name, token, {
-          httpOnly: cookie.httpOnly,
-          sameSite: cookie.sameSite,
-          path: cookie.path,
-          secure: cookie.secure,
-          maxAge: cookie.maxAgeSeconds,
+        setCookie(c, SESSION_COOKIE, token, {
+          ...fixedCookieAttributes,
+          secure: policy.secure,
+          maxAge: policy.maxAgeSeconds,
         });
         return c.json({ email }, 200);
       } catch (error) {
         // The service decides that login failures are uniform: whatever went wrong, the
         // only error kind login can produce is invalid_credentials.
         if (error instanceof AccountsError && error.kind === "invalid_credentials") {
-          return c.json({ message: error.message }, statusForKind(error.kind));
+          return c.json({ message: error.message }, statusFor[error.kind]);
         }
         throw error;
       }
@@ -141,7 +145,7 @@ export function createAccountsRest(service: AccountsService) {
   );
 
   app.openapi(session, async (c) => {
-    const token = getCookie(c, cookie.name);
+    const token = getCookie(c, SESSION_COOKIE);
     const account = token === undefined ? null : await service.session(token);
     if (account === null) return c.json({ message: "Not signed in." }, 401);
     return c.json(account, 200);

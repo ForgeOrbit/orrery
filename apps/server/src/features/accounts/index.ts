@@ -5,7 +5,7 @@ import { type AccountsDeps, createAccountsService } from "./service.ts";
 
 export { routes as accountsRoutes };
 export { createAccountsService } from "./service.ts";
-export type { AccountsService, SessionCookiePolicy } from "./service.ts";
+export type { AccountsService, SessionPolicy } from "./service.ts";
 
 export function createAccountsFeature(deps: AccountsDeps): Feature {
   const service = createAccountsService(deps);

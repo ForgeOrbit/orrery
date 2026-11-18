@@ -24,7 +24,6 @@ import {
 // enforces the same rule at the bottom, for any writer that skips the contract.
 
 const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60;
-const SESSION_COOKIE = "orrery_session";
 
 // Password hashing: node's scrypt with per-hash salt and recorded parameters.
 // Passwords never appear in responses or logs; only this string is stored.
@@ -121,14 +120,6 @@ const messages = {
   invalid_credentials: "Invalid email or password.",
 } as const satisfies Record<AccountsErrorKind, string>;
 
-// Every kind maps to exactly one HTTP status, here and nowhere else.
-export const statusFor = {
-  setup_unavailable: 403,
-  invalid_secret: 401,
-  setup_complete: 409,
-  invalid_credentials: 401,
-} as const satisfies Record<AccountsErrorKind, number>;
-
 export class AccountsError extends Error {
   readonly kind: AccountsErrorKind;
 
@@ -139,13 +130,11 @@ export class AccountsError extends Error {
   }
 }
 
-// The cookie policy for browser sessions: one place decides name, lifetime, and flags.
-export interface SessionCookiePolicy {
-  name: string;
-  path: string;
+// What the service decides about browser sessions: how long they last, and whether the
+// deployment's public URL makes cookies Secure. The cookie's transport attributes are
+// rest.ts's business.
+export interface SessionPolicy {
   maxAgeSeconds: number;
-  httpOnly: boolean;
-  sameSite: "Lax" | "Strict" | "None";
   secure: boolean;
 }
 
@@ -163,7 +152,7 @@ export interface AccountsService {
   setupAdmin(input: SetupAdminRequest): Promise<SetupAdminResponse>;
   login(input: LoginRequest): Promise<{ token: string; email: string }>;
   session(token: string): Promise<SessionResponse | null>;
-  sessionPolicy(): SessionCookiePolicy;
+  sessionPolicy(): SessionPolicy;
 }
 
 export function createAccountsService({
@@ -171,12 +160,8 @@ export function createAccountsService({
   setupSecret,
   publicUrl,
 }: AccountsDeps): AccountsService {
-  const sessionPolicy: SessionCookiePolicy = {
-    name: SESSION_COOKIE,
-    path: "/",
+  const sessionPolicy: SessionPolicy = {
     maxAgeSeconds: SESSION_TTL_SECONDS,
-    httpOnly: true,
-    sameSite: "Lax",
     secure: publicUrl.startsWith("https://"),
   };
 
