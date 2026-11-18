@@ -1,0 +1,26 @@
+# Git hooks, installed by `pnpm install`. CI is still the gate: hooks only catch the cheap things early.
+
+pre-commit:
+  parallel: false
+  commands:
+    lint:
+      priority: 1
+      glob: "*.{ts,tsx}"
+      exclude:
+        - "**/routeTree.gen.ts"
+      run: pnpm exec oxlint --type-aware --fix {staged_files}
+      stage_fixed: true
+    format:
+      priority: 2
+      glob: "*.{ts,tsx,js,mjs,json,jsonc,yml,yaml}"
+      exclude:
+        - "contract/**"
+        - "pnpm-lock.yaml"
+        - "**/routeTree.gen.ts"
+      run: pnpm exec oxfmt {staged_files}
+      stage_fixed: true
+
+pre-push:
+  commands:
+    check:
+      run: pnpm check

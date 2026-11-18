@@ -1,0 +1,30 @@
+{
+  "name": "@orrery/server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch --env-file-if-exists=../../.env src/main.ts",
+    "start": "node src/main.ts",
+    "gen": "node scripts/gen-contract.ts",
+    "db:generate": "drizzle-kit generate",
+    "typecheck": "tsc -p .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.9",
+    "@hono/zod-openapi": "^1.6.3",
+    "@modelcontextprotocol/hono": "^2.0.2",
+    "@modelcontextprotocol/server": "^2.4.0",
+    "@orrery/contract": "workspace:*",
+    "drizzle-orm": "^0.45.4",
+    "hono": "^4.13.19",
+    "postgres": "^4.1.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^12.2.1",
+    "@types/node": "26.6.6",
+    "drizzle-kit": "^0.31.11",
+    "vitest": "^5.1.0"
+  }
+}

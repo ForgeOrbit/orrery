@@ -1,0 +1,7 @@
+{$ORRERY_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy orrery:8080 {
+		# Stream SSE and MCP responses immediately instead of buffering them.
+		flush_interval -1
+	}
+}

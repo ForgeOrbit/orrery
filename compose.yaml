@@ -1,0 +1,60 @@
+# Self-hosted Orrery: `cp .env.example .env`, set POSTGRES_PASSWORD, then `docker compose up -d`.
+# For HTTPS on a public domain, set ORRERY_DOMAIN and PUBLIC_URL and add `--profile tls`.
+name: orrery
+
+services:
+  orrery:
+    image: ghcr.io/forge-orbit/orrery:${ORRERY_VERSION:-latest}
+    build: .
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://orrery:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/orrery
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "${ORRERY_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: orrery
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: orrery
+    volumes:
+      - pgdata:/var/lib/postgresql
+    # Only reachable from this machine; used by `pnpm dev`.
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "orrery", "-d", "orrery"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Optional HTTPS with an automatic Let's Encrypt certificate. Agents on members' machines need
+  # Orrery over HTTPS. Skip this profile if you already run a reverse proxy; point it at :8080.
+  caddy:
+    image: caddy:2
+    profiles: [tls]
+    restart: unless-stopped
+    environment:
+      ORRERY_DOMAIN: ${ORRERY_DOMAIN:-}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - orrery
+
+volumes:
+  pgdata:
+  caddy-data:
+  caddy-config:

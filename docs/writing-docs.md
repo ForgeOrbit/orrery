@@ -8,6 +8,8 @@ folder when it builds and publishes it at
 <https://forge-orbit.github.io/orrery-site/docs/>. You don't need to touch the website to change
 the docs.
 
+`docs/agents/` is the exception: it holds configuration for coding agents and is never published.
+
 ## Conventions
 
 Write plain GitHub Markdown. Every page should read well on GitHub and on the website.
