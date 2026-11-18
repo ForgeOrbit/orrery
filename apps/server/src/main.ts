@@ -28,7 +28,9 @@ const server = serve({ fetch: app.fetch, port: config.PORT }, (info) => {
 
 async function shutdown(signal: string) {
   log.info("shutting down", { signal });
-  server.close();
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
   await database.sql.end({ timeout: 5 });
   process.exit(0);
 }
