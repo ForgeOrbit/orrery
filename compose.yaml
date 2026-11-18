@@ -10,6 +10,8 @@ services:
     environment:
       DATABASE_URL: postgres://orrery:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/orrery
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      # One-time secret for initial setup (issue #21). Unset keeps setup closed.
+      BOOTSTRAP_SECRET: ${BOOTSTRAP_SECRET:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "${ORRERY_PORT:-8080}:8080"
