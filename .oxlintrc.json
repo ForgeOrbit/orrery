@@ -1,14 +1,6 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": [
-    "typescript",
-    "unicorn",
-    "oxc",
-    "import",
-    "react",
-    "vitest",
-    "node"
-  ],
+  "plugins": ["typescript", "unicorn", "oxc", "import", "react", "vitest", "node"],
   "categories": {
     "correctness": "error",
     "suspicious": "error",
@@ -25,28 +17,17 @@
     "react/react-in-jsx-scope": "off",
     "no-await-in-loop": "off"
   },
-  "ignorePatterns": [
-    "**/dist/**",
-    "contract/**",
-    "**/routeTree.gen.ts"
-  ],
+  "ignorePatterns": ["**/dist/**", "contract/**", "**/routeTree.gen.ts"],
   "overrides": [
     {
-      "files": [
-        "apps/server/src/features/**",
-        "apps/web/src/features/**"
-      ],
+      "files": ["apps/server/src/features/**", "apps/web/src/features/**"],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
             "patterns": [
               {
-                "group": [
-                  "../*/*",
-                  "!../*/index.ts",
-                  "!../platform/**"
-                ],
+                "group": ["../*/*", "!../*/index.ts", "!../platform/**"],
                 "message": "Import another feature only through its index.ts, never its internal files."
               }
             ]
@@ -55,20 +36,14 @@
       }
     },
     {
-      "files": [
-        "apps/server/src/platform/**"
-      ],
+      "files": ["apps/server/src/platform/**"],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
             "patterns": [
               {
-                "group": [
-                  "**/features/**",
-                  "../features",
-                  "../features/*"
-                ],
+                "group": ["**/features/**", "../features", "../features/*"],
                 "message": "platform/ must not import features. Features depend on the platform, not the other way round."
               }
             ]
@@ -77,19 +52,14 @@
       }
     },
     {
-      "files": [
-        "apps/web/src/routes/**"
-      ],
+      "files": ["apps/web/src/routes/**"],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
             "patterns": [
               {
-                "group": [
-                  "**/features/*/*",
-                  "!**/features/*/index.ts"
-                ],
+                "group": ["**/features/*/*", "!**/features/*/index.ts"],
                 "message": "Import a feature only through its index.ts, never its internal files."
               }
             ]
