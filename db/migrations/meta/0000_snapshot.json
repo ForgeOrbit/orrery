@@ -1,5 +1,5 @@
 {
-  "id": "03ae9b68-0197-4e8c-b6e6-ac80cf79f86d",
+  "id": "22fc2c5c-cf0c-4a27-af35-b93843b7ecaf",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -244,7 +244,7 @@
       "checkConstraints": {
         "workspace_kind": {
           "name": "workspace_kind",
-          "value": "kind in ('personal', 'shared')"
+          "value": "\"workspaces\".\"kind\" in ('personal', 'shared')"
         },
         "workspace_owner_matches_kind": {
           "name": "workspace_owner_matches_kind",

@@ -9,7 +9,13 @@ import type {
 } from "@orrery/contract";
 import { and, eq, gt, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { browserSessions, humans, instanceSetup, workspaces } from "../../db/schema.ts";
+import {
+  browserSessions,
+  humans,
+  instanceSetup,
+  personalKind,
+  workspaces,
+} from "../../db/schema.ts";
 
 // The service is the only file in a feature that decides anything. rest.ts and mcp.ts call it.
 
@@ -199,7 +205,7 @@ export function createAccountsService({
             .values({ id: humanId, email: input.email, passwordHash, isSystemAdministrator: true });
           await tx.insert(workspaces).values({
             id: randomUUID(),
-            kind: "personal",
+            kind: personalKind,
             name: "Personal",
             personalOwnerHumanId: humanId,
           });

@@ -31,7 +31,7 @@ CREATE TABLE "workspaces" (
 	"name" text NOT NULL,
 	"personal_owner_human_id" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "workspace_kind" CHECK (kind in ('personal', 'shared')),
+	CONSTRAINT "workspace_kind" CHECK ("workspaces"."kind" in ('personal', 'shared')),
 	CONSTRAINT "workspace_owner_matches_kind" CHECK (("workspaces"."kind" = 'personal') = ("workspaces"."personal_owner_human_id" is not null))
 );
 --> statement-breakpoint
