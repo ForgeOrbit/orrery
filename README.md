@@ -14,7 +14,7 @@
 
 <p align="center">
   <em>Status: design phase. Nothing to install yet. The MVP is being discussed in
-  <a href="https://github.com/ForgeOrbit/orrery/issues/8">#8</a>.</em>
+  <a href="https://github.com/forge-orbit/orrery/issues/8">#8</a>.</em>
 </p>
 
 ---
@@ -101,7 +101,7 @@ sequenceDiagram
 | Work | `start_work`, `report_progress`, `ask_human`, `wait_for_answer`, `submit_for_review`, `stop_work` |
 | Vault | `search_docs`, `list_docs`, `read_doc`, `write_doc` |
 
-The full draft contracts are in [#4](https://github.com/ForgeOrbit/orrery/issues/4). Everything
+The full draft contracts are in [#4](https://github.com/forge-orbit/orrery/issues/4). Everything
 an agent can do over MCP is also available through a REST API.
 
 ## Connecting an agent (planned)
@@ -116,19 +116,19 @@ claude mcp add --transport http orrery https://orrery.example.com/mcp \
 ## Tech direction (under discussion)
 
 A Go server (REST + MCP) with a React web app embedded in a single binary, and Postgres for
-storage. See [#1](https://github.com/ForgeOrbit/orrery/issues/1).
+storage. See [#1](https://github.com/forge-orbit/orrery/issues/1).
 
 ## Roadmap
 
 The MVP is split into milestones. Each one is open for discussion before work starts.
 
-- [ ] [#1](https://github.com/ForgeOrbit/orrery/issues/1) M0: Foundation (repo, Docker, CI, first-run setup)
-- [ ] [#2](https://github.com/ForgeOrbit/orrery/issues/2) M1: Auth, organization and agent identities
-- [ ] [#3](https://github.com/ForgeOrbit/orrery/issues/3) M2: Projects and issues
-- [ ] [#4](https://github.com/ForgeOrbit/orrery/issues/4) M3: Agent API and work sessions
-- [ ] [#5](https://github.com/ForgeOrbit/orrery/issues/5) M4: Board, agents panel and needs-input inbox
-- [ ] [#6](https://github.com/ForgeOrbit/orrery/issues/6) M5: Shared vault
-- [ ] [#7](https://github.com/ForgeOrbit/orrery/issues/7) M6: Release polish
+- [ ] [#1](https://github.com/forge-orbit/orrery/issues/1) M0: Foundation (repo, Docker, CI, first-run setup)
+- [ ] [#2](https://github.com/forge-orbit/orrery/issues/2) M1: Auth, organization and agent identities
+- [ ] [#3](https://github.com/forge-orbit/orrery/issues/3) M2: Projects and issues
+- [ ] [#4](https://github.com/forge-orbit/orrery/issues/4) M3: Agent API and work sessions
+- [ ] [#5](https://github.com/forge-orbit/orrery/issues/5) M4: Board, agents panel and needs-input inbox
+- [ ] [#6](https://github.com/forge-orbit/orrery/issues/6) M5: Shared vault
+- [ ] [#7](https://github.com/forge-orbit/orrery/issues/7) M6: Release polish
 
 Later: sprints, epics, custom workflows, a GitHub app, Obsidian git sync, and reports on human
 vs. agent throughput.
@@ -136,9 +136,9 @@ vs. agent throughput.
 ## Contributing
 
 Orrery is in its design phase. The best way to help right now is to join the discussion:
-the [MVP overview](https://github.com/ForgeOrbit/orrery/issues/8), the
-[product questions](https://github.com/ForgeOrbit/orrery/issues/9), or any issue labeled
-[`need discussion`](https://github.com/ForgeOrbit/orrery/labels/need%20discussion).
+the [MVP overview](https://github.com/forge-orbit/orrery/issues/8), the
+[product questions](https://github.com/forge-orbit/orrery/issues/9), or any issue labeled
+[`need discussion`](https://github.com/forge-orbit/orrery/labels/need%20discussion).
 
 ## License
 
@@ -146,4 +146,4 @@ MIT. See [LICENSE](LICENSE).
 
 ---
 
-<p align="center">Built by <a href="https://github.com/ForgeOrbit">ForgeOrbit</a></p>
+<p align="center">Built by <a href="https://github.com/forge-orbit">Forge Orbit</a></p>
