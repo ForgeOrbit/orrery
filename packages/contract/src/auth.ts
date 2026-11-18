@@ -1,12 +1,12 @@
 import { z } from "zod";
-import { Email, Password } from "./common.ts";
+import { Email, LoginPassword } from "./common.ts";
 
 // Browser sign-in with email and password. A successful login sets an HttpOnly
 // session cookie; the credentials themselves never appear in a response.
 export const LoginRequest = z
   .object({
     email: Email,
-    password: Password,
+    password: LoginPassword,
   })
   .meta({ id: "LoginRequest" });
 export type LoginRequest = z.infer<typeof LoginRequest>;

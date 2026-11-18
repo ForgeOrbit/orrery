@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { createFeatures } from "./features/index.ts";
+import { createAccountsService } from "./features/accounts/index.ts";
 import { loadConfig } from "./platform/config.ts";
 import { createDb } from "./platform/db.ts";
 import { createApp } from "./platform/http.ts";
@@ -15,6 +16,19 @@ const database = createDb(config.DATABASE_URL);
 const migrationsDir = fileURLToPath(new URL("../../../db/migrations", import.meta.url));
 const applied = await migrate(database.sql, migrationsDir);
 if (applied.length > 0) log.info("migrations applied", { applied });
+
+// A fresh installation with no bootstrap secret can never be set up; say so at startup,
+// while setup is still open, so the installer learns it before trying.
+if (config.BOOTSTRAP_SECRET === undefined) {
+  const accounts = createAccountsService({
+    db: database.db,
+    setupSecret: undefined,
+    publicUrl: config.PUBLIC_URL,
+  });
+  if (!(await accounts.setupStatus()).setupComplete) {
+    log.warn("initial setup cannot run until BOOTSTRAP_SECRET is set");
+  }
+}
 
 const app = createApp({
   features: createFeatures(database, config),

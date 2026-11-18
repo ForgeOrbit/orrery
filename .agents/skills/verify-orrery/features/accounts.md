@@ -7,10 +7,11 @@ the deployment's `BOOTSTRAP_SECRET`, and setup closes forever in the same transa
 ## Preconditions
 
 - A fresh instance started by this run **with a bootstrap secret** (the secret reaches the
-  server through the environment; unset means setup is closed):
+  server through the environment; unset means setup is closed, and a configured secret
+  must be at least 32 characters):
 
   ```bash
-  BOOTSTRAP_SECRET=verify-secret $SK/orrery-verify.sh up
+  BOOTSTRAP_SECRET=verify-orrery-bootstrap-secret-0123456789 $SK/orrery-verify.sh up
   ```
 
 - `scripts/orrery-verify.sh doctor $RUN_DIR` exits 0.
@@ -26,7 +27,7 @@ the deployment's `BOOTSTRAP_SECRET`, and setup closes forever in the same transa
   reuse the spec against this instance — it is the same black-box flow CI runs):
 
   ```bash
-  ORRERY_URL=$URL ORRERY_SETUP_SECRET=verify-secret \
+  ORRERY_URL=$URL ORRERY_SETUP_SECRET=verify-orrery-bootstrap-secret-0123456789 \
     pnpm --filter @orrery/e2e exec playwright test bootstrap.spec.ts -g "creates the first"
   ```
 

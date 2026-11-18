@@ -4,22 +4,10 @@ import { createAccountsRest, routes } from "./rest.ts";
 import { type AccountsDeps, createAccountsService } from "./service.ts";
 
 export { routes as accountsRoutes };
-export type { AccountsService } from "./service.ts";
+export { createAccountsService } from "./service.ts";
+export type { AccountsService, SessionCookiePolicy } from "./service.ts";
 
-export interface AccountsFeatureDeps extends AccountsDeps {
-  // The URL people use to reach the server. Its scheme decides whether the session
-  // cookie is marked Secure.
-  publicUrl: string;
-}
-
-export function createAccountsFeature({
-  db,
-  setupSecret,
-  publicUrl,
-}: AccountsFeatureDeps): Feature {
-  const service = createAccountsService({ db, setupSecret });
-  return {
-    name: "accounts",
-    rest: createAccountsRest(service, { secure: publicUrl.startsWith("https://") }),
-  };
+export function createAccountsFeature(deps: AccountsDeps): Feature {
+  const service = createAccountsService(deps);
+  return { name: "accounts", rest: createAccountsRest(service) };
 }

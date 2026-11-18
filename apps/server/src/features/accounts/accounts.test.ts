@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Problem } from "@orrery/contract";
 import type { Hono } from "hono";
@@ -13,11 +14,20 @@ import { AccountsError, createAccountsService } from "./service.ts";
 import { createAccountsFeature } from "./index.ts";
 
 // Runs against a real Postgres: bootstrap races, sessions, and migrations must never be
-// tested against mocks (see AGENTS.md).
-const SECRET = "correct horse battery staple";
+// tested against mocks (see AGENTS.md). The secret obeys the 32-character minimum.
+const SECRET = "correct horse battery staple staple";
 const EMAIL_INPUT = "  Admin@Example.COM "; // One normalization: trim, then lowercase.
 const EMAIL = "admin@example.com";
 const PASSWORD = "first-admin-password";
+const PUBLIC_URL = "http://orrery.test";
+
+// The request log goes to the console; tests that don't capture it stay quiet.
+const silentLogger: Logger = {
+  debug: () => undefined,
+  info: () => undefined,
+  warn: () => undefined,
+  error: () => undefined,
+};
 
 const postJson = (app: Hono, path: string, body: unknown) =>
   app.request(path, {
@@ -30,6 +40,25 @@ const sessionCookie = (res: Response) =>
   res.headers.getSetCookie().find((c) => c.startsWith("orrery_session="));
 
 const problemBody = async (res: Response) => Problem.parse(await res.json());
+
+// Drizzle wraps the driver's error; the deepest message (the PostgresError's) names the
+// violated constraint. Resolves with that message, or the stringified error.
+async function rejectionMessage(promise: Promise<unknown>): Promise<string> {
+  const error = await promise.then(
+    () => {
+      throw new Error("expected the write to be rejected");
+    },
+    (cause: unknown) => cause,
+  );
+  let current: unknown = error;
+  let message: string | undefined;
+  for (let depth = 0; current !== null && typeof current === "object" && depth < 3; depth++) {
+    const candidate = current as { message?: unknown; cause?: unknown };
+    if (typeof candidate.message === "string") message = candidate.message;
+    current = candidate.cause;
+  }
+  return message ?? String(error);
+}
 
 describe("accounts", () => {
   let pg: StartedPostgreSqlContainer;
@@ -53,8 +82,8 @@ describe("accounts", () => {
 
   function makeApp(
     setupSecret: string | undefined,
-    log?: Logger,
-    publicUrl = "http://orrery.test",
+    log: Logger = silentLogger,
+    publicUrl = PUBLIC_URL,
   ) {
     return createApp({
       features: [createAccountsFeature({ db: database.db, setupSecret, publicUrl })],
@@ -163,7 +192,11 @@ describe("accounts", () => {
     });
 
     it("settles two concurrent setup attempts with exactly one winner", async () => {
-      const service = createAccountsService({ db: database.db, setupSecret: SECRET });
+      const service = createAccountsService({
+        db: database.db,
+        setupSecret: SECRET,
+        publicUrl: PUBLIC_URL,
+      });
       const results = await Promise.allSettled([
         service.setupAdmin({ secret: SECRET, email: "a@example.com", password: PASSWORD }),
         service.setupAdmin({ secret: SECRET, email: "b@example.com", password: PASSWORD }),
@@ -183,6 +216,72 @@ describe("accounts", () => {
       expect(await database.db.select().from(workspaces)).toHaveLength(1);
       expect(await database.db.select().from(instanceSetup)).toHaveLength(1);
     });
+
+    it("settles two concurrent same-email attempts with one winner, and the loser learns setup is complete", async () => {
+      const service = createAccountsService({
+        db: database.db,
+        setupSecret: SECRET,
+        publicUrl: PUBLIC_URL,
+      });
+      const results = await Promise.allSettled([
+        service.setupAdmin({ secret: SECRET, email: "race@example.com", password: PASSWORD }),
+        service.setupAdmin({ secret: SECRET, email: "race@example.com", password: PASSWORD }),
+      ]);
+
+      expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+      const loser = results.find((r) => r.status === "rejected");
+      if (loser?.status !== "rejected") throw new Error("expected one rejected attempt");
+      // The winner closed setup, so the honest answer to the loser is that setup is
+      // complete — not a misleading "email is taken" for a race it can never win.
+      expect(loser.reason).toBeInstanceOf(AccountsError);
+      expect(loser.reason.kind).toBe("setup_complete");
+      expect(await database.db.select().from(humans)).toHaveLength(1);
+    });
+  });
+
+  describe("database constraints", () => {
+    it("rejects a human whose email is not normalized", async () => {
+      const message = await rejectionMessage(
+        database.db.insert(humans).values({
+          id: randomUUID(),
+          email: "Mixed@Example.com",
+          passwordHash: "scrypt$anything",
+        }),
+      );
+      expect(message).toContain("humans_email_normalized");
+    });
+
+    it("rejects a workspace kind outside the contract enum", async () => {
+      // The Drizzle typing prevents an invalid kind in code; the CHECK is the guard for
+      // every other writer, so bypass the typing with raw SQL here.
+      const message = await rejectionMessage(
+        database.db.execute(
+          sql`insert into workspaces (id, kind, name) values (${randomUUID()}, 'team', 'Nope')`,
+        ),
+      );
+      expect(message).toContain("workspace_kind");
+    });
+
+    it("rejects a personal workspace without an owner, and a shared one with an owner", async () => {
+      const missingOwner = await rejectionMessage(
+        database.db.insert(workspaces).values({ id: randomUUID(), kind: "personal", name: "Nope" }),
+      );
+      expect(missingOwner).toContain("workspace_owner_matches_kind");
+
+      const [owner] = await database.db
+        .insert(humans)
+        .values({ id: randomUUID(), email: "owner@example.com", passwordHash: "scrypt$anything" })
+        .returning();
+      const sharedWithOwner = await rejectionMessage(
+        database.db.insert(workspaces).values({
+          id: randomUUID(),
+          kind: "shared",
+          name: "Nope",
+          personalOwnerHumanId: owner?.id,
+        }),
+      );
+      expect(sharedWithOwner).toContain("workspace_owner_matches_kind");
+    });
   });
 
   describe("sign-in", () => {
@@ -201,6 +300,7 @@ describe("accounts", () => {
       expect(cookie).toContain("HttpOnly");
       expect(cookie).toContain("SameSite=Lax");
       expect(cookie).toContain("Path=/");
+      expect(cookie).toContain("Max-Age=604800"); // Seven days.
       expect(cookie).not.toContain("Secure"); // This app's PUBLIC_URL is http.
 
       const withSession = await app.request("/api/auth/session", {
@@ -240,6 +340,22 @@ describe("accounts", () => {
       });
       expect(wrongPassword.status).toBe(unknownEmail.status);
       expect(await wrongPassword.json()).toEqual(await unknownEmail.json());
+      expect(await database.db.select().from(browserSessions)).toHaveLength(0);
+    });
+
+    it("answers a short password like any other wrong password", async () => {
+      const app = makeApp(SECRET);
+      await bootstrapAdmin(app);
+
+      // A stored password may predate today's rules; login accepts any non-empty
+      // password and answers wrong ones with the same 401, whatever their shape.
+      const short = await postJson(app, "/api/auth/login", { email: EMAIL, password: "tiny" });
+      const wrong = await postJson(app, "/api/auth/login", {
+        email: EMAIL,
+        password: "not-the-password",
+      });
+      expect(short.status).toBe(401);
+      expect(await short.json()).toEqual(await wrong.json());
       expect(await database.db.select().from(browserSessions)).toHaveLength(0);
     });
 

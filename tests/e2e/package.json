@@ -8,7 +8,6 @@
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "^2.4.0",
-    "@orrery/contract": "workspace:*",
     "@playwright/test": "^1.65.1",
     "@types/node": "26.6.6",
     "vitest": "^5.1.0"

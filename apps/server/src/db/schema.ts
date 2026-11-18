@@ -1,33 +1,48 @@
+import { WorkspaceKind } from "@orrery/contract";
 import { sql } from "drizzle-orm";
 import { boolean, check, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 
 // The database schema, in one place. drizzle-kit writes it to plain SQL in /db/migrations
 // (see drizzle.config.ts); the server applies those files in name order at startup.
 
-// A human account. One consistent email normalization applies everywhere: trim, then
-// lowercase. `email_verified_at` stays null until the mailbox is verified; bootstrap
-// never requires SMTP (ADR-0001).
-export const humans = pgTable("humans", {
-  id: text("id").primaryKey(),
-  email: text("email").notNull().unique(),
-  passwordHash: text("password_hash").notNull(),
-  emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
-  isSystemAdministrator: boolean("is_system_administrator").notNull().default(false),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+// A human account. Email normalization (trim, then lowercase) is defined once, in the
+// shared contract's Email schema, and enforced here so no writer can store an
+// un-normalized address. `email_verified_at` stays null until the mailbox is verified;
+// bootstrap never requires SMTP (ADR-0001).
+export const humans = pgTable(
+  "humans",
+  {
+    id: text("id").primaryKey(),
+    email: text("email").notNull().unique(),
+    passwordHash: text("password_hash").notNull(),
+    emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
+    isSystemAdministrator: boolean("is_system_administrator").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [check("humans_email_normalized", sql`${t.email} = lower(btrim(${t.email}))`)],
+);
 
 // A container that owns projects: one personal workspace per human, or a shared one.
+// The allowed kinds come from the contract's WorkspaceKind enum; the check's literal
+// list is derived from it, so code, types, and the database agree on the same values.
+const kindList = WorkspaceKind.options.map((kind) => `'${kind}'`).join(", ");
+
 export const workspaces = pgTable(
   "workspaces",
   {
     id: text("id").primaryKey(),
-    kind: text("kind").notNull(),
+    kind: text("kind").$type<WorkspaceKind>().notNull(),
     name: text("name").notNull(),
     personalOwnerHumanId: text("personal_owner_human_id").references(() => humans.id),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    check("workspace_kind", sql`${t.kind} in ('personal', 'shared')`),
+    check("workspace_kind", sql.raw(`kind in (${kindList})`)),
+    // Exactly the personal kind carries a personal owner.
+    check(
+      "workspace_owner_matches_kind",
+      sql`(${t.kind} = 'personal') = (${t.personalOwnerHumanId} is not null)`,
+    ),
     // One personal workspace per human.
     uniqueIndex("one_personal_workspace_per_human")
       .on(t.personalOwnerHumanId)

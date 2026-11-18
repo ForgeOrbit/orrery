@@ -14,7 +14,8 @@ CREATE TABLE "humans" (
 	"email_verified_at" timestamp with time zone,
 	"is_system_administrator" boolean DEFAULT false NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "humans_email_unique" UNIQUE("email")
+	CONSTRAINT "humans_email_unique" UNIQUE("email"),
+	CONSTRAINT "humans_email_normalized" CHECK ("humans"."email" = lower(btrim("humans"."email")))
 );
 --> statement-breakpoint
 CREATE TABLE "instance_setup" (
@@ -30,7 +31,8 @@ CREATE TABLE "workspaces" (
 	"name" text NOT NULL,
 	"personal_owner_human_id" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "workspace_kind" CHECK ("workspaces"."kind" in ('personal', 'shared'))
+	CONSTRAINT "workspace_kind" CHECK (kind in ('personal', 'shared')),
+	CONSTRAINT "workspace_owner_matches_kind" CHECK (("workspaces"."kind" = 'personal') = ("workspaces"."personal_owner_human_id" is not null))
 );
 --> statement-breakpoint
 ALTER TABLE "browser_sessions" ADD CONSTRAINT "browser_sessions_human_id_humans_id_fk" FOREIGN KEY ("human_id") REFERENCES "public"."humans"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint

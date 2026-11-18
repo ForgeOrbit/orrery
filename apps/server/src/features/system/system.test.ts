@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { createApp } from "../../platform/http.ts";
+import { createLogger } from "../../platform/log.ts";
 import { createSystemFeature } from "./index.ts";
 
 function appWith(db: "up" | "down") {
   const ping = db === "up" ? async () => {} : async () => Promise.reject(new Error("db down"));
-  return createApp({ features: [createSystemFeature({ ping })], publicUrl: "http://orrery.test" });
+  const log = createLogger("error");
+  return createApp({
+    features: [createSystemFeature({ ping })],
+    publicUrl: "http://orrery.test",
+    log,
+  });
 }
 
 describe("health", () => {

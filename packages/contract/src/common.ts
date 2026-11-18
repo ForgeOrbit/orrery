@@ -1,16 +1,32 @@
 import { z } from "zod";
 
-// Field schemas shared by setup and authentication. Email keeps one normalization
-// for the whole installation: trim, then lowercase, with no provider rewriting.
+// Field schemas shared by setup and authentication. Email keeps one normalization for
+// the whole installation: trim, then lowercase, with no provider rewriting.
 export const Email = z.string().trim().toLowerCase().max(254).pipe(z.email()).meta({ id: "Email" });
 export type Email = z.infer<typeof Email>;
 
-export const Password = z
+// Setup chooses a new password; it must be at least 8 characters.
+export const NewPassword = z
   .string()
   .min(8, "Use at least 8 characters.")
   .max(256)
-  .meta({ id: "Password" });
-export type Password = z.infer<typeof Password>;
+  .meta({ id: "NewPassword" });
+export type NewPassword = z.infer<typeof NewPassword>;
+
+// Login accepts any non-empty password: a stored password may predate today's rules,
+// and a wrong one simply fails authentication.
+export const LoginPassword = z
+  .string()
+  .min(1)
+  .max(256)
+  .meta({ id: "LoginPassword" });
+export type LoginPassword = z.infer<typeof LoginPassword>;
+
+// A workspace is personal (one private owner) or shared (invited members).
+export const WorkspaceKind = z
+  .enum(["personal", "shared"])
+  .meta({ id: "WorkspaceKind" });
+export type WorkspaceKind = z.infer<typeof WorkspaceKind>;
 
 // Every error response, in every transport, is a Problem: a short, human-readable
 // message and nothing else, so internals (and secrets) never leak into responses.

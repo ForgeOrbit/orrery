@@ -73,7 +73,7 @@
             "$ref": "#/components/schemas/Email"
           },
           "password": {
-            "$ref": "#/components/schemas/Password"
+            "$ref": "#/components/schemas/NewPassword"
           }
         },
         "required": [
@@ -82,7 +82,7 @@
           "password"
         ]
       },
-      "Password": {
+      "NewPassword": {
         "type": "string",
         "minLength": 8,
         "maxLength": 256
@@ -105,13 +105,18 @@
             "$ref": "#/components/schemas/Email"
           },
           "password": {
-            "$ref": "#/components/schemas/Password"
+            "$ref": "#/components/schemas/LoginPassword"
           }
         },
         "required": [
           "email",
           "password"
         ]
+      },
+      "LoginPassword": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
       },
       "SessionResponse": {
         "type": "object",
@@ -245,7 +250,7 @@
             }
           },
           "409": {
-            "description": "Setup is already complete, or the email is taken",
+            "description": "Setup is already complete",
             "content": {
               "application/json": {
                 "schema": {
@@ -260,7 +265,7 @@
     "/api/auth/login": {
       "post": {
         "summary": "Sign in with email and password",
-        "description": "On success, sets the HttpOnly orrery_session cookie.",
+        "description": "On success, sets the HttpOnly session cookie named by the session policy.",
         "requestBody": {
           "required": true,
           "content": {
@@ -283,7 +288,7 @@
             }
           },
           "400": {
-            "description": "Invalid email or password",
+            "description": "Invalid email or password shape",
             "content": {
               "application/json": {
                 "schema": {

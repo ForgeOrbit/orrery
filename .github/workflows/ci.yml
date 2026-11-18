@@ -62,8 +62,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       POSTGRES_PASSWORD: ci
-      # The stack's one-time setup secret; the tests must know it to drive bootstrap.
-      BOOTSTRAP_SECRET: ci-bootstrap-secret
+      # The stack's one-time setup secret (at least 32 characters); the tests must know it
+      # to drive bootstrap.
+      BOOTSTRAP_SECRET: ci-bootstrap-secret-0123456789abcdef
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
@@ -78,9 +79,19 @@ jobs:
       - name: REST and browser checks, including a restart
         run: >
           ORRERY_URL=http://localhost:8080
-          ORRERY_SETUP_SECRET=ci-bootstrap-secret
+          ORRERY_SETUP_SECRET=ci-bootstrap-secret-0123456789abcdef
           ORRERY_RESTART_CMD="docker compose -f $GITHUB_WORKSPACE/compose.yaml restart orrery"
           pnpm test:e2e
+      # The session-cookie needle is a proxy: any logged cookie value would carry the
+      # cookie's name with it.
+      - name: The stack's logs contain no secrets
+        if: always()
+        run: >
+          node scripts/check-e2e-logs.mjs
+          "bootstrap-secret=$BOOTSTRAP_SECRET"
+          "spec-password=browser-checked-admin-password"
+          "rest-password=a-valid-password"
+          "session-cookie=orrery_session"
       - if: failure()
         run: docker compose logs
 

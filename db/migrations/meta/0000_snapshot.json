@@ -1,5 +1,5 @@
 {
-  "id": "a282d033-b56b-4e07-a753-00b3b87b8154",
+  "id": "03ae9b68-0197-4e8c-b6e6-ac80cf79f86d",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -118,7 +118,12 @@
         }
       },
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "humans_email_normalized": {
+          "name": "humans_email_normalized",
+          "value": "\"humans\".\"email\" = lower(btrim(\"humans\".\"email\"))"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.instance_setup": {
@@ -239,7 +244,11 @@
       "checkConstraints": {
         "workspace_kind": {
           "name": "workspace_kind",
-          "value": "\"workspaces\".\"kind\" in ('personal', 'shared')"
+          "value": "kind in ('personal', 'shared')"
+        },
+        "workspace_owner_matches_kind": {
+          "name": "workspace_owner_matches_kind",
+          "value": "(\"workspaces\".\"kind\" = 'personal') = (\"workspaces\".\"personal_owner_human_id\" is not null)"
         }
       },
       "isRLSEnabled": false
