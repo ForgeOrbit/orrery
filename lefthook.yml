@@ -1,5 +1,4 @@
 # Git hooks, installed by `pnpm install`. CI is still the gate: hooks only catch the cheap things early.
-# Skip once with LEFTHOOK=0 git commit ... (CI does the full check anyway).
 
 pre-commit:
   parallel: true
