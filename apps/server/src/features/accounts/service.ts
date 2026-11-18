@@ -164,7 +164,6 @@ export function createAccountsService({
     maxAgeSeconds: SESSION_TTL_SECONDS,
     secure: publicUrl.startsWith("https://"),
   };
-
   return {
     sessionPolicy: () => sessionPolicy,
 
@@ -251,4 +250,13 @@ export function createAccountsService({
       return row ?? null;
     },
   };
+}
+
+// The one startup warning accounts owns: a fresh installation with no bootstrap secret
+// can never be set up, and the installer should learn that before trying. main.ts
+// reports whatever this returns; the decision stays here.
+export async function startupWarnings({ db, setupSecret }: AccountsDeps): Promise<string[]> {
+  if (setupSecret !== undefined) return [];
+  const rows = await db.select({ id: instanceSetup.id }).from(instanceSetup).limit(1);
+  return rows.length > 0 ? [] : ["initial setup cannot run until BOOTSTRAP_SECRET is set"];
 }
