@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/orrery-color-transparent-dark.svg">
-    <img src="assets/orrery-color-transparent.svg" alt="Orrery" width="128">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/orrery-mark-dark.svg">
+    <img src="assets/orrery-mark.svg" alt="Orrery" width="80">
   </picture>
 </p>
 
