@@ -124,6 +124,18 @@
             "name": "react",
             "importNames": ["useEffect", "useLayoutEffect"],
             "message": "Don't use useEffect in the web app. Load server data with TanStack Query, derive values during render, and handle events in event handlers. See Stack in AGENTS.md."
+          },
+          {
+            "name": "cypress",
+            "message": "Browser tests use Playwright in tests/e2e/*.spec.ts. See Stack in AGENTS.md."
+          },
+          {
+            "name": "puppeteer",
+            "message": "Browser tests use Playwright in tests/e2e/*.spec.ts. See Stack in AGENTS.md."
+          },
+          {
+            "name": "selenium-webdriver",
+            "message": "Browser tests use Playwright in tests/e2e/*.spec.ts. See Stack in AGENTS.md."
           }
         ]
       }
@@ -246,6 +258,18 @@
                 "name": "react",
                 "importNames": ["useEffect", "useLayoutEffect"],
                 "message": "Don't use useEffect in the web app. Load server data with TanStack Query, derive values during render, and handle events in event handlers. See Stack in AGENTS.md."
+              },
+              {
+                "name": "cypress",
+                "message": "Browser tests use Playwright in tests/e2e/*.spec.ts. See Stack in AGENTS.md."
+              },
+              {
+                "name": "puppeteer",
+                "message": "Browser tests use Playwright in tests/e2e/*.spec.ts. See Stack in AGENTS.md."
+              },
+              {
+                "name": "selenium-webdriver",
+                "message": "Browser tests use Playwright in tests/e2e/*.spec.ts. See Stack in AGENTS.md."
               }
             ]
           }
@@ -367,6 +391,18 @@
                 "name": "react",
                 "importNames": ["useEffect", "useLayoutEffect"],
                 "message": "Don't use useEffect in the web app. Load server data with TanStack Query, derive values during render, and handle events in event handlers. See Stack in AGENTS.md."
+              },
+              {
+                "name": "cypress",
+                "message": "Browser tests use Playwright in tests/e2e/*.spec.ts. See Stack in AGENTS.md."
+              },
+              {
+                "name": "puppeteer",
+                "message": "Browser tests use Playwright in tests/e2e/*.spec.ts. See Stack in AGENTS.md."
+              },
+              {
+                "name": "selenium-webdriver",
+                "message": "Browser tests use Playwright in tests/e2e/*.spec.ts. See Stack in AGENTS.md."
               }
             ],
             "patterns": [
@@ -494,6 +530,18 @@
                 "name": "react",
                 "importNames": ["useEffect", "useLayoutEffect"],
                 "message": "Don't use useEffect in the web app. Load server data with TanStack Query, derive values during render, and handle events in event handlers. See Stack in AGENTS.md."
+              },
+              {
+                "name": "cypress",
+                "message": "Browser tests use Playwright in tests/e2e/*.spec.ts. See Stack in AGENTS.md."
+              },
+              {
+                "name": "puppeteer",
+                "message": "Browser tests use Playwright in tests/e2e/*.spec.ts. See Stack in AGENTS.md."
+              },
+              {
+                "name": "selenium-webdriver",
+                "message": "Browser tests use Playwright in tests/e2e/*.spec.ts. See Stack in AGENTS.md."
               }
             ],
             "patterns": [
@@ -621,6 +669,18 @@
                 "name": "react",
                 "importNames": ["useEffect", "useLayoutEffect"],
                 "message": "Don't use useEffect in the web app. Load server data with TanStack Query, derive values during render, and handle events in event handlers. See Stack in AGENTS.md."
+              },
+              {
+                "name": "cypress",
+                "message": "Browser tests use Playwright in tests/e2e/*.spec.ts. See Stack in AGENTS.md."
+              },
+              {
+                "name": "puppeteer",
+                "message": "Browser tests use Playwright in tests/e2e/*.spec.ts. See Stack in AGENTS.md."
+              },
+              {
+                "name": "selenium-webdriver",
+                "message": "Browser tests use Playwright in tests/e2e/*.spec.ts. See Stack in AGENTS.md."
               }
             ],
             "patterns": [

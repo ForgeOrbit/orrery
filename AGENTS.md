@@ -48,6 +48,7 @@ Use these. Don't add an alternative; the lint bans the common ones (`.oxlintrc.j
 | Web app | React, Vite, TanStack Router (file-based; `routeTree.gen.ts` is generated, don't edit it) | React Router |
 | Web data | TanStack Query with `fetch`. No `useEffect` (lint error): load data with a query, derive values during render, react to events in handlers. | axios, SWR, fetching in `useEffect` |
 | Tests | Vitest in `apps/`, `packages/` and `tests/`; Testcontainers for Postgres. `node:test` only in root `scripts/`. | Jest, Mocha |
+| Browser tests | Playwright (`@playwright/test`), only in `tests/e2e/*.spec.ts`, against a running server like the other e2e tests | Cypress, Puppeteer, Selenium |
 | Format and lint | oxfmt and Oxlint (`pnpm check`, `pnpm fix`) | Prettier, ESLint, Biome |
 
 ## Layout
