@@ -3,9 +3,8 @@ import { Email, Timestamp } from "./common.ts";
 
 // Projects and their content (issue #26). A project belongs to exactly one workspace and
 // holds issues, their comments, basic Markdown knowledge entries, and one activity feed.
-// Access is the workspace's own: until #27 adds project levels, only workspace owners can
-// read or change a project. A personal workspace's owner is its single human, so a
-// personal project stays private.
+// Until #27 adds shared-workspace project levels, only a personal workspace's owner can
+// create, read, or change projects in their personal workspace, keeping them private.
 
 export const IssueStatus = z.enum(["open", "closed"]).meta({ id: "IssueStatus" });
 export type IssueStatus = z.infer<typeof IssueStatus>;

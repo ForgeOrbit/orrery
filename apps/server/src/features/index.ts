@@ -55,7 +55,7 @@ export function createFeatures(database: Database, config: Config, log: Logger):
       log,
     }),
     // Projects borrow the accounts session reader and nothing else: a personal
-    // workspace's owner, or a shared workspace's owner, is the access boundary in #26.
+    // workspace's owner is the access boundary in #26 (shared-workspace access lands in #27).
     createProjectsFeature({
       db: database.db,
       sessionReader: accounts.sessionReader,
