@@ -137,6 +137,7 @@ const setProjectAccess = createRoute({
       "Read or Contribute access cannot manage project access, or the project is personal",
     ),
     404: problem("No accessible project or workspace member"),
+    409: problem("Workspace owners already have Manage access to every project"),
   },
 });
 
@@ -155,6 +156,7 @@ const removeProjectAccess = createRoute({
       "Read or Contribute access cannot manage project access, or the project is personal",
     ),
     404: problem("No project with this id is accessible to the caller"),
+    409: problem("Workspace owners already have Manage access to every project"),
   },
 });
 
@@ -432,6 +434,7 @@ const statusFor = {
   insufficient_project_access: 403,
   member_not_found: 404,
   personal_project_access: 403,
+  workspace_owner_access: 409,
 } as const satisfies Record<ProjectsErrorKind, number>;
 
 function isKind<K extends readonly ProjectsErrorKind[]>(
@@ -445,7 +448,12 @@ const workspaceListKinds = ["not_signed_in", "workspace_not_found"] as const;
 const workspaceCreateKinds = [...workspaceListKinds, "project_creation_not_allowed"] as const;
 const projectReadKinds = ["not_signed_in", "project_not_found"] as const;
 const projectWriteKinds = [...projectReadKinds, "insufficient_project_access"] as const;
-const accessKinds = [...projectWriteKinds, "member_not_found", "personal_project_access"] as const;
+const accessKinds = [
+  ...projectWriteKinds,
+  "member_not_found",
+  "personal_project_access",
+  "workspace_owner_access",
+] as const;
 const issueReadKinds = ["not_signed_in", "issue_not_found"] as const;
 const issueWriteKinds = [...issueReadKinds, "insufficient_project_access"] as const;
 const knowledgeReadKinds = ["not_signed_in", "knowledge_entry_not_found"] as const;
@@ -514,7 +522,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
       const { projectId } = c.req.valid("param");
       return c.json(await service.listProjectAccess(await sessionReader(c), projectId), 200);
     } catch (error) {
-      return failure(c, error, accessKinds);
+      return failure(c, error, projectWriteKinds);
     }
   });
 

@@ -914,4 +914,90 @@ describe("shared project access", () => {
       level: "read",
     });
   });
+
+  it("refuses mutating a workspace owner's implicit project access or Create projects capability", async () => {
+    const { app, adminCookie } = await readyApp();
+    const [admin] = await database.db.select().from(humans).where(eq(humans.email, ADMIN_EMAIL));
+    if (admin === undefined) throw new Error("the administrator was not found");
+    const workspace = await createSharedWorkspace(app, adminCookie, "Owner Authority");
+    const manager = await secondHuman("manager@example.com", workspace.id);
+    const project = await createProject(app, adminCookie, workspace.id, "Core");
+
+    // Grant manager Manage on Core so they can call project-access routes.
+    const granted = await patchJson(
+      app,
+      `/api/projects/${project.id}/access`,
+      { email: manager.human.email, level: "manage" },
+      adminCookie,
+    );
+    expect(granted.status).toBe(200);
+
+    const eventsBefore = await database.db.select().from(projectAccessEvents);
+
+    // A project manager cannot write a lower explicit grant or revoke a workspace owner.
+    const grantOwner = await patchJson(
+      app,
+      `/api/projects/${project.id}/access`,
+      { email: admin.email, level: "read" },
+      manager.cookie,
+    );
+    expect(grantOwner.status).toBe(409);
+    expect(await problemBody(grantOwner)).toMatchObject({ code: "workspace_owner_access" });
+
+    const revokeOwner = await deleteRequest(
+      app,
+      `/api/projects/${project.id}/access/${admin.id}`,
+      manager.cookie,
+    );
+    expect(revokeOwner.status).toBe(409);
+    expect(await problemBody(revokeOwner)).toMatchObject({ code: "workspace_owner_access" });
+
+    expect(await database.db.select().from(projectAccessEvents)).toHaveLength(eventsBefore.length);
+    const grantsAfter = ProjectAccessGrantsResponse.parse(
+      await (await getJson(app, `/api/projects/${project.id}/access`, adminCookie)).json(),
+    );
+    expect(grantsAfter.map((g) => g.humanId)).toEqual([manager.human.id]);
+
+    // Promoting a member with an existing grant to owner hides that stale grant from the listing.
+    const promoted = await postJson(
+      app,
+      `/api/workspaces/${workspace.id}/owners`,
+      { humanId: manager.human.id },
+      adminCookie,
+    );
+    expect(promoted.status).toBe(200);
+    const grantsAfterPromotion = ProjectAccessGrantsResponse.parse(
+      await (await getJson(app, `/api/projects/${project.id}/access`, adminCookie)).json(),
+    );
+    expect(grantsAfterPromotion).toEqual([]);
+
+    // Workspace owners always have Create projects: revoking is 409, granting is a no-op,
+    // and neither records a workspace_events row.
+    const wsEventsBefore = await database.db.select().from(workspaceEvents);
+
+    const revokeOwnerCap = await patchJson(
+      app,
+      `/api/workspaces/${workspace.id}/members/${admin.id}`,
+      { canCreateProjects: false },
+      adminCookie,
+    );
+    expect(revokeOwnerCap.status).toBe(409);
+    expect(await problemBody(revokeOwnerCap)).toMatchObject({
+      code: "workspace_owner_capability",
+    });
+
+    const grantOwnerCap = await patchJson(
+      app,
+      `/api/workspaces/${workspace.id}/members/${admin.id}`,
+      { canCreateProjects: true },
+      adminCookie,
+    );
+    expect(grantOwnerCap.status).toBe(200);
+    expect(WorkspaceMember.parse(await grantOwnerCap.json())).toMatchObject({
+      humanId: admin.id,
+      isOwner: true,
+      canCreateProjects: true,
+    });
+    expect(await database.db.select().from(workspaceEvents)).toHaveLength(wsEventsBefore.length);
+  });
 });

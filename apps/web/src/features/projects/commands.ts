@@ -25,7 +25,7 @@ export function createProject(workspaceId: string, input: CreateProjectRequest):
   );
 }
 
-// A manager's project setting: the name. The server checks Manage and records the
+// A project manager's project setting: the name. The server checks Manage and records the
 // rename in the project's activity.
 export function updateProject(projectId: string, input: UpdateProjectRequest): Promise<Project> {
   return patchJson(`/api/projects/${encodeURIComponent(projectId)}`, input, (value) =>

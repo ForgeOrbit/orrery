@@ -243,6 +243,7 @@ const updateWorkspaceMember = createRoute({
     401: problem("Not signed in"),
     403: problem("Not an owner of this workspace"),
     404: problem("No accessible shared workspace or member"),
+    409: problem("Workspace owners always have Create projects"),
   },
 });
 
@@ -293,6 +294,7 @@ const statusFor = {
   account_exists: 409,
   member_not_found: 404,
   last_owner: 409,
+  workspace_owner_capability: 409,
 } as const satisfies Record<WorkspacesErrorKind, number>;
 
 // True when the error's kind is one of the route's kinds. A type guard is the honest
@@ -339,6 +341,7 @@ const updateMemberKinds = [
   "workspace_not_found",
   "not_workspace_owner",
   "member_not_found",
+  "workspace_owner_capability",
 ] as const;
 const removeKinds = [
   "not_signed_in",

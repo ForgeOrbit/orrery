@@ -54,7 +54,8 @@ export type ProjectsErrorKind =
   | "project_creation_not_allowed"
   | "insufficient_project_access"
   | "member_not_found"
-  | "personal_project_access";
+  | "personal_project_access"
+  | "workspace_owner_access";
 
 const messages = {
   not_signed_in: "Not signed in.",
@@ -66,6 +67,7 @@ const messages = {
   insufficient_project_access: "This project access level cannot do that.",
   member_not_found: "This person is not a member of the workspace.",
   personal_project_access: "Personal projects have no direct collaborators.",
+  workspace_owner_access: "Workspace owners already have Manage access to every project.",
 } as const satisfies Record<ProjectsErrorKind, string>;
 
 const ACCESS_RANK: Record<ProjectAccessLevel, number> = {
@@ -616,6 +618,37 @@ async function revokeMemberProjectAccessInTransaction(
   }
 }
 
+async function lockProjectForMutation(tx: DbTransaction, projectId: string) {
+  await tx
+    .select({ id: projects.id })
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .for("update");
+}
+
+const grantColumns = {
+  humanId: projectAccessGrants.humanId,
+  email: humans.email,
+  level: projectAccessGrants.level,
+  grantedByHumanId: projectAccessGrants.grantedByHumanId,
+  grantedByEmail: accessGrantor.email,
+  createdAt: projectAccessGrants.createdAt,
+  updatedAt: projectAccessGrants.updatedAt,
+};
+
+async function readProjectGrant(tx: DbTransaction, projectId: string, humanId: string) {
+  const [row] = await tx
+    .select(grantColumns)
+    .from(projectAccessGrants)
+    .innerJoin(humans, eq(humans.id, projectAccessGrants.humanId))
+    .innerJoin(accessGrantor, eq(accessGrantor.id, projectAccessGrants.grantedByHumanId))
+    .where(
+      and(eq(projectAccessGrants.projectId, projectId), eq(projectAccessGrants.humanId, humanId)),
+    )
+    .limit(1);
+  return row;
+}
+
 export interface ProjectsDeps {
   db: PostgresJsDatabase;
 }
@@ -830,7 +863,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
       return db.transaction(async (tx) => {
         // Lock first, then authorize: a concurrent grant change cannot slip between the
         // access check and the rename.
-        await tx.execute(sql`select id from projects where id = ${projectId} for update`);
+        await lockProjectForMutation(tx, projectId);
         const current = await requireProject(
           tx,
           projectId,
@@ -854,8 +887,9 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
       });
     },
 
-    // The explicit grants a manager sees. Workspace owners are not listed because their
-    // Manage is implicit; a personal project has no collaborators at all.
+    // The explicit grants a project manager sees. Workspace owners are not listed because
+    // their Manage is implicit (including members later promoted to owner); a personal
+    // project has no collaborators at all.
     async listProjectAccess(account, projectId) {
       const actor = requireAccount(account);
       return db.transaction(
@@ -868,19 +902,23 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
           );
           if (project.workspaceKind === WorkspaceKind.enum.personal) return [];
           const rows = await tx
-            .select({
-              humanId: projectAccessGrants.humanId,
-              email: humans.email,
-              level: projectAccessGrants.level,
-              grantedByHumanId: projectAccessGrants.grantedByHumanId,
-              grantedByEmail: accessGrantor.email,
-              createdAt: projectAccessGrants.createdAt,
-              updatedAt: projectAccessGrants.updatedAt,
-            })
+            .select(grantColumns)
             .from(projectAccessGrants)
             .innerJoin(humans, eq(humans.id, projectAccessGrants.humanId))
             .innerJoin(accessGrantor, eq(accessGrantor.id, projectAccessGrants.grantedByHumanId))
-            .where(eq(projectAccessGrants.projectId, projectId))
+            .innerJoin(
+              workspaceMemberships,
+              and(
+                eq(workspaceMemberships.workspaceId, project.workspaceId),
+                eq(workspaceMemberships.humanId, projectAccessGrants.humanId),
+              ),
+            )
+            .where(
+              and(
+                eq(projectAccessGrants.projectId, projectId),
+                eq(workspaceMemberships.isOwner, false),
+              ),
+            )
             .orderBy(projectAccessGrants.createdAt, projectAccessGrants.humanId);
           return rows.map(toProjectGrant);
         },
@@ -890,13 +928,14 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
 
     // Manage grants or changes one member's level. The project row lock serializes
     // concurrent grant changes; the unique pair keeps one row per person, and every real
-    // change writes one attributed event. Personal projects refuse collaborators.
+    // change writes one attributed event. Personal projects refuse collaborators, and
+    // workspace owners already hold implicit Manage that project managers cannot alter.
     async setProjectAccess(account, projectId, input) {
       const actor = requireAccount(account);
       return db.transaction(async (tx) => {
         // The project row is the serialization point for grant changes, so the level
         // check and the write see one ordered history.
-        await tx.execute(sql`select id from projects where id = ${projectId} for update`);
+        await lockProjectForMutation(tx, projectId);
         const project = await requireProject(
           tx,
           projectId,
@@ -908,7 +947,11 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
         }
 
         const [target] = await tx
-          .select({ humanId: humans.id, email: humans.email })
+          .select({
+            humanId: humans.id,
+            email: humans.email,
+            isOwner: workspaceMemberships.isOwner,
+          })
           .from(workspaceMemberships)
           .innerJoin(humans, eq(humans.id, workspaceMemberships.humanId))
           .where(
@@ -919,6 +962,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
           )
           .limit(1);
         if (target === undefined) throw new ProjectsError("member_not_found");
+        if (target.isOwner) throw new ProjectsError("workspace_owner_access");
 
         const [current] = await tx
           .select({ level: projectAccessGrants.level })
@@ -932,26 +976,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
           .limit(1);
 
         if (current?.level === input.level) {
-          const [existing] = await tx
-            .select({
-              humanId: projectAccessGrants.humanId,
-              email: humans.email,
-              level: projectAccessGrants.level,
-              grantedByHumanId: projectAccessGrants.grantedByHumanId,
-              grantedByEmail: accessGrantor.email,
-              createdAt: projectAccessGrants.createdAt,
-              updatedAt: projectAccessGrants.updatedAt,
-            })
-            .from(projectAccessGrants)
-            .innerJoin(humans, eq(humans.id, projectAccessGrants.humanId))
-            .innerJoin(accessGrantor, eq(accessGrantor.id, projectAccessGrants.grantedByHumanId))
-            .where(
-              and(
-                eq(projectAccessGrants.projectId, projectId),
-                eq(projectAccessGrants.humanId, target.humanId),
-              ),
-            )
-            .limit(1);
+          const existing = await readProjectGrant(tx, projectId, target.humanId);
           if (existing === undefined) throw new Error("the access grant disappeared");
           return toProjectGrant(existing);
         }
@@ -988,37 +1013,19 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
           previousLevel: current === undefined ? null : ProjectAccessLevel.parse(current.level),
         });
 
-        const [saved] = await tx
-          .select({
-            humanId: projectAccessGrants.humanId,
-            email: humans.email,
-            level: projectAccessGrants.level,
-            grantedByHumanId: projectAccessGrants.grantedByHumanId,
-            grantedByEmail: accessGrantor.email,
-            createdAt: projectAccessGrants.createdAt,
-            updatedAt: projectAccessGrants.updatedAt,
-          })
-          .from(projectAccessGrants)
-          .innerJoin(humans, eq(humans.id, projectAccessGrants.humanId))
-          .innerJoin(accessGrantor, eq(accessGrantor.id, projectAccessGrants.grantedByHumanId))
-          .where(
-            and(
-              eq(projectAccessGrants.projectId, projectId),
-              eq(projectAccessGrants.humanId, target.humanId),
-            ),
-          )
-          .limit(1);
+        const saved = await readProjectGrant(tx, projectId, target.humanId);
         if (saved === undefined) throw new Error("the access grant was not saved");
         return toProjectGrant(saved);
       });
     },
 
     // Revoking is idempotent: the desired state is "no grant", and a missing grant is
-    // already there. A real revocation is recorded with its previous level.
+    // already there. A real revocation is recorded with its previous level. Workspace
+    // owners cannot have their implicit Manage revoked here.
     async removeProjectAccess(account, projectId, humanId) {
       const actor = requireAccount(account);
       await db.transaction(async (tx) => {
-        await tx.execute(sql`select id from projects where id = ${projectId} for update`);
+        await lockProjectForMutation(tx, projectId);
         const project = await requireProject(
           tx,
           projectId,
@@ -1027,6 +1034,20 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
         );
         if (project.workspaceKind === WorkspaceKind.enum.personal) {
           throw new ProjectsError("personal_project_access");
+        }
+
+        const [targetMembership] = await tx
+          .select({ isOwner: workspaceMemberships.isOwner })
+          .from(workspaceMemberships)
+          .where(
+            and(
+              eq(workspaceMemberships.workspaceId, project.workspaceId),
+              eq(workspaceMemberships.humanId, humanId),
+            ),
+          )
+          .limit(1);
+        if (targetMembership?.isOwner === true) {
+          throw new ProjectsError("workspace_owner_access");
         }
 
         const [current] = await tx

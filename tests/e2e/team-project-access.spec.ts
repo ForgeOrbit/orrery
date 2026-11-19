@@ -267,13 +267,31 @@ test("enforces the direct-request matrix for every level", async () => {
   expect((await outsiderApi.get(`/api/projects/${adminPersonalProjectId}`)).status()).toBe(404);
   expect((await memberApi.get(`/api/projects/${adminPersonalProjectId}`)).status()).toBe(404);
 
-  // The system administrator's role does not open another human's personal project.
+  // The system administrator's role does not open another human's personal project or
+  // another team's shared workspace/project.
   expect((await adminApi.get(`/api/projects/${outsiderPersonalProjectId}`)).status()).toBe(404);
   expect(
     (
       await adminApi.get(`/api/workspaces/${await personalWorkspaceOfApi(outsiderApi)}/projects`)
     ).status(),
   ).toBe(404);
+
+  const outsiderSharedWs = await outsiderApi.post("/api/workspaces", {
+    data: { name: "Outsider Team" },
+  });
+  expect(outsiderSharedWs.status()).toBe(201);
+  const outsiderSharedId = field(await outsiderSharedWs.json(), "id");
+  if (typeof outsiderSharedId !== "string") throw new Error("missing outsider shared workspace id");
+  const outsiderSharedProj = await outsiderApi.post(
+    `/api/workspaces/${outsiderSharedId}/projects`,
+    { data: { name: "Outsider Shared Project" } },
+  );
+  expect(outsiderSharedProj.status()).toBe(201);
+  const outsiderSharedProjId = field(await outsiderSharedProj.json(), "id");
+  if (typeof outsiderSharedProjId !== "string")
+    throw new Error("missing outsider shared project id");
+  expect((await adminApi.get(`/api/workspaces/${outsiderSharedId}/projects`)).status()).toBe(404);
+  expect((await adminApi.get(`/api/projects/${outsiderSharedProjId}`)).status()).toBe(404);
 });
 
 test("grants access in the browser and shows Read without mutation controls", async ({

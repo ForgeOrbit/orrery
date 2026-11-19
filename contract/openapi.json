@@ -2167,6 +2167,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Workspace owners always have Create projects",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         }
       },
@@ -2672,6 +2682,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Workspace owners already have Manage access to every project",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         }
       }
@@ -2738,6 +2758,16 @@
           },
           "404": {
             "description": "No project with this id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Workspace owners already have Manage access to every project",
             "content": {
               "application/problem+json": {
                 "schema": {

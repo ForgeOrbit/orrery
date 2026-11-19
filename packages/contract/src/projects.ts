@@ -95,8 +95,8 @@ export const ProjectAccessGrantsResponse = z
 export type ProjectAccessGrantsResponse = z.infer<typeof ProjectAccessGrantsResponse>;
 
 // Granting or changing access always targets a current member of the project's shared
-// workspace by email. The level is cumulative; the manager's own level is the ceiling
-// for what they may grant in a later slice, but Manage is the only required level now.
+// workspace by email. The level is cumulative; the project manager's own level is the
+// ceiling for what they may grant in a later slice, but Manage is the only required level now.
 export const SetProjectAccessRequest = z
   .object({
     email: Email,

@@ -47,7 +47,8 @@ export type WorkspacesErrorKind =
   | "already_member"
   | "account_exists"
   | "member_not_found"
-  | "last_owner";
+  | "last_owner"
+  | "workspace_owner_capability";
 
 // Each kind is the REST error's stable code and its message the Problem's title
 // (ADR-0003), so clients branch on the code and people read the title.
@@ -66,6 +67,7 @@ const messages = {
   account_exists: "This email already has an account. Sign in to accept the invitation.",
   member_not_found: "This person is not a member of the workspace.",
   last_owner: "A workspace must keep at least one owner.",
+  workspace_owner_capability: "Workspace owners always have Create projects.",
 } as const satisfies Record<WorkspacesErrorKind, string>;
 
 export class WorkspacesError extends Error {
@@ -363,6 +365,27 @@ async function redeemWorkspaceInvitation(tx: DbTransaction, token: string) {
 
   await requireInviterStillAuthorized(tx, invitation.workspaceId, invitation.invitedByHumanId);
   return { ...invitation, workspace };
+}
+
+async function requireWorkspaceMember(tx: DbTransaction, workspaceId: string, humanId: string) {
+  const [member] = await tx
+    .select({
+      humanId: workspaceMemberships.humanId,
+      email: humans.email,
+      isOwner: workspaceMemberships.isOwner,
+      canCreateProjects: workspaceMemberships.canCreateProjects,
+    })
+    .from(workspaceMemberships)
+    .innerJoin(humans, eq(humans.id, workspaceMemberships.humanId))
+    .where(
+      and(
+        eq(workspaceMemberships.workspaceId, workspaceId),
+        eq(workspaceMemberships.humanId, humanId),
+      ),
+    )
+    .limit(1);
+  if (member === undefined) throw new WorkspacesError("member_not_found");
+  return member;
 }
 
 export function createWorkspacesService({
@@ -715,23 +738,7 @@ export function createWorkspacesService({
         await lockWorkspaceForMutation(tx, workspaceId);
         await requireOwner(tx, workspaceId, actor.humanId);
 
-        const [member] = await tx
-          .select({
-            humanId: workspaceMemberships.humanId,
-            email: humans.email,
-            isOwner: workspaceMemberships.isOwner,
-            canCreateProjects: workspaceMemberships.canCreateProjects,
-          })
-          .from(workspaceMemberships)
-          .innerJoin(humans, eq(humans.id, workspaceMemberships.humanId))
-          .where(
-            and(
-              eq(workspaceMemberships.workspaceId, workspaceId),
-              eq(workspaceMemberships.humanId, humanId),
-            ),
-          )
-          .limit(1);
-        if (member === undefined) throw new WorkspacesError("member_not_found");
+        const member = await requireWorkspaceMember(tx, workspaceId, humanId);
         if (member.isOwner) return toMember(member);
 
         await tx
@@ -748,32 +755,22 @@ export function createWorkspacesService({
       });
     },
 
-    // Owners grant one capability at a time. The effective value is what the member row
-    // reports; an owner's Create projects is implicit, so only a real stored change
-    // writes an event. A no-op answers the member unchanged and records nothing.
+    // Owners grant one capability at a time. An owner's Create projects is implicit and
+    // immutable (granting is a no-op, revoking is refused); for non-owners, only a real
+    // change writes an event.
     async updateMemberCapability(account, workspaceId, humanId, input) {
       const actor = requireAccount(account);
       return db.transaction(async (tx) => {
         await lockWorkspaceForMutation(tx, workspaceId);
         await requireOwner(tx, workspaceId, actor.humanId);
 
-        const [member] = await tx
-          .select({
-            humanId: workspaceMemberships.humanId,
-            email: humans.email,
-            isOwner: workspaceMemberships.isOwner,
-            canCreateProjects: workspaceMemberships.canCreateProjects,
-          })
-          .from(workspaceMemberships)
-          .innerJoin(humans, eq(humans.id, workspaceMemberships.humanId))
-          .where(
-            and(
-              eq(workspaceMemberships.workspaceId, workspaceId),
-              eq(workspaceMemberships.humanId, humanId),
-            ),
-          )
-          .limit(1);
-        if (member === undefined) throw new WorkspacesError("member_not_found");
+        const member = await requireWorkspaceMember(tx, workspaceId, humanId);
+        if (member.isOwner) {
+          if (!input.canCreateProjects) {
+            throw new WorkspacesError("workspace_owner_capability");
+          }
+          return toMember(member);
+        }
         if (member.canCreateProjects === input.canCreateProjects) return toMember(member);
 
         await tx
