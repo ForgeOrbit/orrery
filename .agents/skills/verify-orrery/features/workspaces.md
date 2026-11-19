@@ -59,13 +59,19 @@ project; [projects](./projects.md) covers the Read/Contribute/Manage matrix.
    ```bash
    WORKSPACE=$(curl -sS -b $RUN_DIR/admin.jar -H 'content-type: application/json' \
      -d '{"name":"Live Team"}' $URL/api/workspaces | jq -r .id)
-   curl -sS -b $RUN_DIR/admin.jar -H 'content-type: application/json' \
-     -d '{"email":"newcomer@orrery.test"}' \
-     $URL/api/workspaces/$WORKSPACE/invitations
+   PROJECT=$(curl -fsS -b $RUN_DIR/admin.jar -H 'content-type: application/json' \
+     -d '{"name":"Guidance"}' $URL/api/workspaces/$WORKSPACE/projects | jq -er .id)
+   jq -nc --arg id "$PROJECT" \
+     '{email:"newcomer@orrery.test",projectGrants:[{projectId:$id,level:"contribute"}]}' | \
+     curl -fsS -b $RUN_DIR/admin.jar -H 'content-type: application/json' \
+     --data-binary @- $URL/api/workspaces/$WORKSPACE/invitations
    ```
 
-   The catcher holds `/workspace-invitation?token=...`; the signed-in newcomer accepts by
-   POSTing it to `/api/workspace-invitations/acceptance`.
+   Open the caught `/workspace-invitation?token=...` link as the newcomer. Before accepting,
+   confirm the page shows `Guidance: contribute`. GET `/api/workspace-invitations/preview`
+   with the same token and confirm its `project_access` grant matches the project ID,
+   name, and level. Accept as the signed-in newcomer, then GET `/api/projects/$PROJECT`
+   with `newcomer.jar` and confirm it returns the invited project.
 
 4. Prove owner authority and the capability ceiling:
 

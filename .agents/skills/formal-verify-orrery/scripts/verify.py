@@ -70,12 +70,13 @@ def extract_code_facts() -> dict[str, bool]:
     m1_db_advisory_lock = "pg_advisory_xact_lock(61683814, 24)" in mig_0008
     m1_db_trigger = "ensure_shared_workspace_has_owner()" in mig_0007
 
-    # M2a: Workspace invite supersedes failed deliveries. End before the invitation
-    # history methods so a later method cannot satisfy this fact by accident.
+    # M2a: Replacing a failed, still-live invitation revokes it rather than expiring it.
     invite_fn = slice_between(ws_src, "async invite(", "    // Every invitation in this workspace")
+    revoke_failed = slice_between(invite_fn, "status: InvitationStatus.enum.revoked", "await tx.insert(workspaceInvitations)")
     m2a_supersedes_failed = (
-        "InvitationDelivery.enum.failed" in invite_fn
-        and "InvitationStatus.enum.expired" in invite_fn
+        "InvitationDelivery.enum.failed" in revoke_failed
+        and "revokedAt" in revoke_failed
+        and "gt(workspaceInvitations.expiresAt" in revoke_failed
     )
 
     # M2b: recordDelivery guarded by status='pending' in both workspaces and invitations
@@ -92,6 +93,23 @@ def extract_code_facts() -> dict[str, bool]:
     m3_per_email_lock = (
         "pg_advisory_xact_lock(61683815" in inv_tx_body
         and "pg_advisory_xact_lock(61683815" in create_invited_fn
+    )
+
+    install_resend = slice_between(inv_src, "async resendInstallation(", "async revokeInstallation(")
+    install_registration = inv_src.split("async registerInstallation(", 1)[1]
+    def ordered(source, *markers):
+        offset = 0
+        for marker in markers:
+            offset = source.find(marker, offset)
+            if offset < 0:
+                return False
+            offset += len(marker)
+        return True
+
+    m3_resend_serialized = (
+        m3_per_email_lock
+        and ordered(install_resend, "pg_advisory_xact_lock(61683815", '.for("update")', "await emailRegistered(row.email, tx)", "insert(invitations)")
+        and ordered(install_registration, "pg_advisory_xact_lock(61683815", ".update(invitations)", "await createInvitedHuman(")
     )
 
     # M4: Project updateIssue & updateKnowledge acquire FOR UPDATE before requireIssue / requireKnowledge
@@ -140,13 +158,9 @@ def extract_code_facts() -> dict[str, bool]:
         and "revokeMemberProjectAccess(tx" in remove_member_fn
     )
 
-    # M9: The common redemption path and the projects writer both recheck the offered
-    # project's current workspace; every offer is persisted and copied on resend.
-    redeem_fn = slice_between(
-        ws_src,
-        "async function redeemWorkspaceInvitation(",
-        "export function createWorkspacesService",
-    )
+    # M9: These source markers select transitions in a bounded design model. They do
+    # not prove transaction wiring or rollback; the real-Postgres tests exercise both.
+    preview_fn = slice_between(ws_src, "async previewInvitation(", "async acceptInvitation(")
     accept_fn = slice_between(ws_src, "async acceptInvitation(", "async registerThroughInvitation(")
     register_fn = slice_between(ws_src, "async registerThroughInvitation(", "async appointOwner(")
     resend_fn = slice_between(ws_src, "async resendInvitation(", "async revokeInvitation(")
@@ -156,9 +170,6 @@ def extract_code_facts() -> dict[str, bool]:
         "async function lockWorkspaceOwnershipWrites",
     )
     m9_offer_persisted = "insert(workspaceInvitationGrants)" in invite_fn
-    m9_redemption_scope = (
-        "requireOfferedProjectsInWorkspace(tx, invitation.workspaceId, offered)" in redeem_fn
-    )
     m9_existing_applies = (
         "await applyInvitationGrants(" in accept_fn
         and 'WorkspacesError("invitation_scope_invalid")' in accept_fn
@@ -167,6 +178,7 @@ def extract_code_facts() -> dict[str, bool]:
         "await applyInvitationGrants(" in register_fn
         and 'WorkspacesError("invitation_scope_invalid")' in register_fn
     )
+    m9_grant_writer = "insert(projectAccessGrants)" in apply_grants_fn
     m9_apply_validates = (
         "currentWorkspaceByProject.get(projectId) !== workspaceId" in apply_grants_fn
         and "if (invalid.length > 0) return invalid" in apply_grants_fn
@@ -177,11 +189,21 @@ def extract_code_facts() -> dict[str, bool]:
         and "insert(workspaceInvitationGrants)" in resend_fn
     )
 
+    m9_resend_validates = (
+        "requireOfferedProjectsInWorkspace(tx, workspaceId, offered)" in resend_fn.split(".update(workspaceInvitations)", 1)[0]
+    )
+    m9_preview_validates = (
+        "loadOfferedProjectGrants(db, row.workspaceId, [row.id])" in preview_fn
+        and "grant.projectName === null" in preview_fn
+        and 'WorkspacesError("invitation_scope_invalid")' in preview_fn
+    )
+
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
         "m2a_supersedes_failed": m2a_supersedes_failed,
         "m2b_guarded": m2b_ws_guarded and m2b_inv_guarded,
         "m3_serialized": m3_email_check_in_tx and m3_per_email_lock,
+        "m3_resend_serialized": m3_resend_serialized,
         "m4_issue_for_update": m4_issue_for_update,
         "m4_knowledge_for_update": m4_knowledge_for_update,
         "m5_safe_rotation": m5_no_predelete and m5_post_retire_guarded,
@@ -189,9 +211,12 @@ def extract_code_facts() -> dict[str, bool]:
         "m7_non_member_404": m7_non_member_404,
         "m8_access_serialized": m8_access_serialized,
         "m9_offer_persisted": m9_offer_persisted,
-        "m9_redemption_scope": m9_redemption_scope,
+        "m9_resend_validates": m9_resend_validates,
+        "m9_resend_rejects_member": ordered(resend_fn, "lockWorkspaceForMutation(tx, workspaceId)", "requireRecipientNotMember(tx, workspaceId, row.email)", ".update(workspaceInvitations)", "insert(workspaceInvitations)"),
+        "m9_preview_validates": m9_preview_validates,
         "m9_existing_applies": m9_existing_applies,
         "m9_registration_applies": m9_registration_applies,
+        "m9_grant_writer": m9_grant_writer,
         "m9_apply_validates": m9_apply_validates,
         "m9_resend_copies": m9_resend_copies,
     }
@@ -405,15 +430,20 @@ def check_m2b(facts: dict[str, bool]) -> CheckResult:
 
 
 def check_m3(facts: dict[str, bool]) -> CheckResult:
-    serialized = facts["m3_serialized"]
-    init = (False, "pending_stale_null", None, "idle", "idle")
+    init = (False, "pending_stale_null", None, "idle", "idle", None)
 
     def next_states(state):
-        human, inv_s, lock, admin_pc, reg_pc = state
+        human, inv_s, lock, admin_pc, reg_pc, action = state
+        if action is None:
+            return [
+                ("model: start with an initial installation invite", (*state[:-1], "inviteInstallation")),
+                ("model: start with a resend of an expired invitation", (human, "expired", lock, admin_pc, reg_pc, "resendInstallation")),
+            ]
+        serialized = facts["m3_serialized" if action == "inviteInstallation" else "m3_resend_serialized"]
         out = []
         if serialized:
             if admin_pc == "idle" and lock is None:
-                out.append(("admin: inviteInstallation() acquires per-email lock", (human, inv_s, "admin", "locked", reg_pc)))
+                out.append((f"admin: {action}() acquires per-email lock", (human, inv_s, "admin", "locked", reg_pc)))
             elif admin_pc == "locked":
                 if human:
                     out.append(("admin: emailRegistered(tx)=true -> rollback account_exists", (human, inv_s, None, "done_rejected", reg_pc)))
@@ -424,17 +454,17 @@ def check_m3(facts: dict[str, bool]) -> CheckResult:
             elif reg_pc == "locked":
                 out.append(("recipient: createInvitedHuman() commits human", (True, "accepted", None, admin_pc, "done")))
         else:
-            if admin_pc == "idle" and not human:
-                out.append(("admin: emailRegistered()=false [OUTSIDE TX]", (human, inv_s, lock, "checked", reg_pc)))
+            if admin_pc == "idle" and (not human or action == "resendInstallation"):
+                out.append((f"admin: {action}() starts without a serialized account check", (human, inv_s, lock, "checked", reg_pc)))
             elif admin_pc == "checked":
                 tag = "done_after_human" if human else "done_ok"
-                out.append(("admin: inviteInstallation() TX commits pending without rechecking humans", (human, "pending_fresh", lock, tag, reg_pc)))
+                out.append((f"admin: {action}() TX commits pending without rechecking humans", (human, "pending_fresh", lock, tag, reg_pc)))
             if reg_pc == "idle" and not human:
                 out.append(("recipient: registers account & commits human", (True, "accepted", lock, admin_pc, "done")))
-        return out
+        return [(label, (*next_state, action)) for label, next_state in out]
 
     def inv(state):
-        _, _, _, admin_pc, _ = state
+        _, _, _, admin_pc, _, _ = state
         if admin_pc == "done_after_human":
             return False, "TOCTOU: fresh pending installation invitation committed after account already existed."
         return True, ""
@@ -709,19 +739,13 @@ def check_m8(facts: dict[str, bool]) -> CheckResult:
 def check_m9(facts: dict[str, bool]) -> CheckResult:
     # The offer is a project in the invited workspace. It can be moved to another
     # workspace after the invitation is created, and it can be resent before acceptance.
-    # Either acceptance path commits the membership and the offered grants together; a
-    # moved project must reject the whole transaction and leave the token pending.
+    # The model assumes atomic commits and rollback. It checks scope and preservation
+    # under that assumption, not whether the database actually rolls back every write.
     offer_persisted = facts["m9_offer_persisted"]
-    existing_checked = (
-        facts["m9_redemption_scope"]
-        and facts["m9_existing_applies"]
-        and facts["m9_apply_validates"]
-    )
-    registration_checked = (
-        facts["m9_redemption_scope"]
-        and facts["m9_registration_applies"]
-        and facts["m9_apply_validates"]
-    )
+    existing_checked = facts["m9_existing_applies"] and facts["m9_apply_validates"]
+    registration_checked = facts["m9_registration_applies"] and facts["m9_apply_validates"]
+    resend_validates = facts["m9_resend_validates"]
+    preview_validates = facts["m9_preview_validates"]
     resend_copies = facts["m9_resend_copies"]
     initial = ("invited", offer_persisted, "pending", False, False, False)
 
@@ -735,15 +759,23 @@ def check_m9(facts: dict[str, bool]) -> CheckResult:
                     ("other", offer_present, token, membership, grant, resent),
                 )
             )
-        if token == "pending" and not resent:
-            if offer_present and not resend_copies:
+        scope_valid = not offer_present or project_workspace == "invited"
+        if token == "pending" and not membership:
+            out.append(("recipient: joins via a newer offer after the original expires", (project_workspace, offer_present, "expired", True, grant, resent)))
+        if token in ("pending", "expired") and not resent:
+            if membership:
+                if not facts["m9_resend_rejects_member"]:
+                    out.append(("resendInvitation: mails an existing member", (project_workspace, offer_present, "member_resend", membership, grant, True)))
+            elif not scope_valid and not resend_validates:
+                out.append(("resendInvitation: rotates a stale offer", (project_workspace, offer_present, "stale_resend", membership, grant, True)))
+            elif scope_valid and offer_present and not resend_copies:
                 out.append(
                     (
                         "resendInvitation: replacement loses the offered project",
                         (project_workspace, False, token, membership, grant, True),
                     )
                 )
-            else:
+            elif scope_valid:
                 out.append(
                     (
                         "resendInvitation: replacement copies the offered project",
@@ -751,18 +783,21 @@ def check_m9(facts: dict[str, bool]) -> CheckResult:
                     )
                 )
         if token == "pending":
-            for path, checked in (
-                ("acceptInvitation", existing_checked),
-                ("registerThroughInvitation", registration_checked),
+            if not scope_valid and not preview_validates:
+                out.append(("previewInvitation: exposes a stale offer", (project_workspace, offer_present, "stale_preview", membership, grant, resent)))
+            for path, checked, applies in (
+                ("acceptInvitation", existing_checked, facts["m9_existing_applies"]),
+                ("registerThroughInvitation", registration_checked, facts["m9_registration_applies"]),
             ):
                 if offer_present and project_workspace != "invited" and checked:
                     # The common redemption path rejects before committing, so the
                     # token and every row stay as they were.
                     continue
+                grant_written = offer_present and applies and facts["m9_grant_writer"]
                 out.append(
                     (
-                        f"{path}: commit membership + offered project grant",
-                        (project_workspace, offer_present, "accepted", True, offer_present, resent),
+                        f"{path}: commit acceptance",
+                        (project_workspace, offer_present, "accepted", True, grant_written, resent),
                     )
                 )
         return out
@@ -771,12 +806,14 @@ def check_m9(facts: dict[str, bool]) -> CheckResult:
         project_workspace, offer_present, token, membership, grant, resent = state
         if not offer_persisted:
             return False, "Invitation creation does not persist any offered project grant!"
+        if token == "member_resend":
+            return False, "An existing workspace member was sent a replacement invitation!"
+        if token in ("stale_resend", "stale_preview"):
+            return False, "An invitation with stale project scope was exposed or rotated!"
         if grant and project_workspace != "invited":
             return False, "A project grant was applied after its project left the invited workspace!"
-        if token == "accepted" and not membership:
-            return False, "Invitation acceptance committed without the workspace membership!"
-        if token == "accepted" and offer_present and project_workspace == "invited" and not grant:
-            return False, "A valid offered project grant was not applied on acceptance!"
+        if token == "accepted" and offer_present and not grant:
+            return False, "Acceptance omitted an offered project grant!"
         if resent and not offer_present:
             return False, "Resend lost the offered project grant!"
         return True, ""
@@ -784,7 +821,7 @@ def check_m9(facts: dict[str, bool]) -> CheckResult:
     return bfs_check(
         "M9",
         "Workspace Invitation Project Grants (#25)",
-        "Offered project grants survive resend and are applied only while the project remains in the invited workspace",
+        "Valid project scope survives resend; stale scope and existing members cannot receive replacements",
         "safety",
         initial,
         next_states,
