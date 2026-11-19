@@ -64,6 +64,7 @@ Code is organized by feature. One feature lives in one folder, on the server and
 | `apps/server/src/platform/` | Shared infrastructure: config, logging, database, migrations, HTTP app, MCP endpoint, OpenAPI. Knows nothing about features. |
 | `apps/web/src/routes/` | Pages, one file per route (TanStack Router, file-based). |
 | `apps/web/src/features/<name>/` | Queries and components a feature's pages share, with an `index.ts`. |
+| `apps/web/src/lib/` | Shared, feature-agnostic web code. It imports no feature. |
 | `packages/contract/` | zod schemas shared by REST, MCP and web. MCP tool contracts live in `mcp-tools.ts`. |
 | `contract/` | Generated OpenAPI 3.1 and MCP tool JSON Schemas. Don't edit by hand. |
 | `apps/server/src/db/schema.ts` | The Drizzle schema: the source of truth for tables, indexes and constraints. |

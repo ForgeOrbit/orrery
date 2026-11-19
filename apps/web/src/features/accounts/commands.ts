@@ -1,25 +1,10 @@
-import { LoginResponse, Problem, SetupAdminResponse } from "@orrery/contract";
+import { LoginResponse, SetupAdminResponse } from "@orrery/contract";
 import type { LoginRequest, SetupAdminRequest } from "@orrery/contract";
+import { postJson } from "../../lib/api.ts";
 
-// Mutations for this feature. Each posts JSON, parses the response with the contract's
-// schemas, and turns a Problem (RFC 9457) response into a plain Error carrying its most
-// specific human text, so the routes can render the failure without knowing anything
-// about the transport.
-
-async function postJson<T>(path: string, body: unknown, parse: (value: unknown) => T): Promise<T> {
-  const res = await fetch(path, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const problem = Problem.safeParse(await res.json().catch(() => null));
-    if (!problem.success) throw new Error(`Request failed (${res.status}).`);
-    const { title, detail, errors } = problem.data;
-    throw new Error(errors?.[0]?.detail ?? detail ?? title);
-  }
-  return parse(await res.json());
-}
+// Mutations for this feature. Each posts JSON through the app's one request helper,
+// which parses the response with the contract's schemas and turns a Problem (RFC 9457)
+// response into a plain Error carrying its most specific human text.
 
 // Creates the first system administrator and closes setup. Succeeds exactly once.
 export function createFirstAdministrator(input: SetupAdminRequest): Promise<SetupAdminResponse> {

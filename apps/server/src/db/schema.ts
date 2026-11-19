@@ -1,4 +1,9 @@
-import { WorkspaceKind, SmtpSecurity } from "@orrery/contract";
+import {
+  InvitationDelivery,
+  InvitationStatus,
+  WorkspaceKind,
+  SmtpSecurity,
+} from "@orrery/contract";
 import { sql } from "drizzle-orm";
 import {
   boolean,
@@ -44,6 +49,10 @@ function sqlLiteralList(enumeration: { options: readonly string[] }): string {
 // raw SQL text. That is safe here because the values come from the WorkspaceKind enum,
 // never from input.
 const personalKindSql = sql.raw(`'${WorkspaceKind.enum.personal}'`);
+
+// The invitations partial index needs the same trick: the pending literal comes from the
+// InvitationStatus enum value, raw because DDL binds no parameters.
+const pendingStatusSql = sql.raw(`'${InvitationStatus.enum.pending}'`);
 
 export const workspaces = pgTable(
   "workspaces",
@@ -139,3 +148,49 @@ export const emailVerificationTokens = pgTable("email_verification_tokens", {
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   usedAt: timestamp("used_at", { withTimezone: true }),
 });
+
+// An invitation (issue #23): a system administrator's offer to register on the
+// installation, sent to one email. The emailed link carries a random token; only its
+// SHA-256 hash is stored. The lifecycle is tracked separately from delivery and account
+// verification (#20): the row keeps who invited and when it was accepted, expiry is
+// seven days evaluated in database time at redemption, and a newer invitation supersedes
+// a stale one in place by marking it expired.
+export const invitations = pgTable(
+  "invitations",
+  {
+    id: text("id").primaryKey(),
+    // The invited address, normalized by the contract's Email schema; the CHECK enforces
+    // it for every other writer, exactly like humans.
+    email: text("email").notNull(),
+    status: text("status").$type<InvitationStatus>().notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    invitedByHumanId: text("invited_by_human_id")
+      .notNull()
+      .references(() => humans.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    // Delivery, tracked separately from the lifecycle: pending never implies delivered
+    // (#20). Null means no attempt has been recorded; only 'failed' never redeems, and
+    // an old null row is superseded once its send could no longer be in flight.
+    deliveryStatus: text("delivery_status").$type<InvitationDelivery>(),
+    deliveryAttemptedAt: timestamp("delivery_attempted_at", { withTimezone: true }),
+  },
+  (t) => [
+    check("invitations_email_normalized", sql`${t.email} = lower(btrim(${t.email}))`),
+    // DDL cannot bind parameters, so the status lists are raw SQL text; the values come
+    // from the contract enums, never from input.
+    check("invitations_status", sql`${t.status} in (${sql.raw(sqlLiteralList(InvitationStatus))})`),
+    check(
+      "invitations_delivery_status",
+      sql`(${t.deliveryStatus} is null or ${t.deliveryStatus} in (${sql.raw(
+        sqlLiteralList(InvitationDelivery),
+      )}))`,
+    ),
+    // One pending invitation per email: a second valid link must not accumulate (#25
+    // rotates the existing one instead).
+    uniqueIndex("one_pending_invitation_per_email")
+      .on(t.email)
+      .where(sql`${t.status} = ${pendingStatusSql}`),
+  ],
+);

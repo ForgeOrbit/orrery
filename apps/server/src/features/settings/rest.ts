@@ -13,7 +13,13 @@ import {
   validationHook,
 } from "../../platform/problem.ts";
 import type { SessionReader } from "../accounts/index.ts";
-import { SettingsError, type SettingsErrorKind, type SettingsService } from "./service.ts";
+import {
+  isDeliveryKind,
+  SettingsError,
+  type DeliveryErrorKind,
+  type SettingsErrorKind,
+  type SettingsService,
+} from "./service.ts";
 
 const smtp = createRoute({
   method: "get",
@@ -94,25 +100,46 @@ const verifyEmail = createRoute({
 // Route definitions, for the generated OpenAPI document.
 export const routes = [smtp, saveSmtp, sendTestEmail, verifyEmail];
 
-// Every error kind's HTTP status, the same shape as accounts/rest.ts. An unreadable
-// stored password is 409, not 502: it comes from this server's own key setup, and the
-// administrator fixes it by re-entering the password.
+// Every non-delivery error kind's HTTP status. Delivery statuses come from the one
+// shared map (deliveryStatusFor), so the codes and statuses mean the same wherever a
+// send happens. An unreadable stored password is 409, not 502: it comes from this
+// server's own key setup, and the administrator fixes it by re-entering the password.
 const statusFor = {
   not_signed_in: 401,
   not_admin: 403,
   insecure_smtp_credentials: 400,
   encryption_key_missing: 409,
+  verification_token_invalid: 400,
+} as const satisfies Record<Exclude<SettingsErrorKind, DeliveryErrorKind>, number>;
+
+// Every delivery kind's HTTP status, wherever the send happened: one map, because the
+// codes mean the same thing on every route that sends mail. The service classifies the
+// failure; this layer alone decides its status.
+const deliveryStatusFor = {
   smtp_unconfigured: 409,
   smtp_password_unreadable: 409,
-  verification_token_invalid: 400,
   smtp_unreachable: 502,
   smtp_auth_failed: 502,
   smtp_tls_failed: 502,
   smtp_send_failed: 502,
-} as const satisfies Record<SettingsErrorKind, number>;
+} as const satisfies Record<DeliveryErrorKind, number>;
 
-// The kinds each route's service calls can throw: a route answers exactly these. Any
-// other kind is a programming error.
+// A delivery failure as its Problem, or undefined when the error is not one. Exported
+// through settings/index.ts, so a feature that borrows the mail path answers the same
+// codes at the same statuses without importing this file.
+export function deliveryProblem(c: Context, error: unknown) {
+  if (error instanceof SettingsError && isDeliveryKind(error)) {
+    return problemResponse(c, {
+      status: deliveryStatusFor[error.kind],
+      code: error.kind,
+      title: error.message,
+    });
+  }
+  return undefined;
+}
+
+// The kinds each route's service calls can throw: a route answers exactly these. The
+// sending route's delivery kinds are answered through the shared guard, not listed here.
 const sessionKinds = ["not_signed_in", "not_admin"] as const;
 const saveKinds = [
   "not_signed_in",
@@ -120,21 +147,12 @@ const saveKinds = [
   "insecure_smtp_credentials",
   "encryption_key_missing",
 ] as const;
-const testKinds = [
-  "not_signed_in",
-  "not_admin",
-  "smtp_unconfigured",
-  "smtp_password_unreadable",
-  "smtp_unreachable",
-  "smtp_auth_failed",
-  "smtp_tls_failed",
-  "smtp_send_failed",
-] as const;
+const testKinds = ["not_signed_in", "not_admin"] as const;
 const verifyKinds = ["not_signed_in", "verification_token_invalid"] as const;
 
 // True when the error's kind is one of the route's kinds. A type guard is the honest
 // way to narrow; no assertions.
-function isKind<K extends readonly SettingsErrorKind[]>(
+function isKind<K extends readonly Exclude<SettingsErrorKind, DeliveryErrorKind>[]>(
   error: SettingsError,
   kinds: K,
 ): error is SettingsError & { kind: K[number] } {
@@ -142,9 +160,13 @@ function isKind<K extends readonly SettingsErrorKind[]>(
 }
 
 // Every route's error answer in one place: a Problem for the kinds the route declares,
-// at statusFor's status. A kind the route does not answer is a programming error: it
+// at that kind's status. A kind the route does not answer is a programming error: it
 // stays a 500 instead of silently gaining a status.
-function failure<K extends readonly SettingsErrorKind[]>(c: Context, error: unknown, kinds: K) {
+function failure<K extends readonly Exclude<SettingsErrorKind, DeliveryErrorKind>[]>(
+  c: Context,
+  error: unknown,
+  kinds: K,
+) {
   if (error instanceof SettingsError && isKind(error, kinds)) {
     return problemResponse(c, {
       status: statusFor[error.kind],
@@ -153,6 +175,16 @@ function failure<K extends readonly SettingsErrorKind[]>(c: Context, error: unkn
     });
   }
   throw error;
+}
+
+// The sending route additionally answers every delivery failure with its shared code
+// and status, so a client can tell the reasons apart wherever the send happened.
+function failureWithDelivery<K extends readonly Exclude<SettingsErrorKind, DeliveryErrorKind>[]>(
+  c: Context,
+  error: unknown,
+  kinds: K,
+) {
+  return deliveryProblem(c, error) ?? failure(c, error, kinds);
 }
 
 // Thin: resolve the session, call the service, map the result to HTTP. The service
@@ -182,7 +214,7 @@ export function createSettingsRest(service: SettingsService, sessionReader: Sess
     try {
       return c.json(await service.sendTestEmail(await sessionReader(c)), 200);
     } catch (error) {
-      return failure(c, error, testKinds);
+      return failureWithDelivery(c, error, testKinds);
     }
   });
 

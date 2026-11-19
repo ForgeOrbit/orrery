@@ -1,9 +1,11 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { createTransport } from "nodemailer";
 import type { SmtpSecurity, SmtpSettings, SmtpSettingsResponse } from "@orrery/contract";
 import type { SessionAccount } from "../accounts/index.ts";
 import type { DbTransaction } from "../../platform/db.ts";
+import { errorNameAndCode } from "../../platform/errors.ts";
 import type { Logger } from "../../platform/log.ts";
+import { tokenHash } from "../../platform/tokens.ts";
 import { and, eq, isNull, gt, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { emailVerificationTokens, instanceSettings } from "../../db/schema.ts";
@@ -15,6 +17,15 @@ import { decryptSecret, encryptSecret } from "../../platform/secrets.ts";
 // must be able to read it, and nothing in this ticket needs HTML.
 export interface SmtpMail {
   from: string;
+  to: string;
+  subject: string;
+  text: string;
+}
+
+// One email another feature asks the installation to send (issue #23's invitations
+// first): the caller decides the recipient and the content; settings owns the transport
+// and supplies the configured From address.
+export interface OutgoingMail {
   to: string;
   subject: string;
   text: string;
@@ -37,6 +48,38 @@ export type SettingsErrorKind =
   | "smtp_auth_failed"
   | "smtp_tls_failed"
   | "smtp_send_failed";
+
+// The kinds a delivery through the configured relay can answer with: every feature that
+// borrows the mail path (invitations now, recovery and input later) declares the same
+// codes for its own send routes, so a client can tell the reasons apart wherever the
+// send happened.
+export type DeliveryErrorKind = Extract<
+  SettingsErrorKind,
+  | "smtp_unconfigured"
+  | "smtp_password_unreadable"
+  | "smtp_unreachable"
+  | "smtp_auth_failed"
+  | "smtp_tls_failed"
+  | "smtp_send_failed"
+>;
+
+// The delivery kinds, as one list the guard checks against.
+const deliveryKinds = [
+  "smtp_unconfigured",
+  "smtp_password_unreadable",
+  "smtp_unreachable",
+  "smtp_auth_failed",
+  "smtp_tls_failed",
+  "smtp_send_failed",
+] as const satisfies readonly DeliveryErrorKind[];
+
+// True when the error is one of the delivery kinds. A type guard is the honest way to
+// narrow; no assertions.
+export function isDeliveryKind(error: SettingsError): error is SettingsError & {
+  kind: DeliveryErrorKind;
+} {
+  return deliveryKinds.some((kind) => kind === error.kind);
+}
 
 // Each kind is the REST error's stable code and its message the Problem's title
 // (ADR-0003), so clients branch on the code and people read the title.
@@ -73,10 +116,6 @@ export class SettingsError extends Error {
 // the token exists to be redeemed minutes after the test email arrives.
 const VERIFICATION_TTL_SECONDS = 24 * 60 * 60;
 
-// The verification token is random and travels by email in the clear; only its
-// SHA-256 is stored, exactly like accounts' session tokens.
-const tokenHash = (token: string) => createHash("sha256").update(token).digest("hex");
-
 export interface SettingsDeps {
   db: PostgresJsDatabase;
   // The URL people use to reach the server; the verification email names its API.
@@ -99,6 +138,9 @@ export interface SettingsService {
     account: SessionAccount | null,
     input: { token: string },
   ): Promise<{ email: string; emailVerified: true }>;
+  // Sends one email through the configured relay, with the stored From address: the one
+  // mail path other features borrow, so no second transport exists anywhere.
+  deliver(mail: OutgoingMail): Promise<void>;
 }
 
 // One row of the settings table as every reader needs it, mapped once: the secret stays
@@ -157,14 +199,6 @@ const UNSET_RESPONSE: SmtpSettingsResponse = {
   from: null,
 };
 
-// An error's code (ECONNREFUSED, EAUTH, ...), read without asserting a shape: errors
-// arrive from drivers and libraries that each wrap them differently.
-function errorCode(error: unknown): string | undefined {
-  if (typeof error !== "object" || error === null) return undefined;
-  const code: unknown = Reflect.get(error, "code");
-  return typeof code === "string" ? code : undefined;
-}
-
 // The socket-level causes that make a relay unreachable, as one list for both checks:
 // nodemailer wraps them as ESOCKET with the cause in the message, and other callers
 // surface them as the error's own code.
@@ -174,7 +208,9 @@ const UNREACHABLE_CODES =
 // What kind of failure a relay error is, without the error's own text: the kind names
 // what to check, the log keeps the rest.
 function deliveryFailureKind(error: unknown): SettingsErrorKind {
-  const code = errorCode(error);
+  // errorNameAndCode reads the error's code without asserting a shape: errors arrive
+  // from drivers and libraries that each wrap them differently.
+  const { code } = errorNameAndCode(error);
   if (code === "EAUTH") return "smtp_auth_failed";
   const message = error instanceof Error ? error.message : "";
   if (UNREACHABLE_CODES.test(message)) return "smtp_unreachable";
@@ -188,14 +224,6 @@ function deliveryFailureKind(error: unknown): SettingsErrorKind {
     return "smtp_tls_failed";
   }
   return "smtp_send_failed";
-}
-
-function errorNameAndCode(error: unknown): { error: string; code?: string } {
-  const code = errorCode(error);
-  return {
-    error: error instanceof Error ? error.name : typeof error,
-    ...(code === undefined ? {} : { code }),
-  };
 }
 
 function verificationEmail(email: string, token: string, publicUrl: string): SmtpMail["text"] {
@@ -383,6 +411,23 @@ export function createSettingsService({
         await markEmailVerified(row.humanId, tx);
       });
       return { email: account.email, emailVerified: true as const };
+    },
+
+    // The one mail path other features borrow: the stored settings decide the relay and
+    // the From address, the caller decides the content. Answers the delivery Problems
+    // by code, exactly like sendTestEmail, so callers and clients tell the reasons
+    // apart wherever the send happened.
+    async deliver(mail) {
+      const [row] = await db.select().from(instanceSettings).limit(1);
+      if (row === undefined) throw new SettingsError("smtp_unconfigured");
+      const stored = toSettings(row);
+      const settings = toSmtpSettings(stored, storedPassword(stored, encryptionKey));
+      try {
+        await sendMail(settings, { from: settings.from, ...mail });
+      } catch (error) {
+        log?.warn("mail delivery failed", errorNameAndCode(error));
+        throw new SettingsError(deliveryFailureKind(error));
+      }
     },
   };
 }

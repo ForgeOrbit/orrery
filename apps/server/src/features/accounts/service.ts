@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID, scrypt, timingSafeEqual } from "node:crypto";
 import type { ScryptOptions } from "node:crypto";
 import { WorkspaceKind } from "@orrery/contract";
 import type {
@@ -10,6 +10,8 @@ import type {
 import { and, eq, gt, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
+import { uniqueConstraintName } from "../../platform/errors.ts";
+import { tokenHash } from "../../platform/tokens.ts";
 import { browserSessions, humans, instanceSetup, workspaces } from "../../db/schema.ts";
 
 // The service is the only file in a feature that decides anything. rest.ts and mcp.ts call it.
@@ -73,32 +75,6 @@ function secretsEqual(presented: string, configured: string): boolean {
   const a = Buffer.from(presented);
   const b = Buffer.from(configured);
   return a.length === b.length && timingSafeEqual(a, b);
-}
-
-// The browser session cookie holds a random token; only its SHA-256 is stored.
-function tokenHash(token: string): string {
-  return createHash("sha256").update(token).digest("hex");
-}
-
-// Returns the constraint name of a Postgres unique violation (SQLSTATE 23505), walking
-// through driver and ORM wrappers, or undefined for anything else.
-function uniqueConstraintName(error: unknown): string | undefined {
-  let current: unknown = error;
-  for (let depth = 0; current !== null && typeof current === "object" && depth < 3; depth++) {
-    const candidate = current as {
-      code?: unknown;
-      constraint?: unknown;
-      constraint_name?: unknown;
-      cause?: unknown;
-    };
-    if (candidate.code === "23505") {
-      const name = candidate.constraint ?? candidate.constraint_name;
-      if (typeof name === "string") return name;
-      return undefined;
-    }
-    current = candidate.cause;
-  }
-  return undefined;
 }
 
 export type AccountsErrorKind =
@@ -168,6 +144,40 @@ export interface AccountsService {
   // transaction: the humans table is accounts' to write, but the flow that earns the
   // mark (issue #22's token redemption) is another feature's.
   markEmailVerified(humanId: string, tx: DbTransaction): Promise<void>;
+  // Creates an invited human and their personal workspace, inside the caller's
+  // transaction (issue #23): accounts owns those tables and the password hash, while
+  // invitations owns the flow. The verified-email mark is the caller's to apply, through
+  // markEmailVerified, in the same transaction.
+  createInvitedHuman(
+    input: { email: string; password: string },
+    tx: DbTransaction,
+  ): Promise<{ humanId: string }>;
+  // Whether an email already belongs to an account: the guard for anything that must not
+  // double an account (invitations now). Accounts owns humans, so the check lives here.
+  emailRegistered(email: string): Promise<boolean>;
+}
+
+// One place creates a human with their personal workspace (issue #23): bootstrap's
+// administrator and an invited registration are the same two rows, whoever the human
+// turns out to be. Inside the caller's transaction, on the caller's id.
+async function insertHumanWithPersonalWorkspace(
+  tx: DbTransaction,
+  input: { id: string; email: string; passwordHash: string; isSystemAdministrator?: boolean },
+) {
+  await tx.insert(humans).values({
+    id: input.id,
+    email: input.email,
+    passwordHash: input.passwordHash,
+    // exactOptionalPropertyTypes: the flag reaches the insert only when set, so an
+    // invited human stays an ordinary account by omission, not by a false value.
+    ...(input.isSystemAdministrator === true ? { isSystemAdministrator: true } : {}),
+  });
+  await tx.insert(workspaces).values({
+    id: randomUUID(),
+    kind: WorkspaceKind.enum.personal,
+    name: "Personal",
+    personalOwnerHumanId: input.id,
+  });
 }
 
 export function createAccountsService({
@@ -199,14 +209,11 @@ export function createAccountsService({
 
       try {
         await db.transaction(async (tx) => {
-          await tx
-            .insert(humans)
-            .values({ id: humanId, email: input.email, passwordHash, isSystemAdministrator: true });
-          await tx.insert(workspaces).values({
-            id: randomUUID(),
-            kind: WorkspaceKind.enum.personal,
-            name: "Personal",
-            personalOwnerHumanId: humanId,
+          await insertHumanWithPersonalWorkspace(tx, {
+            id: humanId,
+            email: input.email,
+            passwordHash,
+            isSystemAdministrator: true,
           });
           await tx.insert(instanceSetup).values({ id: true, administratorHumanId: humanId });
         });
@@ -240,6 +247,7 @@ export function createAccountsService({
         throw new AccountsError("invalid_credentials");
       }
 
+      // The browser session cookie holds a random token; only its SHA-256 is stored.
       const token = randomBytes(32).toString("base64url");
       await db.insert(browserSessions).values({
         id: randomUUID(),
@@ -277,6 +285,32 @@ export function createAccountsService({
         .update(humans)
         .set({ emailVerifiedAt: sql`now()` })
         .where(eq(humans.id, humanId));
+    },
+
+    // Inside the caller's transaction: the invited human (issue #23) with their
+    // personal workspace, bound to the invited email and starting as an ordinary
+    // account. A duplicate email surfaces as its unique constraint, which the caller
+    // answers in its own words.
+    async createInvitedHuman(input: { email: string; password: string }, tx: DbTransaction) {
+      const humanId = randomUUID();
+      const passwordHash = await hashPassword(input.password);
+      await insertHumanWithPersonalWorkspace(tx, {
+        id: humanId,
+        email: input.email,
+        passwordHash,
+      });
+      return { humanId };
+    },
+
+    // The registration surface's guard: whoever must not double an account asks here
+    // instead of querying humans themselves.
+    async emailRegistered(email: string) {
+      const rows = await db
+        .select({ id: humans.id })
+        .from(humans)
+        .where(eq(humans.email, email))
+        .limit(1);
+      return rows.length > 0;
     },
   };
 }

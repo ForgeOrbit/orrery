@@ -5,8 +5,10 @@ import type { Config } from "../platform/config.ts";
 import type { Feature } from "../platform/feature.ts";
 import type { Logger } from "../platform/log.ts";
 import { createAccountsFeature, accountsRoutes } from "./accounts/index.ts";
+import { createInvitationsFeature, invitationsRoutes } from "./invitations/index.ts";
 import { createSettingsFeature, settingsRoutes } from "./settings/index.ts";
 import { createSystemFeature, systemRoutes } from "./system/index.ts";
+import { createWorkspacesFeature, workspacesRoutes } from "./workspaces/index.ts";
 
 export function createFeatures(database: Database, config: Config, log: Logger): Feature[] {
   const accounts = createAccountsFeature({
@@ -14,22 +16,43 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     setupSecret: config.BOOTSTRAP_SECRET,
     publicUrl: config.PUBLIC_URL,
   });
+  // Settings authorizes with the accounts feature's session reader and earns its
+  // humans write, so the cookie and that table stay accounts' details. Its service
+  // defaults to the real SMTP transport; tests inject a fake.
+  const settings = createSettingsFeature({
+    db: database.db,
+    publicUrl: config.PUBLIC_URL,
+    encryptionKey: config.ORRERY_ENCRYPTION_KEY,
+    sessionReader: accounts.sessionReader,
+    markEmailVerified: accounts.markEmailVerified,
+    log,
+  });
   return [
     createSystemFeature({ ping: database.ping }),
     accounts,
-    // Settings authorizes with the accounts feature's session reader and earns its
-    // humans write, so the cookie and that table stay accounts' details. Its service
-    // defaults to the real SMTP transport; tests inject a fake.
-    createSettingsFeature({
+    settings,
+    // Invitations borrows the same things from accounts (the reader, the
+    // registered-email guard, the account-creation seam, the verified mark) and sends
+    // mail only through settings' exported sender, so no second mail path exists.
+    createInvitationsFeature({
       db: database.db,
       publicUrl: config.PUBLIC_URL,
-      encryptionKey: config.ORRERY_ENCRYPTION_KEY,
       sessionReader: accounts.sessionReader,
+      emailRegistered: accounts.emailRegistered,
+      createInvitedHuman: accounts.createInvitedHuman,
       markEmailVerified: accounts.markEmailVerified,
+      deliver: settings.deliver,
       log,
     }),
+    createWorkspacesFeature({ db: database.db, sessionReader: accounts.sessionReader }),
   ];
 }
 
 // Every REST route definition, for contract/openapi.json.
-export const routes = [...systemRoutes, ...accountsRoutes, ...settingsRoutes];
+export const routes = [
+  ...systemRoutes,
+  ...accountsRoutes,
+  ...settingsRoutes,
+  ...invitationsRoutes,
+  ...workspacesRoutes,
+];
