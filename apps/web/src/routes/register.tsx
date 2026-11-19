@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { sessionQuery, signIn, type Session } from "../features/accounts/index.ts";
@@ -21,6 +21,9 @@ function RegisterPage() {
   const navigate = useNavigate();
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string>();
+  // Set when registration succeeded but the follow-up sign-in failed: the account
+  // exists, so the form is gone and the person is sent to sign in.
+  const [createdEmail, setCreatedEmail] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
@@ -31,7 +34,14 @@ function RegisterPage() {
       const account = await registerThroughInvitation({ token, password });
       // Registered: sign straight in with the credentials just chosen, so following
       // the invitation is one flow, ending inside the new personal workspace.
-      await signIn({ email: account.email, password });
+      try {
+        await signIn({ email: account.email, password });
+      } catch {
+        // The account was created and the invitation consumed; a resubmit would fail
+        // with invitation_invalid. Tell the person, and send them to sign in.
+        setCreatedEmail(account.email);
+        return;
+      }
       const session: Session = { signedIn: true, email: account.email };
       queryClient.setQueryData(sessionQuery.queryKey, session);
       await navigate({ to: "/" });
@@ -41,6 +51,18 @@ function RegisterPage() {
     } finally {
       setSubmitting(false);
     }
+  }
+
+  if (createdEmail !== undefined) {
+    return (
+      <main>
+        <h1>Accept your invitation</h1>
+        <p role="status">Your account was created for {createdEmail}.</p>
+        <p>
+          <Link to="/signin">Sign in</Link> with the password you chose.
+        </p>
+      </main>
+    );
   }
 
   if (token === "") {

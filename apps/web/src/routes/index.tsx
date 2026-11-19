@@ -39,7 +39,9 @@ function Home() {
             <h2>Your workspaces</h2>
             <ul>
               {workspaces.map((workspace) => (
-                <li key={workspace.id}>{workspace.name}</li>
+                <li key={workspace.id} data-workspace-id={workspace.id}>
+                  {workspace.name}
+                </li>
               ))}
             </ul>
           </section>
