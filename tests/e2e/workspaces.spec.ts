@@ -495,6 +495,48 @@ test("an inviter removed as owner cannot have their invitation accepted", async 
   }
 });
 
+test("workspace invite form refreshes failed delivery history without a reload", async ({
+  page,
+}) => {
+  const FAILED_EMAIL = "workspace.smtp.failure@orrery.test";
+  const created = await api.post("/api/workspaces", { data: { name: "SMTP Failure Team" } });
+  expect(created.status()).toBe(201);
+  const workspace = await created.json();
+
+  await page.goto("/signin");
+  await page.getByLabel("Email").fill(ADMIN_EMAIL);
+  await page.getByLabel("Password").fill(ADMIN_PASSWORD);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByText(`Signed in as ${ADMIN_EMAIL}.`)).toBeVisible();
+  await page.goto(`/workspaces/${workspace.id}`);
+  await expect(
+    page.getByRole("heading", { name: "Invite someone to SMTP Failure Team" }),
+  ).toBeVisible();
+
+  await api.put("/api/settings/smtp", {
+    data: { ...SETTINGS, host: "127.0.0.1", port: 1 },
+  });
+  try {
+    await page.getByLabel("Email").fill(FAILED_EMAIL);
+    await page.getByRole("button", { name: "Send invitation" }).click();
+
+    // The original delivery Problem stays visible, while the history refreshes on its
+    // own to show the pending row, the separate failure, and the Resend action.
+    await expect(page.getByRole("alert")).toContainText("Could not reach the SMTP server");
+    await expect(page.getByRole("heading", { name: "Invitation history" })).toBeVisible();
+    const row = page.locator("li[data-invitation-id]").filter({ hasText: FAILED_EMAIL });
+    await expect(row).toContainText("Pending");
+    await expect(row).toContainText("Email failed");
+    await expect(row).toContainText("Created");
+    await expect(row.getByRole("button", { name: "Resend" })).toBeVisible();
+  } finally {
+    const repaired = await api.put("/api/settings/smtp", { data: SETTINGS });
+    expect(repaired.status()).toBe(200);
+  }
+
+  for (const cookie of await page.context().cookies()) await recordSecret(cookie.value);
+});
+
 test("owner sees invitation history and delivery separately, and resends from the page", async ({
   page,
 }) => {

@@ -470,8 +470,8 @@ describe("invitations", () => {
       if (admin === undefined) throw new Error("the administrator was not found");
 
       // No attempt recorded, and long enough ago that any send has certainly finished
-      // or died: the row is stale, not in flight. Just past the window, the same
-      // treatment as an expired or failed row applies.
+      // or died: the row is stale, not in flight. A still-live stale row is revoked by
+      // replacement, never marked expired at a deadline that has not arrived.
       await database.db.insert(invitations).values({
         id: randomUUID(),
         email: INVITEE,
@@ -490,14 +490,17 @@ describe("invitations", () => {
       );
       expect(res.status).toBe(201);
 
-      // The stale row expired in place; exactly one pending row remains, the new one.
+      // The live stale row was revoked now; exactly one pending row remains, the new
+      // one. Delivery stays unknown on the old row, and no future expiry is invented.
       const rows = await database.db
         .select()
         .from(invitations)
         .where(eq(invitations.email, INVITEE));
       expect(rows).toHaveLength(2);
       const stale = rows.find((row) => row.tokenHash === tokenHash("unknown-delivery-stale"));
-      expect(stale?.status).toBe("expired");
+      expect(stale).toMatchObject({ status: "revoked", expiredAt: null, deliveryStatus: null });
+      expect(stale?.revokedAt).not.toBeNull();
+      expect(stale?.revokedAt?.getTime()).toBeLessThan(stale?.expiresAt.getTime() ?? 0);
       const live = rows.filter((row) => row.status === "pending");
       expect(live).toHaveLength(1);
       expect(live[0]?.tokenHash).not.toBe(tokenHash("unknown-delivery-stale"));
@@ -518,6 +521,83 @@ describe("invitations", () => {
         password: INVITEE_PASSWORD,
       });
       expect(ok.status).toBe(200);
+    });
+
+    it("records replacement as revocation for live undelivered offers and as actual expiry past the deadline", async () => {
+      const { app, cookie } = await armedApp();
+      const [admin] = await database.db.select().from(humans).where(eq(humans.email, EMAIL));
+      if (admin === undefined) throw new Error("the administrator was not found");
+
+      const liveDeadline = new Date(Date.now() + 60 * 60 * 1000);
+      const pastDeadline = new Date(Date.now() - 60 * 1000);
+      const staleCreation = new Date(Date.now() - (UNKNOWN_DELIVERY_GRACE_SECONDS + 1) * 1000);
+      await database.db.insert(invitations).values([
+        {
+          id: randomUUID(),
+          email: "live-failed@example.com",
+          status: "pending",
+          tokenHash: tokenHash("live-failed"),
+          invitedByHumanId: admin.id,
+          expiresAt: liveDeadline,
+          deliveryStatus: "failed",
+          deliveryAttemptedAt: sql`now() - interval '1 minute'`,
+        },
+        {
+          id: randomUUID(),
+          email: "live-unknown@example.com",
+          status: "pending",
+          tokenHash: tokenHash("live-unknown"),
+          invitedByHumanId: admin.id,
+          createdAt: staleCreation,
+          expiresAt: liveDeadline,
+        },
+        {
+          id: randomUUID(),
+          email: "past-deadline@example.com",
+          status: "pending",
+          tokenHash: tokenHash("past-deadline"),
+          invitedByHumanId: admin.id,
+          expiresAt: pastDeadline,
+          deliveryStatus: "failed",
+          deliveryAttemptedAt: sql`now() - interval '8 days'`,
+        },
+      ]);
+
+      for (const email of [
+        "live-failed@example.com",
+        "live-unknown@example.com",
+        "past-deadline@example.com",
+      ]) {
+        const res = await postJson(app, "/api/invitations/installation", { email }, cookie);
+        expect(res.status).toBe(201);
+      }
+
+      const rows = await database.db.select().from(invitations);
+      const failedLive = rows.find((row) => row.tokenHash === tokenHash("live-failed"));
+      expect(failedLive).toMatchObject({
+        status: "revoked",
+        deliveryStatus: "failed",
+        expiredAt: null,
+      });
+      expect(failedLive?.revokedAt).not.toBeNull();
+      expect(failedLive?.revokedAt?.getTime()).toBeLessThan(liveDeadline.getTime());
+      expect(failedLive?.expiresAt.getTime()).toBe(liveDeadline.getTime());
+
+      const unknownLive = rows.find((row) => row.tokenHash === tokenHash("live-unknown"));
+      expect(unknownLive).toMatchObject({
+        status: "revoked",
+        deliveryStatus: null,
+        expiredAt: null,
+      });
+      expect(unknownLive?.revokedAt).not.toBeNull();
+      expect(unknownLive?.revokedAt?.getTime()).toBeLessThan(liveDeadline.getTime());
+      expect(unknownLive?.expiresAt.getTime()).toBe(liveDeadline.getTime());
+
+      const past = rows.find((row) => row.tokenHash === tokenHash("past-deadline"));
+      expect(past).toMatchObject({ status: "expired", revokedAt: null });
+      expect(past?.expiredAt?.getTime()).toBe(pastDeadline.getTime());
+      expect(past?.expiredAt?.getTime() ?? 0).toBeLessThan(Date.now());
+      expect(past?.deliveryStatus).toBe("failed");
     });
 
     it("settles two concurrent invitations for the same email with one winner", async () => {
@@ -645,7 +725,8 @@ describe("invitations", () => {
       expect(redeem.status).toBe(400);
       expect(await problemBody(redeem)).toMatchObject({ code: "invitation_invalid" });
 
-      // And it does not block a fresh invitation: the new one supersedes it in place.
+      // And it does not block a fresh invitation: the live failed row is revoked by
+      // replacement, while its delivery stays failed and no future expiry is invented.
       fake.repair();
       const res = await postJson(
         app,
@@ -659,7 +740,11 @@ describe("invitations", () => {
         .from(invitations)
         .where(eq(invitations.email, INVITEE));
       expect(rows).toHaveLength(2);
-      expect(rows.filter((r) => r.status === "expired")).toHaveLength(1);
+      expect(rows.filter((r) => r.status === "revoked")).toHaveLength(1);
+      const superseded = rows.find((candidate) => candidate.status === "revoked");
+      expect(superseded).toMatchObject({ deliveryStatus: "failed", expiredAt: null });
+      expect(superseded?.revokedAt).not.toBeNull();
+      expect(superseded?.revokedAt?.getTime()).toBeLessThan(superseded?.expiresAt.getTime() ?? 0);
       const live = rows.filter((r) => r.status === "pending");
       expect(live).toHaveLength(1);
       expect(live[0]?.deliveryStatus).toBe("sent");

@@ -38,7 +38,7 @@ function targetLabel(invitation: InvitationSummary): string {
 
 function lifecycleTimes(invitation: InvitationSummary): string[] {
   const times = [
-    `Sent ${formatTime(invitation.createdAt)}`,
+    `Created ${formatTime(invitation.createdAt)}`,
     `Expires ${formatTime(invitation.expiresAt)}`,
   ];
   if (invitation.acceptedAt !== null) times.push(`Accepted ${formatTime(invitation.acceptedAt)}`);

@@ -190,6 +190,21 @@ async function requireOwner(tx: DbTransaction, workspaceId: string, humanId: str
   if (membership?.isOwner !== true) throw new WorkspacesError("not_workspace_owner");
 }
 
+// The same verified-inviter policy for creating and rotating an offer (#20): the
+// current owner must have a verified mailbox before either action. Accounts stay active
+// until #38 introduces deactivation; until then an existing account is active by
+// definition.
+async function requireVerifiedInviter(tx: DbTransaction, humanId: string) {
+  const [inviter] = await tx
+    .select({ emailVerifiedAt: humans.emailVerifiedAt })
+    .from(humans)
+    .where(eq(humans.id, humanId))
+    .limit(1);
+  if (inviter?.emailVerifiedAt == null) {
+    throw new WorkspacesError("inviter_unverified");
+  }
+}
+
 // #20's acceptance rule: the inviter's authority is rechecked when the offer is taken
 // up, not only when it was sent. An inviter who left the workspace or lost ownership
 // cannot still hand out access.
@@ -597,17 +612,7 @@ export function createWorkspacesService({
         workspaceName = await db.transaction(async (tx) => {
           const workspace = await lockWorkspaceForMutation(tx, workspaceId);
           await requireOwner(tx, workspaceId, actor.humanId);
-
-          const [inviter] = await tx
-            .select({ emailVerifiedAt: humans.emailVerifiedAt })
-            .from(humans)
-            .where(eq(humans.id, actor.humanId))
-            .limit(1);
-          // Accounts stay active until #38 introduces deactivation; until then an
-          // existing account is active by definition. Verification is already concrete.
-          if (inviter === undefined || inviter.emailVerifiedAt === null) {
-            throw new WorkspacesError("inviter_unverified");
-          }
+          await requireVerifiedInviter(tx, actor.humanId);
 
           const [member] = await tx
             .select({ id: workspaceMemberships.id })
@@ -729,6 +734,10 @@ export function createWorkspacesService({
         invitation = await db.transaction(async (tx) => {
           const workspace = await lockWorkspaceForMutation(tx, workspaceId);
           await requireOwner(tx, workspaceId, actor.humanId);
+          // Rotating is a new offer: the current owner must satisfy the same verified
+          // inviter policy as an initial invitation. The check runs before the old row
+          // is touched, so a refusal leaves the original link valid.
+          await requireVerifiedInviter(tx, actor.humanId);
 
           const [row] = await tx
             .select({

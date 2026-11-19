@@ -154,11 +154,13 @@ function InstallationInvitations() {
     try {
       await inviteInstallation({ email });
       setEmail("");
-      await reload();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not send the invitation.");
     } finally {
       setInviting(false);
+      // A failed send still created the pending row with a failed delivery; refresh so
+      // the history shows it beside the original error without a manual reload.
+      await reload();
     }
   }
 

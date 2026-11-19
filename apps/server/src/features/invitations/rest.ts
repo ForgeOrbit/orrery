@@ -68,7 +68,7 @@ const resendInstallationInvitation = createRoute({
   path: "/api/invitations/installation/{invitationId}/resend",
   summary: "Resend an installation invitation",
   description:
-    "System administrators only. Rotates the link: the pending invitation becomes revoked (or expired, when its deadline already passed), and a new pending invitation with a fresh seven-day deadline keeps the history. The previous link stops working. A delivery failure is recorded on the new invitation and answered as a delivery Problem; the invitation's lifecycle stays pending.",
+    "System administrators only. Rotates the link: a still-live pending invitation becomes revoked at replacement time, one past its deadline becomes expired at the deadline it passed, and a new pending invitation with a fresh seven-day deadline keeps the history. The previous link stops working. A delivery failure is recorded on the new invitation and answered as a delivery Problem; the invitation's lifecycle stays pending. Answers 409 invitation_not_pending when the invitation is accepted, declined, or revoked; invitation_pending when a concurrent invitation already owns the address; smtp_unconfigured when SMTP is missing; and smtp_password_unreadable when the stored password cannot be read. Answers 502 smtp_unreachable, smtp_auth_failed, smtp_tls_failed, or smtp_send_failed when the relay refuses the message.",
   request: { params: invitationParams },
   responses: {
     200: {
@@ -79,7 +79,9 @@ const resendInstallationInvitation = createRoute({
     401: problem("Not signed in"),
     403: problem("Signed in, but not a system administrator"),
     404: problem("No invitation with this id"),
-    409: problem("The invitation is accepted, declined, or revoked"),
+    409: problem(
+      "The invitation is accepted, declined, or revoked; another invitation for this address is already pending; or SMTP is not configured or its stored password is unreadable",
+    ),
     502: problem("The SMTP server refused the message; the code says why"),
   },
 });
@@ -204,20 +206,9 @@ function isKind<K extends readonly InvitationsErrorKind[]>(
   return kinds.some((kind) => kind === error.kind);
 }
 
-function failure<K extends readonly InvitationsErrorKind[]>(c: Context, error: unknown, kinds: K) {
-  if (error instanceof InvitationsError && isKind(error, kinds)) {
-    return problemResponse(c, {
-      status: statusFor[error.kind],
-      code: error.kind,
-      title: error.message,
-    });
-  }
-  throw error;
-}
-
-// The sending routes also answer every delivery failure with settings' own code and
-// status, so a client can tell the reasons apart wherever the send happened.
-function sendFailure<K extends readonly InvitationsErrorKind[]>(
+// Map the invitation kinds a route answers to their Problem. Undefined means the error
+// is not one of them; the caller decides whether another mapper owns it.
+function invitationFailure<K extends readonly InvitationsErrorKind[]>(
   c: Context,
   error: unknown,
   kinds: K,
@@ -229,6 +220,24 @@ function sendFailure<K extends readonly InvitationsErrorKind[]>(
       title: error.message,
     });
   }
+  return undefined;
+}
+
+function failure<K extends readonly InvitationsErrorKind[]>(c: Context, error: unknown, kinds: K) {
+  const invitation = invitationFailure(c, error, kinds);
+  if (invitation !== undefined) return invitation;
+  throw error;
+}
+
+// The sending routes also answer every delivery failure with settings' own code and
+// status, so a client can tell the reasons apart wherever the send happened.
+function sendFailure<K extends readonly InvitationsErrorKind[]>(
+  c: Context,
+  error: unknown,
+  kinds: K,
+) {
+  const invitation = invitationFailure(c, error, kinds);
+  if (invitation !== undefined) return invitation;
   const delivery = deliveryProblem(c, error);
   if (delivery !== undefined) return delivery;
   throw error;

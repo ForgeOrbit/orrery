@@ -508,6 +508,41 @@ test("administrator sees installation invitation history and resends from the pa
   for (const cookie of await page.context().cookies()) await recordSecret(cookie.value);
 });
 
+test("installation invite form refreshes failed delivery history without a reload", async ({
+  page,
+}) => {
+  const FAILED_EMAIL = "installation.smtp.form@orrery.test";
+  await page.goto("/signin");
+  await page.getByLabel("Email").fill(ADMIN_EMAIL);
+  await page.getByLabel("Password").fill(ADMIN_PASSWORD);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByText(`Signed in as ${ADMIN_EMAIL}.`)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Installation invitations" })).toBeVisible();
+
+  await api.put("/api/settings/smtp", {
+    data: { ...SETTINGS, host: "127.0.0.1", port: 1 },
+  });
+  try {
+    await page.getByLabel("Email").fill(FAILED_EMAIL);
+    await page.getByRole("button", { name: "Send installation invitation" }).click();
+
+    // The original delivery Problem stays visible, while the history refreshes on its
+    // own to show the pending row, the separate failure, and the Resend action.
+    await expect(page.getByRole("alert")).toContainText("Could not reach the SMTP server");
+    const row = page.locator("li[data-invitation-id]").filter({ hasText: FAILED_EMAIL });
+    await expect(row).toContainText("Pending");
+    await expect(row).toContainText("This installation");
+    await expect(row).toContainText("Email failed");
+    await expect(row.getByRole("button", { name: "Resend" })).toBeVisible();
+    await expect(row).toContainText("Created");
+  } finally {
+    const repaired = await api.put("/api/settings/smtp", { data: SETTINGS });
+    expect(repaired.status()).toBe(200);
+  }
+
+  for (const cookie of await page.context().cookies()) await recordSecret(cookie.value);
+});
+
 // One person's workspace listing, already validated against the response shape.
 async function workspacesOf(context: APIRequestContext) {
   const res = await context.get("/api/workspaces");

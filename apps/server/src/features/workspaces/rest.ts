@@ -156,7 +156,7 @@ const resendWorkspaceInvitation = createRoute({
   path: "/api/workspaces/{workspaceId}/invitations/{invitationId}/resend",
   summary: "Resend a workspace invitation",
   description:
-    "Owners only. Rotates the link: the pending invitation becomes revoked (or expired, when its deadline already passed), and a new pending invitation from the current owner starts a fresh seven-day deadline. The previous link stops working. A delivery failure is recorded on the new invitation and answered as a delivery Problem; the invitation's lifecycle stays pending.",
+    "Owners only, and the resending owner's email must be verified, exactly as for an initial invitation. Rotates the link: a still-live pending invitation becomes revoked at replacement time, one past its deadline becomes expired at the deadline it passed, and a new pending invitation from the current owner starts a fresh seven-day deadline. The previous link stops working. A delivery failure is recorded on the new invitation and answered as a delivery Problem; the invitation's lifecycle stays pending. Answers 409 invitation_not_pending when the invitation is accepted, declined, or revoked; invitation_pending when a concurrent invitation already owns the address; smtp_unconfigured when SMTP is missing; and smtp_password_unreadable when the stored password cannot be read. Answers 502 smtp_unreachable, smtp_auth_failed, smtp_tls_failed, or smtp_send_failed when the relay refuses the message.",
   request: { params: invitationParams },
   responses: {
     200: {
@@ -165,9 +165,11 @@ const resendWorkspaceInvitation = createRoute({
     },
     400: problem("The workspace or invitation id is invalid"),
     401: problem("Not signed in"),
-    403: problem("Not an owner of this workspace"),
+    403: problem("Not an owner of this workspace, or the owner's email is unverified"),
     404: problem("No accessible shared workspace or invitation"),
-    409: problem("The invitation is accepted, declined, revoked, or another is pending"),
+    409: problem(
+      "The invitation is accepted, declined, or revoked; another invitation for this address is already pending; or SMTP is not configured or its stored password is unreadable",
+    ),
     502: problem("The SMTP server refused the message; the code says why"),
   },
 });
@@ -388,6 +390,7 @@ const resendKinds = [
   "not_signed_in",
   "workspace_not_found",
   "not_workspace_owner",
+  "inviter_unverified",
   "invitation_not_found",
   "invitation_not_pending",
   "invitation_pending",

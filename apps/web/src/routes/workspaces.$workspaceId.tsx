@@ -174,16 +174,18 @@ function InviteMemberForm({
       const invitation = await inviteWorkspaceMember(workspaceId, { email });
       setInvited(invitation.email);
       setEmail("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not send the invitation.");
+    } finally {
+      setSubmitting(false);
+      // A failed send still created the pending row with a failed delivery; refresh so
+      // the history shows it beside the original error without a manual reload.
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: workspacesQuery.queryKey }),
         queryClient.invalidateQueries({
           queryKey: workspaceInvitationsQuery(workspaceId).queryKey,
         }),
       ]);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not send the invitation.");
-    } finally {
-      setSubmitting(false);
     }
   }
 

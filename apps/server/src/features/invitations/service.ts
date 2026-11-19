@@ -298,10 +298,10 @@ export function createInvitationsService({
       const id = randomUUID();
       try {
         await db.transaction(async (tx) => {
-          // Supersede in place: any pending row for this email that is expired,
-          // delivery-failed, or left with an unknown delivery past the grace window
-          // becomes expired, in the new invitation's own transaction, so the one-pending
-          // rule holds for the new link and the old token dies with its row.
+          // Supersede in place. A row past its deadline expired at that deadline; a
+          // still-live row that cannot deliver (known failure, or unknown past the grace
+          // window) is revoked now. Replacing an undelivered offer must never pretend it
+          // expired in the future. Delivery stays a separate fact on the old row.
           await tx
             .update(invitations)
             .set({
@@ -312,8 +312,21 @@ export function createInvitationsService({
               and(
                 eq(invitations.email, input.email),
                 eq(invitations.status, InvitationStatus.enum.pending),
+                lte(invitations.expiresAt, sql`now()`),
+              ),
+            );
+          await tx
+            .update(invitations)
+            .set({
+              status: InvitationStatus.enum.revoked,
+              revokedAt: sql`now()`,
+            })
+            .where(
+              and(
+                eq(invitations.email, input.email),
+                eq(invitations.status, InvitationStatus.enum.pending),
+                gt(invitations.expiresAt, sql`now()`),
                 or(
-                  lte(invitations.expiresAt, sql`now()`),
                   eq(invitations.deliveryStatus, InvitationDelivery.enum.failed),
                   and(
                     isNull(invitations.deliveryStatus),

@@ -1210,6 +1210,64 @@ describe("workspaces", () => {
     });
   });
 
+  it("refuses a resend from an unverified owner and keeps the original invitation valid", async () => {
+    const { app, sent, adminCookie } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const [unverified] = await insertHuman({
+      email: "unverified.owner@example.com",
+      verified: false,
+    });
+    await database.db.insert(workspaceMemberships).values({
+      id: randomUUID(),
+      workspaceId: workspace.id,
+      humanId: unverified.id,
+      isOwner: true,
+    });
+    const unverifiedCookie = await sessionFor(app, unverified.id);
+    await invite(app, adminCookie, workspace.id, INVITEE);
+    const token = await workspaceInviteToken(sent, INVITEE, "Rocket Team");
+    const [pending] = await invitationList(app, adminCookie, workspace.id);
+    if (pending === undefined) throw new Error("the invitation was not listed");
+
+    const refused = await postEmpty(
+      app,
+      `/api/workspaces/${workspace.id}/invitations/${pending.id}/resend`,
+      unverifiedCookie,
+    );
+    expect(refused.status).toBe(403);
+    expect(refused.headers.get("content-type")).toBe("application/problem+json");
+    expect(await problemBody(refused)).toMatchObject({ code: "inviter_unverified" });
+
+    // The refusal ran before any rotation: one row, still pending, same deadline, and
+    // no replacement email left the relay.
+    const rows = await database.db.select().from(workspaceInvitations);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: pending.id,
+      status: "pending",
+      revokedAt: null,
+      expiredAt: null,
+    });
+    expect(rows[0]?.expiresAt.toISOString()).toBe(pending.expiresAt);
+    expect(sent).toHaveLength(1);
+    expect((await getJson(app, `/api/workspace-invitations/preview?token=${token}`)).status).toBe(
+      200,
+    );
+
+    // The original link still accepts for its real recipient.
+    const { cookie: memberCookie } = await verifiedCookie(app, INVITEE);
+    const accepted = await postJson(
+      app,
+      "/api/workspace-invitations/acceptance",
+      { token },
+      memberCookie,
+    );
+    expect(accepted.status).toBe(200);
+    const [acceptedRow] = await database.db.select().from(workspaceInvitations);
+    expect(acceptedRow).toMatchObject({ id: pending.id, status: "accepted" });
+    expect(acceptedRow?.acceptedAt).not.toBeNull();
+  });
+
   it("resends a workspace invitation: the old link dies, history stays, and the deadline is seven fresh days", async () => {
     const { app, sent, adminCookie } = await readyApp();
     const workspace = await createWorkspace(app, adminCookie);
