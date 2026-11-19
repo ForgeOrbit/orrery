@@ -21,3 +21,39 @@ describe("loadConfig: BOOTSTRAP_SECRET", () => {
     expect(loadConfig({ ...baseEnv, BOOTSTRAP_SECRET: secret }).BOOTSTRAP_SECRET).toBe(secret);
   });
 });
+
+describe("loadConfig: ORRERY_ENCRYPTION_KEY", () => {
+  it("treats an unset, empty, or blank key as no key", () => {
+    expect(loadConfig({ ...baseEnv }).ORRERY_ENCRYPTION_KEY).toBeUndefined();
+    expect(
+      loadConfig({ ...baseEnv, ORRERY_ENCRYPTION_KEY: "" }).ORRERY_ENCRYPTION_KEY,
+    ).toBeUndefined();
+    expect(
+      loadConfig({ ...baseEnv, ORRERY_ENCRYPTION_KEY: "   " }).ORRERY_ENCRYPTION_KEY,
+    ).toBeUndefined();
+  });
+
+  it("decodes a 32-byte base64 key to the 32 bytes", () => {
+    const key = loadConfig({
+      ...baseEnv,
+      ORRERY_ENCRYPTION_KEY: "5JxZLMqonzkGHjJwLLuzM6d6fQ6m7onmSI+7yeB9NW0=",
+    }).ORRERY_ENCRYPTION_KEY;
+    expect(key).toBeInstanceOf(Buffer);
+    expect(key?.byteLength).toBe(32);
+  });
+
+  it("refuses to start with a key that is not base64 for exactly 32 bytes", () => {
+    // Not 32 bytes, whatever the string.
+    expect(() => loadConfig({ ...baseEnv, ORRERY_ENCRYPTION_KEY: "aGk=" })).toThrow(
+      /ORRERY_ENCRYPTION_KEY/,
+    );
+    // Base64-shaped but not a key's worth of bytes.
+    expect(() =>
+      loadConfig({ ...baseEnv, ORRERY_ENCRYPTION_KEY: Buffer.alloc(16).toString("base64") }),
+    ).toThrow(/ORRERY_ENCRYPTION_KEY/);
+    // Not base64 at all.
+    expect(() => loadConfig({ ...baseEnv, ORRERY_ENCRYPTION_KEY: "not base64!!" })).toThrow(
+      /ORRERY_ENCRYPTION_KEY/,
+    );
+  });
+});

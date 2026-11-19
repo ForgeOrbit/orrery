@@ -8,13 +8,6 @@
       "when": 1795037563749,
       "tag": "0000_identity",
       "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1795040006467,
-      "tag": "0001_instance_settings_email_tokens",
-      "breakpoints": true
     }
   ]
 }

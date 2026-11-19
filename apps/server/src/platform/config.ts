@@ -17,6 +17,18 @@ const Env = z.object({
     .refine((value) => value === undefined || value.length >= 32, {
       message: "BOOTSTRAP_SECRET must be at least 32 characters. Generate a long random secret.",
     }),
+  // The 32-byte key (base64) that encrypts instance secrets at rest (ADR-0004), the
+  // SMTP password first. An unset or empty value means no key: a password cannot be
+  // saved until the deployment supplies one. Generate with: openssl rand -base64 32.
+  ORRERY_ENCRYPTION_KEY: z
+    .string()
+    .optional()
+    .transform((value) => (value !== undefined && value.trim() === "" ? undefined : value))
+    .transform((value) => (value === undefined ? undefined : Buffer.from(value, "base64")))
+    .refine((value) => value === undefined || value.byteLength === 32, {
+      message:
+        "ORRERY_ENCRYPTION_KEY must be base64 for exactly 32 bytes. Generate one with: openssl rand -base64 32",
+    }),
   // Directory with the built web app. Unset in development, where Vite serves it.
   WEB_DIST: z.string().optional(),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
