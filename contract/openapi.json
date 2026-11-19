@@ -326,7 +326,8 @@
         "type": "string",
         "enum": [
           "pending",
-          "accepted"
+          "accepted",
+          "expired"
         ]
       },
       "InviteInstallationRequest": {

@@ -11,7 +11,7 @@ import {
   validationHook,
 } from "../../platform/problem.ts";
 import type { SessionReader } from "../accounts/index.ts";
-import { SettingsError, type DeliveryErrorKind } from "../settings/index.ts";
+import { deliveryStatusFor, isDeliveryKind, SettingsError } from "../settings/index.ts";
 import { InvitationsError, type InvitationsErrorKind, type InvitationsService } from "./service.ts";
 
 const inviteInstallation = createRoute({
@@ -66,9 +66,9 @@ const registerInstallation = createRoute({
 // Route definitions, for the generated OpenAPI document.
 export const routes = [inviteInstallation, registerInstallation];
 
-// Transport details rest.ts owns: every error kind's HTTP status. Delivery failures
-// keep their settings codes and statuses, so the reason says where the send failed,
-// not which route asked for it.
+// Transport details rest.ts owns: every invitations error kind's HTTP status. Delivery
+// failures keep their settings codes and statuses through the shared map, so the reason
+// says where the send failed, not which route asked for it.
 const statusFor = {
   not_signed_in: 401,
   not_admin: 403,
@@ -76,33 +76,6 @@ const statusFor = {
   invitation_pending: 409,
   invitation_invalid: 400,
 } as const satisfies Record<InvitationsErrorKind, number>;
-
-const deliveryStatusFor = {
-  smtp_unconfigured: 409,
-  smtp_password_unreadable: 409,
-  smtp_unreachable: 502,
-  smtp_auth_failed: 502,
-  smtp_tls_failed: 502,
-  smtp_send_failed: 502,
-} as const satisfies Record<DeliveryErrorKind, number>;
-
-// The kinds a delivery through the configured relay can answer with.
-const deliveryKinds = [
-  "smtp_unconfigured",
-  "smtp_password_unreadable",
-  "smtp_unreachable",
-  "smtp_auth_failed",
-  "smtp_tls_failed",
-  "smtp_send_failed",
-] as const satisfies readonly DeliveryErrorKind[];
-
-// True when the error is one of the delivery kinds every sending route answers. A type
-// guard is the honest way to narrow; no assertions.
-function isDeliveryKind(error: SettingsError): error is SettingsError & {
-  kind: DeliveryErrorKind;
-} {
-  return deliveryKinds.some((kind) => kind === error.kind);
-}
 
 // The kinds each route's service calls can throw: a route answers exactly these. The
 // registration route sends no email, so only the invitations kinds apply there.

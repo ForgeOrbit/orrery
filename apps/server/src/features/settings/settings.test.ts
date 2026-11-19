@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import {
   Problem,
@@ -20,6 +20,7 @@ import { createDb, type Database } from "../../platform/db.ts";
 import { createApp } from "../../platform/http.ts";
 import { type Logger, createLogger } from "../../platform/log.ts";
 import { migrate } from "../../platform/migrate.ts";
+import { tokenHash } from "../../platform/tokens.ts";
 import { createSettingsFeature, startupWarnings } from "./index.ts";
 import { createSettingsService } from "./service.ts";
 import type { SmtpMail, SmtpSender } from "./service.ts";
@@ -82,8 +83,6 @@ const getJson = (app: Hono, path: string, cookie?: string) =>
   app.request(path, cookie ? { headers: { cookie } } : undefined);
 
 const problemBody = async (res: Response) => Problem.parse(await res.json());
-
-const tokenHash = (token: string) => createHash("sha256").update(token).digest("hex");
 
 // The token as the email's one identifiable line carries it, tolerant of the CRLF the
 // SMTP wire adds on the way through a real relay.

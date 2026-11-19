@@ -1,24 +1,21 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { InvitationStatus } from "@orrery/contract";
+import { randomBytes, randomUUID } from "node:crypto";
+import { InvitationDelivery, InvitationStatus } from "@orrery/contract";
 import type { InstallationInvitation } from "@orrery/contract";
-import { and, eq, gt, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, lt, or, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
 import { errorNameAndCode, uniqueConstraintName } from "../../platform/errors.ts";
 import type { Logger } from "../../platform/log.ts";
+import { tokenHash } from "../../platform/tokens.ts";
 import type { SessionAccount } from "../accounts/index.ts";
 import type { OutgoingMail } from "../settings/index.ts";
-import { humans, invitations } from "../../db/schema.ts";
+import { invitations } from "../../db/schema.ts";
 
 // The service is the only file in a feature that decides anything. rest.ts calls it.
 
 // How long an invitation lives (#20): seven days, evaluated in database time at
 // redemption, never by a deployed clock.
 const INVITATION_TTL_SECONDS = 7 * 24 * 60 * 60;
-
-// The emailed link carries a random token; only its SHA-256 is stored, exactly like
-// accounts' session tokens and settings' verification tokens.
-const tokenHash = (token: string) => createHash("sha256").update(token).digest("hex");
 
 export type InvitationsErrorKind =
   | "not_signed_in"
@@ -70,24 +67,39 @@ function invitationMail(email: string, token: string, publicUrl: string): Outgoi
 
 // Installation invitations are administrator-only (issue #23): no session is 401, an
 // ordinary account is 403. The one authorization rule of this feature, stated once.
+// An unverified administrator may still send: #20's verified-inviter rule is stated for
+// workspace invitations, and nothing can be sent at all without configured SMTP, which
+// an administrator set up — ADR-0001 signs the first administrator in before
+// verification on purpose.
 function requireAdministrator(account: SessionAccount | null): SessionAccount {
   if (account === null) throw new InvitationsError("not_signed_in");
   if (!account.isSystemAdministrator) throw new InvitationsError("not_admin");
   return account;
 }
 
+// Records one delivery attempt's outcome, separately from the lifecycle (#20): the
+// status says whether the email left, the timestamp says when mail was last tried.
+async function recordDelivery(db: PostgresJsDatabase, id: string, delivery: InvitationDelivery) {
+  await db
+    .update(invitations)
+    .set({ deliveryStatus: delivery, deliveryAttemptedAt: sql`now()` })
+    .where(eq(invitations.id, id));
+}
+
 export interface InvitationsServiceDeps {
   db: PostgresJsDatabase;
   // The URL the emailed link carries.
   publicUrl: string;
-  // Accounts owns humans and personal workspaces: it creates the invited human inside
-  // the redemption transaction, and the verified mark is applied through it too.
+  // Accounts owns humans: the registered-email guard, the account-creation seam, and
+  // the verified mark all live there, and invitations asks instead of querying humans
+  // itself.
+  emailRegistered: (email: string) => Promise<boolean>;
   createInvitedHuman: (
     input: { email: string; password: string },
     tx: DbTransaction,
   ) => Promise<{ humanId: string }>;
   markEmailVerified: (humanId: string, tx: DbTransaction) => Promise<void>;
-  // The one mail path: settings' exported sender, never a second transport.
+  // Settings owns the relay: the one mail path, never a second transport.
   deliver: (mail: OutgoingMail) => Promise<void>;
   log?: Logger;
 }
@@ -106,35 +118,71 @@ export interface InvitationsService {
 export function createInvitationsService({
   db,
   publicUrl,
+  emailRegistered,
   createInvitedHuman,
   markEmailVerified,
   deliver,
   log,
 }: InvitationsServiceDeps): InvitationsService {
   return {
-    // Sends the invitation: one pending row per email, then the email through settings'
-    // sender. A send that fails leaves no live invitation behind, so a link that was
-    // never delivered cannot redeem, and the administrator can simply invite again.
+    // Sends the invitation. No history event here: installation invitations are not
+    // among #20's sensitive access actions, and membership events begin with #24's
+    // workspace invitations.
     async inviteInstallation(account, input) {
       const admin = requireAdministrator(account);
       // A registered address has nothing to be invited to.
-      const registered = await db
-        .select({ id: humans.id })
-        .from(humans)
-        .where(eq(humans.email, input.email))
+      if (await emailRegistered(input.email)) throw new InvitationsError("account_exists");
+
+      // A pending invitation blocks a new one while it is valid and not known-failed;
+      // an expired one, or one whose email never left, is superseded in place below.
+      // Unknown delivery (no attempt recorded) blocks too: that email may have left,
+      // and silently invalidating a possibly-delivered link is the worse failure.
+      const blocking = await db
+        .select({ id: invitations.id })
+        .from(invitations)
+        .where(
+          and(
+            eq(invitations.email, input.email),
+            eq(invitations.status, InvitationStatus.enum.pending),
+            gt(invitations.expiresAt, sql`now()`),
+            or(
+              eq(invitations.deliveryStatus, InvitationDelivery.enum.sent),
+              isNull(invitations.deliveryStatus),
+            ),
+          ),
+        )
         .limit(1);
-      if (registered.length > 0) throw new InvitationsError("account_exists");
+      if (blocking.length > 0) throw new InvitationsError("invitation_pending");
 
       const token = randomBytes(32).toString("base64url");
       const id = randomUUID();
       try {
-        await db.insert(invitations).values({
-          id,
-          email: input.email,
-          status: InvitationStatus.enum.pending,
-          tokenHash: tokenHash(token),
-          invitedByHumanId: admin.humanId,
-          expiresAt: sql`now() + make_interval(secs => ${INVITATION_TTL_SECONDS})`,
+        await db.transaction(async (tx) => {
+          // Supersede in place: any pending row for this email that is expired or
+          // delivery-failed becomes expired, in the new invitation's own transaction,
+          // so the one-pending rule holds for the new link and the old token dies
+          // with its row.
+          await tx
+            .update(invitations)
+            .set({ status: InvitationStatus.enum.expired })
+            .where(
+              and(
+                eq(invitations.email, input.email),
+                eq(invitations.status, InvitationStatus.enum.pending),
+                or(
+                  lt(invitations.expiresAt, sql`now()`),
+                  eq(invitations.deliveryStatus, InvitationDelivery.enum.failed),
+                ),
+              ),
+            );
+          await tx.insert(invitations).values({
+            id,
+            email: input.email,
+            status: InvitationStatus.enum.pending,
+            tokenHash: tokenHash(token),
+            invitedByHumanId: admin.humanId,
+            expiresAt: sql`now() + make_interval(secs => ${INVITATION_TTL_SECONDS})`,
+          });
         });
       } catch (error) {
         // One pending invitation per email: the loser of a race learns the same as the
@@ -145,29 +193,37 @@ export function createInvitationsService({
         throw error;
       }
 
+      // The delivery attempt, recorded separately from the lifecycle: pending never
+      // implies delivered (#20).
       try {
         await deliver(invitationMail(input.email, token, publicUrl));
       } catch (error) {
-        // The email never left, so its link must not redeem. The delivery Problem
-        // (settings' code, already logged there) still goes out; if even the cleanup
-        // fails, the log keeps its name and code only, never its message.
+        // The email never left. The invitation stays, with its delivery failure
+        // recorded: it can never redeem, and it will not block a fresh invitation.
+        // The delivery Problem (settings' code, already logged there) still goes out;
+        // if even the recording fails, the log keeps its name and code only, never its
+        // message.
         try {
-          await db.delete(invitations).where(eq(invitations.id, id));
-        } catch (cleanupError) {
-          log?.warn(
-            "invitation cleanup after a failed delivery failed",
-            errorNameAndCode(cleanupError),
-          );
+          await recordDelivery(db, id, InvitationDelivery.enum.failed);
+        } catch (recordingError) {
+          log?.warn("failed-delivery recording failed", errorNameAndCode(recordingError));
         }
         throw error;
       }
+      // A delivery that left but could not be recorded answers as an error on purpose:
+      // the invitation's delivery state stays unknown, which blocks both redemption
+      // and a fresh invitation, and the administrator learns the request failed.
+      await recordDelivery(db, id, InvitationDelivery.enum.sent);
       return { email: input.email, status: InvitationStatus.enum.pending };
     },
 
-    // One conditional update, evaluated in database time: the invitation must be pending
-    // and unexpired, and only this POST consumes its token. The account, its personal
-    // workspace, and the verified mark join the same transaction, so a half-registered
-    // human cannot exist, and a reused or expired link changes nothing.
+    // One conditional update, evaluated in database time: the invitation must be
+    // pending, unexpired, and actually delivered, and only this POST consumes its
+    // token. The account, its personal workspace, and the verified mark join the same
+    // transaction, so a half-registered human cannot exist, and a reused, expired, or
+    // never-delivered link changes nothing. No history event here either: the account
+    // and its personal workspace are not among #20's sensitive access actions, and
+    // membership events begin with #24.
     async registerInstallation(input) {
       const email = await db.transaction(async (tx) => {
         const rows = await tx
@@ -178,6 +234,7 @@ export function createInvitationsService({
               eq(invitations.tokenHash, tokenHash(input.token)),
               eq(invitations.status, InvitationStatus.enum.pending),
               gt(invitations.expiresAt, sql`now()`),
+              eq(invitations.deliveryStatus, InvitationDelivery.enum.sent),
             ),
           )
           .returning({ email: invitations.email });

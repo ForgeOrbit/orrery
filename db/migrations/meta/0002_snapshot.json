@@ -1,5 +1,5 @@
 {
-  "id": "1f9af586-57d8-42db-a4a2-f1655f4410a4",
+  "id": "52f00bf1-91ce-4526-891b-c8b3cce1b834",
   "prevId": "10839eae-f000-4a68-9a2a-df050b0840d9",
   "version": "7",
   "dialect": "postgresql",
@@ -378,6 +378,18 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "delivery_status": {
+          "name": "delivery_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "delivery_attempted_at": {
+          "name": "delivery_attempted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -425,7 +437,11 @@
         },
         "invitations_status": {
           "name": "invitations_status",
-          "value": "\"invitations\".\"status\" in ('pending', 'accepted')"
+          "value": "\"invitations\".\"status\" in ('pending', 'accepted', 'expired')"
+        },
+        "invitations_delivery_status": {
+          "name": "invitations_delivery_status",
+          "value": "(\"invitations\".\"delivery_status\" is null or \"invitations\".\"delivery_status\" in ('sent', 'failed'))"
         }
       },
       "isRLSEnabled": false

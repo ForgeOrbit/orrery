@@ -1,10 +1,11 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { createTransport } from "nodemailer";
 import type { SmtpSecurity, SmtpSettings, SmtpSettingsResponse } from "@orrery/contract";
 import type { SessionAccount } from "../accounts/index.ts";
 import type { DbTransaction } from "../../platform/db.ts";
 import { errorNameAndCode } from "../../platform/errors.ts";
 import type { Logger } from "../../platform/log.ts";
+import { tokenHash } from "../../platform/tokens.ts";
 import { and, eq, isNull, gt, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { emailVerificationTokens, instanceSettings } from "../../db/schema.ts";
@@ -62,6 +63,35 @@ export type DeliveryErrorKind = Extract<
   | "smtp_send_failed"
 >;
 
+// The delivery kinds, as one list the guard checks against.
+const deliveryKinds = [
+  "smtp_unconfigured",
+  "smtp_password_unreadable",
+  "smtp_unreachable",
+  "smtp_auth_failed",
+  "smtp_tls_failed",
+  "smtp_send_failed",
+] as const satisfies readonly DeliveryErrorKind[];
+
+// True when the error is one of the delivery kinds. A type guard is the honest way to
+// narrow; no assertions.
+export function isDeliveryKind(error: SettingsError): error is SettingsError & {
+  kind: DeliveryErrorKind;
+} {
+  return deliveryKinds.some((kind) => kind === error.kind);
+}
+
+// Every delivery kind's HTTP status, wherever the send happened: one map, because the
+// codes mean the same thing on every route that sends mail.
+export const deliveryStatusFor = {
+  smtp_unconfigured: 409,
+  smtp_password_unreadable: 409,
+  smtp_unreachable: 502,
+  smtp_auth_failed: 502,
+  smtp_tls_failed: 502,
+  smtp_send_failed: 502,
+} as const satisfies Record<DeliveryErrorKind, number>;
+
 // Each kind is the REST error's stable code and its message the Problem's title
 // (ADR-0003), so clients branch on the code and people read the title.
 const messages = {
@@ -96,10 +126,6 @@ export class SettingsError extends Error {
 // How long a verification token lives. An implementation default, not a product mode:
 // the token exists to be redeemed minutes after the test email arrives.
 const VERIFICATION_TTL_SECONDS = 24 * 60 * 60;
-
-// The verification token is random and travels by email in the clear; only its
-// SHA-256 is stored, exactly like accounts' session tokens.
-const tokenHash = (token: string) => createHash("sha256").update(token).digest("hex");
 
 export interface SettingsDeps {
   db: PostgresJsDatabase;
@@ -184,14 +210,6 @@ const UNSET_RESPONSE: SmtpSettingsResponse = {
   from: null,
 };
 
-// An error's code (ECONNREFUSED, EAUTH, ...), read without asserting a shape: errors
-// arrive from drivers and libraries that each wrap them differently.
-function errorCode(error: unknown): string | undefined {
-  if (typeof error !== "object" || error === null) return undefined;
-  const code: unknown = Reflect.get(error, "code");
-  return typeof code === "string" ? code : undefined;
-}
-
 // The socket-level causes that make a relay unreachable, as one list for both checks:
 // nodemailer wraps them as ESOCKET with the cause in the message, and other callers
 // surface them as the error's own code.
@@ -201,7 +219,9 @@ const UNREACHABLE_CODES =
 // What kind of failure a relay error is, without the error's own text: the kind names
 // what to check, the log keeps the rest.
 function deliveryFailureKind(error: unknown): SettingsErrorKind {
-  const code = errorCode(error);
+  // errorNameAndCode reads the error's code without asserting a shape: errors arrive
+  // from drivers and libraries that each wrap them differently.
+  const { code } = errorNameAndCode(error);
   if (code === "EAUTH") return "smtp_auth_failed";
   const message = error instanceof Error ? error.message : "";
   if (UNREACHABLE_CODES.test(message)) return "smtp_unreachable";

@@ -11,12 +11,14 @@ export { createSessionReader, type SessionReader } from "./rest.ts";
 
 // The accounts feature, plus what other features need from it: resolving the account
 // behind a session cookie, marking an email verified inside another feature's
-// transaction, and creating an invited human with their personal workspace inside one
-// (issue #23). The cookie's name stays private to this feature.
+// transaction, creating an invited human with their personal workspace inside one
+// (issue #23), and the registered-email guard. The cookie's name stays private to this
+// feature.
 export interface AccountsFeature extends Feature {
   sessionReader: SessionReader;
   markEmailVerified: AccountsService["markEmailVerified"];
   createInvitedHuman: AccountsService["createInvitedHuman"];
+  emailRegistered: AccountsService["emailRegistered"];
 }
 
 export function createAccountsFeature(deps: AccountsDeps): AccountsFeature {
@@ -27,5 +29,6 @@ export function createAccountsFeature(deps: AccountsDeps): AccountsFeature {
     sessionReader: createSessionReader(service),
     markEmailVerified: (humanId, tx) => service.markEmailVerified(humanId, tx),
     createInvitedHuman: (input, tx) => service.createInvitedHuman(input, tx),
+    emailRegistered: (email) => service.emailRegistered(email),
   };
 }

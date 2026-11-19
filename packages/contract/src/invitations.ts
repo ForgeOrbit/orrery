@@ -7,10 +7,20 @@ import { Email, NewPassword } from "./common.ts";
 // redeems it. Registration is invitation-only: there is no public sign-up.
 
 // The lifecycle states an invitation records (#20 tracks them separately from email
-// delivery and account verification). Expired is not a stored state: expiry is seven
-// days, evaluated in database time at redemption. Decline and revoke arrive with #25.
-export const InvitationStatus = z.enum(["pending", "accepted"]).meta({ id: "InvitationStatus" });
+// delivery and account verification). `expired` is set in place when a newer invitation
+// supersedes one whose seven days passed (or whose email never left); time itself is
+// still evaluated in database time at redemption. Decline and revoke arrive with #25.
+export const InvitationStatus = z
+  .enum(["pending", "accepted", "expired"])
+  .meta({ id: "InvitationStatus" });
 export type InvitationStatus = z.infer<typeof InvitationStatus>;
+
+// Whether the invitation email actually left (#20: pending does not imply delivered).
+// `sent` is the only state that may redeem; `failed` records a delivery the relay
+// refused. Null means no attempt has been recorded yet — such an invitation never
+// redeems either.
+export const InvitationDelivery = z.enum(["sent", "failed"]).meta({ id: "InvitationDelivery" });
+export type InvitationDelivery = z.infer<typeof InvitationDelivery>;
 
 // The email a system administrator invites.
 export const InviteInstallationRequest = z

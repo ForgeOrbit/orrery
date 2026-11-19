@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { WorkspacesResponse } from "@orrery/contract";
 import type { Hono } from "hono";
@@ -12,6 +12,7 @@ import { createDb, type Database } from "../../platform/db.ts";
 import { createApp } from "../../platform/http.ts";
 import { createLogger, type Logger } from "../../platform/log.ts";
 import { migrate } from "../../platform/migrate.ts";
+import { tokenHash } from "../../platform/tokens.ts";
 import { createWorkspacesFeature } from "./index.ts";
 
 // Runs against a real Postgres (see AGENTS.md): what a listing contains is decided by
@@ -35,8 +36,6 @@ const postJson = (app: Hono, path: string, body: unknown, cookie?: string) =>
     headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}) },
     body: JSON.stringify(body),
   });
-
-const tokenHash = (token: string) => createHash("sha256").update(token).digest("hex");
 
 // The shared story so far: the first administrator exists (bootstrap) and is signed in.
 async function bootstrapAdmin(app: Hono) {
@@ -145,6 +144,7 @@ describe("workspaces", () => {
       db: database.db,
       publicUrl: PUBLIC_URL,
       sessionReader: accounts.sessionReader,
+      emailRegistered: accounts.emailRegistered,
       createInvitedHuman: accounts.createInvitedHuman,
       markEmailVerified: accounts.markEmailVerified,
       deliver: settings.deliver,

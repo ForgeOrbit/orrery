@@ -31,13 +31,14 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     createSystemFeature({ ping: database.ping }),
     accounts,
     settings,
-    // Invitations borrows the same three things from accounts (the reader, the
-    // account-creation seam, the verified mark) and sends mail only through settings'
-    // exported sender, so no second mail path exists.
+    // Invitations borrows the same things from accounts (the reader, the
+    // registered-email guard, the account-creation seam, the verified mark) and sends
+    // mail only through settings' exported sender, so no second mail path exists.
     createInvitationsFeature({
       db: database.db,
       publicUrl: config.PUBLIC_URL,
       sessionReader: accounts.sessionReader,
+      emailRegistered: accounts.emailRegistered,
       createInvitedHuman: accounts.createInvitedHuman,
       markEmailVerified: accounts.markEmailVerified,
       deliver: settings.deliver,

@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID, scrypt, timingSafeEqual } from "node:crypto";
 import type { ScryptOptions } from "node:crypto";
 import { WorkspaceKind } from "@orrery/contract";
 import type {
@@ -11,6 +11,7 @@ import { and, eq, gt, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
 import { uniqueConstraintName } from "../../platform/errors.ts";
+import { tokenHash } from "../../platform/tokens.ts";
 import { browserSessions, humans, instanceSetup, workspaces } from "../../db/schema.ts";
 
 // The service is the only file in a feature that decides anything. rest.ts and mcp.ts call it.
@@ -74,11 +75,6 @@ function secretsEqual(presented: string, configured: string): boolean {
   const a = Buffer.from(presented);
   const b = Buffer.from(configured);
   return a.length === b.length && timingSafeEqual(a, b);
-}
-
-// The browser session cookie holds a random token; only its SHA-256 is stored.
-function tokenHash(token: string): string {
-  return createHash("sha256").update(token).digest("hex");
 }
 
 export type AccountsErrorKind =
@@ -156,6 +152,32 @@ export interface AccountsService {
     input: { email: string; password: string },
     tx: DbTransaction,
   ): Promise<{ humanId: string }>;
+  // Whether an email already belongs to an account: the guard for anything that must not
+  // double an account (invitations now). Accounts owns humans, so the check lives here.
+  emailRegistered(email: string): Promise<boolean>;
+}
+
+// One place creates a human with their personal workspace (issue #23): bootstrap's
+// administrator and an invited registration are the same two rows, whoever the human
+// turns out to be. Inside the caller's transaction, on the caller's id.
+async function insertHumanWithPersonalWorkspace(
+  tx: DbTransaction,
+  input: { id: string; email: string; passwordHash: string; isSystemAdministrator?: boolean },
+) {
+  await tx.insert(humans).values({
+    id: input.id,
+    email: input.email,
+    passwordHash: input.passwordHash,
+    // exactOptionalPropertyTypes: the flag reaches the insert only when set, so an
+    // invited human stays an ordinary account by omission, not by a false value.
+    ...(input.isSystemAdministrator === true ? { isSystemAdministrator: true } : {}),
+  });
+  await tx.insert(workspaces).values({
+    id: randomUUID(),
+    kind: WorkspaceKind.enum.personal,
+    name: "Personal",
+    personalOwnerHumanId: input.id,
+  });
 }
 
 export function createAccountsService({
@@ -187,14 +209,11 @@ export function createAccountsService({
 
       try {
         await db.transaction(async (tx) => {
-          await tx
-            .insert(humans)
-            .values({ id: humanId, email: input.email, passwordHash, isSystemAdministrator: true });
-          await tx.insert(workspaces).values({
-            id: randomUUID(),
-            kind: WorkspaceKind.enum.personal,
-            name: "Personal",
-            personalOwnerHumanId: humanId,
+          await insertHumanWithPersonalWorkspace(tx, {
+            id: humanId,
+            email: input.email,
+            passwordHash,
+            isSystemAdministrator: true,
           });
           await tx.insert(instanceSetup).values({ id: true, administratorHumanId: humanId });
         });
@@ -228,6 +247,7 @@ export function createAccountsService({
         throw new AccountsError("invalid_credentials");
       }
 
+      // The browser session cookie holds a random token; only its SHA-256 is stored.
       const token = randomBytes(32).toString("base64url");
       await db.insert(browserSessions).values({
         id: randomUUID(),
@@ -274,14 +294,23 @@ export function createAccountsService({
     async createInvitedHuman(input: { email: string; password: string }, tx: DbTransaction) {
       const humanId = randomUUID();
       const passwordHash = await hashPassword(input.password);
-      await tx.insert(humans).values({ id: humanId, email: input.email, passwordHash });
-      await tx.insert(workspaces).values({
-        id: randomUUID(),
-        kind: WorkspaceKind.enum.personal,
-        name: "Personal",
-        personalOwnerHumanId: humanId,
+      await insertHumanWithPersonalWorkspace(tx, {
+        id: humanId,
+        email: input.email,
+        passwordHash,
       });
       return { humanId };
+    },
+
+    // The registration surface's guard: whoever must not double an account asks here
+    // instead of querying humans themselves.
+    async emailRegistered(email: string) {
+      const rows = await db
+        .select({ id: humans.id })
+        .from(humans)
+        .where(eq(humans.email, email))
+        .limit(1);
+      return rows.length > 0;
     },
   };
 }

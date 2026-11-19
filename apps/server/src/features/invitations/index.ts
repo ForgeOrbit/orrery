@@ -7,14 +7,14 @@ import { createInvitationsRest, routes } from "./rest.ts";
 export { routes as invitationsRoutes };
 export type { InvitationsService } from "./service.ts";
 
-// What invitations borrows from accounts and settings: the session reader that
-// authorizes the inviter, the account-creation seam and the verified-email mark, and
-// the one mail path.
-export type InvitationsDepsWithAccounts = InvitationsServiceDeps & {
+// What the invitations feature is wired with: from accounts, the session reader its
+// routes authorize with, the registered-email guard, the account-creation seam, and
+// the verified-email mark; from settings, the one mail path.
+export type InvitationsFeatureDeps = InvitationsServiceDeps & {
   sessionReader: SessionReader;
 };
 
-export function createInvitationsFeature(deps: InvitationsDepsWithAccounts): Feature {
+export function createInvitationsFeature(deps: InvitationsFeatureDeps): Feature {
   const service = createInvitationsService(deps);
   return { name: "invitations", rest: createInvitationsRest(service, deps.sessionReader) };
 }

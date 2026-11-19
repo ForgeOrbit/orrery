@@ -1,4 +1,9 @@
-import { InvitationStatus, WorkspaceKind, SmtpSecurity } from "@orrery/contract";
+import {
+  InvitationDelivery,
+  InvitationStatus,
+  WorkspaceKind,
+  SmtpSecurity,
+} from "@orrery/contract";
 import { sql } from "drizzle-orm";
 import {
   boolean,
@@ -147,8 +152,9 @@ export const emailVerificationTokens = pgTable("email_verification_tokens", {
 // An invitation (issue #23): a system administrator's offer to register on the
 // installation, sent to one email. The emailed link carries a random token; only its
 // SHA-256 hash is stored. The lifecycle is tracked separately from delivery and account
-// verification (#20): the row keeps who invited and when it was accepted, and expiry is
-// seven days, evaluated in database time at redemption.
+// verification (#20): the row keeps who invited and when it was accepted, expiry is
+// seven days evaluated in database time at redemption, and a newer invitation supersedes
+// a stale one in place by marking it expired.
 export const invitations = pgTable(
   "invitations",
   {
@@ -164,12 +170,22 @@ export const invitations = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    // Delivery, tracked separately from the lifecycle: pending never implies delivered
+    // (#20). Null means no attempt has been recorded; only 'sent' may redeem.
+    deliveryStatus: text("delivery_status").$type<InvitationDelivery>(),
+    deliveryAttemptedAt: timestamp("delivery_attempted_at", { withTimezone: true }),
   },
   (t) => [
     check("invitations_email_normalized", sql`${t.email} = lower(btrim(${t.email}))`),
-    // DDL cannot bind parameters, so the status list is raw SQL text; the values come
-    // from the InvitationStatus contract enum, never from input.
+    // DDL cannot bind parameters, so the status lists are raw SQL text; the values come
+    // from the contract enums, never from input.
     check("invitations_status", sql`${t.status} in (${sql.raw(sqlLiteralList(InvitationStatus))})`),
+    check(
+      "invitations_delivery_status",
+      sql`(${t.deliveryStatus} is null or ${t.deliveryStatus} in (${sql.raw(
+        sqlLiteralList(InvitationDelivery),
+      )}))`,
+    ),
     // One pending invitation per email: a second valid link must not accumulate (#25
     // rotates the existing one instead).
     uniqueIndex("one_pending_invitation_per_email")

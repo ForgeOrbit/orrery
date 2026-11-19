@@ -6,7 +6,7 @@ import { type SettingsDeps, createSettingsService, type OutgoingMail } from "./s
 
 export { routes as settingsRoutes };
 export type { SmtpMail, SmtpSender, SettingsService } from "./service.ts";
-export { SettingsError, startupWarnings } from "./service.ts";
+export { SettingsError, deliveryStatusFor, isDeliveryKind, startupWarnings } from "./service.ts";
 export type { SettingsErrorKind, DeliveryErrorKind, OutgoingMail } from "./service.ts";
 
 // What settings borrows from accounts: the session reader it authorizes with, on top
