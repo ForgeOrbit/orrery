@@ -21,6 +21,7 @@ import { createApp } from "../../platform/http.ts";
 import { type Logger, createLogger } from "../../platform/log.ts";
 import { migrate } from "../../platform/migrate.ts";
 import { createSettingsFeature, startupWarnings } from "./index.ts";
+import { createSettingsService } from "./service.ts";
 import type { SmtpMail, SmtpSender } from "./service.ts";
 
 // Runs against a real Postgres (see AGENTS.md): settings persistence, authorization,
@@ -498,10 +499,11 @@ describe("settings", () => {
       const cookie = await adminCookie(app);
       await saveSettings(app, cookie);
 
-      // A different key cannot read the stored ciphertext.
+      // A different key cannot read the stored ciphertext: 409, because the fix is on
+      // this server — re-enter the password — not on the relay.
       const rekeyed = makeApp(SECRET, { sendMail: fake.sender, encryptionKey: OTHER_KEY });
       const wrongKey = await postJson(rekeyed, "/api/settings/smtp/test", {}, cookie);
-      expect(wrongKey.status).toBe(502);
+      expect(wrongKey.status).toBe(409);
       const unreadable = await problemBody(wrongKey);
       expect(unreadable).toMatchObject({ code: "smtp_password_unreadable" });
       expect(unreadable.title).toContain("Re-enter the password");
@@ -510,7 +512,7 @@ describe("settings", () => {
       // response says exactly what to do.
       const keyless = makeApp(SECRET, { sendMail: fake.sender, encryptionKey: null });
       const noKey = await postJson(keyless, "/api/settings/smtp/test", {}, cookie);
-      expect(noKey.status).toBe(502);
+      expect(noKey.status).toBe(409);
       expect(await problemBody(noKey)).toMatchObject({ code: "smtp_password_unreadable" });
       expect(fake.sent).toHaveLength(0);
     });
@@ -663,6 +665,62 @@ describe("settings", () => {
       const token = tokenFrom(fake.sent[0]?.mail.text ?? "");
       const redeem = await postJson(app, "/api/settings/email-verification", { token }, cookie);
       expect(redeem.status).toBe(400);
+    });
+
+    it("still answers the delivery Problem when the token cleanup itself fails", async () => {
+      const lines: string[] = [];
+      const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+        lines.push(args.join(" "));
+      });
+      try {
+        // The real database, with delete made to fail: everything else runs as-is.
+        const failingCleanup = new Proxy(database.db, {
+          get(target, property) {
+            if (property === "delete") {
+              return () => ({
+                where: () => Promise.reject(new Error("cleanup exploded with a secret detail")),
+              });
+            }
+            const value = Reflect.get(target, property);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        });
+        const fake = createFakeSender();
+        const log = createLogger("info");
+        const app = makeApp();
+        await bootstrapAdmin(app);
+        await saveSettings(app, await adminCookie(app));
+        const [admin] = await database.db.select().from(humans).where(eq(humans.email, EMAIL));
+        if (admin === undefined) throw new Error("the administrator was not found");
+        const service = createSettingsService({
+          db: failingCleanup,
+          publicUrl: PUBLIC_URL,
+          encryptionKey: TEST_KEY,
+          markEmailVerified: () => Promise.resolve(),
+          sendMail: fake.sender,
+          log,
+        });
+
+        fake.failWith(() => codedError("ECONNREFUSED", "connect ECONNREFUSED 127.0.0.1:25"));
+        await expect(
+          service.sendTestEmail({
+            humanId: admin.id,
+            email: admin.email,
+            isSystemAdministrator: true,
+            emailVerifiedAt: admin.emailVerifiedAt,
+          }),
+        ).rejects.toMatchObject({ kind: "smtp_unreachable" });
+
+        const captured = lines.join("\n");
+        // The delivery failure and the failed cleanup both made the log...
+        expect(captured).toContain("test email failed");
+        expect(captured).toContain("token cleanup");
+        // ...as names and codes only: the cleanup error's message never does.
+        expect(captured).not.toContain("exploded");
+        expect(captured).not.toContain("secret detail");
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it("invalidates the account's earlier unused tokens when a new one is issued", async () => {

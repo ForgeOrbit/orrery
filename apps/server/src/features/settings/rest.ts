@@ -57,7 +57,7 @@ const sendTestEmail = createRoute({
   path: "/api/settings/smtp/test",
   summary: "Send a test email to the administrator's own address",
   description:
-    "System administrators only, after SMTP is configured. The email carries a single-use token; redeeming it verifies the administrator's address. A delivery failure is a Problem whose code names the reason (smtp_unreachable, smtp_auth_failed, smtp_tls_failed, smtp_send_failed, smtp_password_unreadable).",
+    "System administrators only, after SMTP is configured. The email carries a single-use token; redeeming it verifies the administrator's address. A delivery failure is a Problem whose code names the reason (smtp_unreachable, smtp_auth_failed, smtp_tls_failed, smtp_send_failed); a stored password the key cannot read is 409 smtp_password_unreadable.",
   responses: {
     200: {
       description: "The test email was sent to the administrator's own address",
@@ -65,7 +65,9 @@ const sendTestEmail = createRoute({
     },
     401: problem("Not signed in"),
     403: problem("Signed in, but not a system administrator"),
-    409: problem("SMTP is not configured yet"),
+    409: problem(
+      "SMTP is not configured, or its stored password cannot be read with the configured key",
+    ),
     502: problem("The SMTP server refused the message; the code says why"),
   },
 });
@@ -92,14 +94,16 @@ const verifyEmail = createRoute({
 // Route definitions, for the generated OpenAPI document.
 export const routes = [smtp, saveSmtp, sendTestEmail, verifyEmail];
 
-// Every error kind's HTTP status, the same shape as accounts/rest.ts.
+// Every error kind's HTTP status, the same shape as accounts/rest.ts. An unreadable
+// stored password is 409, not 502: it comes from this server's own key setup, and the
+// administrator fixes it by re-entering the password.
 const statusFor = {
   not_signed_in: 401,
   not_admin: 403,
   insecure_smtp_credentials: 400,
   encryption_key_missing: 409,
   smtp_unconfigured: 409,
-  smtp_password_unreadable: 502,
+  smtp_password_unreadable: 409,
   verification_token_invalid: 400,
   smtp_unreachable: 502,
   smtp_auth_failed: 502,

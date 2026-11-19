@@ -56,4 +56,14 @@ describe("loadConfig: ORRERY_ENCRYPTION_KEY", () => {
       /ORRERY_ENCRYPTION_KEY/,
     );
   });
+
+  it("refuses a stray character inside an otherwise valid key", () => {
+    // A lenient decoder would skip the stray byte and still land on 32 usable bytes;
+    // canonical base64 re-encodes differently, so the key is refused.
+    const valid = "5JxZLMqonzkGHjJwLLuzM6d6fQ6m7onmSI+7yeB9NW0=";
+    const stray = `${valid.slice(0, 22)}*${valid.slice(22)}`;
+    expect(() => loadConfig({ ...baseEnv, ORRERY_ENCRYPTION_KEY: stray })).toThrow(
+      /ORRERY_ENCRYPTION_KEY/,
+    );
+  });
 });

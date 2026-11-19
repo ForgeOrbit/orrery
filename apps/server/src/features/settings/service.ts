@@ -49,7 +49,7 @@ const messages = {
     "No encryption key is configured, so a password cannot be saved. Set ORRERY_ENCRYPTION_KEY on the server and try again.",
   smtp_unconfigured: "SMTP is not configured yet. Save the SMTP settings first.",
   smtp_password_unreadable:
-    "The stored SMTP password cannot be read with the configured key. Re-enter the password in the settings.",
+    "The stored SMTP password cannot be read with the server's encryption key. Re-enter the password in the settings.",
   verification_token_invalid: "This verification token is invalid, expired, or already used.",
   smtp_unreachable:
     "Could not reach the SMTP server. Check the host and port, and that the server accepts connections from this Orrery server.",
@@ -338,11 +338,17 @@ export function createSettingsService({
       try {
         await sendMail(settings, mail);
       } catch (error) {
-        // The email never left, so its token must not be redeemable.
-        await db
-          .delete(emailVerificationTokens)
-          .where(eq(emailVerificationTokens.tokenHash, tokenHash(token)));
         log?.warn("test email failed", errorNameAndCode(error));
+        // The email never left, so its token must not be redeemable. If even that
+        // cleanup fails, the delivery answer still goes out: the log keeps the failed
+        // cleanup's name and code only, never its message.
+        try {
+          await db
+            .delete(emailVerificationTokens)
+            .where(eq(emailVerificationTokens.tokenHash, tokenHash(token)));
+        } catch (cleanupError) {
+          log?.warn("token cleanup after a failed send failed", errorNameAndCode(cleanupError));
+        }
         throw new SettingsError(deliveryFailureKind(error));
       }
       return {
