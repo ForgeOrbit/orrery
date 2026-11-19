@@ -19,7 +19,7 @@ const inviteInstallation = createRoute({
   path: "/api/invitations/installation",
   summary: "Send an installation invitation",
   description:
-    "System administrators only, after SMTP is configured. Emails the invited address a single-use registration link, valid for seven days. Following the link (GET) changes nothing; the recipient registers with a POST. One pending invitation per email. A delivery failure sends no link at all and answers a Problem whose code names the reason (smtp_unreachable, smtp_auth_failed, smtp_tls_failed, smtp_send_failed).",
+    "System administrators only, after SMTP is configured. Emails the invited address a single-use registration link, valid for seven days. Following the link (GET) changes nothing; the recipient registers with a POST. One pending invitation per email; re-inviting supersedes an expired or undelivered one in place. A delivery failure keeps the invitation recorded with delivery failed — it can never redeem — and answers a Problem whose code names the reason (smtp_unreachable, smtp_auth_failed, smtp_tls_failed, smtp_send_failed).",
   request: {
     body: {
       required: true,
