@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
   IssueStatus,
+  ProjectAccessEventType,
+  ProjectAccessLevel,
   WorkspaceKind,
   type CreateIssueCommentRequest,
   type CreateIssueRequest,
@@ -10,12 +12,15 @@ import {
   type IssueComment,
   type KnowledgeEntry,
   type Project,
+  type ProjectAccessGrant,
   type ProjectActivity,
   type ProjectActivityType,
+  type SetProjectAccessRequest,
   type UpdateIssueRequest,
   type UpdateKnowledgeEntryRequest,
+  type UpdateProjectRequest,
 } from "@orrery/contract";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
@@ -24,25 +29,33 @@ import {
   issueComments,
   issues,
   knowledgeEntries,
+  projectAccessEvents,
+  projectAccessGrants,
   projectActivity,
   projects,
+  workspaceMemberships,
   workspaces,
 } from "../../db/schema.ts";
 import type { SessionAccount } from "../accounts/index.ts";
 
 // The service is the only file in this feature that decides anything. rest.ts calls it.
 //
-// Projects are personal in this slice (#26): only the owner of a personal workspace can
-// list, create, or access its projects. Shared workspaces gain project creation and the
-// Read/Contribute/Manage levels with #27, so they have no project surface yet. Every
-// project query applies the one access predicate below, so no transport can bypass it.
+// A personal project belongs to its workspace owner alone. A shared project's effective
+// level is Manage for a workspace owner, otherwise the member's explicit grant (Read,
+// Contribute, or Manage), otherwise none. Every project query applies the same resolver,
+// so no transport can bypass it. Membership alone never grants project access.
 
 export type ProjectsErrorKind =
   | "not_signed_in"
   | "workspace_not_found"
   | "project_not_found"
   | "issue_not_found"
-  | "knowledge_entry_not_found";
+  | "knowledge_entry_not_found"
+  | "project_creation_not_allowed"
+  | "insufficient_project_access"
+  | "member_not_found"
+  | "personal_project_access"
+  | "workspace_owner_access";
 
 const messages = {
   not_signed_in: "Not signed in.",
@@ -50,7 +63,53 @@ const messages = {
   project_not_found: "This project does not exist.",
   issue_not_found: "This issue does not exist.",
   knowledge_entry_not_found: "This knowledge entry does not exist.",
+  project_creation_not_allowed: "You do not have Create projects in this workspace.",
+  insufficient_project_access: "This project access level cannot do that.",
+  member_not_found: "This person is not a member of the workspace.",
+  personal_project_access: "Personal projects have no direct collaborators.",
+  workspace_owner_access: "Workspace owners already have Manage access to every project.",
 } as const satisfies Record<ProjectsErrorKind, string>;
+
+const ACCESS_RANK: Record<ProjectAccessLevel, number> = {
+  read: 1,
+  contribute: 2,
+  manage: 3,
+};
+
+// What a project query learns about the caller's access. A shared workspace row has a
+// membership (isOwner false or true) or none (null); a personal row has an owner id.
+type AccessFacts = {
+  workspaceKind: WorkspaceKind;
+  personalOwnerHumanId: string | null;
+  membershipIsOwner: boolean | null;
+  grantLevel: ProjectAccessLevel | null;
+};
+
+// The one resolver: personal owner or shared owner -> Manage; a shared member -> their
+// explicit grant; anyone else -> none. A grant without a live membership is stale and
+// grants nothing (removal deletes it too, so a rejoin starts fresh).
+function resolveAccessLevel(facts: AccessFacts, humanId: string): ProjectAccessLevel | null {
+  if (facts.workspaceKind === WorkspaceKind.enum.personal) {
+    return facts.personalOwnerHumanId === humanId ? ProjectAccessLevel.enum.manage : null;
+  }
+  if (facts.membershipIsOwner === null) return null;
+  if (facts.membershipIsOwner) return ProjectAccessLevel.enum.manage;
+  return facts.grantLevel;
+}
+
+function requireLevel(
+  facts: AccessFacts,
+  humanId: string,
+  required: ProjectAccessLevel,
+  missingKind: ProjectsErrorKind,
+): ProjectAccessLevel {
+  const level = resolveAccessLevel(facts, humanId);
+  if (level === null) throw new ProjectsError(missingKind);
+  if (ACCESS_RANK[level] < ACCESS_RANK[required]) {
+    throw new ProjectsError("insufficient_project_access");
+  }
+  return level;
+}
 
 export class ProjectsError extends Error {
   readonly kind: ProjectsErrorKind;
@@ -76,6 +135,7 @@ const commentAuthor = alias(humans, "comment_author");
 const knowledgeCreator = alias(humans, "knowledge_creator");
 const knowledgeEditor = alias(humans, "knowledge_editor");
 const activityActor = alias(humans, "activity_actor");
+const accessGrantor = alias(humans, "access_grantor");
 
 const projectColumns = {
   id: projects.id,
@@ -143,6 +203,18 @@ type ProjectRow = {
   createdAt: Date;
   createdByHumanId: string;
   createdByEmail: string;
+  workspaceKind: WorkspaceKind;
+  accessLevel: ProjectAccessLevel;
+};
+
+type ProjectGrantRow = {
+  humanId: string;
+  email: string;
+  level: ProjectAccessLevel;
+  grantedByHumanId: string;
+  grantedByEmail: string;
+  createdAt: Date;
+  updatedAt: Date;
 };
 
 type IssueRow = {
@@ -202,6 +274,19 @@ function toProject(row: ProjectRow): Project {
     name: row.name,
     createdAt: row.createdAt.toISOString(),
     createdBy: { humanId: row.createdByHumanId, email: row.createdByEmail },
+    workspaceKind: row.workspaceKind,
+    accessLevel: row.accessLevel,
+  };
+}
+
+function toProjectGrant(row: ProjectGrantRow): ProjectAccessGrant {
+  return {
+    humanId: row.humanId,
+    email: row.email,
+    level: row.level,
+    grantedBy: { humanId: row.grantedByHumanId, email: row.grantedByEmail },
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
   };
 }
 
@@ -257,101 +342,180 @@ function toActivity(row: ActivityRow): ProjectActivity {
   };
 }
 
-// The one project access predicate for #26: the workspace is personal, and the caller is
-// its owner. Shared workspaces gain project access with #27; until then they have no
-// project surface. Every workspace and project query below applies this same predicate.
-function canAccessProject(
-  row: { workspaceKind: WorkspaceKind; personalOwnerHumanId: string | null },
-  humanId: string,
-): boolean {
-  return row.workspaceKind === WorkspaceKind.enum.personal && row.personalOwnerHumanId === humanId;
-}
+type WorkspaceFacts = {
+  id: string;
+  kind: WorkspaceKind;
+  name: string;
+  isOwner: boolean;
+  canCreateProjects: boolean;
+};
 
-// A workspace outside the caller's personal ownership answers exactly like a missing one.
-async function requireWorkspace(tx: DbTransaction, workspaceId: string, humanId: string) {
+// The caller's workspace access, in one query. Personal access is ownership; shared
+// access is a membership. A workspace outside the caller's access answers exactly like
+// a missing one, so workspace ids cannot be enumerated.
+async function readWorkspaceFacts(
+  tx: DbTransaction,
+  workspaceId: string,
+  humanId: string,
+): Promise<WorkspaceFacts> {
   const [row] = await tx
     .select({
-      workspaceKind: workspaces.kind,
+      id: workspaces.id,
+      kind: workspaces.kind,
+      name: workspaces.name,
       personalOwnerHumanId: workspaces.personalOwnerHumanId,
+      membershipIsOwner: workspaceMemberships.isOwner,
+      membershipCanCreateProjects: workspaceMemberships.canCreateProjects,
     })
     .from(workspaces)
+    .leftJoin(
+      workspaceMemberships,
+      and(
+        eq(workspaceMemberships.workspaceId, workspaces.id),
+        eq(workspaceMemberships.humanId, humanId),
+      ),
+    )
     .where(eq(workspaces.id, workspaceId))
     .limit(1);
 
-  if (row === undefined || !canAccessProject(row, humanId)) {
-    throw new ProjectsError("workspace_not_found");
+  if (row === undefined) throw new ProjectsError("workspace_not_found");
+
+  if (row.kind === WorkspaceKind.enum.personal) {
+    if (row.personalOwnerHumanId !== humanId) throw new ProjectsError("workspace_not_found");
+    return { ...row, isOwner: true, canCreateProjects: true };
   }
-  return row;
+
+  if (row.membershipIsOwner === null) throw new ProjectsError("workspace_not_found");
+  return {
+    id: row.id,
+    kind: row.kind,
+    name: row.name,
+    isOwner: row.membershipIsOwner,
+    canCreateProjects: row.membershipIsOwner || row.membershipCanCreateProjects === true,
+  };
 }
 
-// The project and the caller's access to it, in one query. A caller who cannot access the
-// project gets the same answer as one asking for a missing project, so project ids cannot
-// be enumerated.
-async function requireProject(tx: DbTransaction, projectId: string, humanId: string) {
+// The project and the caller's effective access to it, in one query. No access answers
+// exactly like a missing project; a level below the requirement answers 403, because
+// the caller can already see that the project exists.
+async function requireProject(
+  tx: DbTransaction,
+  projectId: string,
+  humanId: string,
+  required: ProjectAccessLevel,
+) {
   const [row] = await tx
     .select({
       ...projectColumns,
       workspaceKind: workspaces.kind,
       personalOwnerHumanId: workspaces.personalOwnerHumanId,
+      membershipIsOwner: workspaceMemberships.isOwner,
+      grantLevel: projectAccessGrants.level,
     })
     .from(projects)
     .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
     .innerJoin(projectCreator, eq(projectCreator.id, projects.createdByHumanId))
+    .leftJoin(
+      workspaceMemberships,
+      and(
+        eq(workspaceMemberships.workspaceId, projects.workspaceId),
+        eq(workspaceMemberships.humanId, humanId),
+      ),
+    )
+    .leftJoin(
+      projectAccessGrants,
+      and(eq(projectAccessGrants.projectId, projects.id), eq(projectAccessGrants.humanId, humanId)),
+    )
     .where(eq(projects.id, projectId))
     .limit(1);
 
-  if (row === undefined || !canAccessProject(row, humanId)) {
-    throw new ProjectsError("project_not_found");
-  }
-  return row;
+  if (row === undefined) throw new ProjectsError("project_not_found");
+  return {
+    ...row,
+    workspaceKind: WorkspaceKind.parse(row.workspaceKind),
+    grantLevel: row.grantLevel === null ? null : ProjectAccessLevel.parse(row.grantLevel),
+    accessLevel: requireLevel(row, humanId, required, "project_not_found"),
+  };
 }
 
-async function requireIssue(tx: DbTransaction, issueId: string, humanId: string) {
+async function requireIssue(
+  tx: DbTransaction,
+  issueId: string,
+  humanId: string,
+  required: ProjectAccessLevel,
+) {
   const [row] = await tx
     .select({
       ...issueColumns,
       workspaceKind: workspaces.kind,
       personalOwnerHumanId: workspaces.personalOwnerHumanId,
+      membershipIsOwner: workspaceMemberships.isOwner,
+      grantLevel: projectAccessGrants.level,
     })
     .from(issues)
     .innerJoin(projects, eq(projects.id, issues.projectId))
     .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
     .innerJoin(issueCreator, eq(issueCreator.id, issues.createdByHumanId))
     .innerJoin(issueEditor, eq(issueEditor.id, issues.updatedByHumanId))
+    .leftJoin(
+      workspaceMemberships,
+      and(
+        eq(workspaceMemberships.workspaceId, projects.workspaceId),
+        eq(workspaceMemberships.humanId, humanId),
+      ),
+    )
+    .leftJoin(
+      projectAccessGrants,
+      and(eq(projectAccessGrants.projectId, projects.id), eq(projectAccessGrants.humanId, humanId)),
+    )
     .where(eq(issues.id, issueId))
     .limit(1);
 
-  if (row === undefined || !canAccessProject(row, humanId)) {
-    throw new ProjectsError("issue_not_found");
-  }
-  return row;
+  if (row === undefined) throw new ProjectsError("issue_not_found");
+  return { ...row, accessLevel: requireLevel(row, humanId, required, "issue_not_found") };
 }
 
-async function requireKnowledge(tx: DbTransaction, entryId: string, humanId: string) {
+async function requireKnowledge(
+  tx: DbTransaction,
+  entryId: string,
+  humanId: string,
+  required: ProjectAccessLevel,
+) {
   const [row] = await tx
     .select({
       ...knowledgeColumns,
       workspaceKind: workspaces.kind,
       personalOwnerHumanId: workspaces.personalOwnerHumanId,
+      membershipIsOwner: workspaceMemberships.isOwner,
+      grantLevel: projectAccessGrants.level,
     })
     .from(knowledgeEntries)
     .innerJoin(projects, eq(projects.id, knowledgeEntries.projectId))
     .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
     .innerJoin(knowledgeCreator, eq(knowledgeCreator.id, knowledgeEntries.createdByHumanId))
     .innerJoin(knowledgeEditor, eq(knowledgeEditor.id, knowledgeEntries.updatedByHumanId))
+    .leftJoin(
+      workspaceMemberships,
+      and(
+        eq(workspaceMemberships.workspaceId, projects.workspaceId),
+        eq(workspaceMemberships.humanId, humanId),
+      ),
+    )
+    .leftJoin(
+      projectAccessGrants,
+      and(eq(projectAccessGrants.projectId, projects.id), eq(projectAccessGrants.humanId, humanId)),
+    )
     .where(eq(knowledgeEntries.id, entryId))
     .limit(1);
 
-  if (row === undefined || !canAccessProject(row, humanId)) {
-    throw new ProjectsError("knowledge_entry_not_found");
-  }
-  return row;
+  if (row === undefined) throw new ProjectsError("knowledge_entry_not_found");
+  return { ...row, accessLevel: requireLevel(row, humanId, required, "knowledge_entry_not_found") };
 }
 
 type RecordActivityInput =
   | {
       projectId: string;
-      type: "project_created";
+      type: "project_created" | "project_renamed";
       actorHumanId: string;
       summary: string;
     }
@@ -390,6 +554,105 @@ async function recordActivity(tx: DbTransaction, input: RecordActivityInput) {
   });
 }
 
+// One project access-change event, written in the grant's transaction so the row and its
+// history commit together. The event names the stable human ids, never emails or secrets.
+async function recordAccessEvent(
+  tx: DbTransaction,
+  input: {
+    projectId: string;
+    actorHumanId: string;
+    subjectHumanId: string;
+    type: ProjectAccessEventType;
+    level: ProjectAccessLevel | null;
+    previousLevel: ProjectAccessLevel | null;
+  },
+) {
+  await tx.insert(projectAccessEvents).values({
+    id: randomUUID(),
+    projectId: input.projectId,
+    actorHumanId: input.actorHumanId,
+    subjectHumanId: input.subjectHumanId,
+    type: input.type,
+    level: input.level,
+    previousLevel: input.previousLevel,
+    createdAt: sql`statement_timestamp()`,
+  });
+}
+
+// A membership removal ends every project grant it carried in that workspace, in the
+// removing transaction. The workspace feature calls this through the projects feature's
+// public interface; the revocation events keep the attribution.
+async function revokeMemberProjectAccessInTransaction(
+  tx: DbTransaction,
+  workspaceId: string,
+  humanId: string,
+  actorHumanId: string,
+) {
+  const grants = await tx
+    .select({
+      id: projectAccessGrants.id,
+      projectId: projectAccessGrants.projectId,
+      level: projectAccessGrants.level,
+    })
+    .from(projectAccessGrants)
+    .innerJoin(projects, eq(projects.id, projectAccessGrants.projectId))
+    .where(and(eq(projects.workspaceId, workspaceId), eq(projectAccessGrants.humanId, humanId)));
+
+  if (grants.length === 0) return;
+
+  await tx.delete(projectAccessGrants).where(
+    inArray(
+      projectAccessGrants.id,
+      grants.map((grant) => grant.id),
+    ),
+  );
+  for (const grant of grants) {
+    await recordAccessEvent(tx, {
+      projectId: grant.projectId,
+      actorHumanId,
+      subjectHumanId: humanId,
+      type: ProjectAccessEventType.enum.project_access_revoked,
+      level: null,
+      previousLevel: ProjectAccessLevel.parse(grant.level),
+    });
+  }
+}
+
+async function lockWorkspaceOwnershipWrites(tx: DbTransaction) {
+  await tx.execute(sql`select lock_workspace_ownership_writes()`);
+}
+
+async function lockProjectForMutation(tx: DbTransaction, projectId: string) {
+  await tx
+    .select({ id: projects.id })
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .for("update");
+}
+
+const grantColumns = {
+  humanId: projectAccessGrants.humanId,
+  email: humans.email,
+  level: projectAccessGrants.level,
+  grantedByHumanId: projectAccessGrants.grantedByHumanId,
+  grantedByEmail: accessGrantor.email,
+  createdAt: projectAccessGrants.createdAt,
+  updatedAt: projectAccessGrants.updatedAt,
+};
+
+async function readProjectGrant(tx: DbTransaction, projectId: string, humanId: string) {
+  const [row] = await tx
+    .select(grantColumns)
+    .from(projectAccessGrants)
+    .innerJoin(humans, eq(humans.id, projectAccessGrants.humanId))
+    .innerJoin(accessGrantor, eq(accessGrantor.id, projectAccessGrants.grantedByHumanId))
+    .where(
+      and(eq(projectAccessGrants.projectId, projectId), eq(projectAccessGrants.humanId, humanId)),
+    )
+    .limit(1);
+  return row;
+}
+
 export interface ProjectsDeps {
   db: PostgresJsDatabase;
 }
@@ -402,6 +665,32 @@ export interface ProjectsService {
     workspaceId: string,
     input: CreateProjectRequest,
   ): Promise<Project>;
+  updateProject(
+    account: SessionAccount | null,
+    projectId: string,
+    input: UpdateProjectRequest,
+  ): Promise<Project>;
+  listProjectAccess(
+    account: SessionAccount | null,
+    projectId: string,
+  ): Promise<ProjectAccessGrant[]>;
+  setProjectAccess(
+    account: SessionAccount | null,
+    projectId: string,
+    input: SetProjectAccessRequest,
+  ): Promise<ProjectAccessGrant>;
+  removeProjectAccess(
+    account: SessionAccount | null,
+    projectId: string,
+    humanId: string,
+  ): Promise<void>;
+  // The workspace feature's membership removal calls this inside its transaction.
+  revokeMemberProjectAccess(
+    tx: DbTransaction,
+    workspaceId: string,
+    humanId: string,
+    actorHumanId: string,
+  ): Promise<void>;
   listIssues(account: SessionAccount | null, projectId: string): Promise<Issue[]>;
   getIssue(account: SessionAccount | null, issueId: string): Promise<Issue>;
   createIssue(
@@ -437,21 +726,56 @@ export interface ProjectsService {
 
 export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
   return {
-    // The listing starts from the caller's personal workspace. A shared workspace has no
-    // project surface in #26, and a workspace outside the caller's ownership answers like
-    // a missing one.
+    // The listing is the caller's accessible projects in the workspace: all of a personal
+    // workspace's own projects, all of a shared workspace's projects for an owner, and
+    // only explicitly granted projects for an ordinary member. Membership validates the
+    // workspace; it does not reveal the projects themselves.
     async listProjects(account, workspaceId) {
       const actor = requireAccount(account);
       return db.transaction(
         async (tx) => {
-          await requireWorkspace(tx, workspaceId, actor.humanId);
+          const workspace = await readWorkspaceFacts(tx, workspaceId, actor.humanId);
           const rows = await tx
-            .select(projectColumns)
+            .select({
+              ...projectColumns,
+              workspaceKind: workspaces.kind,
+              personalOwnerHumanId: workspaces.personalOwnerHumanId,
+              membershipIsOwner: workspaceMemberships.isOwner,
+              grantLevel: projectAccessGrants.level,
+            })
             .from(projects)
+            .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
             .innerJoin(projectCreator, eq(projectCreator.id, projects.createdByHumanId))
-            .where(eq(projects.workspaceId, workspaceId))
+            .leftJoin(
+              workspaceMemberships,
+              and(
+                eq(workspaceMemberships.workspaceId, projects.workspaceId),
+                eq(workspaceMemberships.humanId, actor.humanId),
+              ),
+            )
+            .leftJoin(
+              projectAccessGrants,
+              and(
+                eq(projectAccessGrants.projectId, projects.id),
+                eq(projectAccessGrants.humanId, actor.humanId),
+              ),
+            )
+            .where(
+              workspace.kind === WorkspaceKind.enum.personal
+                ? eq(projects.workspaceId, workspaceId)
+                : workspace.isOwner
+                  ? eq(projects.workspaceId, workspaceId)
+                  : and(
+                      eq(projects.workspaceId, workspaceId),
+                      isNotNull(projectAccessGrants.level),
+                    ),
+            )
             .orderBy(projects.createdAt, projects.id);
-          return rows.map(toProject);
+
+          return rows.flatMap((row) => {
+            const accessLevel = resolveAccessLevel(row, actor.humanId);
+            return accessLevel === null ? [] : [toProject({ ...row, accessLevel })];
+          });
         },
         { accessMode: "read only" },
       );
@@ -460,19 +784,30 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
     async getProject(account, projectId) {
       const actor = requireAccount(account);
       return db.transaction(
-        async (tx) => toProject(await requireProject(tx, projectId, actor.humanId)),
+        async (tx) =>
+          toProject(
+            await requireProject(tx, projectId, actor.humanId, ProjectAccessLevel.enum.read),
+          ),
         { accessMode: "read only" },
       );
     },
 
     // The creator is recorded, and the workspace keeps the project: the creator does not
-    // become a second owner. Only the personal workspace's owner can create one in #26;
-    // shared-workspace creation arrives with #27.
+    // become a second owner. A personal owner or a shared owner can always create; a
+    // shared member needs the Create projects capability. A member who creates a project
+    // receives an explicit Manage grant in the same transaction, so their access is real
+    // and revocable rather than inferred from creation.
     async createProject(account, workspaceId, input) {
       const actor = requireAccount(account);
       const id = randomUUID();
       return db.transaction(async (tx) => {
-        await requireWorkspace(tx, workspaceId, actor.humanId);
+        // Serialize with workspace membership/capability mutations so a removed member
+        // or revoked capability cannot commit a project with an orphaned Manage grant.
+        await lockWorkspaceOwnershipWrites(tx);
+        const workspace = await readWorkspaceFacts(tx, workspaceId, actor.humanId);
+        if (!workspace.canCreateProjects) {
+          throw new ProjectsError("project_creation_not_allowed");
+        }
         const [created] = await tx
           .insert(projects)
           .values({
@@ -489,6 +824,27 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
             createdAt: projects.createdAt,
           });
         if (created === undefined) throw new Error("the project was not created");
+
+        if (workspace.kind === WorkspaceKind.enum.shared && !workspace.isOwner) {
+          await tx.insert(projectAccessGrants).values({
+            id: randomUUID(),
+            projectId: id,
+            humanId: actor.humanId,
+            level: ProjectAccessLevel.enum.manage,
+            grantedByHumanId: actor.humanId,
+            createdAt: sql`statement_timestamp()`,
+            updatedAt: sql`statement_timestamp()`,
+          });
+          await recordAccessEvent(tx, {
+            projectId: id,
+            actorHumanId: actor.humanId,
+            subjectHumanId: actor.humanId,
+            type: ProjectAccessEventType.enum.project_access_granted,
+            level: ProjectAccessLevel.enum.manage,
+            previousLevel: null,
+          });
+        }
+
         await recordActivity(tx, {
           projectId: id,
           type: "project_created",
@@ -501,15 +857,250 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
           name: created.name,
           createdAt: created.createdAt.toISOString(),
           createdBy: { humanId: actor.humanId, email: actor.email },
+          workspaceKind: workspace.kind,
+          accessLevel: ProjectAccessLevel.enum.manage,
         };
       });
+    },
+
+    // Manage may rename the project. A no-op keeps the project and its activity
+    // unchanged, so a repeated save cannot invent history.
+    async updateProject(account, projectId, input) {
+      const actor = requireAccount(account);
+      return db.transaction(async (tx) => {
+        // Lock first, then authorize: a concurrent grant change cannot slip between the
+        // access check and the rename.
+        await lockProjectForMutation(tx, projectId);
+        const current = await requireProject(
+          tx,
+          projectId,
+          actor.humanId,
+          ProjectAccessLevel.enum.manage,
+        );
+        if (input.name === current.name) return toProject(current);
+        const [updated] = await tx
+          .update(projects)
+          .set({ name: input.name })
+          .where(eq(projects.id, projectId))
+          .returning({ name: projects.name, createdAt: projects.createdAt });
+        if (updated === undefined) throw new ProjectsError("project_not_found");
+        await recordActivity(tx, {
+          projectId,
+          type: "project_renamed",
+          actorHumanId: actor.humanId,
+          summary: updated.name,
+        });
+        return toProject({ ...current, name: updated.name });
+      });
+    },
+
+    // The explicit grants a project manager sees. Workspace owners are not listed because
+    // their Manage is implicit (including members later promoted to owner); a personal
+    // project has no collaborators at all.
+    async listProjectAccess(account, projectId) {
+      const actor = requireAccount(account);
+      return db.transaction(
+        async (tx) => {
+          const project = await requireProject(
+            tx,
+            projectId,
+            actor.humanId,
+            ProjectAccessLevel.enum.manage,
+          );
+          if (project.workspaceKind === WorkspaceKind.enum.personal) return [];
+          const rows = await tx
+            .select(grantColumns)
+            .from(projectAccessGrants)
+            .innerJoin(humans, eq(humans.id, projectAccessGrants.humanId))
+            .innerJoin(accessGrantor, eq(accessGrantor.id, projectAccessGrants.grantedByHumanId))
+            .innerJoin(
+              workspaceMemberships,
+              and(
+                eq(workspaceMemberships.workspaceId, project.workspaceId),
+                eq(workspaceMemberships.humanId, projectAccessGrants.humanId),
+              ),
+            )
+            .where(
+              and(
+                eq(projectAccessGrants.projectId, projectId),
+                eq(workspaceMemberships.isOwner, false),
+              ),
+            )
+            .orderBy(projectAccessGrants.createdAt, projectAccessGrants.humanId);
+          return rows.map(toProjectGrant);
+        },
+        { accessMode: "read only" },
+      );
+    },
+
+    // Manage grants or changes one member's level. The project row lock serializes
+    // concurrent grant changes; the unique pair keeps one row per person, and every real
+    // change writes one attributed event. Personal projects refuse collaborators, and
+    // workspace owners already hold implicit Manage that project managers cannot alter.
+    async setProjectAccess(account, projectId, input) {
+      const actor = requireAccount(account);
+      return db.transaction(async (tx) => {
+        // Lock workspace membership writes before the project row so granting access
+        // cannot race with removeMember() (orphaning a grant) or appointOwner().
+        await lockWorkspaceOwnershipWrites(tx);
+        await lockProjectForMutation(tx, projectId);
+        const project = await requireProject(
+          tx,
+          projectId,
+          actor.humanId,
+          ProjectAccessLevel.enum.manage,
+        );
+        if (project.workspaceKind === WorkspaceKind.enum.personal) {
+          throw new ProjectsError("personal_project_access");
+        }
+
+        const [target] = await tx
+          .select({
+            humanId: humans.id,
+            email: humans.email,
+            isOwner: workspaceMemberships.isOwner,
+          })
+          .from(workspaceMemberships)
+          .innerJoin(humans, eq(humans.id, workspaceMemberships.humanId))
+          .where(
+            and(
+              eq(workspaceMemberships.workspaceId, project.workspaceId),
+              eq(humans.email, input.email),
+            ),
+          )
+          .limit(1);
+        if (target === undefined) throw new ProjectsError("member_not_found");
+        if (target.isOwner) throw new ProjectsError("workspace_owner_access");
+
+        const [current] = await tx
+          .select({ level: projectAccessGrants.level })
+          .from(projectAccessGrants)
+          .where(
+            and(
+              eq(projectAccessGrants.projectId, projectId),
+              eq(projectAccessGrants.humanId, target.humanId),
+            ),
+          )
+          .limit(1);
+
+        if (current?.level === input.level) {
+          const existing = await readProjectGrant(tx, projectId, target.humanId);
+          if (existing === undefined) throw new Error("the access grant disappeared");
+          return toProjectGrant(existing);
+        }
+
+        await tx
+          .insert(projectAccessGrants)
+          .values({
+            id: randomUUID(),
+            projectId,
+            humanId: target.humanId,
+            level: input.level,
+            grantedByHumanId: actor.humanId,
+            createdAt: sql`statement_timestamp()`,
+            updatedAt: sql`statement_timestamp()`,
+          })
+          .onConflictDoUpdate({
+            target: [projectAccessGrants.projectId, projectAccessGrants.humanId],
+            set: {
+              level: input.level,
+              grantedByHumanId: actor.humanId,
+              updatedAt: sql`statement_timestamp()`,
+            },
+          });
+
+        await recordAccessEvent(tx, {
+          projectId,
+          actorHumanId: actor.humanId,
+          subjectHumanId: target.humanId,
+          type:
+            current === undefined
+              ? ProjectAccessEventType.enum.project_access_granted
+              : ProjectAccessEventType.enum.project_access_level_changed,
+          level: input.level,
+          previousLevel: current === undefined ? null : ProjectAccessLevel.parse(current.level),
+        });
+
+        const saved = await readProjectGrant(tx, projectId, target.humanId);
+        if (saved === undefined) throw new Error("the access grant was not saved");
+        return toProjectGrant(saved);
+      });
+    },
+
+    // Revoking is idempotent: the desired state is "no grant", and a missing grant is
+    // already there. A real revocation is recorded with its previous level. Workspace
+    // owners cannot have their implicit Manage revoked here.
+    async removeProjectAccess(account, projectId, humanId) {
+      const actor = requireAccount(account);
+      await db.transaction(async (tx) => {
+        // Lock workspace membership writes before the project row so revoking access
+        // cannot race with removeMember() and emit duplicate revocation events.
+        await lockWorkspaceOwnershipWrites(tx);
+        await lockProjectForMutation(tx, projectId);
+        const project = await requireProject(
+          tx,
+          projectId,
+          actor.humanId,
+          ProjectAccessLevel.enum.manage,
+        );
+        if (project.workspaceKind === WorkspaceKind.enum.personal) {
+          throw new ProjectsError("personal_project_access");
+        }
+
+        const [targetMembership] = await tx
+          .select({ isOwner: workspaceMemberships.isOwner })
+          .from(workspaceMemberships)
+          .where(
+            and(
+              eq(workspaceMemberships.workspaceId, project.workspaceId),
+              eq(workspaceMemberships.humanId, humanId),
+            ),
+          )
+          .limit(1);
+        if (targetMembership?.isOwner === true) {
+          throw new ProjectsError("workspace_owner_access");
+        }
+
+        const [current] = await tx
+          .select({ level: projectAccessGrants.level })
+          .from(projectAccessGrants)
+          .where(
+            and(
+              eq(projectAccessGrants.projectId, projectId),
+              eq(projectAccessGrants.humanId, humanId),
+            ),
+          )
+          .limit(1);
+        if (current === undefined) return;
+
+        await tx
+          .delete(projectAccessGrants)
+          .where(
+            and(
+              eq(projectAccessGrants.projectId, projectId),
+              eq(projectAccessGrants.humanId, humanId),
+            ),
+          );
+        await recordAccessEvent(tx, {
+          projectId,
+          actorHumanId: actor.humanId,
+          subjectHumanId: humanId,
+          type: ProjectAccessEventType.enum.project_access_revoked,
+          level: null,
+          previousLevel: ProjectAccessLevel.parse(current.level),
+        });
+      });
+    },
+
+    revokeMemberProjectAccess(tx, workspaceId, humanId, actorHumanId) {
+      return revokeMemberProjectAccessInTransaction(tx, workspaceId, humanId, actorHumanId);
     },
 
     async listIssues(account, projectId) {
       const actor = requireAccount(account);
       return db.transaction(
         async (tx) => {
-          await requireProject(tx, projectId, actor.humanId);
+          await requireProject(tx, projectId, actor.humanId, ProjectAccessLevel.enum.read);
           const rows = await tx
             .select(issueColumns)
             .from(issues)
@@ -525,9 +1116,11 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
 
     async getIssue(account, issueId) {
       const actor = requireAccount(account);
-      return db.transaction(async (tx) => toIssue(await requireIssue(tx, issueId, actor.humanId)), {
-        accessMode: "read only",
-      });
+      return db.transaction(
+        async (tx) =>
+          toIssue(await requireIssue(tx, issueId, actor.humanId, ProjectAccessLevel.enum.read)),
+        { accessMode: "read only" },
+      );
     },
 
     // The project row is updated before the issue is inserted: the row lock serializes
@@ -535,7 +1128,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
     async createIssue(account, projectId, input) {
       const actor = requireAccount(account);
       return db.transaction(async (tx) => {
-        await requireProject(tx, projectId, actor.humanId);
+        await requireProject(tx, projectId, actor.humanId, ProjectAccessLevel.enum.contribute);
         const [counter] = await tx
           .update(projects)
           .set({ nextIssueNumber: sql`${projects.nextIssueNumber} + 1` })
@@ -603,7 +1196,12 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
         // Serialize concurrent updates to the same issue so two PATCHes cannot lose
         // each other's changes or diverge the activity feed from the issue's status.
         await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issueId)).for("update");
-        const current = await requireIssue(tx, issueId, actor.humanId);
+        const current = await requireIssue(
+          tx,
+          issueId,
+          actor.humanId,
+          ProjectAccessLevel.enum.contribute,
+        );
         const title = input.title ?? current.title;
         const body = input.body ?? current.body;
         const status = input.status ?? current.status;
@@ -673,7 +1271,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
       const actor = requireAccount(account);
       return db.transaction(
         async (tx) => {
-          await requireIssue(tx, issueId, actor.humanId);
+          await requireIssue(tx, issueId, actor.humanId, ProjectAccessLevel.enum.read);
           const rows = await tx
             .select(commentColumns)
             .from(issueComments)
@@ -691,7 +1289,12 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
     async createComment(account, issueId, input) {
       const actor = requireAccount(account);
       return db.transaction(async (tx) => {
-        const issue = await requireIssue(tx, issueId, actor.humanId);
+        const issue = await requireIssue(
+          tx,
+          issueId,
+          actor.humanId,
+          ProjectAccessLevel.enum.contribute,
+        );
         const id = randomUUID();
         const [created] = await tx
           .insert(issueComments)
@@ -730,7 +1333,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
       const actor = requireAccount(account);
       return db.transaction(
         async (tx) => {
-          await requireProject(tx, projectId, actor.humanId);
+          await requireProject(tx, projectId, actor.humanId, ProjectAccessLevel.enum.read);
           const rows = await tx
             .select(activityColumns)
             .from(projectActivity)
@@ -747,7 +1350,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
       const actor = requireAccount(account);
       return db.transaction(
         async (tx) => {
-          await requireProject(tx, projectId, actor.humanId);
+          await requireProject(tx, projectId, actor.humanId, ProjectAccessLevel.enum.read);
           const rows = await tx
             .select(knowledgeColumns)
             .from(knowledgeEntries)
@@ -764,7 +1367,10 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
     async getKnowledge(account, entryId) {
       const actor = requireAccount(account);
       return db.transaction(
-        async (tx) => toKnowledge(await requireKnowledge(tx, entryId, actor.humanId)),
+        async (tx) =>
+          toKnowledge(
+            await requireKnowledge(tx, entryId, actor.humanId, ProjectAccessLevel.enum.read),
+          ),
         { accessMode: "read only" },
       );
     },
@@ -772,7 +1378,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
     async createKnowledge(account, projectId, input) {
       const actor = requireAccount(account);
       return db.transaction(async (tx) => {
-        await requireProject(tx, projectId, actor.humanId);
+        await requireProject(tx, projectId, actor.humanId, ProjectAccessLevel.enum.contribute);
         const id = randomUUID();
         const [created] = await tx
           .insert(knowledgeEntries)
@@ -826,7 +1432,12 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
           .from(knowledgeEntries)
           .where(eq(knowledgeEntries.id, entryId))
           .for("update");
-        const current = await requireKnowledge(tx, entryId, actor.humanId);
+        const current = await requireKnowledge(
+          tx,
+          entryId,
+          actor.humanId,
+          ProjectAccessLevel.enum.contribute,
+        );
         const title = input.title ?? current.title;
         const body = input.body ?? current.body;
         if (title === current.title && body === current.body) return toKnowledge(current);

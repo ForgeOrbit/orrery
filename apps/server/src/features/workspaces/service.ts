@@ -5,6 +5,7 @@ import {
   WorkspaceKind,
   type CreateWorkspaceRequest,
   type InviteWorkspaceMemberRequest,
+  type UpdateWorkspaceMemberRequest,
   type Workspace,
   type WorkspaceInvitation,
   type WorkspaceInvitationPreview,
@@ -50,7 +51,8 @@ export type WorkspacesErrorKind =
   | "already_member"
   | "account_exists"
   | "member_not_found"
-  | "last_owner";
+  | "last_owner"
+  | "workspace_owner_capability";
 
 // Each kind is the REST error's stable code and its message the Problem's title
 // (ADR-0003), so clients branch on the code and people read the title.
@@ -69,6 +71,7 @@ const messages = {
   account_exists: "This email already has an account. Sign in to accept the invitation.",
   member_not_found: "This person is not a member of the workspace.",
   last_owner: "A workspace must keep at least one owner.",
+  workspace_owner_capability: "Workspace owners always have Create projects.",
 } as const satisfies Record<WorkspacesErrorKind, string>;
 
 export class WorkspacesError extends Error {
@@ -220,18 +223,38 @@ async function requireInviterStillAuthorized(
 }
 
 // The listing projection: personal owners are owners by definition; a shared workspace
-// is the caller's membership, with its owner flag.
+// is the caller's membership, with its owner flag and delegated Create projects
+// capability. Owners always hold the capability, whatever the stored column says.
 function toWorkspace(row: {
   id: string;
   kind: Workspace["kind"];
   name: string;
   membershipIsOwner: boolean | null;
+  membershipCanCreateProjects: boolean | null;
 }): Workspace {
+  const isOwner = row.kind === WorkspaceKind.enum.personal || row.membershipIsOwner === true;
   return {
     id: row.id,
     kind: row.kind,
     name: row.name,
-    isOwner: row.kind === WorkspaceKind.enum.personal || row.membershipIsOwner === true,
+    isOwner,
+    canCreateProjects: isOwner || row.membershipCanCreateProjects === true,
+  };
+}
+
+// A member row's effective capability. An owner can always create, so a stored false
+// never hides that.
+function toMember(row: {
+  humanId: string;
+  email: string;
+  isOwner: boolean;
+  canCreateProjects: boolean;
+}): WorkspaceMember {
+  return {
+    humanId: row.humanId,
+    email: row.email,
+    isOwner: row.isOwner,
+    canCreateProjects: row.isOwner || row.canCreateProjects,
   };
 }
 
@@ -248,6 +271,14 @@ export interface WorkspacesDeps {
   markEmailVerified: (humanId: string, tx: DbTransaction) => Promise<void>;
   // Settings owns the relay: the one mail path, never a second transport.
   deliver: (mail: OutgoingMail) => Promise<void>;
+  // Projects owns project grants: removing a member ends them in the same transaction
+  // and records the revocations. The projects feature's public interface supplies this.
+  revokeMemberProjectAccess: (
+    tx: DbTransaction,
+    workspaceId: string,
+    humanId: string,
+    actorHumanId: string,
+  ) => Promise<void>;
   log?: Logger;
 }
 
@@ -271,6 +302,12 @@ export interface WorkspacesService {
     account: SessionAccount | null,
     workspaceId: string,
     humanId: string,
+  ): Promise<WorkspaceMember>;
+  updateMemberCapability(
+    account: SessionAccount | null,
+    workspaceId: string,
+    humanId: string,
+    input: UpdateWorkspaceMemberRequest,
   ): Promise<WorkspaceMember>;
   removeMember(account: SessionAccount | null, workspaceId: string, humanId: string): Promise<void>;
 }
@@ -343,12 +380,34 @@ async function redeemWorkspaceInvitation(tx: DbTransaction, token: string) {
   return { ...invitation, workspace };
 }
 
+async function requireWorkspaceMember(tx: DbTransaction, workspaceId: string, humanId: string) {
+  const [member] = await tx
+    .select({
+      humanId: workspaceMemberships.humanId,
+      email: humans.email,
+      isOwner: workspaceMemberships.isOwner,
+      canCreateProjects: workspaceMemberships.canCreateProjects,
+    })
+    .from(workspaceMemberships)
+    .innerJoin(humans, eq(humans.id, workspaceMemberships.humanId))
+    .where(
+      and(
+        eq(workspaceMemberships.workspaceId, workspaceId),
+        eq(workspaceMemberships.humanId, humanId),
+      ),
+    )
+    .limit(1);
+  if (member === undefined) throw new WorkspacesError("member_not_found");
+  return member;
+}
+
 export function createWorkspacesService({
   db,
   publicUrl,
   createInvitedHuman,
   markEmailVerified,
   deliver,
+  revokeMemberProjectAccess,
   log,
 }: WorkspacesDeps): WorkspacesService {
   return {
@@ -362,6 +421,7 @@ export function createWorkspacesService({
           kind: workspaces.kind,
           name: workspaces.name,
           membershipIsOwner: workspaceMemberships.isOwner,
+          membershipCanCreateProjects: workspaceMemberships.canCreateProjects,
         })
         .from(workspaces)
         .leftJoin(
@@ -391,6 +451,7 @@ export function createWorkspacesService({
           kind: workspaces.kind,
           name: workspaces.name,
           membershipIsOwner: workspaceMemberships.isOwner,
+          membershipCanCreateProjects: workspaceMemberships.canCreateProjects,
         })
         .from(workspaces)
         .leftJoin(
@@ -422,16 +483,18 @@ export function createWorkspacesService({
         async (tx) => {
           await readSharedWorkspace(tx, workspaceId);
           await requireOwner(tx, workspaceId, actor.humanId);
-          return tx
+          const rows = await tx
             .select({
               humanId: workspaceMemberships.humanId,
               email: humans.email,
               isOwner: workspaceMemberships.isOwner,
+              canCreateProjects: workspaceMemberships.canCreateProjects,
             })
             .from(workspaceMemberships)
             .innerJoin(humans, eq(humans.id, workspaceMemberships.humanId))
             .where(eq(workspaceMemberships.workspaceId, workspaceId))
             .orderBy(workspaceMemberships.createdAt, workspaceMemberships.humanId);
+          return rows.map(toMember);
         },
         { isolationLevel: "repeatable read", accessMode: "read only" },
       );
@@ -457,7 +520,13 @@ export function createWorkspacesService({
         });
         await recordEvent(tx, "workspace_created", id, actor.humanId, actor.humanId);
       });
-      return { id, kind: WorkspaceKind.enum.shared, name: input.name, isOwner: true };
+      return {
+        id,
+        kind: WorkspaceKind.enum.shared,
+        name: input.name,
+        isOwner: true,
+        canCreateProjects: true,
+      };
     },
 
     // An owner invites one address. The invitation can go to an existing account or an
@@ -651,7 +720,7 @@ export function createWorkspacesService({
         );
         return invitation.workspace;
       });
-      return { ...workspace, isOwner: false };
+      return { ...workspace, isOwner: false, canCreateProjects: false };
     },
 
     // A new address: the invitation creates the installation account, its personal
@@ -701,23 +770,8 @@ export function createWorkspacesService({
         await lockWorkspaceForMutation(tx, workspaceId);
         await requireOwner(tx, workspaceId, actor.humanId);
 
-        const [member] = await tx
-          .select({
-            humanId: workspaceMemberships.humanId,
-            email: humans.email,
-            isOwner: workspaceMemberships.isOwner,
-          })
-          .from(workspaceMemberships)
-          .innerJoin(humans, eq(humans.id, workspaceMemberships.humanId))
-          .where(
-            and(
-              eq(workspaceMemberships.workspaceId, workspaceId),
-              eq(workspaceMemberships.humanId, humanId),
-            ),
-          )
-          .limit(1);
-        if (member === undefined) throw new WorkspacesError("member_not_found");
-        if (member.isOwner) return member;
+        const member = await requireWorkspaceMember(tx, workspaceId, humanId);
+        if (member.isOwner) return toMember(member);
 
         await tx
           .update(workspaceMemberships)
@@ -729,7 +783,45 @@ export function createWorkspacesService({
             ),
           );
         await recordEvent(tx, "owner_appointed", workspaceId, actor.humanId, humanId);
-        return { ...member, isOwner: true };
+        return toMember({ ...member, isOwner: true });
+      });
+    },
+
+    // Owners grant one capability at a time. An owner's Create projects is implicit and
+    // immutable (granting is a no-op, revoking is refused); for non-owners, only a real
+    // change writes an event.
+    async updateMemberCapability(account, workspaceId, humanId, input) {
+      const actor = requireAccount(account);
+      return db.transaction(async (tx) => {
+        await lockWorkspaceForMutation(tx, workspaceId);
+        await requireOwner(tx, workspaceId, actor.humanId);
+
+        const member = await requireWorkspaceMember(tx, workspaceId, humanId);
+        if (member.isOwner) {
+          if (!input.canCreateProjects) {
+            throw new WorkspacesError("workspace_owner_capability");
+          }
+          return toMember(member);
+        }
+        if (member.canCreateProjects === input.canCreateProjects) return toMember(member);
+
+        await tx
+          .update(workspaceMemberships)
+          .set({ canCreateProjects: input.canCreateProjects })
+          .where(
+            and(
+              eq(workspaceMemberships.workspaceId, workspaceId),
+              eq(workspaceMemberships.humanId, humanId),
+            ),
+          );
+        await recordEvent(
+          tx,
+          input.canCreateProjects ? "create_projects_granted" : "create_projects_revoked",
+          workspaceId,
+          actor.humanId,
+          humanId,
+        );
+        return toMember({ ...member, canCreateProjects: input.canCreateProjects });
       });
     },
 
@@ -775,6 +867,9 @@ export function createWorkspacesService({
               eq(workspaceMemberships.humanId, humanId),
             ),
           );
+        // Project grants die with the membership, in this transaction, so a rejoin
+        // starts fresh and cannot revive an old level.
+        await revokeMemberProjectAccess(tx, workspaceId, humanId, actor.humanId);
         await recordEvent(
           tx,
           target.isOwner ? "owner_removed" : "member_removed",

@@ -7,6 +7,7 @@ import {
   InviteWorkspaceMemberRequest,
   RegisterThroughWorkspaceInvitationRequest,
   SessionResponse,
+  UpdateWorkspaceMemberRequest,
   Workspace,
   WorkspaceInvitation,
   WorkspaceInvitationPreview,
@@ -220,6 +221,32 @@ const appointWorkspaceOwner = createRoute({
   },
 });
 
+const updateWorkspaceMember = createRoute({
+  method: "patch",
+  path: "/api/workspaces/{workspaceId}/members/{humanId}",
+  summary: "Grant or revoke a member's Create projects capability",
+  description:
+    "Owners only. An owner can always create projects; this capability lets one member create projects without workspace-wide authority. The created project's creator receives Manage on it, and membership alone still grants no existing project's content.",
+  request: {
+    params: memberParams,
+    body: {
+      required: true,
+      content: { "application/json": { schema: UpdateWorkspaceMemberRequest } },
+    },
+  },
+  responses: {
+    200: {
+      description: "The member with the effective capability",
+      content: { "application/json": { schema: WorkspaceMember } },
+    },
+    400: problem("The request is invalid"),
+    401: problem("Not signed in"),
+    403: problem("Not an owner of this workspace"),
+    404: problem("No accessible shared workspace or member"),
+    409: problem("Workspace owners always have Create projects"),
+  },
+});
+
 const removeWorkspaceMember = createRoute({
   method: "delete",
   path: "/api/workspaces/{workspaceId}/members/{humanId}",
@@ -248,6 +275,7 @@ export const routes = [
   acceptWorkspaceInvitation,
   registerThroughWorkspaceInvitation,
   appointWorkspaceOwner,
+  updateWorkspaceMember,
   removeWorkspaceMember,
 ];
 
@@ -266,6 +294,7 @@ const statusFor = {
   account_exists: 409,
   member_not_found: 404,
   last_owner: 409,
+  workspace_owner_capability: 409,
 } as const satisfies Record<WorkspacesErrorKind, number>;
 
 // True when the error's kind is one of the route's kinds. A type guard is the honest
@@ -306,6 +335,13 @@ const appointKinds = [
   "workspace_not_found",
   "not_workspace_owner",
   "member_not_found",
+] as const;
+const updateMemberKinds = [
+  "not_signed_in",
+  "workspace_not_found",
+  "not_workspace_owner",
+  "member_not_found",
+  "workspace_owner_capability",
 ] as const;
 const removeKinds = [
   "not_signed_in",
@@ -434,6 +470,23 @@ export function createWorkspacesRest(service: WorkspacesService, sessionReader: 
       );
     } catch (error) {
       return failure(c, error, appointKinds);
+    }
+  });
+
+  app.openapi(updateWorkspaceMember, async (c) => {
+    try {
+      const { workspaceId, humanId } = c.req.valid("param");
+      return c.json(
+        await service.updateMemberCapability(
+          await sessionReader(c),
+          workspaceId,
+          humanId,
+          c.req.valid("json"),
+        ),
+        200,
+      );
+    } catch (error) {
+      return failure(c, error, updateMemberKinds);
     }
   });
 

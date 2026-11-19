@@ -28,6 +28,12 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     markEmailVerified: accounts.markEmailVerified,
     log,
   });
+  // Projects owns project grants and their access events. Workspaces borrows the
+  // removal cleanup so losing a membership ends project access in the same transaction.
+  const projects = createProjectsFeature({
+    db: database.db,
+    sessionReader: accounts.sessionReader,
+  });
   return [
     createSystemFeature({ ping: database.ping }),
     accounts,
@@ -52,14 +58,11 @@ export function createFeatures(database: Database, config: Config, log: Logger):
       createInvitedHuman: accounts.createInvitedHuman,
       markEmailVerified: accounts.markEmailVerified,
       deliver: settings.deliver,
+      revokeMemberProjectAccess: (tx, workspaceId, humanId, actorHumanId) =>
+        projects.revokeMemberProjectAccess(tx, workspaceId, humanId, actorHumanId),
       log,
     }),
-    // Projects borrow the accounts session reader and nothing else: a personal
-    // workspace's owner is the access boundary in #26 (shared-workspace access lands in #27).
-    createProjectsFeature({
-      db: database.db,
-      sessionReader: accounts.sessionReader,
-    }),
+    projects,
   ];
 }
 

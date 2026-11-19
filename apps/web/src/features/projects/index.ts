@@ -5,8 +5,11 @@ export {
   createIssueComment,
   createKnowledgeEntry,
   createProject,
+  removeProjectAccess,
+  setProjectAccess,
   updateIssue,
   updateKnowledgeEntry,
+  updateProject,
 } from "./commands.ts";
 export { ResourceLoadError } from "./LoadError.tsx";
 export { TitleBodyForm } from "./TitleBodyForm.tsx";
@@ -16,6 +19,7 @@ export {
   issuesQuery,
   knowledgeEntriesQuery,
   knowledgeEntryQuery,
+  projectAccessQuery,
   projectActivityQuery,
   projectQuery,
   projectsQuery,

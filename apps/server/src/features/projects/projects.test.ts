@@ -652,7 +652,7 @@ describe("projects", () => {
     expect(await database.db.select().from(knowledgeEntries)).toHaveLength(0);
   });
 
-  it("refuses listing and creating projects on a shared workspace until #27", async () => {
+  it("lets a shared workspace owner create and manage its projects", async () => {
     const { app, adminCookie } = await readyApp();
     const [admin] = await database.db.select().from(humans).where(eq(humans.email, EMAIL));
     if (admin === undefined) throw new Error("expected bootstrapped admin");
@@ -672,20 +672,30 @@ describe("projects", () => {
       });
     });
 
-    const listRes = await getJson(app, `/api/workspaces/${sharedId}/projects`, adminCookie);
-    expect(listRes.status).toBe(404);
-    expect(listRes.headers.get("content-type")).toBe("application/problem+json");
-    expect(await problemBody(listRes)).toMatchObject({ code: "workspace_not_found" });
+    // The owner sees every project in the workspace and creates one; the owner's
+    // effective level is Manage. A non-owner member's ceiling is covered in
+    // access.test.ts, which owns the #27 access matrix.
+    const empty = await getJson(app, `/api/workspaces/${sharedId}/projects`, adminCookie);
+    expect(empty.status).toBe(200);
+    expect(await empty.json()).toEqual([]);
 
-    const createRes = await postJson(
+    const created = await postJson(
       app,
       `/api/workspaces/${sharedId}/projects`,
-      { name: "Not Yet" },
+      { name: "Shared Project" },
       adminCookie,
     );
-    expect(createRes.status).toBe(404);
-    expect(createRes.headers.get("content-type")).toBe("application/problem+json");
-    expect(await problemBody(createRes)).toMatchObject({ code: "workspace_not_found" });
+    expect(created.status).toBe(201);
+    expect(Project.parse(await created.json())).toMatchObject({
+      workspaceId: sharedId,
+      name: "Shared Project",
+      workspaceKind: "shared",
+      accessLevel: "manage",
+    });
+
+    const listed = await getJson(app, `/api/workspaces/${sharedId}/projects`, adminCookie);
+    expect(listed.status).toBe(200);
+    expect(ProjectsResponse.parse(await listed.json())).toHaveLength(1);
   });
 
   it("serializes concurrent issue updates so edits and closes never lose updates or duplicate events", async () => {

@@ -78,6 +78,20 @@
       "when": 1795096412147,
       "tag": "0010_bent_hedge_knight",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1795099526389,
+      "tag": "0011_zippy_zarda",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1795099539087,
+      "tag": "0012_project_access_scope",
+      "breakpoints": true
     }
   ]
 }

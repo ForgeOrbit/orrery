@@ -3,14 +3,17 @@ import {
   IssueComment,
   KnowledgeEntry,
   Project,
+  ProjectAccessGrant,
   type CreateIssueCommentRequest,
   type CreateIssueRequest,
   type CreateKnowledgeEntryRequest,
   type CreateProjectRequest,
+  type SetProjectAccessRequest,
   type UpdateIssueRequest,
   type UpdateKnowledgeEntryRequest,
+  type UpdateProjectRequest,
 } from "@orrery/contract";
-import { patchJson, postJson } from "../../lib/api.ts";
+import { deleteRequest, patchJson, postJson } from "../../lib/api.ts";
 
 // Mutations for this feature. Each goes through the app's one request helper, which
 // parses the response with the contract's schemas and turns a Problem (RFC 9457)
@@ -19,6 +22,32 @@ import { patchJson, postJson } from "../../lib/api.ts";
 export function createProject(workspaceId: string, input: CreateProjectRequest): Promise<Project> {
   return postJson(`/api/workspaces/${encodeURIComponent(workspaceId)}/projects`, input, (value) =>
     Project.parse(value),
+  );
+}
+
+// A project manager's project setting: the name. The server checks Manage and records the
+// rename in the project's activity.
+export function updateProject(projectId: string, input: UpdateProjectRequest): Promise<Project> {
+  return patchJson(`/api/projects/${encodeURIComponent(projectId)}`, input, (value) =>
+    Project.parse(value),
+  );
+}
+
+// Grants or changes one workspace member's project level. Manage only; the server
+// resolves the member by email inside the project's workspace.
+export function setProjectAccess(
+  projectId: string,
+  input: SetProjectAccessRequest,
+): Promise<ProjectAccessGrant> {
+  return patchJson(`/api/projects/${encodeURIComponent(projectId)}/access`, input, (value) =>
+    ProjectAccessGrant.parse(value),
+  );
+}
+
+// Revokes a grant. The server makes this idempotent, so a stale page does not fail.
+export function removeProjectAccess(projectId: string, humanId: string): Promise<void> {
+  return deleteRequest(
+    `/api/projects/${encodeURIComponent(projectId)}/access/${encodeURIComponent(humanId)}`,
   );
 }
 

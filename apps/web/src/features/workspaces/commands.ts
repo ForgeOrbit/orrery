@@ -7,8 +7,9 @@ import {
   type CreateWorkspaceRequest,
   type InviteWorkspaceMemberRequest,
   type RegisterThroughWorkspaceInvitationRequest,
+  type UpdateWorkspaceMemberRequest,
 } from "@orrery/contract";
-import { postJson } from "../../lib/api.ts";
+import { patchJson, postJson } from "../../lib/api.ts";
 
 // Mutations for this feature. Each posts JSON through the app's one request helper,
 // which parses the response with the contract's schemas and turns a Problem (RFC 9457)
@@ -49,6 +50,20 @@ export function appointWorkspaceOwner(
   return postJson(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/owners`,
     { humanId },
+    (value) => WorkspaceMember.parse(value),
+  );
+}
+
+// Owners grant or revoke one member's Create projects capability. The response is the
+// member with the effective value (owners always hold it).
+export function updateWorkspaceMember(
+  workspaceId: string,
+  humanId: string,
+  input: UpdateWorkspaceMemberRequest,
+): Promise<WorkspaceMember> {
+  return patchJson(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(humanId)}`,
+    input,
     (value) => WorkspaceMember.parse(value),
   );
 }

@@ -9,17 +9,22 @@ import {
   issueQuery,
   issuesQuery,
   projectActivityQuery,
+  projectQuery,
   ResourceLoadError,
   TitleBodyForm,
   updateIssue,
 } from "../features/projects/index.ts";
 
 // One issue's page: read it, edit its Markdown body, close or reopen it, and comment.
-// Every action refreshes the project's activity so the history stays in step.
+// The project's effective level decides whether those controls appear; Read sees the
+// issue and its comments only. Every action refreshes the activity so history stays in step.
 export const Route = createFileRoute("/issues/$issueId")({
   loader: async ({ context, params }) => {
-    await context.queryClient.ensureQueryData(issueQuery(params.issueId));
-    await context.queryClient.ensureQueryData(issueCommentsQuery(params.issueId));
+    const issue = await context.queryClient.ensureQueryData(issueQuery(params.issueId));
+    await Promise.all([
+      context.queryClient.ensureQueryData(issueCommentsQuery(params.issueId)),
+      context.queryClient.ensureQueryData(projectQuery(issue.projectId)),
+    ]);
   },
   component: IssuePage,
   errorComponent: ({ error }) => <ResourceLoadError resource="issue" error={error} />,
@@ -29,6 +34,8 @@ function IssuePage() {
   const { issueId } = Route.useParams();
   const { data: issue } = useSuspenseQuery(issueQuery(issueId));
   const { data: comments } = useSuspenseQuery(issueCommentsQuery(issueId));
+  const { data: project } = useSuspenseQuery(projectQuery(issue.projectId));
+  const canContribute = project.accessLevel !== "read";
 
   return (
     <main>
@@ -49,8 +56,12 @@ function IssuePage() {
           {issue.body}
         </div>
       )}
-      <IssueStatusButton issue={issue} />
-      <EditIssueForm key={issue.updatedAt} issue={issue} />
+      {canContribute && (
+        <>
+          <IssueStatusButton issue={issue} />
+          <EditIssueForm key={issue.updatedAt} issue={issue} />
+        </>
+      )}
 
       <section>
         <h2>Comments</h2>
@@ -69,7 +80,7 @@ function IssuePage() {
             ))}
           </ul>
         )}
-        <CommentForm issueId={issue.id} projectId={issue.projectId} />
+        {canContribute && <CommentForm issueId={issue.id} projectId={issue.projectId} />}
       </section>
     </main>
   );

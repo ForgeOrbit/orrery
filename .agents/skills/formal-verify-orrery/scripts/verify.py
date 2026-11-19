@@ -128,6 +128,17 @@ def extract_code_facts() -> dict[str, bool]:
         and '!membership.isOwner) throw new WorkspacesError("not_workspace_owner")' in require_owner_fn
     )
 
+    # M8: Project access grants and creation serialize with workspace membership writes
+    create_project_fn = slice_between(proj_src, "async createProject(", "async updateProject(")
+    set_access_fn = slice_between(proj_src, "async setProjectAccess(", "async removeProjectAccess(")
+    remove_access_fn = slice_between(proj_src, "async removeProjectAccess(", "async revokeMemberProjectAccess(")
+    m8_access_serialized = (
+        "lockWorkspaceOwnershipWrites(tx)" in create_project_fn
+        and "lockWorkspaceOwnershipWrites(tx)" in set_access_fn
+        and "lockWorkspaceOwnershipWrites(tx)" in remove_access_fn
+        and "revokeMemberProjectAccess(tx" in remove_member_fn
+    )
+
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
         "m2a_supersedes_failed": m2a_supersedes_failed,
@@ -138,6 +149,7 @@ def extract_code_facts() -> dict[str, bool]:
         "m5_safe_rotation": m5_no_predelete and m5_post_retire_guarded,
         "m6_singleton_tx": m6_singleton_tx,
         "m7_non_member_404": m7_non_member_404,
+        "m8_access_serialized": m8_access_serialized,
     }
 
 
@@ -598,6 +610,58 @@ def check_m7(facts: dict[str, bool]) -> CheckResult:
     )
 
 
+def check_m8(facts: dict[str, bool]) -> CheckResult:
+    # Models setProjectAccess() racing with removeMember() on a shared workspace member.
+    serialized = facts["m8_access_serialized"]
+    # State: (is_member, has_grant, lock, grant_pc, remove_pc)
+    init = (True, False, None, "idle", "idle")
+
+    def next_states(state):
+        is_member, has_grant, lock, g_pc, r_pc = state
+        out = []
+        if serialized:
+            if g_pc == "idle" and lock is None:
+                out.append(("setProjectAccess: acquire lock_workspace_ownership_writes()", (is_member, has_grant, "grant", "locked", r_pc)))
+            elif g_pc == "locked":
+                if is_member:
+                    out.append(("setProjectAccess: commit grant", (is_member, True, None, "done", r_pc)))
+                else:
+                    out.append(("setProjectAccess: reject member_not_found", (is_member, has_grant, None, "done", r_pc)))
+            if r_pc == "idle" and lock is None:
+                out.append(("removeMember: acquire lock_workspace_ownership_writes()", (is_member, has_grant, "remove", g_pc, "locked")))
+            elif r_pc == "locked":
+                out.append(("removeMember: delete membership + revoke grants + commit", (False, False, None, g_pc, "done")))
+        else:
+            if g_pc == "idle" and is_member:
+                out.append(("setProjectAccess: trigger sees member & inserts grant (uncommitted)", (is_member, has_grant, lock, "inserted", r_pc)))
+            elif g_pc == "inserted":
+                out.append(("setProjectAccess: commits grant", (is_member, True, lock, "done", r_pc)))
+            if r_pc == "idle" and is_member:
+                out.append(("removeMember: deletes membership & sees 0 committed grants", (False, False, lock, g_pc, "done")))
+        return out
+
+    def inv(state):
+        is_member, has_grant, _, g_pc, r_pc = state
+        if g_pc == "done" and r_pc == "done" and not is_member and has_grant:
+            return False, "Orphaned project_access_grants row survived removeMember() and will revive on rejoin!"
+        return True, ""
+
+    return bfs_check(
+        "M8",
+        "Project Access Grants (#27)",
+        "No orphaned project_access_grants row survives concurrent removeMember()",
+        "safety",
+        init,
+        next_states,
+        inv,
+        [
+            "apps/server/src/features/projects/service.ts",
+            "apps/server/src/features/workspaces/service.ts",
+            "db/migrations/0012_project_access_scope.sql",
+        ],
+    )
+
+
 def main() -> None:
     facts = extract_code_facts()
     results = [
@@ -609,6 +673,7 @@ def main() -> None:
         check_m5(facts),
         check_m6(facts),
         check_m7(facts),
+        check_m8(facts),
     ]
 
     if "--json" in sys.argv:

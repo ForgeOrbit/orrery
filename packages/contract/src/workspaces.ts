@@ -9,13 +9,16 @@ import { InvitationStatus } from "./invitations.ts";
 
 // A workspace the signed-in account can access. `isOwner` is true for the owner of a
 // personal workspace and for each owner of a shared one; it is what lets a client show
-// owner-only actions without a second request.
+// owner-only actions without a second request. `canCreateProjects` is the caller's
+// effective Create projects capability: owners always have it, and a member has it only
+// when granted. It never grants access to an existing project by itself.
 export const Workspace = z
   .object({
     id: z.string(),
     kind: WorkspaceKind,
     name: z.string(),
     isOwner: z.boolean(),
+    canCreateProjects: z.boolean(),
   })
   .meta({ id: "Workspace" });
 export type Workspace = z.infer<typeof Workspace>;
@@ -38,9 +41,20 @@ export const WorkspaceMember = z
     humanId: z.string(),
     email: Email,
     isOwner: z.boolean(),
+    // The effective capability: an owner can always create, whatever the stored grant.
+    canCreateProjects: z.boolean(),
   })
   .meta({ id: "WorkspaceMember" });
 export type WorkspaceMember = z.infer<typeof WorkspaceMember>;
+
+// Owners grant one workspace capability at a time here. #28 adds the other three and the
+// delegation ceilings; in this slice an owner grants Create projects directly.
+export const UpdateWorkspaceMemberRequest = z
+  .object({
+    canCreateProjects: z.boolean(),
+  })
+  .meta({ id: "UpdateWorkspaceMemberRequest" });
+export type UpdateWorkspaceMemberRequest = z.infer<typeof UpdateWorkspaceMemberRequest>;
 
 export const WorkspaceMembersResponse = z
   .array(WorkspaceMember)

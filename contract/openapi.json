@@ -378,13 +378,17 @@
           },
           "isOwner": {
             "type": "boolean"
+          },
+          "canCreateProjects": {
+            "type": "boolean"
           }
         },
         "required": [
           "id",
           "kind",
           "name",
-          "isOwner"
+          "isOwner",
+          "canCreateProjects"
         ]
       },
       "WorkspaceKind": {
@@ -411,12 +415,16 @@
           },
           "isOwner": {
             "type": "boolean"
+          },
+          "canCreateProjects": {
+            "type": "boolean"
           }
         },
         "required": [
           "humanId",
           "email",
-          "isOwner"
+          "isOwner",
+          "canCreateProjects"
         ]
       },
       "CreateWorkspaceRequest": {
@@ -524,6 +532,17 @@
           "humanId"
         ]
       },
+      "UpdateWorkspaceMemberRequest": {
+        "type": "object",
+        "properties": {
+          "canCreateProjects": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "canCreateProjects"
+        ]
+      },
       "ProjectsResponse": {
         "type": "array",
         "items": {
@@ -547,6 +566,12 @@
           },
           "createdBy": {
             "$ref": "#/components/schemas/Actor"
+          },
+          "workspaceKind": {
+            "$ref": "#/components/schemas/WorkspaceKind"
+          },
+          "accessLevel": {
+            "$ref": "#/components/schemas/ProjectAccessLevel"
           }
         },
         "required": [
@@ -554,7 +579,9 @@
           "workspaceId",
           "name",
           "createdAt",
-          "createdBy"
+          "createdBy",
+          "workspaceKind",
+          "accessLevel"
         ]
       },
       "Timestamp": {
@@ -576,6 +603,14 @@
           "email"
         ]
       },
+      "ProjectAccessLevel": {
+        "type": "string",
+        "enum": [
+          "read",
+          "contribute",
+          "manage"
+        ]
+      },
       "CreateProjectRequest": {
         "type": "object",
         "properties": {
@@ -587,6 +622,71 @@
         },
         "required": [
           "name"
+        ]
+      },
+      "UpdateProjectRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "ProjectAccessGrantsResponse": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ProjectAccessGrant"
+        }
+      },
+      "ProjectAccessGrant": {
+        "type": "object",
+        "properties": {
+          "humanId": {
+            "type": "string"
+          },
+          "email": {
+            "$ref": "#/components/schemas/Email"
+          },
+          "level": {
+            "$ref": "#/components/schemas/ProjectAccessLevel"
+          },
+          "grantedBy": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "humanId",
+          "email",
+          "level",
+          "grantedBy",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "SetProjectAccessRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "$ref": "#/components/schemas/Email"
+          },
+          "level": {
+            "$ref": "#/components/schemas/ProjectAccessLevel"
+          }
+        },
+        "required": [
+          "email",
+          "level"
         ]
       },
       "IssuesResponse": {
@@ -801,6 +901,7 @@
         "type": "string",
         "enum": [
           "project_created",
+          "project_renamed",
           "issue_created",
           "issue_edited",
           "issue_commented",
@@ -1981,6 +2082,104 @@
       }
     },
     "/api/workspaces/{workspaceId}/members/{humanId}": {
+      "patch": {
+        "summary": "Grant or revoke a member's Create projects capability",
+        "description": "Owners only. An owner can always create projects; this capability lets one member create projects without workspace-wide authority. The created project's creator receives Manage on it, and membership alone still grants no existing project's content.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "humanId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateWorkspaceMemberRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The member with the effective capability",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceMember"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an owner of this workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No accessible shared workspace or member",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Workspace owners always have Create projects",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
       "delete": {
         "summary": "Remove a member from a shared workspace",
         "description": "Owners only. Removing an owner is refused when it would leave the workspace with no owner. The removed human keeps their personal workspace and every other membership.",
@@ -2065,8 +2264,8 @@
     },
     "/api/workspaces/{workspaceId}/projects": {
       "get": {
-        "summary": "The projects in the caller's personal workspace",
-        "description": "A personal workspace's owner sees its projects. Projects are personal in this release; a shared workspace has no project surface yet (#27). A workspace outside the caller's personal ownership answers exactly like a missing one.",
+        "summary": "The projects the caller can access in a workspace",
+        "description": "A personal workspace's owner sees its projects. A shared workspace's owner sees every project; an ordinary member sees only the projects explicitly granted to them. Membership alone never reveals a project. A workspace outside the caller's access answers exactly like a missing one.",
         "parameters": [
           {
             "schema": {
@@ -2081,7 +2280,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The projects in the personal workspace",
+            "description": "The accessible projects in the workspace",
             "content": {
               "application/json": {
                 "schema": {
@@ -2111,7 +2310,7 @@
             }
           },
           "404": {
-            "description": "No personal workspace with this id is accessible to the caller",
+            "description": "No workspace with this id is accessible to the caller",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2123,8 +2322,8 @@
         }
       },
       "post": {
-        "summary": "Create a project in the caller's personal workspace",
-        "description": "The personal workspace's owner creates a project. Projects are personal in this release; a shared workspace has no project surface yet (#27). The project belongs to the workspace; its creator is recorded as authorship. The creation is recorded in the project's activity.",
+        "summary": "Create a project in a workspace",
+        "description": "A personal workspace's owner or a shared workspace's owner can always create a project. A shared member needs the Create projects capability; the member who creates a project receives Manage on it. The project belongs to the workspace, its creator is recorded as authorship, and the creation is recorded in the project's activity.",
         "parameters": [
           {
             "schema": {
@@ -2149,7 +2348,7 @@
         },
         "responses": {
           "201": {
-            "description": "The project, created in the personal workspace",
+            "description": "The project, created in the workspace",
             "content": {
               "application/json": {
                 "schema": {
@@ -2178,8 +2377,18 @@
               }
             }
           },
+          "403": {
+            "description": "The caller does not have Create projects in this workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
-            "description": "No personal workspace with this id is accessible to the caller",
+            "description": "No workspace with this id is accessible to the caller",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2240,6 +2449,325 @@
           },
           "404": {
             "description": "No project with this id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "summary": "Configure a project",
+        "description": "Manage access may rename the project. A request that does not change the name returns the project unchanged and records no event.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateProjectRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The project after the change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Project"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read or Contribute access cannot configure the project",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No project with this id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{projectId}/access": {
+      "get": {
+        "summary": "The explicit access grants on a project",
+        "description": "Manage only. Workspace owners have implicit Manage and are not listed; a personal project has no collaborators and answers with an empty list.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The project's explicit grants",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectAccessGrantsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The project id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read or Contribute access cannot manage project access",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No project with this id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "summary": "Grant or change a member's project access",
+        "description": "Manage only. The target must be a current member of the project's shared workspace. The level is one of Read, Contribute, or Manage; a real change records an attributed access event in the same transaction.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetProjectAccessRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The grant after the change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectAccessGrant"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read or Contribute access cannot manage project access, or the project is personal",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No accessible project or workspace member",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Workspace owners already have Manage access to every project",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{projectId}/access/{humanId}": {
+      "delete": {
+        "summary": "Revoke a member's project access",
+        "description": "Manage only. Revoking is idempotent: a person with no grant is already in the desired state. A real revocation records an attributed access event.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "humanId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The grant was removed"
+          },
+          "400": {
+            "description": "The project or member id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read or Contribute access cannot manage project access, or the project is personal",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No project with this id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Workspace owners already have Manage access to every project",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2312,7 +2840,7 @@
       },
       "post": {
         "summary": "Create an issue in a project",
-        "description": "The issue gets the project's next local number, starts open, and records its creator. The creation is recorded in the project's activity.",
+        "description": "Contribute or Manage. The issue gets the project's next local number, starts open, and records its creator. The creation is recorded in the project's activity.",
         "parameters": [
           {
             "schema": {
@@ -2358,6 +2886,16 @@
           },
           "401": {
             "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read access cannot create an issue",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2440,7 +2978,7 @@
       },
       "patch": {
         "summary": "Edit, close, or reopen an issue",
-        "description": "Every field is optional. A title or body change records an edit; a status change records a close or a reopen. A request that changes nothing returns the issue unchanged and records no event.",
+        "description": "Contribute or Manage. Every field is optional. A title or body change records an edit; a status change records a close or a reopen. A request that changes nothing returns the issue unchanged and records no event.",
         "parameters": [
           {
             "schema": {
@@ -2486,6 +3024,16 @@
           },
           "401": {
             "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read access cannot change the issue",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2568,7 +3116,7 @@
       },
       "post": {
         "summary": "Comment on an issue",
-        "description": "A comment needs no work session (#20), only project access. It records its author and appears in the project's activity.",
+        "description": "Contribute or Manage. A comment needs no work session (#20), only project access. It records its author and appears in the project's activity.",
         "parameters": [
           {
             "schema": {
@@ -2614,6 +3162,16 @@
           },
           "401": {
             "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read access cannot comment",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2756,7 +3314,7 @@
       },
       "post": {
         "summary": "Create a basic Markdown knowledge entry",
-        "description": "Stores the title and Markdown body as written, records the creator, and adds a creation event to the project's activity.",
+        "description": "Contribute or Manage. Stores the title and Markdown body as written, records the creator, and adds a creation event to the project's activity.",
         "parameters": [
           {
             "schema": {
@@ -2802,6 +3360,16 @@
           },
           "401": {
             "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read access cannot create knowledge",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2884,7 +3452,7 @@
       },
       "patch": {
         "summary": "Edit a basic Markdown knowledge entry",
-        "description": "Every field is optional. A real change records the editor and adds an edit event; a no-op returns the entry unchanged.",
+        "description": "Contribute or Manage. Every field is optional. A real change records the editor and adds an edit event; a no-op returns the entry unchanged.",
         "parameters": [
           {
             "schema": {
@@ -2930,6 +3498,16 @@
           },
           "401": {
             "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read access cannot edit knowledge",
             "content": {
               "application/problem+json": {
                 "schema": {

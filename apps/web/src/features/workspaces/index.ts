@@ -6,6 +6,7 @@ export {
   createWorkspace,
   inviteWorkspaceMember,
   registerThroughWorkspaceInvitation,
+  updateWorkspaceMember,
 } from "./commands.ts";
 export {
   workspaceInvitationPreviewQuery,
