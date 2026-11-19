@@ -785,6 +785,20 @@ async function verifiedAccount(email: string, password: string): Promise<APIRequ
   return context;
 }
 
+async function memberIdFor(workspaceId: string, email: string): Promise<string> {
+  const res = await api.get(`/api/workspaces/${workspaceId}/members`);
+  expect(res.status()).toBe(200);
+  const body: unknown = await res.json();
+  if (!Array.isArray(body)) throw new Error("the member directory is not a list");
+  for (const entry of body) {
+    if (typeof entry !== "object" || entry === null) continue;
+    if (Reflect.get(entry, "email") !== email) continue;
+    const id: unknown = Reflect.get(entry, "humanId");
+    if (typeof id === "string") return id;
+  }
+  throw new Error(`${email} is not a member`);
+}
+
 // Invites an email into a workspace and accepts it as that account, returning its member
 // id from the owner's directory and the account's own request context.
 async function joinWorkspace(
@@ -808,18 +822,7 @@ async function joinWorkspace(
     data: { token },
   });
   expect(accepted.status()).toBe(200);
-  const directory = await api.get(`/api/workspaces/${workspaceId}/members`);
-  expect(directory.status()).toBe(200);
-  const members: unknown = await directory.json();
-  if (!Array.isArray(members)) throw new Error("the member directory is not a list");
-  const entry = members.find(
-    (member) =>
-      typeof member === "object" && member !== null && Reflect.get(member, "email") === email,
-  );
-  const humanId: unknown =
-    typeof entry === "object" && entry !== null ? Reflect.get(entry, "humanId") : undefined;
-  if (typeof humanId !== "string") throw new Error("the joined member has no id");
-  return { context, humanId };
+  return { context, humanId: await memberIdFor(workspaceId, email) };
 }
 
 async function setCapabilities(
@@ -906,6 +909,115 @@ test("delegates workspace capabilities within their ceilings and protects owners
     ).status(),
   ).toBe(200);
 
+  // Only owners remove a permission manager, even when the target is another manager.
+  const secondManagerEmail = await freshEmail("delegation-second-manager");
+  const secondManager = await joinWorkspace(
+    workspaceId,
+    name,
+    secondManagerEmail,
+    DELEGATION_PASSWORD,
+  );
+  await setCapabilities(workspaceId, secondManager.humanId, {
+    canManageMemberPermissions: true,
+    canInviteMembers: true,
+  });
+  // Revocation has the same ceiling as granting: a manager who lacks Invite members
+  // cannot revoke it from someone who has it, nor remove another permission manager.
+  await expectRefusal(
+    await manager.context.patch(peerPath(secondManager.humanId), {
+      data: { canInviteMembers: false },
+    }),
+    403,
+    "not_workspace_owner",
+  );
+  await expectRefusal(
+    await manager.context.patch(peerPath(secondManager.humanId), {
+      data: { canManageMemberPermissions: false },
+    }),
+    403,
+    "not_workspace_owner",
+  );
+
+  // Project Manage is a project level: this member has no workspace capability and no
+  // workspace operation beyond reading the project they Manage.
+  const pmEmail = await freshEmail("project-only-manager");
+  const projectOnly = await joinWorkspace(workspaceId, name, pmEmail, DELEGATION_PASSWORD);
+  const projectCreated = await api.post(`/api/workspaces/${workspaceId}/projects`, {
+    data: { name: "Project-Only Work" },
+  });
+  expect(projectCreated.status()).toBe(201);
+  const projectIdForPm: unknown = (await projectCreated.json()).id;
+  if (typeof projectIdForPm !== "string") throw new Error("the project has no id");
+  const pmGrant = await api.patch(`/api/projects/${projectIdForPm}/access`, {
+    data: { email: pmEmail, level: "manage" },
+  });
+  expect(pmGrant.status()).toBe(200);
+  const pmView = await projectOnly.context.get(`/api/workspaces/${workspaceId}`);
+  expect(await pmView.json()).toMatchObject({
+    isOwner: false,
+    canCreateProjects: false,
+    canInviteMembers: false,
+    canRemoveMembers: false,
+    canManageMemberPermissions: false,
+  });
+  await expectRefusal(
+    await projectOnly.context.get(`/api/workspaces/${workspaceId}/members`),
+    403,
+    "not_workspace_owner",
+  );
+  await expectRefusal(
+    await projectOnly.context.patch(peerPath(peer.humanId), { data: { canCreateProjects: true } }),
+    403,
+    "not_workspace_owner",
+  );
+  await expectRefusal(
+    await projectOnly.context.delete(peerPath(peer.humanId)),
+    403,
+    "not_workspace_owner",
+  );
+  await expectRefusal(
+    await projectOnly.context.get(`/api/workspaces/${workspaceId}/invitations`),
+    403,
+    "not_workspace_owner",
+  );
+  await expectRefusal(
+    await projectOnly.context.post(`/api/workspaces/${workspaceId}/invitations`, {
+      data: { email: await freshEmail("project-only-blocked") },
+    }),
+    403,
+    "not_workspace_owner",
+  );
+  await expectRefusal(
+    await projectOnly.context.post(`/api/workspaces/${workspaceId}/projects`, {
+      data: { name: "Blocked" },
+    }),
+    403,
+    "project_creation_not_allowed",
+  );
+  const pmInviteEmail = await freshEmail("project-only-invite");
+  expect(
+    (
+      await api.post(`/api/workspaces/${workspaceId}/invitations`, {
+        data: { email: pmInviteEmail },
+      })
+    ).status(),
+  ).toBe(201);
+  const pmInvitationId = await invitationId(api, workspaceId, pmInviteEmail, "pending");
+  await expectRefusal(
+    await projectOnly.context.post(
+      `/api/workspaces/${workspaceId}/invitations/${pmInvitationId}/resend`,
+    ),
+    403,
+    "not_workspace_owner",
+  );
+  await expectRefusal(
+    await projectOnly.context.post(
+      `/api/workspaces/${workspaceId}/invitations/${pmInvitationId}/revoke`,
+    ),
+    403,
+    "not_workspace_owner",
+  );
+
   // An ordinary member has none of the directory, capability, removal, or invite paths.
   const deniedUrl = `/api/workspaces/${workspaceId}/members`;
   await expectRefusal(await peer.context.get(deniedUrl), 403, "not_workspace_owner");
@@ -979,7 +1091,14 @@ test("delegates workspace capabilities within their ceilings and protects owners
   expect((await api.delete(peerPath(remover.humanId))).status()).toBe(204);
   expect((await api.delete(peerPath(manager.humanId))).status()).toBe(204);
 
-  for (const context of [manager.context, peer.context, remover.context, outsider]) {
+  for (const context of [
+    manager.context,
+    peer.context,
+    secondManager.context,
+    projectOnly.context,
+    remover.context,
+    outsider,
+  ]) {
     for (const cookie of await context.cookies()) await recordSecret(cookie.value);
     await context.dispose();
   }
@@ -1023,6 +1142,34 @@ test("a delegated inviter stays inside project scope and pending offers fail whe
     "not_workspace_owner",
   );
 
+  // An owner's offer on a project this delegate does not Manage is neither listed for
+  // them nor resendable/revocable by them: the summary would leak the project id, name,
+  // and offered level.
+  const ownerOfferEmail = await freshEmail("scoped-owner-offer");
+  expect(
+    (
+      await api.post(invitationsUrl, {
+        data: { email: ownerOfferEmail, projectGrants: [{ projectId, level: "read" }] },
+      })
+    ).status(),
+  ).toBe(201);
+  const ownerOfferId = await invitationId(api, workspaceId, ownerOfferEmail, "pending");
+  const delegateHistoryRes = await inviter.context.get(invitationsUrl);
+  expect(delegateHistoryRes.status()).toBe(200);
+  const delegateHistory: unknown = await delegateHistoryRes.json();
+  if (!Array.isArray(delegateHistory)) throw new Error("the delegate history is not a list");
+  expect(delegateHistory.some((row) => Reflect.get(row, "email") === ownerOfferEmail)).toBe(false);
+  await expectRefusal(
+    await inviter.context.post(`${invitationsUrl}/${ownerOfferId}/resend`),
+    403,
+    "not_workspace_owner",
+  );
+  await expectRefusal(
+    await inviter.context.post(`${invitationsUrl}/${ownerOfferId}/revoke`),
+    403,
+    "not_workspace_owner",
+  );
+
   // A project Manage grant is not workspace authority, but it does authorize that
   // project's grant in an invitation while it lasts.
   const manageGrant = await api.patch(`/api/projects/${projectId}/access`, {
@@ -1041,12 +1188,76 @@ test("a delegated inviter stays inside project scope and pending offers fail whe
   if (offeredToken === undefined) throw new Error("the catcher never received the scoped offer");
   await recordSecret(offeredToken);
 
+  const recipientEmail = await freshEmail("scoped-recipient");
+  const recipient = await verifiedAccount(recipientEmail, RECIPIENT_PASSWORD);
+
+  // A new email's registration offer is also bound to the inviter's current authority.
+  const registrationEmail = await freshEmail("scoped-registration");
+  const registrationPassword = "scoped-registration-password";
+  await recordSecret(registrationPassword);
+  expect(
+    (
+      await inviter.context.post(invitationsUrl, {
+        data: { email: registrationEmail, projectGrants: [{ projectId, level: "read" }] },
+      })
+    ).status(),
+  ).toBe(201);
+  await expect
+    .poll(async () => caughtToken(api, registrationEmail, "workspace", name), {
+      timeout: 15_000,
+    })
+    .toBeTruthy();
+  const registrationToken = await caughtToken(api, registrationEmail, "workspace", name);
+  if (registrationToken === undefined)
+    throw new Error("the catcher never received the registration offer");
+  await recordSecret(registrationToken);
+
   // Withdrawing the project Manage grant leaves the invitation pending but unusable at
   // acceptance, and the transaction rolls the token back rather than burning it.
   const revokedGrant = await api.delete(`/api/projects/${projectId}/access/${inviter.humanId}`);
   expect(revokedGrant.status()).toBe(204);
-  const recipientEmail = await freshEmail("scoped-recipient");
-  const recipient = await verifiedAccount(recipientEmail, RECIPIENT_PASSWORD);
+  await expectRefusal(
+    await recipient.post("/api/workspace-invitations/registration", {
+      data: { token: registrationToken, password: registrationPassword },
+    }),
+    403,
+    "inviter_not_authorized",
+  );
+  const afterManageRes = await inviter.context.get(invitationsUrl);
+  expect(afterManageRes.status()).toBe(200);
+  const afterManage: unknown = await afterManageRes.json();
+  if (!Array.isArray(afterManage)) throw new Error("the delegate history is not a list");
+  expect(afterManage.some((row) => Reflect.get(row, "email") === registrationEmail)).toBe(false);
+
+  // The dead offer must not block the address for seven days: an authorized inviter can
+  // re-invite immediately within scope, and the new link registers normally.
+  expect(
+    (
+      await api.post(invitationsUrl, {
+        data: { email: registrationEmail },
+      })
+    ).status(),
+  ).toBe(201);
+  await expect
+    .poll(
+      async () =>
+        (await caughtTokens(api, registrationEmail, "workspace", name)).some(
+          (token) => token !== registrationToken,
+        ),
+      { timeout: 15_000 },
+    )
+    .toBe(true);
+  const replacementToken = (await caughtTokens(api, registrationEmail, "workspace", name)).find(
+    (token) => token !== registrationToken,
+  );
+  if (replacementToken === undefined)
+    throw new Error("the catcher never received the replacement offer");
+  await recordSecret(replacementToken);
+  const registered = await recipient.post("/api/workspace-invitations/registration", {
+    data: { token: replacementToken, password: registrationPassword },
+  });
+  expect(registered.status()).toBe(200);
+
   await expectRefusal(
     await recipient.post("/api/workspace-invitations/acceptance", {
       data: { token: offeredToken },
@@ -1068,7 +1279,7 @@ test("a delegated inviter stays inside project scope and pending offers fail whe
     403,
     "inviter_not_authorized",
   );
-  const stillPending = await invitationsUrlHistory(invitationsUrl);
+  const stillPending = await readInvitationHistory(invitationsUrl);
   expect(stillPending).toContainEqual(
     expect.objectContaining({ email: offeredEmail, status: "pending" }),
   );
@@ -1154,21 +1365,7 @@ test("a delegated member sees only the controls within their authority in the br
   await member.context.dispose();
 });
 
-async function memberIdFor(workspaceId: string, email: string): Promise<string> {
-  const res = await api.get(`/api/workspaces/${workspaceId}/members`);
-  expect(res.status()).toBe(200);
-  const body: unknown = await res.json();
-  if (!Array.isArray(body)) throw new Error("the member directory is not a list");
-  for (const entry of body) {
-    if (typeof entry !== "object" || entry === null) continue;
-    if (Reflect.get(entry, "email") !== email) continue;
-    const id: unknown = Reflect.get(entry, "humanId");
-    if (typeof id === "string") return id;
-  }
-  throw new Error(`${email} is not a member`);
-}
-
-async function invitationsUrlHistory(url: string): Promise<unknown[]> {
+async function readInvitationHistory(url: string): Promise<unknown[]> {
   const res = await api.get(url);
   expect(res.status()).toBe(200);
   const body: unknown = await res.json();

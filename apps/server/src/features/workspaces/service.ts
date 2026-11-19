@@ -4,11 +4,13 @@ import {
   InvitationStatus,
   ProjectAccessLevel,
   WorkspaceKind,
+  UpdateWorkspaceMemberRequest,
+  workspaceCapabilities,
   type CreateWorkspaceRequest,
   type InvitationSummary,
   type InviteWorkspaceMemberRequest,
-  type UpdateWorkspaceMemberRequest,
   type Workspace,
+  type WorkspaceCapability,
   type WorkspaceInvitation,
   type WorkspaceInvitationPreview,
   type WorkspaceMember,
@@ -67,7 +69,7 @@ export type WorkspacesErrorKind =
 const messages = {
   not_signed_in: "Not signed in.",
   workspace_not_found: "This workspace does not exist.",
-  not_workspace_owner: "Only a workspace owner can do that.",
+  not_workspace_owner: "Only a workspace owner or an authorized delegate can do that.",
   inviter_unverified: "Verify your own email before inviting someone to a workspace.",
   inviter_not_authorized:
     "The person who sent this invitation can no longer invite to this workspace.",
@@ -240,15 +242,20 @@ async function requireOwner(tx: DbTransaction, workspaceId: string, humanId: str
   if (!membership.isOwner) throw new WorkspacesError("not_workspace_owner");
 }
 
-// Owners hold all four capabilities. A delegate's authority is only what is stored.
-const workspaceCapabilities = [
-  "canCreateProjects",
-  "canInviteMembers",
-  "canRemoveMembers",
-  "canManageMemberPermissions",
-] as const;
-type WorkspaceCapability = (typeof workspaceCapabilities)[number];
+// The same non-enumerating actor check for every invitation-management endpoint. A caller
+// who is not a member answers workspace_not_found; a member without Invite members answers
+// not_workspace_owner.
+async function requireInviter(tx: DbTransaction, workspaceId: string, humanId: string) {
+  const inviter = await readMembership(tx, workspaceId, humanId, "workspace_not_found");
+  if (!inviter.isOwner && !inviter.canInviteMembers) {
+    throw new WorkspacesError("not_workspace_owner");
+  }
+  return inviter;
+}
 
+// Owners hold all four capabilities. A delegate's authority is only what is stored.
+// The capability names come from the shared contract so the server and the web app cannot
+// drift apart.
 const capabilityEvents: Record<
   WorkspaceCapability,
   { granted: WorkspaceEventType; revoked: WorkspaceEventType }
@@ -326,6 +333,61 @@ async function requireInviterStillAuthorized(
     throw new WorkspacesError("inviter_not_authorized");
   }
   await requireProjectManageScope(tx, workspaceId, inviter, offered, "inviter_not_authorized");
+}
+
+// Every project this human currently Manages in the workspace. Used both to scope an
+// inviter's view of the invitation history and to decide whether a dead pending offer can
+// still be redeemed. Reading the grants instead of trusting a stored flag keeps authority
+// tied to current project access (#28).
+async function loadManagedProjectIds(tx: DbTransaction, workspaceId: string, humanId: string) {
+  const rows = await tx
+    .select({ projectId: projectAccessGrants.projectId })
+    .from(projectAccessGrants)
+    .innerJoin(projects, eq(projects.id, projectAccessGrants.projectId))
+    .where(
+      and(
+        eq(projectAccessGrants.humanId, humanId),
+        eq(projectAccessGrants.level, ProjectAccessLevel.enum.manage),
+        eq(projects.workspaceId, workspaceId),
+      ),
+    );
+  return new Set(rows.map((row) => row.projectId));
+}
+
+// Non-throwing form of requireInviterStillAuthorized, for deciding whether a pending
+// invitation is still live when another invitation to the same address is created. A dead
+// offer must not block that address for seven days.
+async function inviterStillAuthorized(
+  tx: DbTransaction,
+  workspaceId: string,
+  inviterHumanId: string,
+  offered: readonly { projectId: string }[],
+) {
+  const [inviter] = await tx
+    .select({
+      isOwner: workspaceMemberships.isOwner,
+      canInviteMembers: workspaceMemberships.canInviteMembers,
+      emailVerifiedAt: humans.emailVerifiedAt,
+    })
+    .from(workspaceMemberships)
+    .innerJoin(humans, eq(humans.id, workspaceMemberships.humanId))
+    .where(
+      and(
+        eq(workspaceMemberships.workspaceId, workspaceId),
+        eq(workspaceMemberships.humanId, inviterHumanId),
+      ),
+    )
+    .limit(1);
+  if (
+    inviter === undefined ||
+    inviter.emailVerifiedAt === null ||
+    (!inviter.isOwner && !inviter.canInviteMembers)
+  ) {
+    return false;
+  }
+  if (inviter.isOwner) return true;
+  const managed = await loadManagedProjectIds(tx, workspaceId, inviterHumanId);
+  return offered.every((grant) => managed.has(grant.projectId));
 }
 
 // The listing projection: personal owners are owners by definition; a shared workspace
@@ -899,15 +961,7 @@ export function createWorkspacesService({
       try {
         workspaceName = await db.transaction(async (tx) => {
           const workspace = await lockWorkspaceForMutation(tx, workspaceId);
-          const inviter = await readMembership(
-            tx,
-            workspaceId,
-            actor.humanId,
-            "workspace_not_found",
-          );
-          if (!inviter.isOwner && !inviter.canInviteMembers) {
-            throw new WorkspacesError("not_workspace_owner");
-          }
+          const inviter = await requireInviter(tx, workspaceId, actor.humanId);
           await requireVerifiedInviter(tx, actor.humanId);
           await requireOfferedProjectsInWorkspace(tx, workspaceId, input.projectGrants);
           await requireProjectManageScope(
@@ -921,11 +975,17 @@ export function createWorkspacesService({
           await requireRecipientNotMember(tx, workspaceId, input.email);
 
           // A pending invitation blocks a new one while it is unexpired and either sent or
-          // still within the in-flight delivery grace window. Expired rows, known-failed
+          // still within the in-flight delivery grace window — but only while its inviter
+          // could still redeem it. A delegate who lost Invite members or project Manage
+          // leaves an unredeemable offer; revoking it here frees the address immediately
+          // instead of holding it for seven days (#28). Expired rows, known-failed
           // deliveries, and stale unknown deliveries past the grace window are superseded
-          // in place so a failed SMTP attempt never locks an address out for seven days.
+          // in place so a failed SMTP attempt never locks an address out either.
           const [blocking] = await tx
-            .select({ id: workspaceInvitations.id })
+            .select({
+              id: workspaceInvitations.id,
+              invitedByHumanId: workspaceInvitations.invitedByHumanId,
+            })
             .from(workspaceInvitations)
             .where(
               and(
@@ -946,7 +1006,21 @@ export function createWorkspacesService({
               ),
             )
             .limit(1);
-          if (blocking !== undefined) throw new WorkspacesError("invitation_pending");
+          if (blocking !== undefined) {
+            const deadOffered = await tx
+              .select({ projectId: workspaceInvitationGrants.projectId })
+              .from(workspaceInvitationGrants)
+              .where(eq(workspaceInvitationGrants.invitationId, blocking.id));
+            if (
+              await inviterStillAuthorized(tx, workspaceId, blocking.invitedByHumanId, deadOffered)
+            ) {
+              throw new WorkspacesError("invitation_pending");
+            }
+            await tx
+              .update(workspaceInvitations)
+              .set({ status: InvitationStatus.enum.revoked, revokedAt: sql`statement_timestamp()` })
+              .where(eq(workspaceInvitations.id, blocking.id));
+          }
 
           await tx
             .update(workspaceInvitations)
@@ -1033,17 +1107,15 @@ export function createWorkspacesService({
       return { workspaceId, email: input.email, status: InvitationStatus.enum.pending };
     },
 
-    // Every invitation in this workspace, newest first, for owners and delegated
-    // inviters. Delivery is reported separately from the lifecycle; a pending row whose
-    // deadline passed is stored and reported as expired.
+    // Invitations for owners and delegated inviters, newest first. An owner sees all of
+    // them; a delegate sees only offers they could resend or revoke themselves, i.e. those
+    // whose every offered project is one they currently Manage. Delivery is reported
+    // separately from the lifecycle; a pending row past its deadline is stored as expired.
     async invitations(account, workspaceId) {
       const actor = requireAccount(account);
       return db.transaction(async (tx) => {
         await readSharedWorkspace(tx, workspaceId);
-        const inviter = await readMembership(tx, workspaceId, actor.humanId, "workspace_not_found");
-        if (!inviter.isOwner && !inviter.canInviteMembers) {
-          throw new WorkspacesError("not_workspace_owner");
-        }
+        const inviter = await requireInviter(tx, workspaceId, actor.humanId);
         await tx
           .update(workspaceInvitations)
           .set({
@@ -1069,7 +1141,18 @@ export function createWorkspacesService({
           workspaceId,
           rows.map((row) => row.id),
         );
-        return rows.map((row) => toWorkspaceSummary(row, grantsByInvitation.get(row.id) ?? []));
+        // A delegate must not see another inviter's offer on a project that was never
+        // shared with them: the grant carries project ids, names, and levels.
+        const managed = inviter.isOwner
+          ? new Set<string>()
+          : await loadManagedProjectIds(tx, workspaceId, actor.humanId);
+        return rows
+          .filter((row) => {
+            if (inviter.isOwner) return true;
+            const offered = grantsByInvitation.get(row.id) ?? [];
+            return offered.every((grant) => managed.has(grant.projectId));
+          })
+          .map((row) => toWorkspaceSummary(row, grantsByInvitation.get(row.id) ?? []));
       });
     },
 
@@ -1085,15 +1168,7 @@ export function createWorkspacesService({
       try {
         invitation = await db.transaction(async (tx) => {
           const workspace = await lockWorkspaceForMutation(tx, workspaceId);
-          const inviter = await readMembership(
-            tx,
-            workspaceId,
-            actor.humanId,
-            "workspace_not_found",
-          );
-          if (!inviter.isOwner && !inviter.canInviteMembers) {
-            throw new WorkspacesError("not_workspace_owner");
-          }
+          const inviter = await requireInviter(tx, workspaceId, actor.humanId);
           // Rotating is a new offer: the current inviter must satisfy the same verified
           // inviter policy as an initial invitation. The check runs before the old row
           // is touched, so a refusal leaves the original link valid.
@@ -1192,18 +1267,20 @@ export function createWorkspacesService({
 
     // Revoke is an owner's or delegated inviter's answer to an offer that should no
     // longer be live. Only a pending, unexpired row changes; the row keeps its history and
-    // revocation time. A delegate cannot touch an offer with projects they do not Manage.
+    // revocation time. A delegate cannot touch another inviter's offer with projects they
+    // do not Manage, but may always revoke their own — even after losing that Manage.
     async revokeInvitation(account, workspaceId, invitationId) {
       const actor = requireAccount(account);
       const didRevoke = await db.transaction(async (tx) => {
         await lockWorkspaceForMutation(tx, workspaceId);
-        const inviter = await readMembership(tx, workspaceId, actor.humanId, "workspace_not_found");
-        if (!inviter.isOwner && !inviter.canInviteMembers) {
-          throw new WorkspacesError("not_workspace_owner");
-        }
+        const inviter = await requireInviter(tx, workspaceId, actor.humanId);
 
         const [row] = await tx
-          .select({ id: workspaceInvitations.id, status: workspaceInvitations.status })
+          .select({
+            id: workspaceInvitations.id,
+            status: workspaceInvitations.status,
+            invitedByHumanId: workspaceInvitations.invitedByHumanId,
+          })
           .from(workspaceInvitations)
           .where(
             and(
@@ -1220,7 +1297,9 @@ export function createWorkspacesService({
           .select({ projectId: workspaceInvitationGrants.projectId })
           .from(workspaceInvitationGrants)
           .where(eq(workspaceInvitationGrants.invitationId, invitationId));
-        await requireProjectManageScope(tx, workspaceId, inviter, offered, "not_workspace_owner");
+        if (row.invitedByHumanId !== actor.humanId) {
+          await requireProjectManageScope(tx, workspaceId, inviter, offered, "not_workspace_owner");
+        }
         const revoked = await tx
           .update(workspaceInvitations)
           .set({
@@ -1475,12 +1554,9 @@ export function createWorkspacesService({
           actor.humanId,
           "workspace_not_found",
         );
-        const requested: Partial<Record<WorkspaceCapability, boolean>> = {};
-        for (const capability of workspaceCapabilities) {
-          const value = input[capability];
-          if (value !== undefined) requested[capability] = value;
-        }
-        if (Object.keys(requested).length === 0) throw new WorkspacesError("not_workspace_owner");
+        // The request schema already guarantees at least one capability; parse again at
+        // the policy boundary so a direct service caller cannot bypass that contract.
+        const requested = UpdateWorkspaceMemberRequest.parse(input);
 
         const member = await requireWorkspaceMember(tx, workspaceId, humanId);
 

@@ -2641,15 +2641,20 @@ describe("workspaces", () => {
     const resent = await postEmpty(app, `${url}/${pending.id}/resend`, inviter.cookie);
     expect(resent.status).toBe(200);
 
-    // An owner-made offer on a project the delegate does not Manage cannot be touched.
+    // An owner-made offer on a project the delegate does not Manage is neither listed
+    // nor touchable by that delegate: its grant would leak a project they cannot see.
     await invite(app, adminCookie, workspace.id, "delegated.fourth@example.com", [
       { projectId: other, level: "read" },
     ]);
-    const foreign = (await invitationList(app, inviter.cookie, workspace.id)).find(
+    const inviterHistory = await invitationList(app, inviter.cookie, workspace.id);
+    expect(inviterHistory.some((item) => item.email === "delegated.fourth@example.com")).toBe(
+      false,
+    );
+    const foreign = (await invitationList(app, adminCookie, workspace.id)).find(
       (item) => item.email === "delegated.fourth@example.com" && item.status === "pending",
     );
     expect(foreign).toBeDefined();
-    if (foreign === undefined) throw new Error("the owner invitation was not listed");
+    if (foreign === undefined) throw new Error("the owner invitation was not listed for the owner");
     expect((await postEmpty(app, `${url}/${foreign.id}/resend`, inviter.cookie)).status).toBe(403);
     expect((await postEmpty(app, `${url}/${foreign.id}/revoke`, inviter.cookie)).status).toBe(403);
 
@@ -2665,6 +2670,131 @@ describe("workspaces", () => {
     expect((await postEmpty(app, `${url}/${foreign.id}/revoke`, noAuthority.cookie)).status).toBe(
       403,
     );
+  });
+
+  it("scopes a delegated inviter's invitation history to projects they currently Manage", async () => {
+    const { app, adminCookie, admin } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie, "Scoped Directory Team");
+    const managed = await createProjectDirect(workspace.id, admin.id, "Visible Project");
+    const unmanaged = await createProjectDirect(workspace.id, admin.id, "Hidden Project");
+    const inviter = await addMember(app, workspace.id, "scope.directory@example.com", {
+      canInviteMembers: true,
+    });
+    await grantProjectManage(managed, inviter.human.id, admin.id);
+
+    // The owner may offer any workspace project; the delegate may offer only the one
+    // they Manage. The delegate's history must not carry the other offer's project id,
+    // name, or level — all three are in the invitation summary's grants.
+    await invite(app, adminCookie, workspace.id, "scope.hidden@example.com", [
+      { projectId: unmanaged, level: "manage" },
+    ]);
+    await invite(app, inviter.cookie, workspace.id, "scope.visible@example.com", [
+      { projectId: managed, level: "read" },
+    ]);
+    await invite(app, inviter.cookie, workspace.id, "scope.plain@example.com");
+
+    const delegateHistory = await invitationList(app, inviter.cookie, workspace.id);
+    const emails = delegateHistory.map((item) => item.email);
+    expect(emails).toContain("scope.visible@example.com");
+    expect(emails).toContain("scope.plain@example.com");
+    expect(emails).not.toContain("scope.hidden@example.com");
+    expect(JSON.stringify(delegateHistory)).not.toContain(unmanaged);
+    expect(JSON.stringify(delegateHistory)).not.toContain("Hidden Project");
+
+    const ownerHistory = await invitationList(app, adminCookie, workspace.id);
+    expect(ownerHistory.some((item) => item.email === "scope.hidden@example.com")).toBe(true);
+    expect(JSON.stringify(ownerHistory)).toContain(unmanaged);
+  });
+
+  it("frees a dead pending invitation for revoke and immediate re-invite after Manage is lost", async () => {
+    const { app, sent, adminCookie, admin } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie, "Reinvite Team");
+    const project = await createProjectDirect(workspace.id, admin.id, "Revocable Project");
+    const inviter = await addMember(app, workspace.id, "reinvite.inviter@example.com", {
+      canInviteMembers: true,
+    });
+    await grantProjectManage(project, inviter.human.id, admin.id);
+    const url = `/api/workspaces/${workspace.id}/invitations`;
+    const dropManage = () =>
+      database.db
+        .delete(projectAccessGrants)
+        .where(
+          and(
+            eq(projectAccessGrants.projectId, project),
+            eq(projectAccessGrants.humanId, inviter.human.id),
+          ),
+        );
+    const lastToken = (email: string) => {
+      const mail = sent.findLast(
+        (candidate) => candidate.to === email && candidate.text.includes('"Reinvite Team"'),
+      );
+      const token = mail === undefined ? undefined : tokenFrom(mail.text);
+      if (token === undefined) throw new Error(`no invitation token for ${email}`);
+      return token;
+    };
+
+    // The original inviter can still revoke their own dead offer after losing Manage.
+    const firstEmail = "reinvite.revoke@example.com";
+    await invite(app, inviter.cookie, workspace.id, firstEmail, [
+      { projectId: project, level: "read" },
+    ]);
+    const firstToken = lastToken(firstEmail);
+    await dropManage();
+    const [firstHuman] = await insertHuman({ email: firstEmail, verified: true });
+    const firstRefused = await postJson(
+      app,
+      "/api/workspace-invitations/acceptance",
+      { token: firstToken },
+      await sessionFor(app, firstHuman.id),
+    );
+    expect(firstRefused.status).toBe(403);
+    expect(await problemBody(firstRefused)).toMatchObject({ code: "inviter_not_authorized" });
+    const own = (await invitationList(app, adminCookie, workspace.id)).find(
+      (item) => item.email === firstEmail && item.status === "pending",
+    );
+    expect(own).toBeDefined();
+    if (own === undefined) throw new Error("the dead invitation was not listed for the owner");
+    expect((await postEmpty(app, `${url}/${own.id}/revoke`, inviter.cookie)).status).toBe(200);
+    expect((await postJson(app, url, { email: firstEmail }, inviter.cookie)).status).toBe(201);
+
+    // A second dead offer need not be revoked first: creating a new invitation must
+    // supersede it rather than answering 409 invitation_pending for seven days.
+    const secondEmail = "reinvite.replace@example.com";
+    await grantProjectManage(project, inviter.human.id, admin.id);
+    await invite(app, inviter.cookie, workspace.id, secondEmail, [
+      { projectId: project, level: "contribute" },
+    ]);
+    const secondToken = lastToken(secondEmail);
+    await dropManage();
+    const [secondHuman] = await insertHuman({ email: secondEmail, verified: true });
+    const secondRefused = await postJson(
+      app,
+      "/api/workspace-invitations/acceptance",
+      { token: secondToken },
+      await sessionFor(app, secondHuman.id),
+    );
+    expect(secondRefused.status).toBe(403);
+    expect(await problemBody(secondRefused)).toMatchObject({ code: "inviter_not_authorized" });
+    const replacement = await postJson(app, url, { email: secondEmail }, inviter.cookie);
+    expect(replacement.status).toBe(201);
+
+    const rows = await database.db
+      .select({ status: workspaceInvitations.status })
+      .from(workspaceInvitations)
+      .where(
+        and(
+          eq(workspaceInvitations.workspaceId, workspace.id),
+          eq(workspaceInvitations.email, secondEmail),
+        ),
+      );
+    expect(rows.map((row) => row.status).toSorted()).toEqual(["pending", "revoked"]);
+    const accepted = await postJson(
+      app,
+      "/api/workspace-invitations/acceptance",
+      { token: lastToken(secondEmail) },
+      await sessionFor(app, secondHuman.id),
+    );
+    expect(accepted.status).toBe(200);
   });
 
   it("refuses a pending invitation once the inviter loses capability or project Manage", async () => {

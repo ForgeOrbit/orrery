@@ -2,8 +2,10 @@ import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import {
   ProjectAccessLevel,
+  workspaceCapabilities,
   type InvitationSummary,
   type Workspace,
+  type WorkspaceCapability,
   type WorkspaceMember,
 } from "@orrery/contract";
 import type { FormEvent } from "react";
@@ -31,30 +33,12 @@ import {
 // same boundary for every client (#33). No client state is a capability: the effective
 // capabilities come from the Workspace response on every load.
 
-type WorkspaceCapability =
-  | "canCreateProjects"
-  | "canInviteMembers"
-  | "canRemoveMembers"
-  | "canManageMemberPermissions";
-
 const capabilityLabels: Record<WorkspaceCapability, string> = {
   canCreateProjects: "Create projects",
   canInviteMembers: "Invite members",
   canRemoveMembers: "Remove members",
   canManageMemberPermissions: "Manage member permissions",
 };
-
-const delegatedCapabilities: readonly WorkspaceCapability[] = [
-  "canCreateProjects",
-  "canInviteMembers",
-  "canRemoveMembers",
-];
-const allCapabilities: readonly WorkspaceCapability[] = [
-  "canCreateProjects",
-  "canInviteMembers",
-  "canRemoveMembers",
-  "canManageMemberPermissions",
-];
 
 function mayManageMembers(workspace: Workspace): boolean {
   return (
@@ -76,9 +60,11 @@ function changeableCapabilities(
   ownEmail: string | undefined,
 ): readonly WorkspaceCapability[] {
   if (member.isOwner || member.email === ownEmail) return [];
-  if (workspace.isOwner) return allCapabilities;
+  if (workspace.isOwner) return workspaceCapabilities;
   if (!workspace.canManageMemberPermissions) return [];
-  return delegatedCapabilities.filter((capability) => workspace[capability]);
+  return workspaceCapabilities.filter(
+    (capability) => capability !== "canManageMemberPermissions" && workspace[capability],
+  );
 }
 
 // Owners may remove anyone except the last owner (a server-side check). A delegated
@@ -283,7 +269,7 @@ function WorkspaceMembers({
         {members.map((member) => (
           <li key={member.humanId} data-member-id={member.humanId}>
             {member.email} <span>{member.isOwner ? "Owner" : "Member"}</span>{" "}
-            {allCapabilities.map((capability) => (
+            {workspaceCapabilities.map((capability) => (
               <span
                 key={capability}
                 data-capability={capability}

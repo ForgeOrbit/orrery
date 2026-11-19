@@ -7,6 +7,18 @@ import { InvitationGrant, InvitationStatus, WorkspaceInvitationProjectGrant } fr
 // scoped to the caller's own access: another person's personal workspace never appears
 // in it, not even for a system administrator.
 
+// The four independently delegated workspace capabilities (#20, #28). One tuple, shared
+// by the server's policy checks and the web app's controls, so a capability added here
+// cannot be forgotten by one client. Project Manage is not in this list: it is a project
+// level and grants none of these.
+export const workspaceCapabilities = [
+  "canCreateProjects",
+  "canInviteMembers",
+  "canRemoveMembers",
+  "canManageMemberPermissions",
+] as const;
+export type WorkspaceCapability = (typeof workspaceCapabilities)[number];
+
 // A workspace the signed-in account can access. `isOwner` is true for the owner of a
 // personal workspace and for each owner of a shared one; it is what lets a client show
 // owner-only actions without a second request. The four `can*` fields are the caller's
