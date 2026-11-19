@@ -103,6 +103,8 @@ const failure = (c: Context, error: AccountsError) =>
 // Thin: call the service, map the result to HTTP. No rules here.
 export function createAccountsRest(service: AccountsService) {
   const policy = service.sessionPolicy();
+  // The session route and every borrowing feature resolve sessions the same way.
+  const readSession = createSessionReader(service);
 
   // Validation failures answer as a validation_failed Problem, like every other error.
   const app = new OpenAPIHono({ defaultHook: validationHook });
@@ -158,8 +160,7 @@ export function createAccountsRest(service: AccountsService) {
   );
 
   app.openapi(session, async (c) => {
-    const token = getCookie(c, SESSION_COOKIE);
-    const account = token === undefined ? null : await service.session(token);
+    const account = await readSession(c);
     if (account === null) {
       return problemResponse(c, { status: 401, code: "not_signed_in", title: "Not signed in." });
     }

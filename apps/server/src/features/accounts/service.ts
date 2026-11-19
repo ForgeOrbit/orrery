@@ -9,6 +9,7 @@ import type {
 } from "@orrery/contract";
 import { and, eq, gt, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import type { DbTransaction } from "../../platform/db.ts";
 import { browserSessions, humans, instanceSetup, workspaces } from "../../db/schema.ts";
 
 // The service is the only file in a feature that decides anything. rest.ts and mcp.ts call it.
@@ -163,6 +164,10 @@ export interface AccountsService {
   login(input: LoginRequest): Promise<{ token: string; email: string }>;
   session(token: string): Promise<SessionAccount | null>;
   sessionPolicy(): SessionPolicy;
+  // Marks an account's email verified, at database time, inside the caller's
+  // transaction: the humans table is accounts' to write, but the flow that earns the
+  // mark (issue #22's token redemption) is another feature's.
+  markEmailVerified(humanId: string, tx: DbTransaction): Promise<void>;
 }
 
 export function createAccountsService({
@@ -263,6 +268,15 @@ export function createAccountsService({
         )
         .limit(1);
       return row ?? null;
+    },
+
+    // Inside the caller's transaction: the mark commits with the flow that earned it
+    // or not at all.
+    async markEmailVerified(humanId: string, tx: DbTransaction) {
+      await tx
+        .update(humans)
+        .set({ emailVerifiedAt: sql`now()` })
+        .where(eq(humans.id, humanId));
     },
   };
 }
