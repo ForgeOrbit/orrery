@@ -30,7 +30,7 @@ Run from the repo root. Node 26 (`.node-version`) and pnpm 12 (`packageManager`)
 | `pnpm test` | Unit tests and Postgres tests (Docker required, via Testcontainers). |
 | `pnpm gen` | Regenerate `contract/*.json`. Run after changing a route or tool, and commit the result. |
 | `pnpm db:generate` | Generate a migration in `db/migrations/` from the Drizzle schema. Run after changing the schema, and commit the result. |
-| `docker compose up -d --build --wait` then `ORRERY_URL=http://localhost:8080 pnpm test:e2e` | Black-box tests against the real image. |
+| `docker compose --profile mail-test up -d --build --wait` then `ORRERY_URL=http://localhost:8080 pnpm test:e2e` | Black-box tests against the real image, with the Mailpit catcher for email delivery. |
 
 ## Stack
 
@@ -44,6 +44,7 @@ Use these. Don't add an alternative; the lint bans the common ones (`.oxlintrc.j
 | Migrations | `pnpm db:generate` from `apps/server/src/db/schema.ts` | hand-written `.sql` |
 | Validation and schemas | Zod 4, shared through `packages/contract/` | Zod 3 APIs, `zod/v3` |
 | Error responses | RFC 9457 Problem Details (`application/problem+json`) with a stable `code`, built only through `platform/problem.ts`; successes return the resource itself ([ADR-0003](docs/adr/0003-problem-details-for-errors.md)). A test fails if an API route declares an error that isn't a Problem. | JSend or other envelopes, ad-hoc `{ message }` bodies, `c.json` for errors |
+| Email | nodemailer, sent only through the settings feature's exported sender (`apps/server/src/features/settings/`). Secrets in instance settings are encrypted at rest with `ORRERY_ENCRYPTION_KEY` ([ADR-0004](docs/adr/0004-encrypt-instance-secrets-at-rest.md)). | other mail libraries |
 | MCP | `@modelcontextprotocol/server` (server), `@modelcontextprotocol/client` (e2e). Tool contracts in `packages/contract/src/mcp-tools.ts`. | |
 | Logging | `platform/log.ts` (JSON lines). `console` is a lint error in `apps/server/src/`. | pino, winston |
 | Web app | React, Vite, TanStack Router (file-based; `routeTree.gen.ts` is generated, don't edit it) | React Router |

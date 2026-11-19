@@ -26,13 +26,26 @@ if (!baseUrl)
 const mailpit = process.env.MAILPIT_URL ?? "http://localhost:8025";
 const restartCommand = process.env.ORRERY_RESTART_CMD;
 
-// The settings under test: the catcher's SMTP listener, reached over the compose network.
+// A password the stack stores encrypted at rest (ADR-0004); its plaintext is a needle.
 const SMTP_PASSWORD = "catcher-relay-passphrase-for-tests";
+
+// The settings that deliver through the catcher: its SMTP listener is plain and open,
+// reached over the compose network.
 const SETTINGS = {
   host: "mailpit",
   port: 1025,
   security: "none",
   username: null,
+  password: null,
+  from: "orrery@orrery.test",
+} as const;
+// A password-bearing shape for the echo check: security tls is allowed to carry one
+// (only "none" refuses credentials), and it is never sent anywhere.
+const SETTINGS_WITH_PASSWORD = {
+  host: "mailpit",
+  port: 465,
+  security: "tls",
+  username: "postmaster",
   password: SMTP_PASSWORD,
   from: "orrery@orrery.test",
 } as const;
@@ -44,7 +57,11 @@ let verificationToken = "";
 
 let api: APIRequestContext;
 test.beforeAll(async () => {
+  // The plaintext and the deployment's key are both secrets the stack's logs must never
+  // contain (ADR-0004).
   await recordSecret(SMTP_PASSWORD);
+  const encryptionKey = process.env.ORRERY_ENCRYPTION_KEY;
+  if (encryptionKey !== undefined) await recordSecret(encryptionKey);
   api = await request.newContext({ baseURL: baseUrl });
   // Sign in here, not inside a test: Playwright restarts the worker after a failed
   // test, and a restarted worker re-runs this hook with a fresh, signed-in context —
@@ -79,6 +96,19 @@ test("refuses every settings operation without a session", async () => {
 });
 
 test("saves the SMTP settings without ever echoing the password", async () => {
+  // First a password-bearing shape: the stack stores it encrypted at rest with the
+  // deployment's key (ADR-0004) and returns only that one is stored.
+  const withPassword = await api.put("/api/settings/smtp", {
+    data: SETTINGS_WITH_PASSWORD,
+  });
+  expect(withPassword.status()).toBe(200);
+  const stored = await withPassword.json();
+  expect(stored).toMatchObject({ security: "tls", username: "postmaster", hasPassword: true });
+  // The plaintext is never echoed, in any response.
+  expect(JSON.stringify(stored)).not.toContain(SMTP_PASSWORD);
+
+  // Then the settings that actually deliver through the catcher: its listener is
+  // plain and open, so security none with no credentials.
   const saved = await api.put("/api/settings/smtp", { data: SETTINGS });
   expect(saved.status()).toBe(200);
   const body = await saved.json();
@@ -87,11 +117,9 @@ test("saves the SMTP settings without ever echoing the password", async () => {
     port: 1025,
     security: "none",
     username: null,
-    hasPassword: true,
+    hasPassword: false,
     from: "orrery@orrery.test",
   });
-  // The secret is stored, never returned.
-  expect(JSON.stringify(body)).not.toContain(SMTP_PASSWORD);
 
   const got = await api.get("/api/settings/smtp");
   expect(await got.json()).toEqual(body);
@@ -120,9 +148,13 @@ test("sends the test email, and the catcher receives it with a fresh token", asy
   const { text, to } = caughtTextAndTo(await detail.json());
   expect(text).toContain(ADMIN_EMAIL);
   expect(to).toContain(ADMIN_EMAIL);
-  const token = text.match(/token=([A-Za-z0-9_-]+)/)?.[1];
+  // The email says how to complete verification, with no link to follow (issue #22
+  // review): the token travels as its own identifiable line.
+  expect(text).toContain("/api/settings/email-verification");
+  expect(text).not.toContain("verify-email?token=");
+  const token = text.match(/Single-use token, valid for 24 hours:\r?\n\r?\n([A-Za-z0-9_-]+)/)?.[1];
   expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
-  // A token-bearing URL: the stack's logs must never contain it.
+  // A token the stack's logs must never contain.
   await recordSecret(token ?? "");
   verificationToken = token ?? "";
 });
@@ -201,7 +233,7 @@ test("keeps the settings and the verified email across a restart", async () => {
     host: "mailpit",
     port: 1025,
     security: "none",
-    hasPassword: true,
+    hasPassword: false,
     from: "orrery@orrery.test",
   });
 

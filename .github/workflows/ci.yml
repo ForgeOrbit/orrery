@@ -65,6 +65,9 @@ jobs:
       # The stack's one-time setup secret (at least 32 characters); the tests must know it
       # to drive bootstrap.
       BOOTSTRAP_SECRET: ci-bootstrap-secret-0123456789abcdef
+      # The key that encrypts instance secrets at rest (ADR-0004): base64 for exactly
+      # 32 bytes. The SMTP spec saves a password, so the stack needs it.
+      ORRERY_ENCRYPTION_KEY: 5JxZLMqonzkGHjJwLLuzM6d6fQ6m7onmSI+7yeB9NW0=
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
@@ -73,7 +76,8 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: docker compose up -d --build --wait
+      # The mail-test profile starts the Mailpit catcher the SMTP checks read from.
+      - run: docker compose --profile mail-test up -d --build --wait
       - name: Install the browser for the Playwright specs
         run: pnpm --filter @orrery/e2e exec playwright install --with-deps chromium
       - name: REST and browser checks, including a restart
