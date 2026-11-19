@@ -140,7 +140,7 @@ describe("invitations", () => {
 
   afterEach(async () => {
     await database.db.execute(
-      sql`truncate invitations, humans, workspaces, browser_sessions, instance_setup, instance_settings, email_verification_tokens`,
+      sql`truncate workspace_events, workspace_invitations, workspace_memberships, invitations, humans, workspaces, browser_sessions, instance_setup, instance_settings, email_verification_tokens`,
     );
   });
 

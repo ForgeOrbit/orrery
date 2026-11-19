@@ -44,7 +44,15 @@ export function createFeatures(database: Database, config: Config, log: Logger):
       deliver: settings.deliver,
       log,
     }),
-    createWorkspacesFeature({ db: database.db, sessionReader: accounts.sessionReader }),
+    createWorkspacesFeature({
+      db: database.db,
+      publicUrl: config.PUBLIC_URL,
+      sessionReader: accounts.sessionReader,
+      createInvitedHuman: accounts.createInvitedHuman,
+      markEmailVerified: accounts.markEmailVerified,
+      deliver: settings.deliver,
+      log,
+    }),
   ];
 }
 

@@ -1,6 +1,7 @@
-import { WorkspacesResponse } from "@orrery/contract";
-import type { Workspace } from "@orrery/contract";
+import { Workspace, WorkspaceInvitationPreview, WorkspacesResponse } from "@orrery/contract";
+import type { Workspace as WorkspaceResource } from "@orrery/contract";
 import { queryOptions } from "@tanstack/react-query";
+import { getJson } from "../../lib/api.ts";
 
 // Query definitions for this feature, shared by routes and components so they use one
 // cache key. Responses are parsed with the contract's zod schemas, so a server change
@@ -8,7 +9,7 @@ import { queryOptions } from "@tanstack/react-query";
 
 export const workspacesQuery = queryOptions({
   queryKey: ["workspaces"],
-  queryFn: async (): Promise<Workspace[]> => {
+  queryFn: async (): Promise<WorkspaceResource[]> => {
     const res = await fetch("/api/workspaces");
     // No cookie or an expired session is a normal state, not an error.
     if (res.status === 401) return [];
@@ -16,3 +17,21 @@ export const workspacesQuery = queryOptions({
     return WorkspacesResponse.parse(await res.json());
   },
 });
+
+export const workspaceQuery = (workspaceId: string) =>
+  queryOptions({
+    queryKey: ["workspaces", workspaceId],
+    queryFn: () =>
+      getJson(`/api/workspaces/${encodeURIComponent(workspaceId)}`, (value) =>
+        Workspace.parse(value),
+      ),
+  });
+
+export const workspaceInvitationPreviewQuery = (token: string) =>
+  queryOptions({
+    queryKey: ["workspace-invitation", token],
+    queryFn: () =>
+      getJson(`/api/workspace-invitations/preview?token=${encodeURIComponent(token)}`, (value) =>
+        WorkspaceInvitationPreview.parse(value),
+      ),
+  });

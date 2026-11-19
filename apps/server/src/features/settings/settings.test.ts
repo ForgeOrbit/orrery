@@ -189,7 +189,7 @@ describe("settings", () => {
 
   afterEach(async () => {
     await database.db.execute(
-      sql`truncate humans, workspaces, browser_sessions, instance_setup, instance_settings, email_verification_tokens, invitations`,
+      sql`truncate workspace_events, workspace_invitations, workspace_memberships, humans, workspaces, browser_sessions, instance_setup, instance_settings, email_verification_tokens, invitations`,
     );
   });
 

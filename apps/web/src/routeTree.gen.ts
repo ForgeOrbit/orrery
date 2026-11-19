@@ -13,6 +13,8 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as RegisterRouteImport } from './routes/register'
 import { Route as SetupRouteImport } from './routes/setup'
 import { Route as SigninRouteImport } from './routes/signin'
+import { Route as WorkspaceInvitationRouteImport } from './routes/workspace-invitation'
+import { Route as WorkspacesWorkspaceIdRouteImport } from './routes/workspaces.$workspaceId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -34,18 +36,32 @@ const SigninRoute = SigninRouteImport.update({
   path: '/signin',
   getParentRoute: () => rootRouteImport,
 } as any)
+const WorkspaceInvitationRoute = WorkspaceInvitationRouteImport.update({
+  id: '/workspace-invitation',
+  path: '/workspace-invitation',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const WorkspacesWorkspaceIdRoute = WorkspacesWorkspaceIdRouteImport.update({
+  id: '/workspaces/$workspaceId',
+  path: '/workspaces/$workspaceId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/register': typeof RegisterRoute
   '/setup': typeof SetupRoute
   '/signin': typeof SigninRoute
+  '/workspace-invitation': typeof WorkspaceInvitationRoute
+  '/workspaces/$workspaceId': typeof WorkspacesWorkspaceIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/register': typeof RegisterRoute
   '/setup': typeof SetupRoute
   '/signin': typeof SigninRoute
+  '/workspace-invitation': typeof WorkspaceInvitationRoute
+  '/workspaces/$workspaceId': typeof WorkspacesWorkspaceIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -53,13 +69,34 @@ export interface FileRoutesById {
   '/register': typeof RegisterRoute
   '/setup': typeof SetupRoute
   '/signin': typeof SigninRoute
+  '/workspace-invitation': typeof WorkspaceInvitationRoute
+  '/workspaces/$workspaceId': typeof WorkspacesWorkspaceIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/register' | '/setup' | '/signin'
+  fullPaths:
+    | '/'
+    | '/register'
+    | '/setup'
+    | '/signin'
+    | '/workspace-invitation'
+    | '/workspaces/$workspaceId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/register' | '/setup' | '/signin'
-  id: '__root__' | '/' | '/register' | '/setup' | '/signin'
+  to:
+    | '/'
+    | '/register'
+    | '/setup'
+    | '/signin'
+    | '/workspace-invitation'
+    | '/workspaces/$workspaceId'
+  id:
+    | '__root__'
+    | '/'
+    | '/register'
+    | '/setup'
+    | '/signin'
+    | '/workspace-invitation'
+    | '/workspaces/$workspaceId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -67,6 +104,8 @@ export interface RootRouteChildren {
   RegisterRoute: typeof RegisterRoute
   SetupRoute: typeof SetupRoute
   SigninRoute: typeof SigninRoute
+  WorkspaceInvitationRoute: typeof WorkspaceInvitationRoute
+  WorkspacesWorkspaceIdRoute: typeof WorkspacesWorkspaceIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -99,6 +138,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SigninRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/workspace-invitation': {
+      id: '/workspace-invitation'
+      path: '/workspace-invitation'
+      fullPath: '/workspace-invitation'
+      preLoaderRoute: typeof WorkspaceInvitationRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/workspaces/$workspaceId': {
+      id: '/workspaces/$workspaceId'
+      path: '/workspaces/$workspaceId'
+      fullPath: '/workspaces/$workspaceId'
+      preLoaderRoute: typeof WorkspacesWorkspaceIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -107,6 +160,8 @@ const rootRouteChildren: RootRouteChildren = {
   RegisterRoute: RegisterRoute,
   SetupRoute: SetupRoute,
   SigninRoute: SigninRoute,
+  WorkspaceInvitationRoute: WorkspaceInvitationRoute,
+  WorkspacesWorkspaceIdRoute: WorkspacesWorkspaceIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
