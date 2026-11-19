@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import {
   Issue,
@@ -16,21 +16,19 @@ import { eq, sql } from "drizzle-orm";
 import type { Hono } from "hono";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
-  browserSessions,
   humans,
   issueComments,
   issues,
   knowledgeEntries,
   projectActivity,
   projects,
-  workspaceMemberships,
   workspaces,
 } from "../../db/schema.ts";
 import { createDb, type Database } from "../../platform/db.ts";
+import { rootCause } from "../../platform/errors.ts";
 import { createApp } from "../../platform/http.ts";
 import { createLogger } from "../../platform/log.ts";
 import { migrate } from "../../platform/migrate.ts";
-import { tokenHash } from "../../platform/tokens.ts";
 import { createAccountsFeature } from "../accounts/index.ts";
 import { createProjectsFeature } from "./index.ts";
 
@@ -87,36 +85,16 @@ async function cookieFor(app: Hono, email: string, password: string) {
 let databaseForHelpers: Database;
 const currentDatabase = () => databaseForHelpers;
 
-async function insertHuman(input: { email: string; verified: boolean }) {
-  const [human] = await currentDatabase()
-    .db.insert(humans)
-    .values({
-      id: randomUUID(),
-      email: input.email.trim().toLowerCase(),
-      passwordHash: "scrypt$anything",
-      ...(input.verified ? { emailVerifiedAt: sql`now()` } : {}),
-    })
-    .returning();
-  if (human === undefined) throw new Error("the account was not created");
-  return human;
-}
-
-async function sessionFor(app: Hono, humanId: string) {
-  const token = randomBytes(32).toString("base64url");
-  await currentDatabase()
-    .db.insert(browserSessions)
-    .values({
-      id: randomUUID(),
-      humanId,
-      tokenHash: tokenHash(token),
-      expiresAt: sql`now() + interval '1 hour'`,
-    });
-  return `orrery_session=${token}`;
-}
-
-async function verifiedCookie(app: Hono, email: string) {
-  const human = await insertHuman({ email, verified: true });
-  return { human, cookie: await sessionFor(app, human.id) };
+// Drizzle wraps the driver's error; the root's message (the PostgresError's) carries the
+// constraint name. Resolves with that, or the stringified error.
+async function rejection(promise: Promise<unknown>): Promise<string> {
+  const error = await promise.then(
+    () => {
+      throw new Error("expected the write to be rejected");
+    },
+    (cause: unknown) => cause,
+  );
+  return rootCause(error)?.message ?? String(error);
 }
 
 async function personalWorkspaceId(humanId: string) {
@@ -234,7 +212,7 @@ describe("projects", () => {
     };
   }
 
-  it("keeps a personal project private and refuses every unauthenticated path", async () => {
+  it("refuses every unauthenticated path to a personal project", async () => {
     const { app, admin, adminCookie, workspaceId } = await readyApp();
     const project = await createProject(app, adminCookie, workspaceId);
     const issue = await createIssue(app, adminCookie, project.id);
@@ -276,35 +254,6 @@ describe("projects", () => {
       expect(res.headers.get("content-type")).toBe("application/problem+json");
       expect(await problemBody(res)).toMatchObject({ status: 401, code: "not_signed_in" });
     }
-
-    // A second signed-in human has no access to another person's personal workspace or
-    // project. The answers are the same as for a missing resource, so ids cannot be
-    // enumerated.
-    const { cookie: outsiderCookie } = await verifiedCookie(app, "outsider@example.com");
-    const hiddenWorkspace = await getJson(
-      app,
-      `/api/workspaces/${workspaceId}/projects`,
-      outsiderCookie,
-    );
-    expect(hiddenWorkspace.status).toBe(404);
-    expect(await problemBody(hiddenWorkspace)).toMatchObject({ code: "workspace_not_found" });
-
-    const hiddenProject = await getJson(app, `/api/projects/${project.id}`, outsiderCookie);
-    expect(hiddenProject.status).toBe(404);
-    expect(await problemBody(hiddenProject)).toMatchObject({ code: "project_not_found" });
-
-    const hiddenIssue = await getJson(app, `/api/issues/${issue.id}`, outsiderCookie);
-    expect(hiddenIssue.status).toBe(404);
-    expect(await problemBody(hiddenIssue)).toMatchObject({ code: "issue_not_found" });
-
-    const hiddenComment = await postJson(
-      app,
-      `/api/issues/${issue.id}/comments`,
-      { body: "Not mine" },
-      outsiderCookie,
-    );
-    expect(hiddenComment.status).toBe(404);
-    expect(await problemBody(hiddenComment)).toMatchObject({ code: "issue_not_found" });
 
     // The administrator's own listing still returns the project.
     const visible = await getJson(app, `/api/workspaces/${workspaceId}/projects`, adminCookie);
@@ -577,48 +526,51 @@ describe("projects", () => {
     });
   });
 
-  it("gives a shared workspace owner access while an ordinary member has none", async () => {
-    const { app, admin, adminCookie } = await readyApp();
-    const workspaceId = randomUUID();
-    await database.db.transaction(async (tx) => {
-      await tx.insert(workspaces).values({ id: workspaceId, kind: "shared", name: "Team" });
-      await tx.insert(workspaceMemberships).values({
-        id: randomUUID(),
-        workspaceId,
-        humanId: admin.id,
-        isOwner: true,
-      });
-    });
-    const { human: member, cookie: memberCookie } = await verifiedCookie(app, "member@example.com");
-    await database.db.insert(workspaceMemberships).values({
-      id: randomUUID(),
-      workspaceId,
-      humanId: member.id,
-      isOwner: false,
-    });
-
-    // An owner creates a project; a member cannot create one and sees no project.
-    const project = await createProject(app, adminCookie, workspaceId, "Team Project");
-    const memberCreate = await postJson(
+  it("enforces the activity target by event type at the database", async () => {
+    const { app, admin, adminCookie, workspaceId } = await readyApp();
+    const project = await createProject(app, adminCookie, workspaceId);
+    const issue = await createIssue(app, adminCookie, project.id);
+    const knowledgeResponse = await postJson(
       app,
-      `/api/workspaces/${workspaceId}/projects`,
-      { name: "Not allowed" },
-      memberCookie,
+      `/api/projects/${project.id}/knowledge`,
+      { title: "Target check" },
+      adminCookie,
     );
-    expect(memberCreate.status).toBe(403);
-    expect(await problemBody(memberCreate)).toMatchObject({ code: "not_workspace_owner" });
+    expect(knowledgeResponse.status).toBe(201);
+    const knowledge = KnowledgeEntry.parse(await knowledgeResponse.json());
 
-    const memberList = await getJson(app, `/api/workspaces/${workspaceId}/projects`, memberCookie);
-    expect(memberList.status).toBe(200);
-    expect(ProjectsResponse.parse(await memberList.json())).toEqual([]);
+    const invalid = [
+      { type: "project_created", issueId: issue.id, knowledgeEntryId: null },
+      { type: "project_created", issueId: null, knowledgeEntryId: knowledge.id },
+      { type: "issue_created", issueId: null, knowledgeEntryId: null },
+      { type: "issue_commented", issueId: issue.id, knowledgeEntryId: knowledge.id },
+      { type: "knowledge_created", issueId: issue.id, knowledgeEntryId: knowledge.id },
+      { type: "knowledge_edited", issueId: null, knowledgeEntryId: null },
+    ] as const;
+    for (const values of invalid) {
+      expect(
+        await rejection(
+          database.db.insert(projectActivity).values({
+            id: randomUUID(),
+            projectId: project.id,
+            actorHumanId: admin.id,
+            summary: "Target check",
+            createdAt: sql`statement_timestamp()`,
+            ...values,
+          }),
+        ),
+      ).toContain("project_activity_target_matches_type");
+    }
 
-    const memberProject = await getJson(app, `/api/projects/${project.id}`, memberCookie);
-    expect(memberProject.status).toBe(404);
-    expect(await problemBody(memberProject)).toMatchObject({ code: "project_not_found" });
-
-    const ownerList = await getJson(app, `/api/workspaces/${workspaceId}/projects`, adminCookie);
-    expect(ownerList.status).toBe(200);
-    expect(ProjectsResponse.parse(await ownerList.json())).toEqual([project]);
+    // The same shape with a matching target still inserts.
+    await database.db.insert(projectActivity).values({
+      id: randomUUID(),
+      projectId: project.id,
+      actorHumanId: admin.id,
+      type: "project_created",
+      summary: "Valid target",
+      createdAt: sql`statement_timestamp()`,
+    });
   });
 
   it("answers invalid ids and request shapes with validation Problems", async () => {

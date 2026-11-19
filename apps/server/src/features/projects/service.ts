@@ -15,7 +15,7 @@ import {
   type UpdateIssueRequest,
   type UpdateKnowledgeEntryRequest,
 } from "@orrery/contract";
-import { and, eq, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
@@ -26,23 +26,20 @@ import {
   knowledgeEntries,
   projectActivity,
   projects,
-  workspaceMemberships,
   workspaces,
 } from "../../db/schema.ts";
 import type { SessionAccount } from "../accounts/index.ts";
 
 // The service is the only file in this feature that decides anything. rest.ts calls it.
 //
-// Access in this slice (#26) is the workspace's own: a personal workspace's owner, or a
-// shared workspace's owner. #27 adds the Read/Contribute/Manage project levels; until
-// then an ordinary shared-workspace member has no project access, which is exactly #20's
-// default ("members receive no project access by default"). Every project query applies
-// that boundary, so no transport can bypass it.
+// Projects are personal in this slice (#26): only the owner of a personal workspace can
+// list, create, or access its projects. Shared workspaces gain project creation and the
+// Read/Contribute/Manage levels with #27, so they have no project surface yet. Every
+// project query applies the one access predicate below, so no transport can bypass it.
 
 export type ProjectsErrorKind =
   | "not_signed_in"
   | "workspace_not_found"
-  | "not_workspace_owner"
   | "project_not_found"
   | "issue_not_found"
   | "knowledge_entry_not_found";
@@ -50,7 +47,6 @@ export type ProjectsErrorKind =
 const messages = {
   not_signed_in: "Not signed in.",
   workspace_not_found: "This workspace does not exist.",
-  not_workspace_owner: "Only a workspace owner can create a project here.",
   project_not_found: "This project does not exist.",
   issue_not_found: "This issue does not exist.",
   knowledge_entry_not_found: "This knowledge entry does not exist.",
@@ -261,45 +257,31 @@ function toActivity(row: ActivityRow): ProjectActivity {
   };
 }
 
-// The workspace as the caller sees it: personal owner, or a member of a shared one.
-// A workspace outside the caller's access answers exactly like a missing one.
+// The one project access predicate for #26: the workspace is personal, and the caller is
+// its owner. Shared workspaces gain project access with #27; until then they have no
+// project surface. Every workspace and project query below applies this same predicate.
+function canAccessProject(
+  row: { workspaceKind: WorkspaceKind; personalOwnerHumanId: string | null },
+  humanId: string,
+): boolean {
+  return row.workspaceKind === WorkspaceKind.enum.personal && row.personalOwnerHumanId === humanId;
+}
+
+// A workspace outside the caller's personal ownership answers exactly like a missing one.
 async function requireWorkspace(tx: DbTransaction, workspaceId: string, humanId: string) {
   const [row] = await tx
     .select({
-      id: workspaces.id,
-      kind: workspaces.kind,
-      name: workspaces.name,
+      workspaceKind: workspaces.kind,
       personalOwnerHumanId: workspaces.personalOwnerHumanId,
-      membershipHumanId: workspaceMemberships.humanId,
-      membershipIsOwner: workspaceMemberships.isOwner,
     })
     .from(workspaces)
-    .leftJoin(
-      workspaceMemberships,
-      and(
-        eq(workspaceMemberships.workspaceId, workspaces.id),
-        eq(workspaceMemberships.humanId, humanId),
-      ),
-    )
     .where(eq(workspaces.id, workspaceId))
     .limit(1);
 
-  if (row === undefined) throw new ProjectsError("workspace_not_found");
-  const accessible =
-    row.kind === WorkspaceKind.enum.personal
-      ? row.personalOwnerHumanId === humanId
-      : row.membershipHumanId !== null;
-  if (!accessible) throw new ProjectsError("workspace_not_found");
+  if (row === undefined || !canAccessProject(row, humanId)) {
+    throw new ProjectsError("workspace_not_found");
+  }
   return row;
-}
-
-function canManageProjects(
-  workspace: Awaited<ReturnType<typeof requireWorkspace>>,
-  humanId: string,
-): boolean {
-  return workspace.kind === WorkspaceKind.enum.personal
-    ? workspace.personalOwnerHumanId === humanId
-    : workspace.membershipIsOwner === true;
 }
 
 // The project and the caller's access to it, in one query. A caller who cannot access the
@@ -311,27 +293,16 @@ async function requireProject(tx: DbTransaction, projectId: string, humanId: str
       ...projectColumns,
       workspaceKind: workspaces.kind,
       personalOwnerHumanId: workspaces.personalOwnerHumanId,
-      membershipIsOwner: workspaceMemberships.isOwner,
     })
     .from(projects)
     .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
     .innerJoin(projectCreator, eq(projectCreator.id, projects.createdByHumanId))
-    .leftJoin(
-      workspaceMemberships,
-      and(
-        eq(workspaceMemberships.workspaceId, projects.workspaceId),
-        eq(workspaceMemberships.humanId, humanId),
-      ),
-    )
     .where(eq(projects.id, projectId))
     .limit(1);
 
-  if (row === undefined) throw new ProjectsError("project_not_found");
-  const accessible =
-    row.workspaceKind === WorkspaceKind.enum.personal
-      ? row.personalOwnerHumanId === humanId
-      : row.membershipIsOwner === true;
-  if (!accessible) throw new ProjectsError("project_not_found");
+  if (row === undefined || !canAccessProject(row, humanId)) {
+    throw new ProjectsError("project_not_found");
+  }
   return row;
 }
 
@@ -341,29 +312,18 @@ async function requireIssue(tx: DbTransaction, issueId: string, humanId: string)
       ...issueColumns,
       workspaceKind: workspaces.kind,
       personalOwnerHumanId: workspaces.personalOwnerHumanId,
-      membershipIsOwner: workspaceMemberships.isOwner,
     })
     .from(issues)
     .innerJoin(projects, eq(projects.id, issues.projectId))
     .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
     .innerJoin(issueCreator, eq(issueCreator.id, issues.createdByHumanId))
     .innerJoin(issueEditor, eq(issueEditor.id, issues.updatedByHumanId))
-    .leftJoin(
-      workspaceMemberships,
-      and(
-        eq(workspaceMemberships.workspaceId, projects.workspaceId),
-        eq(workspaceMemberships.humanId, humanId),
-      ),
-    )
     .where(eq(issues.id, issueId))
     .limit(1);
 
-  if (row === undefined) throw new ProjectsError("issue_not_found");
-  const accessible =
-    row.workspaceKind === WorkspaceKind.enum.personal
-      ? row.personalOwnerHumanId === humanId
-      : row.membershipIsOwner === true;
-  if (!accessible) throw new ProjectsError("issue_not_found");
+  if (row === undefined || !canAccessProject(row, humanId)) {
+    throw new ProjectsError("issue_not_found");
+  }
   return row;
 }
 
@@ -373,29 +333,18 @@ async function requireKnowledge(tx: DbTransaction, entryId: string, humanId: str
       ...knowledgeColumns,
       workspaceKind: workspaces.kind,
       personalOwnerHumanId: workspaces.personalOwnerHumanId,
-      membershipIsOwner: workspaceMemberships.isOwner,
     })
     .from(knowledgeEntries)
     .innerJoin(projects, eq(projects.id, knowledgeEntries.projectId))
     .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
     .innerJoin(knowledgeCreator, eq(knowledgeCreator.id, knowledgeEntries.createdByHumanId))
     .innerJoin(knowledgeEditor, eq(knowledgeEditor.id, knowledgeEntries.updatedByHumanId))
-    .leftJoin(
-      workspaceMemberships,
-      and(
-        eq(workspaceMemberships.workspaceId, projects.workspaceId),
-        eq(workspaceMemberships.humanId, humanId),
-      ),
-    )
     .where(eq(knowledgeEntries.id, entryId))
     .limit(1);
 
-  if (row === undefined) throw new ProjectsError("knowledge_entry_not_found");
-  const accessible =
-    row.workspaceKind === WorkspaceKind.enum.personal
-      ? row.personalOwnerHumanId === humanId
-      : row.membershipIsOwner === true;
-  if (!accessible) throw new ProjectsError("knowledge_entry_not_found");
+  if (row === undefined || !canAccessProject(row, humanId)) {
+    throw new ProjectsError("knowledge_entry_not_found");
+  }
   return row;
 }
 
@@ -506,15 +455,14 @@ export interface ProjectsService {
 
 export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
   return {
-    // The listing starts from the workspace: the caller's personal workspace or a shared
-    // one they belong to. An ordinary shared member sees no projects until #27 grants
-    // project access; an owner sees every project the workspace owns.
+    // The listing starts from the caller's personal workspace. A shared workspace has no
+    // project surface in #26, and a workspace outside the caller's ownership answers like
+    // a missing one.
     async listProjects(account, workspaceId) {
       const actor = requireAccount(account);
       return db.transaction(
         async (tx) => {
-          const workspace = await requireWorkspace(tx, workspaceId, actor.humanId);
-          if (!canManageProjects(workspace, actor.humanId)) return [];
+          await requireWorkspace(tx, workspaceId, actor.humanId);
           const rows = await tx
             .select(projectColumns)
             .from(projects)
@@ -536,16 +484,13 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
     },
 
     // The creator is recorded, and the workspace keeps the project: the creator does not
-    // become a second owner. Only someone who can manage the workspace's projects may
-    // create one, which in this slice means its personal owner or a shared owner.
+    // become a second owner. Only the personal workspace's owner can create one in #26;
+    // shared-workspace creation arrives with #27.
     async createProject(account, workspaceId, input) {
       const actor = requireAccount(account);
       const id = randomUUID();
       return db.transaction(async (tx) => {
-        const workspace = await requireWorkspace(tx, workspaceId, actor.humanId);
-        if (!canManageProjects(workspace, actor.humanId)) {
-          throw new ProjectsError("not_workspace_owner");
-        }
+        await requireWorkspace(tx, workspaceId, actor.humanId);
         const [created] = await tx
           .insert(projects)
           .values({

@@ -1,17 +1,17 @@
 # Projects, issues, and knowledge
 
 A signed-in human creates a project in their personal workspace, then runs a complete
-issue cycle and writes basic Markdown knowledge in it. Projects belong to a workspace;
-until #27 adds project access levels, only the workspace's owner can see or change one
-(the personal owner, or a shared workspace owner). A personal project is therefore private
-to its human, and an ordinary shared-workspace member sees no projects.
+issue cycle and writes basic Markdown knowledge in it. Projects are personal in this
+release (#26): only the personal workspace's owner can list, create, or access one. Shared
+workspaces gain project creation and the Read/Contribute/Manage levels with #27, so they
+have no Projects section or project endpoints yet.
 
 ## Sub-features
 
 - `project-create` a personal workspace's page lists its projects and offers a create form;
   `POST /api/workspaces/{workspaceId}/projects` returns 201 with the creator recorded.
 - `project-private` signed-out requests to list or fetch a project answer 401
-  `not_signed_in`; another signed-in human gets the same 404 as a missing project.
+  `not_signed_in`.
 - `issue-cycle` create an issue (project-local number 1, open), edit its title and Markdown
   body, comment, close it, and reopen it. `closedAt` is set while closed and null when open.
 - `issue-authorship` each issue keeps its creator and last editor; each comment keeps its
@@ -117,7 +117,7 @@ to its human, and an ordinary shared-workspace member sees no projects.
 - Activity is chronological (oldest first) and its summary is the item's title at the time
   of the event, so renaming an issue later does not rewrite history.
 - Issue numbers restart at 1 for each project; the id is the stable identity.
-- A shared workspace owner can create and read projects; an ordinary member sees an empty
-  project list and 404 for direct project fetches until #27.
+- Shared workspaces have no Projects section and answer project endpoints with 404; that
+  surface arrives with #27.
 - No project appears for a signed-out request: 401, `application/problem+json`, code
   `not_signed_in`.

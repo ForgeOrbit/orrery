@@ -7,9 +7,9 @@ import {
   knowledgeEntriesQuery,
   knowledgeEntryQuery,
   projectActivityQuery,
+  ResourceLoadError,
   updateKnowledgeEntry,
 } from "../features/projects/index.ts";
-import { ApiProblemError } from "../lib/api.ts";
 
 // One basic Markdown knowledge entry. It is stored and shown as written; this is not the
 // full vault editor (#6). Editing keeps the creator and records the last editor.
@@ -18,7 +18,7 @@ export const Route = createFileRoute("/knowledge/$entryId")({
     await context.queryClient.ensureQueryData(knowledgeEntryQuery(params.entryId));
   },
   component: KnowledgePage,
-  errorComponent: ({ error }) => <KnowledgeLoadError error={error} />,
+  errorComponent: ({ error }) => <ResourceLoadError resource="knowledge" error={error} />,
 });
 
 function KnowledgePage() {
@@ -104,36 +104,5 @@ function EditKnowledgeForm({ entry }: { entry: KnowledgeEntry }) {
         </button>
       </form>
     </section>
-  );
-}
-
-function KnowledgeLoadError({ error }: { error: unknown }) {
-  if (error instanceof ApiProblemError && error.status === 401) {
-    return (
-      <main>
-        <h1>Knowledge</h1>
-        <p role="alert">Sign in to view this knowledge entry.</p>
-        <p>
-          <Link to="/signin">Sign in</Link>
-        </p>
-      </main>
-    );
-  }
-  if (error instanceof ApiProblemError && error.status === 404) {
-    return (
-      <main>
-        <h1>Knowledge</h1>
-        <p role="alert">This knowledge entry does not exist or is not available to you.</p>
-        <p>
-          <Link to="/">Go to your workspaces</Link>
-        </p>
-      </main>
-    );
-  }
-  return (
-    <main>
-      <h1>Knowledge</h1>
-      <p role="alert">Could not load this knowledge entry. Check your connection and try again.</p>
-    </main>
   );
 }

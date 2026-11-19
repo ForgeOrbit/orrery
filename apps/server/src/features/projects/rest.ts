@@ -33,40 +33,39 @@ const knowledgeParams = z.object({ entryId: z.string().min(1).max(200) });
 const listProjects = createRoute({
   method: "get",
   path: "/api/workspaces/{workspaceId}/projects",
-  summary: "The projects in a workspace the caller can access",
+  summary: "The projects in the caller's personal workspace",
   description:
-    "A personal workspace's owner sees its projects; a shared workspace's owner sees all of its projects. An ordinary shared member sees no projects until project access is granted (#27). A workspace outside the caller's access answers exactly like a missing one.",
+    "A personal workspace's owner sees its projects. Projects are personal in this release; a shared workspace has no project surface yet (#27). A workspace outside the caller's personal ownership answers exactly like a missing one.",
   request: { params: workspaceParams },
   responses: {
     200: {
-      description: "The accessible projects in the workspace",
+      description: "The projects in the personal workspace",
       content: { "application/json": { schema: ProjectsResponse } },
     },
     400: problem("The workspace id is invalid"),
     401: problem("Not signed in"),
-    404: problem("No workspace with this id is accessible to the caller"),
+    404: problem("No personal workspace with this id is accessible to the caller"),
   },
 });
 
 const createProject = createRoute({
   method: "post",
   path: "/api/workspaces/{workspaceId}/projects",
-  summary: "Create a project in a workspace",
+  summary: "Create a project in the caller's personal workspace",
   description:
-    "The workspace's personal owner, or a shared workspace owner, creates a project. The project belongs to the workspace; its creator is recorded as authorship. The creation is recorded in the project's activity.",
+    "The personal workspace's owner creates a project. Projects are personal in this release; a shared workspace has no project surface yet (#27). The project belongs to the workspace; its creator is recorded as authorship. The creation is recorded in the project's activity.",
   request: {
     params: workspaceParams,
     body: { required: true, content: { "application/json": { schema: CreateProjectRequest } } },
   },
   responses: {
     201: {
-      description: "The project, created in the workspace",
+      description: "The project, created in the personal workspace",
       content: { "application/json": { schema: Project } },
     },
     400: problem("The request is invalid"),
     401: problem("Not signed in"),
-    403: problem("Not an owner of this workspace"),
-    404: problem("No workspace with this id is accessible to the caller"),
+    404: problem("No personal workspace with this id is accessible to the caller"),
   },
 });
 
@@ -328,7 +327,6 @@ export const routes = [
 const statusFor = {
   not_signed_in: 401,
   workspace_not_found: 404,
-  not_workspace_owner: 403,
   project_not_found: 404,
   issue_not_found: 404,
   knowledge_entry_not_found: 404,
@@ -342,7 +340,7 @@ function isKind<K extends readonly ProjectsErrorKind[]>(
 }
 
 const listProjectsKinds = ["not_signed_in", "workspace_not_found"] as const;
-const createProjectKinds = ["not_signed_in", "workspace_not_found", "not_workspace_owner"] as const;
+const createProjectKinds = ["not_signed_in", "workspace_not_found"] as const;
 const projectKinds = ["not_signed_in", "project_not_found"] as const;
 const issueKinds = ["not_signed_in", "issue_not_found"] as const;
 const knowledgeKinds = ["not_signed_in", "knowledge_entry_not_found"] as const;

@@ -12,8 +12,8 @@ import {
   knowledgeEntryQuery,
   projectActivityQuery,
   projectQuery,
+  ResourceLoadError,
 } from "../features/projects/index.ts";
-import { ApiProblemError } from "../lib/api.ts";
 
 // One project's view: its issues, its basic Markdown knowledge, and the activity that
 // records who did what. Creating an issue or an entry leads to its own page, where the
@@ -28,7 +28,7 @@ export const Route = createFileRoute("/projects/$projectId")({
     ]);
   },
   component: ProjectPage,
-  errorComponent: ({ error }) => <ProjectLoadError error={error} />,
+  errorComponent: ({ error }) => <ResourceLoadError resource="project" error={error} />,
 });
 
 const activityLabels: Record<ProjectActivityType, string> = {
@@ -231,36 +231,5 @@ function Activity({ projectId }: { projectId: string }) {
         </ul>
       )}
     </section>
-  );
-}
-
-function ProjectLoadError({ error }: { error: unknown }) {
-  if (error instanceof ApiProblemError && error.status === 401) {
-    return (
-      <main>
-        <h1>Project</h1>
-        <p role="alert">Sign in to view this project.</p>
-        <p>
-          <Link to="/signin">Sign in</Link>
-        </p>
-      </main>
-    );
-  }
-  if (error instanceof ApiProblemError && error.status === 404) {
-    return (
-      <main>
-        <h1>Project</h1>
-        <p role="alert">This project does not exist or is not available to you.</p>
-        <p>
-          <Link to="/">Go to your workspaces</Link>
-        </p>
-      </main>
-    );
-  }
-  return (
-    <main>
-      <h1>Project</h1>
-      <p role="alert">Could not load this project. Check your connection and try again.</p>
-    </main>
   );
 }

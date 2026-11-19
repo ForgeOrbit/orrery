@@ -426,6 +426,25 @@ export const knowledgeEntries = pgTable(
 // The project's activity feed (issue #26). Each event is written in the same transaction
 // as the change it describes, so history cannot disagree with the project. The summary is
 // a snapshot of the item's title at that moment, not a pointer that changes later.
+//
+// The target columns follow the event type: a project event points at neither item, an
+// issue event points at the issue, and a knowledge event points at the entry. These
+// literals come from the ProjectActivityType enum, never from input; DDL cannot bind
+// parameters, so they are raw SQL text.
+const projectCreatedActivitySql = sql.raw(`'${ProjectActivityType.enum.project_created}'`);
+const issueActivityTypesSql = sql.raw(
+  ProjectActivityType.options
+    .filter((type) => type.startsWith("issue_"))
+    .map((type) => `'${type}'`)
+    .join(", "),
+);
+const knowledgeActivityTypesSql = sql.raw(
+  ProjectActivityType.options
+    .filter((type) => type.startsWith("knowledge_"))
+    .map((type) => `'${type}'`)
+    .join(", "),
+);
+
 export const projectActivity = pgTable(
   "project_activity",
   {
@@ -447,6 +466,14 @@ export const projectActivity = pgTable(
     check(
       "project_activity_type",
       sql`${t.type} in (${sql.raw(sqlLiteralList(ProjectActivityType))})`,
+    ),
+    check(
+      "project_activity_target_matches_type",
+      sql`(
+        (${t.type} = ${projectCreatedActivitySql} and ${t.issueId} is null and ${t.knowledgeEntryId} is null)
+        or (${t.type} in (${issueActivityTypesSql}) and ${t.issueId} is not null and ${t.knowledgeEntryId} is null)
+        or (${t.type} in (${knowledgeActivityTypesSql}) and ${t.issueId} is null and ${t.knowledgeEntryId} is not null)
+      )`,
     ),
     index("project_activity_project_created").on(t.projectId, t.createdAt),
   ],

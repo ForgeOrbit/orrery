@@ -8,7 +8,7 @@
     "gen": "node scripts/gen-contract.ts",
     "db:generate": "drizzle-kit generate",
     "typecheck": "tsc -p .",
-    "test": "vitest run --maxWorkers=1"
+    "test": "vitest run"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.9",

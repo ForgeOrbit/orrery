@@ -32,13 +32,14 @@ export async function getJson<T>(path: string, parse: (value: unknown) => T): Pr
   return parse(await res.json());
 }
 
-export async function postJson<T>(
+async function sendJson<T>(
+  method: "POST" | "PATCH",
   path: string,
   body: unknown,
   parse: (value: unknown) => T,
 ): Promise<T> {
   const res = await fetch(path, {
-    method: "POST",
+    method,
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
@@ -46,16 +47,14 @@ export async function postJson<T>(
   return parse(await res.json());
 }
 
-export async function patchJson<T>(
+export function postJson<T>(path: string, body: unknown, parse: (value: unknown) => T): Promise<T> {
+  return sendJson("POST", path, body, parse);
+}
+
+export function patchJson<T>(
   path: string,
   body: unknown,
   parse: (value: unknown) => T,
 ): Promise<T> {
-  const res = await fetch(path, {
-    method: "PATCH",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) return failure(res);
-  return parse(await res.json());
+  return sendJson("PATCH", path, body, parse);
 }

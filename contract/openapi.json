@@ -2065,8 +2065,8 @@
     },
     "/api/workspaces/{workspaceId}/projects": {
       "get": {
-        "summary": "The projects in a workspace the caller can access",
-        "description": "A personal workspace's owner sees its projects; a shared workspace's owner sees all of its projects. An ordinary shared member sees no projects until project access is granted (#27). A workspace outside the caller's access answers exactly like a missing one.",
+        "summary": "The projects in the caller's personal workspace",
+        "description": "A personal workspace's owner sees its projects. Projects are personal in this release; a shared workspace has no project surface yet (#27). A workspace outside the caller's personal ownership answers exactly like a missing one.",
         "parameters": [
           {
             "schema": {
@@ -2081,7 +2081,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The accessible projects in the workspace",
+            "description": "The projects in the personal workspace",
             "content": {
               "application/json": {
                 "schema": {
@@ -2111,7 +2111,7 @@
             }
           },
           "404": {
-            "description": "No workspace with this id is accessible to the caller",
+            "description": "No personal workspace with this id is accessible to the caller",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2123,8 +2123,8 @@
         }
       },
       "post": {
-        "summary": "Create a project in a workspace",
-        "description": "The workspace's personal owner, or a shared workspace owner, creates a project. The project belongs to the workspace; its creator is recorded as authorship. The creation is recorded in the project's activity.",
+        "summary": "Create a project in the caller's personal workspace",
+        "description": "The personal workspace's owner creates a project. Projects are personal in this release; a shared workspace has no project surface yet (#27). The project belongs to the workspace; its creator is recorded as authorship. The creation is recorded in the project's activity.",
         "parameters": [
           {
             "schema": {
@@ -2149,7 +2149,7 @@
         },
         "responses": {
           "201": {
-            "description": "The project, created in the workspace",
+            "description": "The project, created in the personal workspace",
             "content": {
               "application/json": {
                 "schema": {
@@ -2178,18 +2178,8 @@
               }
             }
           },
-          "403": {
-            "description": "Not an owner of this workspace",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
           "404": {
-            "description": "No workspace with this id is accessible to the caller",
+            "description": "No personal workspace with this id is accessible to the caller",
             "content": {
               "application/problem+json": {
                 "schema": {

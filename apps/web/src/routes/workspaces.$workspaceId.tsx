@@ -17,7 +17,9 @@ import {
 export const Route = createFileRoute("/workspaces/$workspaceId")({
   loader: async ({ context, params }) => {
     const workspace = await context.queryClient.ensureQueryData(workspaceQuery(params.workspaceId));
-    await context.queryClient.ensureQueryData(projectsQuery(params.workspaceId));
+    if (workspace.kind === "personal") {
+      await context.queryClient.ensureQueryData(projectsQuery(params.workspaceId));
+    }
     if (workspace.kind === "shared" && workspace.isOwner) {
       await context.queryClient.ensureQueryData(workspaceMembersQuery(params.workspaceId));
     }
@@ -40,7 +42,7 @@ function WorkspacePage() {
           ? "Personal workspace"
           : `Shared workspace · ${workspace.isOwner ? "Owner" : "Member"}`}
       </p>
-      <Projects workspaceId={workspace.id} canCreate={workspace.isOwner} />
+      {workspace.kind === "personal" && <Projects workspaceId={workspace.id} />}
       {workspace.kind === "shared" && workspace.isOwner && (
         <>
           <OwnerMembers workspaceId={workspace.id} />
@@ -51,10 +53,9 @@ function WorkspacePage() {
   );
 }
 
-// The workspace's projects. A personal workspace's owner and a shared workspace's owner
-// can create one; an ordinary shared member sees no projects until #27 grants access, and
-// the server enforces the same boundary.
-function Projects({ workspaceId, canCreate }: { workspaceId: string; canCreate: boolean }) {
+// The personal workspace's projects. Shared workspaces gain a project surface with #27;
+// the server applies the same personal-only boundary.
+function Projects({ workspaceId }: { workspaceId: string }) {
   const { data: projects } = useSuspenseQuery(projectsQuery(workspaceId));
   return (
     <section>
@@ -72,7 +73,7 @@ function Projects({ workspaceId, canCreate }: { workspaceId: string; canCreate: 
           ))}
         </ul>
       )}
-      {canCreate && <CreateProjectForm workspaceId={workspaceId} />}
+      <CreateProjectForm workspaceId={workspaceId} />
     </section>
   );
 }

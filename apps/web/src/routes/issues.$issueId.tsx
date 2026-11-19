@@ -9,9 +9,9 @@ import {
   issueQuery,
   issuesQuery,
   projectActivityQuery,
+  ResourceLoadError,
   updateIssue,
 } from "../features/projects/index.ts";
-import { ApiProblemError } from "../lib/api.ts";
 
 // One issue's page: read it, edit its Markdown body, close or reopen it, and comment.
 // Every action refreshes the project's activity so the history stays in step.
@@ -21,7 +21,7 @@ export const Route = createFileRoute("/issues/$issueId")({
     await context.queryClient.ensureQueryData(issueCommentsQuery(params.issueId));
   },
   component: IssuePage,
-  errorComponent: ({ error }) => <IssueLoadError error={error} />,
+  errorComponent: ({ error }) => <ResourceLoadError resource="issue" error={error} />,
 });
 
 function IssuePage() {
@@ -206,36 +206,5 @@ function CommentForm({ issueId, projectId }: { issueId: string; projectId: strin
         Add comment
       </button>
     </form>
-  );
-}
-
-function IssueLoadError({ error }: { error: unknown }) {
-  if (error instanceof ApiProblemError && error.status === 401) {
-    return (
-      <main>
-        <h1>Issue</h1>
-        <p role="alert">Sign in to view this issue.</p>
-        <p>
-          <Link to="/signin">Sign in</Link>
-        </p>
-      </main>
-    );
-  }
-  if (error instanceof ApiProblemError && error.status === 404) {
-    return (
-      <main>
-        <h1>Issue</h1>
-        <p role="alert">This issue does not exist or is not available to you.</p>
-        <p>
-          <Link to="/">Go to your workspaces</Link>
-        </p>
-      </main>
-    );
-  }
-  return (
-    <main>
-      <h1>Issue</h1>
-      <p role="alert">Could not load this issue. Check your connection and try again.</p>
-    </main>
   );
 }

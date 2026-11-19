@@ -8,6 +8,7 @@ export {
   updateIssue,
   updateKnowledgeEntry,
 } from "./commands.ts";
+export { ResourceLoadError } from "./LoadError.tsx";
 export {
   issueCommentsQuery,
   issueQuery,
