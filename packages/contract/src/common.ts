@@ -39,6 +39,11 @@ export const WorkspaceKind = z
   .meta({ id: "WorkspaceKind" });
 export type WorkspaceKind = z.infer<typeof WorkspaceKind>;
 
+// An instant as an ISO 8601 string. Responses carry UTC (`Z`) timestamps, which is what
+// a database timestamp with time zone serializes to.
+export const Timestamp = z.iso.datetime().meta({ id: "Timestamp" });
+export type Timestamp = z.infer<typeof Timestamp>;
+
 // Every REST error response is an RFC 9457 Problem Details object, served as
 // application/problem+json (ADR-0003). `code` is the stable, machine-readable reason
 // clients branch on; `type` is the same reason as a URI; `title` is its human summary.

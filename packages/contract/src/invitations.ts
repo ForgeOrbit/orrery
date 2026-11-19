@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { Email, NewPassword } from "./common.ts";
+import { ProjectAccessLevel } from "./projects.ts";
 
 // Installation invitations (issue #23): a system administrator invites an email onto
 // the installation. The emailed link carries a single-use token; following the link
@@ -41,9 +42,9 @@ export const InvitationToken = z
   .meta({ id: "InvitationToken" });
 export type InvitationToken = z.infer<typeof InvitationToken>;
 
-// What an invitation offers. Project grants arrive with project access; today an
-// installation invitation offers an account and a workspace invitation offers a
-// workspace membership, so the recipient sees the whole scope before accepting.
+// What an invitation offers. Project grants are the actual scope a workspace invitation
+// can carry: each names a project that must still belong to the invited workspace when
+// the offer is accepted.
 export const InvitationGrant = z
   .discriminatedUnion("kind", [
     z.object({ kind: z.literal("installation_account") }),
@@ -52,9 +53,25 @@ export const InvitationGrant = z
       workspaceId: z.string(),
       role: z.literal("member"),
     }),
+    z.object({
+      kind: z.literal("project_access"),
+      projectId: z.string(),
+      projectName: z.string(),
+      level: ProjectAccessLevel,
+    }),
   ])
   .meta({ id: "InvitationGrant" });
 export type InvitationGrant = z.infer<typeof InvitationGrant>;
+
+// The project access an owner offers in a workspace invitation. At acceptance every
+// project is rechecked against the invited workspace before any grant is written.
+export const WorkspaceInvitationProjectGrant = z
+  .object({
+    projectId: z.string().min(1).max(200),
+    level: ProjectAccessLevel,
+  })
+  .meta({ id: "WorkspaceInvitationProjectGrant" });
+export type WorkspaceInvitationProjectGrant = z.infer<typeof WorkspaceInvitationProjectGrant>;
 
 // What the invitation targets: this installation, or one shared workspace.
 export const InvitationTarget = z

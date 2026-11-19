@@ -10,6 +10,7 @@ import {
   InviteWorkspaceMemberRequest,
   RegisterThroughWorkspaceInvitationRequest,
   SessionResponse,
+  UpdateWorkspaceMemberRequest,
   Workspace,
   WorkspaceInvitation,
   WorkspaceInvitationPreview,
@@ -108,7 +109,7 @@ const inviteWorkspaceMember = createRoute({
   path: "/api/workspaces/{workspaceId}/invitations",
   summary: "Invite an email into a shared workspace",
   description:
-    "Owners only, and the inviter's email must be verified. A single-use link valid for seven days goes to the invited address. An existing account accepts it after signing in; a new address registers through it. Following the link (GET) changes nothing.",
+    "Owners only, and the inviter's email must be verified. A single-use link valid for seven days goes to the invited address, offering workspace membership and any selected project grants. Every offered project must currently belong to the workspace. An existing account accepts it after signing in; a new address registers through it. Following the link (GET) changes nothing.",
   request: {
     params: workspaceParams,
     body: {
@@ -126,7 +127,7 @@ const inviteWorkspaceMember = createRoute({
     403: problem("Not an owner, or the inviter's email is unverified"),
     404: problem("No shared workspace with this id is accessible to the caller"),
     409: problem(
-      "The invitee is already a member or already has a pending invitation, or SMTP is not configured or its stored password is unreadable",
+      "The invitee is already a member or already has a pending invitation, an offered project no longer belongs to the workspace, or SMTP is not configured or its stored password is unreadable",
     ),
     502: problem("The SMTP server refused the message; the code says why"),
   },
@@ -217,7 +218,7 @@ const previewWorkspaceInvitation = createRoute({
   path: "/api/workspace-invitations/preview",
   summary: "The workspace and address a workspace invitation link offers",
   description:
-    "A read-only preview of a single-use invitation token. It never consumes the token and changes nothing. Invalid, expired, used, or failed-delivery links answer the same Problem.",
+    "A read-only preview of a single-use invitation token. It never consumes the token and changes nothing. It returns the workspace, invited address, inviter, deadline, and the actual offered grants, including every project and level. Invalid, expired, used, or failed-delivery links answer the same Problem.",
   request: { query: previewQuery },
   responses: {
     200: {
@@ -233,7 +234,7 @@ const acceptWorkspaceInvitation = createRoute({
   path: "/api/workspace-invitations/acceptance",
   summary: "Accept a workspace invitation as an existing account",
   description:
-    "Redeems the emailed token for the signed-in account. The account's verified email must equal the invited address; a forwarded link cannot attach the membership to another account. The token is consumed only by this POST.",
+    "Redeems the emailed token for the signed-in account. The account's verified email must equal the invited address; a forwarded link cannot attach the membership to another account. Every offered project is rechecked against the workspace and the project grants are applied in the same transaction. The token is consumed only by this POST.",
   request: {
     body: {
       required: true,
@@ -250,7 +251,9 @@ const acceptWorkspaceInvitation = createRoute({
     403: problem(
       "The signed-in account has a different or unverified email, or the inviter no longer has authority",
     ),
-    409: problem("The account is already a member of the workspace"),
+    409: problem(
+      "The account is already a member of the workspace, or an offered project no longer belongs to it",
+    ),
   },
 });
 
@@ -259,7 +262,7 @@ const registerThroughWorkspaceInvitation = createRoute({
   path: "/api/workspace-invitations/registration",
   summary: "Register a new account through a workspace invitation",
   description:
-    "Redeems the token for an address with no account, creating the account, its personal workspace, the verified-email mark, and the workspace membership in one transaction. An existing account answers account_exists and signs in to accept instead.",
+    "Redeems the token for an address with no account, creating the account, its personal workspace, the verified-email mark, the workspace membership, and the offered project grants in one transaction. Every offered project must still belong to the workspace. An existing account answers account_exists and signs in to accept instead.",
   request: {
     body: {
       required: true,
@@ -275,7 +278,9 @@ const registerThroughWorkspaceInvitation = createRoute({
     },
     400: problem("The token is invalid, expired, or already used"),
     403: problem("The inviter no longer has authority to invite to this workspace"),
-    409: problem("The invited email already has an account"),
+    409: problem(
+      "The invited email already has an account, or an offered project no longer belongs to the workspace",
+    ),
   },
 });
 
@@ -301,6 +306,32 @@ const appointWorkspaceOwner = createRoute({
     401: problem("Not signed in"),
     403: problem("Not an owner of this workspace"),
     404: problem("No accessible shared workspace or member"),
+  },
+});
+
+const updateWorkspaceMember = createRoute({
+  method: "patch",
+  path: "/api/workspaces/{workspaceId}/members/{humanId}",
+  summary: "Grant or revoke a member's Create projects capability",
+  description:
+    "Owners only. An owner can always create projects; this capability lets one member create projects without workspace-wide authority. The created project's creator receives Manage on it, and membership alone still grants no existing project's content.",
+  request: {
+    params: memberParams,
+    body: {
+      required: true,
+      content: { "application/json": { schema: UpdateWorkspaceMemberRequest } },
+    },
+  },
+  responses: {
+    200: {
+      description: "The member with the effective capability",
+      content: { "application/json": { schema: WorkspaceMember } },
+    },
+    400: problem("The request is invalid"),
+    401: problem("Not signed in"),
+    403: problem("Not an owner of this workspace"),
+    404: problem("No accessible shared workspace or member"),
+    409: problem("Workspace owners always have Create projects"),
   },
 });
 
@@ -336,6 +367,7 @@ export const routes = [
   acceptWorkspaceInvitation,
   registerThroughWorkspaceInvitation,
   appointWorkspaceOwner,
+  updateWorkspaceMember,
   removeWorkspaceMember,
 ];
 
@@ -352,10 +384,12 @@ const statusFor = {
   invitation_pending: 409,
   invitation_not_found: 404,
   invitation_not_pending: 409,
+  invitation_scope_invalid: 409,
   already_member: 409,
   account_exists: 409,
   member_not_found: 404,
   last_owner: 409,
+  workspace_owner_capability: 409,
 } as const satisfies Record<WorkspacesErrorKind, number>;
 
 // True when the error's kind is one of the route's kinds. A type guard is the honest
@@ -380,6 +414,7 @@ const inviteKinds = [
   "inviter_unverified",
   "already_member",
   "invitation_pending",
+  "invitation_scope_invalid",
 ] as const;
 const listInvitationKinds = [
   "not_signed_in",
@@ -411,13 +446,26 @@ const acceptKinds = [
   "invitation_recipient_mismatch",
   "email_unverified",
   "already_member",
+  "invitation_scope_invalid",
 ] as const;
-const registerKinds = ["invitation_invalid", "inviter_not_authorized", "account_exists"] as const;
+const registerKinds = [
+  "invitation_invalid",
+  "inviter_not_authorized",
+  "account_exists",
+  "invitation_scope_invalid",
+] as const;
 const appointKinds = [
   "not_signed_in",
   "workspace_not_found",
   "not_workspace_owner",
   "member_not_found",
+] as const;
+const updateMemberKinds = [
+  "not_signed_in",
+  "workspace_not_found",
+  "not_workspace_owner",
+  "member_not_found",
+  "workspace_owner_capability",
 ] as const;
 const removeKinds = [
   "not_signed_in",
@@ -594,6 +642,23 @@ export function createWorkspacesRest(service: WorkspacesService, sessionReader: 
       );
     } catch (error) {
       return failure(c, error, appointKinds);
+    }
+  });
+
+  app.openapi(updateWorkspaceMember, async (c) => {
+    try {
+      const { workspaceId, humanId } = c.req.valid("param");
+      return c.json(
+        await service.updateMemberCapability(
+          await sessionReader(c),
+          workspaceId,
+          humanId,
+          c.req.valid("json"),
+        ),
+        200,
+      );
+    } catch (error) {
+      return failure(c, error, updateMemberKinds);
     }
   });
 

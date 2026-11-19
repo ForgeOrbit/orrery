@@ -1,6 +1,10 @@
 import {
   InvitationDelivery,
   InvitationStatus,
+  IssueStatus,
+  ProjectAccessEventType,
+  ProjectAccessLevel,
+  ProjectActivityType,
   WorkspaceKind,
   SmtpSecurity,
 } from "@orrery/contract";
@@ -90,11 +94,11 @@ export const workspaceOwnershipGuards = pgTable("workspace_ownership_guards", {
   version: integer("version").notNull().default(0),
 });
 
-// Membership of a shared workspace (issue #24). The shape is deliberately small: a
-// membership is a human's presence in the workspace, and `is_owner` carries the one
-// role this slice grants. The capability columns from #28 extend this table without
-// changing identity. Personal workspaces do not use memberships; their single owner is
-// `workspaces.personal_owner_human_id`.
+// Membership of a shared workspace (issue #24). A membership is a human's presence in
+// the workspace; `is_owner` carries full authority and `can_create_projects` is the one
+// delegated capability this slice grants (#27). #28 adds the other three capability
+// columns without changing identity. Personal workspaces do not use memberships; their
+// single owner is `workspaces.personal_owner_human_id`.
 export const workspaceMemberships = pgTable(
   "workspace_memberships",
   {
@@ -106,6 +110,7 @@ export const workspaceMemberships = pgTable(
       .notNull()
       .references(() => humans.id),
     isOwner: boolean("is_owner").notNull().default(false),
+    canCreateProjects: boolean("can_create_projects").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -164,8 +169,9 @@ export const workspaceInvitations = pgTable(
   ],
 );
 
-// The access-change events this slice records (issue #24): creating a workspace, joining
-// by invitation, appointing or removing an owner, and removing an ordinary member.
+// The workspace access-change events recorded so far: #24's creation, joining,
+// appointment, and removal, plus #27's Create projects capability grants. Project-level
+// grants live in project_access_events below, because they are scoped to a project.
 // History visibility arrives in #32; the events are written now so it can be built on
 // real history rather than a later backfill. Content never carries secrets.
 export const workspaceEventTypes = [
@@ -174,6 +180,8 @@ export const workspaceEventTypes = [
   "owner_appointed",
   "member_removed",
   "owner_removed",
+  "create_projects_granted",
+  "create_projects_revoked",
 ] as const;
 export type WorkspaceEventType = (typeof workspaceEventTypes)[number];
 
@@ -321,5 +329,281 @@ export const invitations = pgTable(
     uniqueIndex("one_pending_invitation_per_email")
       .on(t.email)
       .where(sql`${t.status} = ${pendingStatusSql}`),
+  ],
+);
+
+// A project (issue #26): a collection of issues and knowledge owned by one workspace.
+// The creator is recorded as authorship, not as a second owner: the project belongs to
+// the workspace. `next_issue_number` is the per-project counter that gives issues their
+// human-readable numbers; it is incremented under the row lock of an issue creation.
+export const projects = pgTable(
+  "projects",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id),
+    name: text("name").notNull(),
+    createdByHumanId: text("created_by_human_id")
+      .notNull()
+      .references(() => humans.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    nextIssueNumber: integer("next_issue_number").notNull().default(1),
+  },
+  (t) => [
+    check("projects_next_issue_number_positive", sql`${t.nextIssueNumber} > 0`),
+    index("projects_workspace_created").on(t.workspaceId, t.createdAt),
+  ],
+);
+
+// An explicit project access grant (issue #27). Personal projects have no direct
+// collaborators; a trigger in migration 0012 refuses grants outside a shared workspace
+// and grants to humans who are not members of that workspace. The workspace owner's
+// Manage is implicit and has no row. The unique pair makes one level per person per
+// project, and the CHECK keeps the level in the contract enum.
+export const projectAccessGrants = pgTable(
+  "project_access_grants",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    humanId: text("human_id")
+      .notNull()
+      .references(() => humans.id),
+    level: text("level").$type<ProjectAccessLevel>().notNull(),
+    grantedByHumanId: text("granted_by_human_id")
+      .notNull()
+      .references(() => humans.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // One level per person per project: a change updates in place and cannot double.
+    uniqueIndex("one_project_access_grant_per_human").on(t.projectId, t.humanId),
+    // DDL cannot bind parameters; the values come from the ProjectAccessLevel enum.
+    check(
+      "project_access_grants_level",
+      sql`${t.level} in (${sql.raw(sqlLiteralList(ProjectAccessLevel))})`,
+    ),
+    index("project_access_grants_human_id").on(t.humanId),
+  ],
+);
+
+// The projects an invitation offers (#25). The invitation belongs to one workspace, so
+// every offered project must still belong to that same workspace when the offer is
+// accepted. The level is the project access granted on acceptance; membership itself
+// still grants no project access. Resending copies these rows to the replacement
+// invitation, which keeps the offer and its history intact.
+export const workspaceInvitationGrants = pgTable(
+  "workspace_invitation_grants",
+  {
+    id: text("id").primaryKey(),
+    invitationId: text("invitation_id")
+      .notNull()
+      .references(() => workspaceInvitations.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    level: text("level").$type<ProjectAccessLevel>().notNull(),
+  },
+  (t) => [
+    uniqueIndex("one_invitation_grant_per_project").on(t.invitationId, t.projectId),
+    check(
+      "workspace_invitation_grants_level",
+      sql`${t.level} in (${sql.raw(sqlLiteralList(ProjectAccessLevel))})`,
+    ),
+  ],
+);
+
+// Project access-change events (#27), scoped to the project whose access changed. The
+// type implies the shape: a grant has a level and no previous level, a level change has
+// both, and a revocation has only the previous level. #32 builds the history view on
+// these rows; writing starts here, with no backfill. No emails or secrets are stored.
+export const projectAccessEvents = pgTable(
+  "project_access_events",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    actorHumanId: text("actor_human_id")
+      .notNull()
+      .references(() => humans.id),
+    subjectHumanId: text("subject_human_id")
+      .notNull()
+      .references(() => humans.id),
+    type: text("type").$type<ProjectAccessEventType>().notNull(),
+    level: text("level").$type<ProjectAccessLevel>(),
+    previousLevel: text("previous_level").$type<ProjectAccessLevel>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "project_access_events_type",
+      sql`${t.type} in (${sql.raw(sqlLiteralList(ProjectAccessEventType))})`,
+    ),
+    check(
+      "project_access_events_level",
+      sql`(${t.level} is null or ${t.level} in (${sql.raw(sqlLiteralList(ProjectAccessLevel))}))`,
+    ),
+    check(
+      "project_access_events_previous_level",
+      sql`(${t.previousLevel} is null or ${t.previousLevel} in (${sql.raw(
+        sqlLiteralList(ProjectAccessLevel),
+      )}))`,
+    ),
+    // DDL cannot bind parameters; the event types are raw SQL text from the enum.
+    check(
+      "project_access_events_shape",
+      sql`(
+        (${t.type} = ${sql.raw(`'${ProjectAccessEventType.enum.project_access_granted}'`)}
+          and ${t.level} is not null and ${t.previousLevel} is null)
+        or (${t.type} = ${sql.raw(`'${ProjectAccessEventType.enum.project_access_level_changed}'`)}
+          and ${t.level} is not null and ${t.previousLevel} is not null)
+        or (${t.type} = ${sql.raw(`'${ProjectAccessEventType.enum.project_access_revoked}'`)}
+          and ${t.level} is null and ${t.previousLevel} is not null)
+      )`,
+    ),
+    index("project_access_events_project_created").on(t.projectId, t.createdAt),
+  ],
+);
+
+// An issue in a project. The body is Markdown, stored as written. `number` is local to
+// the project; the id is the stable identity. `closed_at` is set exactly while the issue
+// is closed, so reopening clears it and an edit while closed leaves it untouched.
+export const issues = pgTable(
+  "issues",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    number: integer("number").notNull(),
+    title: text("title").notNull(),
+    body: text("body").notNull().default(""),
+    status: text("status").$type<IssueStatus>().notNull(),
+    createdByHumanId: text("created_by_human_id")
+      .notNull()
+      .references(() => humans.id),
+    updatedByHumanId: text("updated_by_human_id")
+      .notNull()
+      .references(() => humans.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+  },
+  (t) => [
+    // Issue numbers never repeat inside a project, and two concurrent creations cannot
+    // both take the same one.
+    uniqueIndex("one_issue_number_per_project").on(t.projectId, t.number),
+    check("issues_number_positive", sql`${t.number} > 0`),
+    // DDL cannot bind parameters; the values come from the IssueStatus contract enum.
+    check("issues_status", sql`${t.status} in (${sql.raw(sqlLiteralList(IssueStatus))})`),
+    check(
+      "issues_closed_at_matches_status",
+      sql`(${t.status} = 'closed') = (${t.closedAt} is not null)`,
+    ),
+  ],
+);
+
+// A comment on an issue. Comments are ordinary discussion: they need no work session
+// (#20), and they keep the author who wrote them.
+export const issueComments = pgTable(
+  "issue_comments",
+  {
+    id: text("id").primaryKey(),
+    issueId: text("issue_id")
+      .notNull()
+      .references(() => issues.id),
+    body: text("body").notNull(),
+    createdByHumanId: text("created_by_human_id")
+      .notNull()
+      .references(() => humans.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("issue_comments_issue_created").on(t.issueId, t.createdAt)],
+);
+
+// A basic Markdown knowledge entry (issue #26). This is deliberately not the full vault
+// (#6): a title, a body, and who created and last edited it.
+export const knowledgeEntries = pgTable(
+  "knowledge_entries",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    title: text("title").notNull(),
+    body: text("body").notNull().default(""),
+    createdByHumanId: text("created_by_human_id")
+      .notNull()
+      .references(() => humans.id),
+    updatedByHumanId: text("updated_by_human_id")
+      .notNull()
+      .references(() => humans.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("knowledge_entries_project_created").on(t.projectId, t.createdAt)],
+);
+
+// The project's activity feed (issue #26). Each event is written in the same transaction
+// as the change it describes, so history cannot disagree with the project. The summary is
+// a snapshot of the item's title at that moment, not a pointer that changes later.
+//
+// The target columns follow the event type: a project event points at neither item, an
+// issue event points at the issue, and a knowledge event points at the entry. These
+// literals come from the ProjectActivityType enum, never from input; DDL cannot bind
+// parameters, so they are raw SQL text.
+const projectActivityTypesSql = sql.raw(
+  [ProjectActivityType.enum.project_created, ProjectActivityType.enum.project_renamed]
+    .map((type) => `'${type}'`)
+    .join(", "),
+);
+const issueActivityTypesSql = sql.raw(
+  ProjectActivityType.options
+    .filter((type) => type.startsWith("issue_"))
+    .map((type) => `'${type}'`)
+    .join(", "),
+);
+const knowledgeActivityTypesSql = sql.raw(
+  ProjectActivityType.options
+    .filter((type) => type.startsWith("knowledge_"))
+    .map((type) => `'${type}'`)
+    .join(", "),
+);
+
+export const projectActivity = pgTable(
+  "project_activity",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    type: text("type").$type<ProjectActivityType>().notNull(),
+    actorHumanId: text("actor_human_id")
+      .notNull()
+      .references(() => humans.id),
+    issueId: text("issue_id").references(() => issues.id),
+    knowledgeEntryId: text("knowledge_entry_id").references(() => knowledgeEntries.id),
+    summary: text("summary").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // DDL cannot bind parameters; the values come from the ProjectActivityType enum.
+    check(
+      "project_activity_type",
+      sql`${t.type} in (${sql.raw(sqlLiteralList(ProjectActivityType))})`,
+    ),
+    check(
+      "project_activity_target_matches_type",
+      sql`(
+        (${t.type} in (${projectActivityTypesSql}) and ${t.issueId} is null and ${t.knowledgeEntryId} is null)
+        or (${t.type} in (${issueActivityTypesSql}) and ${t.issueId} is not null and ${t.knowledgeEntryId} is null)
+        or (${t.type} in (${knowledgeActivityTypesSql}) and ${t.issueId} is null and ${t.knowledgeEntryId} is not null)
+      )`,
+    ),
+    index("project_activity_project_created").on(t.projectId, t.createdAt),
   ],
 );

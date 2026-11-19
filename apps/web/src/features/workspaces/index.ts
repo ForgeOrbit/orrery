@@ -9,6 +9,7 @@ export {
   registerThroughWorkspaceInvitation,
   resendWorkspaceInvitation,
   revokeWorkspaceInvitation,
+  updateWorkspaceMember,
 } from "./commands.ts";
 export {
   workspaceInvitationPreviewQuery,

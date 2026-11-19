@@ -41,5 +41,10 @@ The maintained source for verifying Orrery's user-facing behavior. Read this ind
 - [SMTP settings and email verification](./settings.md): an administrator saves the
   installation's SMTP relay, sends a test email, verifies their address with the
   token, and repairs a broken relay.
-- [Workspaces](./workspaces.md): the signed-in home lists the caller's personal
-  workspace, and each person sees only their own.
+- [Workspaces](./workspaces.md): the signed-in home lists the caller's personal and
+  shared workspaces, owners manage members and the Create projects capability, and each
+  person sees only their own.
+- [Projects, issues, knowledge, and project access](./projects.md): a project's full issue
+  cycle (create, edit, comment, close, reopen), basic Markdown knowledge, the attributed
+  activity feed, shared-project Read/Contribute/Manage levels, access grants, and the
+  direct-request denials.

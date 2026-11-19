@@ -10,6 +10,7 @@ import {
   WorkspaceMember,
   WorkspaceMembersResponse,
   WorkspacesResponse,
+  type ProjectAccessLevel,
   type SmtpSettings,
 } from "@orrery/contract";
 import type { Hono } from "hono";
@@ -17,11 +18,15 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createAccountsFeature } from "../accounts/index.ts";
 import { createInvitationsFeature } from "../invitations/index.ts";
+import { createProjectsFeature } from "../projects/index.ts";
 import { createSettingsFeature } from "../settings/index.ts";
 import {
   browserSessions,
   humans,
+  projectAccessGrants,
+  projects,
   workspaceEvents,
+  workspaceInvitationGrants,
   workspaceInvitations,
   workspaceMemberships,
   workspaces,
@@ -225,10 +230,32 @@ async function createWorkspace(app: Hono, cookie: string, name = "Rocket Team") 
   return Workspace.parse(await res.json());
 }
 
-async function invite(app: Hono, cookie: string, workspaceId: string, email: string) {
-  const res = await postJson(app, `/api/workspaces/${workspaceId}/invitations`, { email }, cookie);
+async function invite(
+  app: Hono,
+  cookie: string,
+  workspaceId: string,
+  email: string,
+  projectGrants: { projectId: string; level: ProjectAccessLevel }[] = [],
+) {
+  const res = await postJson(
+    app,
+    `/api/workspaces/${workspaceId}/invitations`,
+    { email, projectGrants },
+    cookie,
+  );
   expect(res.status).toBe(201);
   return WorkspaceInvitation.parse(await res.json());
+}
+
+async function createProjectDirect(workspaceId: string, humanId: string, name = "Rocket Project") {
+  const id = randomUUID();
+  await currentDatabase().db.insert(projects).values({
+    id,
+    workspaceId,
+    name,
+    createdByHumanId: humanId,
+  });
+  return id;
 }
 
 async function invitationList(app: Hono, cookie: string, workspaceId: string) {
@@ -262,8 +289,16 @@ describe("workspaces", () => {
 
   afterEach(async () => {
     await database.db.transaction(async (tx) => {
+      await tx.execute(sql`delete from project_access_events`);
+      await tx.execute(sql`delete from project_access_grants`);
+      await tx.execute(sql`delete from project_activity`);
+      await tx.execute(sql`delete from knowledge_entries`);
+      await tx.execute(sql`delete from issue_comments`);
+      await tx.execute(sql`delete from issues`);
       await tx.execute(sql`delete from workspace_events`);
+      await tx.execute(sql`delete from workspace_invitation_grants`);
       await tx.execute(sql`delete from workspace_invitations`);
+      await tx.execute(sql`delete from projects`);
       await tx.execute(sql`delete from workspace_memberships`);
       await tx.execute(sql`delete from workspaces`);
       await tx.execute(sql`delete from invitations`);
@@ -307,6 +342,10 @@ describe("workspaces", () => {
       deliver: settings.deliver,
       log: silentLogger,
     });
+    const projectsFeature = createProjectsFeature({
+      db: database.db,
+      sessionReader: accounts.sessionReader,
+    });
     const workspacesFeature = createWorkspacesFeature({
       db: database.db,
       publicUrl: PUBLIC_URL,
@@ -314,10 +353,15 @@ describe("workspaces", () => {
       createInvitedHuman: accounts.createInvitedHuman,
       markEmailVerified: accounts.markEmailVerified,
       deliver: settings.deliver,
+      // This suite does not create projects; the projects feature's cleanup is covered
+      // end-to-end in projects/access.test.ts.
+      revokeMemberProjectAccess: async () => {},
+      applyInvitationGrants: (tx, workspaceId, humanId, grantedByHumanId, offered) =>
+        projectsFeature.applyInvitationGrants(tx, workspaceId, humanId, grantedByHumanId, offered),
       log: silentLogger,
     });
     const app = createApp({
-      features: [accounts, settings, invitationsFeature, workspacesFeature],
+      features: [accounts, settings, invitationsFeature, projectsFeature, workspacesFeature],
       publicUrl: PUBLIC_URL,
       log: silentLogger,
     });
@@ -427,7 +471,7 @@ describe("workspaces", () => {
     const members = await getJson(app, `/api/workspaces/${created.id}/members`, adminCookie);
     expect(members.status).toBe(200);
     expect(WorkspaceMembersResponse.parse(await members.json())).toEqual([
-      { humanId: admin.id, email: EMAIL, isOwner: true },
+      { humanId: admin.id, email: EMAIL, isOwner: true, canCreateProjects: true },
     ]);
 
     // Another signed-in person sees neither the workspace nor its detail.
@@ -439,8 +483,8 @@ describe("workspaces", () => {
     expect(hidden.status).toBe(404);
     expect(await problemBody(hidden)).toMatchObject({ code: "workspace_not_found" });
     const hiddenMembers = await getJson(app, `/api/workspaces/${created.id}/members`, otherCookie);
-    expect(hiddenMembers.status).toBe(403);
-    expect(await problemBody(hiddenMembers)).toMatchObject({ code: "not_workspace_owner" });
+    expect(hiddenMembers.status).toBe(404);
+    expect(await problemBody(hiddenMembers)).toMatchObject({ code: "workspace_not_found" });
   });
 
   it("requires a verified owner to invite", async () => {
@@ -460,7 +504,8 @@ describe("workspaces", () => {
     expect(await problemBody(unverified)).toMatchObject({ code: "inviter_unverified" });
     expect(await database.db.select().from(workspaceInvitations)).toHaveLength(0);
 
-    // A signed-in non-member is not an owner and cannot invite either.
+    // A signed-in non-member gets workspace_not_found so shared workspace ids cannot be
+    // enumerated via the invitation endpoint.
     const { cookie: outsiderCookie } = await verifiedCookie(app, "outsider@example.com");
     await verifyHuman(admin.id);
     const outsider = await postJson(
@@ -469,8 +514,8 @@ describe("workspaces", () => {
       { email: INVITEE_INPUT },
       outsiderCookie,
     );
-    expect(outsider.status).toBe(403);
-    expect(await problemBody(outsider)).toMatchObject({ code: "not_workspace_owner" });
+    expect(outsider.status).toBe(404);
+    expect(await problemBody(outsider)).toMatchObject({ code: "workspace_not_found" });
   });
 
   it("lets an existing verified account accept, matching normalized emails on both sides", async () => {
@@ -535,6 +580,7 @@ describe("workspaces", () => {
       kind: "shared",
       name: "Rocket Team",
       isOwner: false,
+      canCreateProjects: false,
     });
     const [membership] = await database.db
       .select()
@@ -723,6 +769,7 @@ describe("workspaces", () => {
       humanId: member.id,
       email: INVITEE,
       isOwner: true,
+      canCreateProjects: true,
     });
     const [membership] = await database.db
       .select()
@@ -834,7 +881,7 @@ describe("workspaces", () => {
       deleteRequest(app, `/api/workspaces/${workspace.id}/members/${second.id}`, adminCookie),
       deleteRequest(app, `/api/workspaces/${workspace.id}/members/${admin.id}`, secondCookie),
     ]);
-    expect([first.status, other.status].toSorted((a, b) => a - b)).toEqual([204, 403]);
+    expect([first.status, other.status].toSorted((a, b) => a - b)).toEqual([204, 404]);
 
     const remaining = await database.db
       .select()
@@ -956,7 +1003,7 @@ describe("workspaces", () => {
     ).toHaveLength(1); // the creator only
   });
 
-  it("keeps invitation expiry separate from a failed delivery", async () => {
+  it("supersedes a failed workspace invitation in place instead of locking the email out for seven days", async () => {
     const made = await readyApp();
     const { app, sent, adminCookie } = made;
     const workspace = await createWorkspace(app, adminCookie);
@@ -977,30 +1024,15 @@ describe("workspaces", () => {
       7 * 24 * 60 * 60 * 1000,
     );
 
-    // Delivery failure is not expiry: the pending offer still blocks a replacement and
-    // the failed link never redeems.
+    // The failed link can never preview or redeem.
     const token = tokenFrom(sent[0]?.text ?? "") ?? "";
-    const blocking = await postJson(
-      app,
-      `/api/workspaces/${workspace.id}/invitations`,
-      { email: INVITEE_INPUT },
-      adminCookie,
-    );
-    expect(blocking.status).toBe(409);
-    expect(await problemBody(blocking)).toMatchObject({ code: "invitation_pending" });
-    const [stillPending] = await database.db.select().from(workspaceInvitations);
-    expect(stillPending).toMatchObject({ status: "pending", deliveryStatus: "failed" });
     const preview = await getJson(app, `/api/workspace-invitations/preview?token=${token}`);
     expect(preview.status).toBe(400);
     expect(await problemBody(preview)).toMatchObject({ code: "invitation_invalid" });
 
-    // Once the seven-day deadline passes, the row is expired in place and a fresh
-    // invitation can be sent. Delivery status did not shorten or extend the deadline.
+    // Once SMTP recovers, re-inviting immediately supersedes the failed row in place
+    // rather than blocking for seven days.
     made.repairDelivery();
-    await database.db
-      .update(workspaceInvitations)
-      .set({ expiresAt: sql`now() - interval '1 second'` })
-      .where(eq(workspaceInvitations.workspaceId, workspace.id));
     const replacement = await invite(app, adminCookie, workspace.id, INVITEE);
     expect(replacement.status).toBe("pending");
     const rows = await database.db.select().from(workspaceInvitations);
@@ -1342,6 +1374,42 @@ describe("workspaces", () => {
     });
   });
 
+  it("copies offered project grants to a resent invitation", async () => {
+    const { app, sent, admin, adminCookie } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const projectId = await createProjectDirect(workspace.id, admin.id, "Resent Project");
+    await invite(app, adminCookie, workspace.id, INVITEE, [{ projectId, level: "contribute" }]);
+    const [oldInvitation] = await invitationList(app, adminCookie, workspace.id);
+    if (oldInvitation === undefined) throw new Error("the invitation was not listed");
+    const oldToken = await workspaceInviteToken(sent, INVITEE, "Rocket Team");
+
+    const res = await postEmpty(
+      app,
+      `/api/workspaces/${workspace.id}/invitations/${oldInvitation.id}/resend`,
+      adminCookie,
+    );
+    expect(res.status).toBe(200);
+    const fresh = InvitationSummary.parse(await res.json());
+    expect(fresh.grants).toContainEqual({
+      kind: "project_access",
+      projectId,
+      projectName: "Resent Project",
+      level: "contribute",
+    });
+
+    // The old offer keeps its row; the replacement carries the same project and level.
+    expect(await database.db.select().from(workspaceInvitationGrants)).toHaveLength(2);
+    const newToken = tokenFrom(sent.at(-1)?.text ?? "");
+    expect(newToken).not.toBe(oldToken);
+    const preview = await getJson(app, `/api/workspace-invitations/preview?token=${newToken}`);
+    expect(WorkspaceInvitationPreview.parse(await preview.json()).grants).toContainEqual({
+      kind: "project_access",
+      projectId,
+      projectName: "Resent Project",
+      level: "contribute",
+    });
+  });
+
   it("resends workspace invitations on both sides of the expiry boundary with a fresh seven-day deadline", async () => {
     const { app, sent, adminCookie } = await readyApp();
     const workspace = await createWorkspace(app, adminCookie);
@@ -1471,6 +1539,141 @@ describe("workspaces", () => {
     );
     expect(missing.status).toBe(404);
     expect(await problemBody(missing)).toMatchObject({ code: "invitation_not_found" });
+  });
+
+  it("shows offered project access and applies it on both acceptance paths", async () => {
+    const { app, sent, admin, adminCookie } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const projectId = await createProjectDirect(workspace.id, admin.id, "Offered Project");
+
+    // An existing account sees the exact project and level before accepting, and the
+    // same transaction writes the membership and grant.
+    const { human: existing, cookie: existingCookie } = await verifiedCookie(app, INVITEE);
+    await invite(app, adminCookie, workspace.id, INVITEE, [{ projectId, level: "contribute" }]);
+    const existingToken = await workspaceInviteToken(sent, INVITEE, "Rocket Team");
+    const preview = await getJson(app, `/api/workspace-invitations/preview?token=${existingToken}`);
+    expect(preview.status).toBe(200);
+    expect(WorkspaceInvitationPreview.parse(await preview.json()).grants).toContainEqual({
+      kind: "project_access",
+      projectId,
+      projectName: "Offered Project",
+      level: "contribute",
+    });
+    expect(
+      (
+        await postJson(
+          app,
+          "/api/workspace-invitations/acceptance",
+          { token: existingToken },
+          existingCookie,
+        )
+      ).status,
+    ).toBe(200);
+    const [existingGrant] = await database.db
+      .select()
+      .from(projectAccessGrants)
+      .where(
+        and(
+          eq(projectAccessGrants.projectId, projectId),
+          eq(projectAccessGrants.humanId, existing.id),
+        ),
+      );
+    expect(existingGrant).toMatchObject({
+      level: "contribute",
+      grantedByHumanId: admin.id,
+    });
+
+    // Registration creates the account, membership, and offered grant together.
+    await invite(app, adminCookie, workspace.id, "new.project@example.com", [
+      { projectId, level: "manage" },
+    ]);
+    const registrationToken = await workspaceInviteToken(
+      sent,
+      "new.project@example.com",
+      "Rocket Team",
+    );
+    expect(
+      (
+        await postJson(app, "/api/workspace-invitations/registration", {
+          token: registrationToken,
+          password: "new-project-password",
+        })
+      ).status,
+    ).toBe(200);
+    const [registered] = await database.db
+      .select()
+      .from(humans)
+      .where(eq(humans.email, "new.project@example.com"));
+    if (registered === undefined) throw new Error("the registered account was not created");
+    const [registeredGrant] = await database.db
+      .select()
+      .from(projectAccessGrants)
+      .where(
+        and(
+          eq(projectAccessGrants.projectId, projectId),
+          eq(projectAccessGrants.humanId, registered.id),
+        ),
+      );
+    expect(registeredGrant).toMatchObject({
+      level: "manage",
+      grantedByHumanId: admin.id,
+    });
+  });
+
+  it("rejects a project that left the workspace on both acceptance paths, leaving the offers pending", async () => {
+    const { app, sent, admin, adminCookie } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const otherWorkspaceId = await directSharedWorkspace([admin.id], "Other Team");
+    const projectId = await createProjectDirect(workspace.id, admin.id, "Moved Project");
+    const { cookie: existingCookie } = await verifiedCookie(app, INVITEE);
+    const newEmail = "moved.project@example.com";
+
+    await invite(app, adminCookie, workspace.id, INVITEE, [{ projectId, level: "read" }]);
+    await invite(app, adminCookie, workspace.id, newEmail, [{ projectId, level: "contribute" }]);
+    const existingToken = await workspaceInviteToken(sent, INVITEE, "Rocket Team");
+    const registrationToken = await workspaceInviteToken(sent, newEmail, "Rocket Team");
+
+    // Project transfer (#46) is out of scope, so simulate the lease changing behind an
+    // existing offer the way a future transfer would: the invitation still names it,
+    // but the project now belongs to another workspace.
+    await database.db
+      .update(projects)
+      .set({ workspaceId: otherWorkspaceId })
+      .where(eq(projects.id, projectId));
+    expect(await database.db.select().from(workspaceInvitationGrants)).toHaveLength(2);
+
+    const existing = await postJson(
+      app,
+      "/api/workspace-invitations/acceptance",
+      { token: existingToken },
+      existingCookie,
+    );
+    expect(existing.status).toBe(409);
+    expect(await problemBody(existing)).toMatchObject({ code: "invitation_scope_invalid" });
+
+    const registration = await postJson(app, "/api/workspace-invitations/registration", {
+      token: registrationToken,
+      password: "moved-project-password",
+    });
+    expect(registration.status).toBe(409);
+    expect(await problemBody(registration)).toMatchObject({
+      code: "invitation_scope_invalid",
+    });
+
+    // Both tokens remain pending: the rejection rolled back the membership, account,
+    // token, and grants together.
+    const invitations = await database.db.select().from(workspaceInvitations);
+    expect(invitations.map((invitation) => invitation.status)).toEqual(["pending", "pending"]);
+    expect(
+      await database.db
+        .select()
+        .from(workspaceMemberships)
+        .where(eq(workspaceMemberships.workspaceId, workspace.id)),
+    ).toHaveLength(1);
+    expect(await database.db.select().from(projectAccessGrants)).toHaveLength(0);
+    expect(await database.db.select().from(humans).where(eq(humans.email, newEmail))).toHaveLength(
+      0,
+    );
   });
 
   it("enforces valid and invalid ownership states at the database, including moves", async () => {

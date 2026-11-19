@@ -6,6 +6,7 @@ import type { Feature } from "../platform/feature.ts";
 import type { Logger } from "../platform/log.ts";
 import { createAccountsFeature, accountsRoutes } from "./accounts/index.ts";
 import { createInvitationsFeature, invitationsRoutes } from "./invitations/index.ts";
+import { createProjectsFeature, projectsRoutes } from "./projects/index.ts";
 import { createSettingsFeature, settingsRoutes } from "./settings/index.ts";
 import { createSystemFeature, systemRoutes } from "./system/index.ts";
 import { createWorkspacesFeature, workspacesRoutes } from "./workspaces/index.ts";
@@ -26,6 +27,12 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     sessionReader: accounts.sessionReader,
     markEmailVerified: accounts.markEmailVerified,
     log,
+  });
+  // Projects owns project grants and their access events. Workspaces borrows the
+  // removal cleanup so losing a membership ends project access in the same transaction.
+  const projects = createProjectsFeature({
+    db: database.db,
+    sessionReader: accounts.sessionReader,
   });
   return [
     createSystemFeature({ ping: database.ping }),
@@ -51,8 +58,13 @@ export function createFeatures(database: Database, config: Config, log: Logger):
       createInvitedHuman: accounts.createInvitedHuman,
       markEmailVerified: accounts.markEmailVerified,
       deliver: settings.deliver,
+      revokeMemberProjectAccess: (tx, workspaceId, humanId, actorHumanId) =>
+        projects.revokeMemberProjectAccess(tx, workspaceId, humanId, actorHumanId),
+      applyInvitationGrants: (tx, workspaceId, humanId, grantedByHumanId, offered) =>
+        projects.applyInvitationGrants(tx, workspaceId, humanId, grantedByHumanId, offered),
       log,
     }),
+    projects,
   ];
 }
 
@@ -63,4 +75,5 @@ export const routes = [
   ...settingsRoutes,
   ...invitationsRoutes,
   ...workspacesRoutes,
+  ...projectsRoutes,
 ];

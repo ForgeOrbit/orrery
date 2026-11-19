@@ -9,8 +9,9 @@ import {
   type DeclineWorkspaceInvitationRequest,
   type InviteWorkspaceMemberRequest,
   type RegisterThroughWorkspaceInvitationRequest,
+  type UpdateWorkspaceMemberRequest,
 } from "@orrery/contract";
-import { post, postJson, postNoContent } from "../../lib/api.ts";
+import { patchJson, post, postJson, postNoContent } from "../../lib/api.ts";
 
 // Mutations for this feature. Each posts JSON through the app's one request helper,
 // which parses the response with the contract's schemas and turns a Problem (RFC 9457)
@@ -33,7 +34,44 @@ export function inviteWorkspaceMember(
   );
 }
 
-// Resend rotates the link for a current owner; the previous link stops working.
+// Accepts the emailed link as the signed-in account. The server enforces that the
+// account's verified email is the invited address.
+export function acceptWorkspaceInvitation(
+  input: AcceptWorkspaceInvitationRequest,
+): Promise<Workspace> {
+  return postJson("/api/workspace-invitations/acceptance", input, (value) =>
+    Workspace.parse(value),
+  );
+}
+
+// Appoints an existing member as another owner. Owners only; the server decides.
+export function appointWorkspaceOwner(
+  workspaceId: string,
+  humanId: string,
+): Promise<WorkspaceMember> {
+  return postJson(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/owners`,
+    { humanId },
+    (value) => WorkspaceMember.parse(value),
+  );
+}
+
+// Owners grant or revoke one member's Create projects capability. The response is the
+// member with the effective value (owners always hold it).
+export function updateWorkspaceMember(
+  workspaceId: string,
+  humanId: string,
+  input: UpdateWorkspaceMemberRequest,
+): Promise<WorkspaceMember> {
+  return patchJson(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(humanId)}`,
+    input,
+    (value) => WorkspaceMember.parse(value),
+  );
+}
+
+// Resend rotates the link for a current owner; the previous link stops working and the
+// offered project grants are copied to the replacement invitation.
 export function resendWorkspaceInvitation(
   workspaceId: string,
   invitationId: string,
@@ -64,28 +102,6 @@ export function declineWorkspaceInvitation(
   input: DeclineWorkspaceInvitationRequest,
 ): Promise<void> {
   return postNoContent("/api/workspace-invitations/decline", input);
-}
-
-// Accepts the emailed link as the signed-in account. The server enforces that the
-// account's verified email is the invited address.
-export function acceptWorkspaceInvitation(
-  input: AcceptWorkspaceInvitationRequest,
-): Promise<Workspace> {
-  return postJson("/api/workspace-invitations/acceptance", input, (value) =>
-    Workspace.parse(value),
-  );
-}
-
-// Appoints an existing member as another owner. Owners only; the server decides.
-export function appointWorkspaceOwner(
-  workspaceId: string,
-  humanId: string,
-): Promise<WorkspaceMember> {
-  return postJson(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/owners`,
-    { humanId },
-    (value) => WorkspaceMember.parse(value),
-  );
 }
 
 // Registers a new account through the same link, creating its personal workspace and

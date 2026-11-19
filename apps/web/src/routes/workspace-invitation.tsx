@@ -122,20 +122,30 @@ function Invitation({ token }: { token: string }) {
 }
 
 // The offer, before anything is accepted: the workspace, who invited the person, the
-// access it grants, and when it expires. The server rechecks all of it at acceptance.
+// actual project grants offered, and when it expires. The server rechecks every project
+// against the workspace at acceptance.
 function InvitationScope({ preview }: { preview: WorkspaceInvitationPreview }) {
-  const offered = preview.grants
-    .map((grant) =>
-      grant.kind === "installation_account" ? "Installation account" : "Workspace member",
-    )
-    .join(", ");
+  const projects = preview.grants.filter((grant) => grant.kind === "project_access");
   return (
     <section>
       <p>
         {preview.invitedByEmail} invited {preview.email} to <strong>{preview.workspaceName}</strong>
         .
       </p>
-      <p>Offered access: {offered}. Workspace membership alone does not grant project access.</p>
+      <p>Offered access: workspace membership.</p>
+      {projects.length > 0 && (
+        <>
+          <p>Project access:</p>
+          <ul>
+            {projects.map((grant) => (
+              <li key={grant.projectId} data-project-grant-id={grant.projectId}>
+                {grant.projectName}: {grant.level}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      <p>Workspace membership alone does not grant project access.</p>
       <p>This invitation expires {new Date(preview.expiresAt).toLocaleString()}.</p>
     </section>
   );

@@ -2,16 +2,18 @@ import { randomBytes, randomUUID } from "node:crypto";
 import {
   InvitationDelivery,
   InvitationStatus,
+  ProjectAccessLevel,
   WorkspaceKind,
   type CreateWorkspaceRequest,
   type InvitationSummary,
   type InviteWorkspaceMemberRequest,
+  type UpdateWorkspaceMemberRequest,
   type Workspace,
   type WorkspaceInvitation,
   type WorkspaceInvitationPreview,
   type WorkspaceMember,
 } from "@orrery/contract";
-import { and, desc, eq, gt, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
 import { errorNameAndCode, uniqueConstraintName } from "../../platform/errors.ts";
@@ -21,7 +23,9 @@ import type { SessionAccount } from "../accounts/index.ts";
 import type { OutgoingMail } from "../settings/index.ts";
 import {
   humans,
+  projects,
   workspaceEvents,
+  workspaceInvitationGrants,
   workspaceInvitations,
   workspaceMemberships,
   workspaceOwnershipGuards,
@@ -33,6 +37,10 @@ import {
 
 // Seven days, evaluated in database time at redemption, never by a deployed clock (#20).
 const INVITATION_TTL_SECONDS = 7 * 24 * 60 * 60;
+
+// How long an unknown delivery keeps blocking a fresh invitation. Matches invitations'
+// grace window so a crashed or failed send never locks an email out for seven days.
+export const UNKNOWN_DELIVERY_GRACE_SECONDS = 10 * 60;
 
 export type WorkspacesErrorKind =
   | "not_signed_in"
@@ -46,10 +54,12 @@ export type WorkspacesErrorKind =
   | "invitation_pending"
   | "invitation_not_found"
   | "invitation_not_pending"
+  | "invitation_scope_invalid"
   | "already_member"
   | "account_exists"
   | "member_not_found"
-  | "last_owner";
+  | "last_owner"
+  | "workspace_owner_capability";
 
 // Each kind is the REST error's stable code and its message the Problem's title
 // (ADR-0003), so clients branch on the code and people read the title.
@@ -66,10 +76,13 @@ const messages = {
   invitation_pending: "An invitation for this email is already pending in this workspace.",
   invitation_not_found: "This workspace invitation does not exist.",
   invitation_not_pending: "Only a pending or expired invitation can be changed.",
+  invitation_scope_invalid:
+    "This invitation offers a project that no longer belongs to this workspace.",
   already_member: "This person is already a member of the workspace.",
   account_exists: "This email already has an account. Sign in to accept the invitation.",
   member_not_found: "This person is not a member of the workspace.",
   last_owner: "A workspace must keep at least one owner.",
+  workspace_owner_capability: "Workspace owners always have Create projects.",
 } as const satisfies Record<WorkspacesErrorKind, string>;
 
 export class WorkspacesError extends Error {
@@ -176,6 +189,8 @@ async function lockWorkspaceForMutation(
 
 // The caller's authority is read after the workspace lock, never from a stale snapshot:
 // an owner removed by the transaction ahead of this one is no longer an owner here.
+// A caller who is not a member at all answers workspace_not_found (404), matching GET,
+// so owner endpoints cannot be used to enumerate shared workspace ids.
 async function requireOwner(tx: DbTransaction, workspaceId: string, humanId: string) {
   const [membership] = await tx
     .select({ isOwner: workspaceMemberships.isOwner })
@@ -187,7 +202,8 @@ async function requireOwner(tx: DbTransaction, workspaceId: string, humanId: str
       ),
     )
     .limit(1);
-  if (membership?.isOwner !== true) throw new WorkspacesError("not_workspace_owner");
+  if (membership === undefined) throw new WorkspacesError("workspace_not_found");
+  if (!membership.isOwner) throw new WorkspacesError("not_workspace_owner");
 }
 
 // The same verified-inviter policy for creating and rotating an offer (#20): the
@@ -233,85 +249,49 @@ async function requireInviterStillAuthorized(
 }
 
 // The listing projection: personal owners are owners by definition; a shared workspace
-// is the caller's membership, with its owner flag.
+// is the caller's membership, with its owner flag and delegated Create projects
+// capability. Owners always hold the capability, whatever the stored column says.
 function toWorkspace(row: {
   id: string;
   kind: Workspace["kind"];
   name: string;
   membershipIsOwner: boolean | null;
+  membershipCanCreateProjects: boolean | null;
 }): Workspace {
+  const isOwner = row.kind === WorkspaceKind.enum.personal || row.membershipIsOwner === true;
   return {
     id: row.id,
     kind: row.kind,
     name: row.name,
-    isOwner: row.kind === WorkspaceKind.enum.personal || row.membershipIsOwner === true,
+    isOwner,
+    canCreateProjects: isOwner || row.membershipCanCreateProjects === true,
   };
 }
 
-export interface WorkspacesDeps {
-  db: PostgresJsDatabase;
-  // The URL the emailed link carries.
-  publicUrl: string;
-  // Accounts owns humans: invited registration creates the account and personal
-  // workspace, and the verified mark is earned by the invitation token.
-  createInvitedHuman: (
-    input: { email: string; password: string },
-    tx: DbTransaction,
-  ) => Promise<{ humanId: string }>;
-  markEmailVerified: (humanId: string, tx: DbTransaction) => Promise<void>;
-  // Settings owns the relay: the one mail path, never a second transport.
-  deliver: (mail: OutgoingMail) => Promise<void>;
-  log?: Logger;
+// A member row's effective capability. An owner can always create, so a stored false
+// never hides that.
+function toMember(row: {
+  humanId: string;
+  email: string;
+  isOwner: boolean;
+  canCreateProjects: boolean;
+}): WorkspaceMember {
+  return {
+    humanId: row.humanId,
+    email: row.email,
+    isOwner: row.isOwner,
+    canCreateProjects: row.isOwner || row.canCreateProjects,
+  };
 }
 
-export interface WorkspacesService {
-  list(account: SessionAccount | null): Promise<Workspace[]>;
-  get(account: SessionAccount | null, workspaceId: string): Promise<Workspace>;
-  members(account: SessionAccount | null, workspaceId: string): Promise<WorkspaceMember[]>;
-  create(account: SessionAccount | null, input: CreateWorkspaceRequest): Promise<Workspace>;
-  invite(
-    account: SessionAccount | null,
-    workspaceId: string,
-    input: InviteWorkspaceMemberRequest,
-  ): Promise<WorkspaceInvitation>;
-  invitations(account: SessionAccount | null, workspaceId: string): Promise<InvitationSummary[]>;
-  resendInvitation(
-    account: SessionAccount | null,
-    workspaceId: string,
-    invitationId: string,
-  ): Promise<InvitationSummary>;
-  revokeInvitation(
-    account: SessionAccount | null,
-    workspaceId: string,
-    invitationId: string,
-  ): Promise<InvitationSummary>;
-  declineInvitation(input: { token: string }): Promise<void>;
-  previewInvitation(token: string): Promise<WorkspaceInvitationPreview>;
-  acceptInvitation(account: SessionAccount | null, token: string): Promise<Workspace>;
-  registerThroughInvitation(input: {
-    token: string;
-    password: string;
-  }): Promise<{ email: string; emailVerified: true }>;
-  appointOwner(
-    account: SessionAccount | null,
-    workspaceId: string,
-    humanId: string,
-  ): Promise<WorkspaceMember>;
-  removeMember(account: SessionAccount | null, workspaceId: string, humanId: string): Promise<void>;
+// The project grants an invitation offers, joined to their project names for the
+// inviter's history and the recipient's preview.
+interface OfferedProjectGrant {
+  projectId: string;
+  projectName: string;
+  level: ProjectAccessLevel;
 }
 
-// The delivery attempt, recorded separately from the lifecycle: pending never implies
-// delivered (#20). Only a recorded failure never redeems.
-async function recordDelivery(db: PostgresJsDatabase, id: string, delivery: InvitationDelivery) {
-  await db
-    .update(workspaceInvitations)
-    .set({ deliveryStatus: delivery, deliveryAttemptedAt: sql`statement_timestamp()` })
-    .where(eq(workspaceInvitations.id, id));
-}
-
-// The projection the inviter's history shares: recipient, inviter, target, offered
-// grants, lifecycle timestamps, and delivery as a separate fact. The token stays in the
-// email.
 const summarySelection = {
   id: workspaceInvitations.id,
   workspaceId: workspaceInvitations.workspaceId,
@@ -348,7 +328,38 @@ interface WorkspaceSummaryRow {
   deliveryAttemptedAt: Date | null;
 }
 
-function toWorkspaceSummary(row: WorkspaceSummaryRow): InvitationSummary {
+async function loadOfferedProjectGrants(
+  db: PostgresJsDatabase,
+  invitationIds: readonly string[],
+): Promise<Map<string, OfferedProjectGrant[]>> {
+  const byInvitation = new Map<string, OfferedProjectGrant[]>();
+  if (invitationIds.length === 0) return byInvitation;
+  const rows = await db
+    .select({
+      invitationId: workspaceInvitationGrants.invitationId,
+      projectId: workspaceInvitationGrants.projectId,
+      projectName: projects.name,
+      level: workspaceInvitationGrants.level,
+    })
+    .from(workspaceInvitationGrants)
+    .innerJoin(projects, eq(projects.id, workspaceInvitationGrants.projectId))
+    .where(inArray(workspaceInvitationGrants.invitationId, [...invitationIds]));
+  for (const row of rows) {
+    const grants = byInvitation.get(row.invitationId) ?? [];
+    grants.push({
+      projectId: row.projectId,
+      projectName: row.projectName,
+      level: ProjectAccessLevel.parse(row.level),
+    });
+    byInvitation.set(row.invitationId, grants);
+  }
+  return byInvitation;
+}
+
+function toWorkspaceSummary(
+  row: WorkspaceSummaryRow,
+  projectGrants: readonly OfferedProjectGrant[],
+): InvitationSummary {
   return {
     id: row.id,
     email: row.email,
@@ -360,6 +371,12 @@ function toWorkspaceSummary(row: WorkspaceSummaryRow): InvitationSummary {
         workspaceId: row.workspaceId,
         role: "member",
       },
+      ...projectGrants.map((grant) => ({
+        kind: "project_access" as const,
+        projectId: grant.projectId,
+        projectName: grant.projectName,
+        level: grant.level,
+      })),
     ],
     invitedBy: { humanId: row.invitedByHumanId, email: row.invitedByEmail },
     delivery: {
@@ -393,12 +410,123 @@ async function readWorkspaceInvitationSummary(
     )
     .limit(1);
   if (row === undefined) throw new WorkspacesError("invitation_not_found");
-  return toWorkspaceSummary(row);
+  const grants = await loadOfferedProjectGrants(db, [invitationId]);
+  return toWorkspaceSummary(row, grants.get(invitationId) ?? []);
+}
+
+// Validate an offered scope at invitation creation: every project must currently belong
+// to the workspace. Acceptance rechecks the same fact under the workspace lock.
+async function requireOfferedProjectsInWorkspace(
+  tx: DbTransaction,
+  workspaceId: string,
+  offered: readonly { projectId: string }[],
+) {
+  const ids = [...new Set(offered.map((grant) => grant.projectId))];
+  if (ids.length === 0) return;
+  const rows = await tx
+    .select({ id: projects.id, workspaceId: projects.workspaceId })
+    .from(projects)
+    .where(inArray(projects.id, ids));
+  const current = new Map(rows.map((row) => [row.id, row.workspaceId]));
+  if (ids.some((id) => current.get(id) !== workspaceId)) {
+    throw new WorkspacesError("invitation_scope_invalid");
+  }
+}
+
+export interface WorkspacesDeps {
+  db: PostgresJsDatabase;
+  // The URL the emailed link carries.
+  publicUrl: string;
+  // Accounts owns humans: invited registration creates the account and personal
+  // workspace, and the verified mark is earned by the invitation token.
+  createInvitedHuman: (
+    input: { email: string; password: string },
+    tx: DbTransaction,
+  ) => Promise<{ humanId: string }>;
+  markEmailVerified: (humanId: string, tx: DbTransaction) => Promise<void>;
+  // Settings owns the relay: the one mail path, never a second transport.
+  deliver: (mail: OutgoingMail) => Promise<void>;
+  // Projects owns project grants: removing a member ends them in the same transaction
+  // and records the revocations. The projects feature's public interface supplies this.
+  revokeMemberProjectAccess: (
+    tx: DbTransaction,
+    workspaceId: string,
+    humanId: string,
+    actorHumanId: string,
+  ) => Promise<void>;
+  // Projects validates and writes the project grants an invitation offers, inside the
+  // same redemption transaction. It returns offered project ids that are no longer in
+  // the workspace.
+  applyInvitationGrants: (
+    tx: DbTransaction,
+    workspaceId: string,
+    humanId: string,
+    grantedByHumanId: string,
+    offered: readonly { projectId: string; level: ProjectAccessLevel }[],
+  ) => Promise<string[]>;
+  log?: Logger;
+}
+
+export interface WorkspacesService {
+  list(account: SessionAccount | null): Promise<Workspace[]>;
+  get(account: SessionAccount | null, workspaceId: string): Promise<Workspace>;
+  members(account: SessionAccount | null, workspaceId: string): Promise<WorkspaceMember[]>;
+  create(account: SessionAccount | null, input: CreateWorkspaceRequest): Promise<Workspace>;
+  invite(
+    account: SessionAccount | null,
+    workspaceId: string,
+    input: InviteWorkspaceMemberRequest,
+  ): Promise<WorkspaceInvitation>;
+  invitations(account: SessionAccount | null, workspaceId: string): Promise<InvitationSummary[]>;
+  resendInvitation(
+    account: SessionAccount | null,
+    workspaceId: string,
+    invitationId: string,
+  ): Promise<InvitationSummary>;
+  revokeInvitation(
+    account: SessionAccount | null,
+    workspaceId: string,
+    invitationId: string,
+  ): Promise<InvitationSummary>;
+  declineInvitation(input: { token: string }): Promise<void>;
+  previewInvitation(token: string): Promise<WorkspaceInvitationPreview>;
+  acceptInvitation(account: SessionAccount | null, token: string): Promise<Workspace>;
+  registerThroughInvitation(input: {
+    token: string;
+    password: string;
+  }): Promise<{ email: string; emailVerified: true }>;
+  appointOwner(
+    account: SessionAccount | null,
+    workspaceId: string,
+    humanId: string,
+  ): Promise<WorkspaceMember>;
+  updateMemberCapability(
+    account: SessionAccount | null,
+    workspaceId: string,
+    humanId: string,
+    input: UpdateWorkspaceMemberRequest,
+  ): Promise<WorkspaceMember>;
+  removeMember(account: SessionAccount | null, workspaceId: string, humanId: string): Promise<void>;
+}
+
+// The delivery attempt, recorded separately from the lifecycle: pending never implies
+// delivered (#20). Only a recorded failure never redeems, and only a still-pending row
+// is updated so a late socket error never stamps 'failed' onto an already-accepted row.
+async function recordDelivery(db: PostgresJsDatabase, id: string, delivery: InvitationDelivery) {
+  await db
+    .update(workspaceInvitations)
+    .set({ deliveryStatus: delivery, deliveryAttemptedAt: sql`statement_timestamp()` })
+    .where(
+      and(
+        eq(workspaceInvitations.id, id),
+        eq(workspaceInvitations.status, InvitationStatus.enum.pending),
+      ),
+    );
 }
 
 // Sends one workspace invitation and records the attempt separately from the lifecycle.
 // A known failure never redeems and answers with settings' own Problem.
-async function sendWorkspaceInvitation(
+async function deliverWorkspaceInvitation(
   db: PostgresJsDatabase,
   deliver: (mail: OutgoingMail) => Promise<void>,
   log: Logger | undefined,
@@ -469,6 +597,7 @@ async function redeemWorkspaceInvitation(tx: DbTransaction, token: string) {
       ),
     )
     .returning({
+      id: workspaceInvitations.id,
       workspaceId: workspaceInvitations.workspaceId,
       email: workspaceInvitations.email,
       invitedByHumanId: workspaceInvitations.invitedByHumanId,
@@ -476,10 +605,43 @@ async function redeemWorkspaceInvitation(tx: DbTransaction, token: string) {
   if (invitation === undefined) throw new WorkspacesError("invitation_invalid");
 
   await requireInviterStillAuthorized(tx, invitation.workspaceId, invitation.invitedByHumanId);
-  // The workspace lock above also proves the target still exists and is shared. Project
-  // grants arrive with project access (#27); when they do, their ownership check belongs
-  // here, before the token is consumed, alongside the inviter recheck.
-  return { ...invitation, workspace };
+  const offered = await tx
+    .select({
+      projectId: workspaceInvitationGrants.projectId,
+      level: workspaceInvitationGrants.level,
+    })
+    .from(workspaceInvitationGrants)
+    .where(eq(workspaceInvitationGrants.invitationId, invitation.id));
+  await requireOfferedProjectsInWorkspace(tx, invitation.workspaceId, offered);
+  return {
+    ...invitation,
+    workspace,
+    offered: offered.map((grant) => ({
+      projectId: grant.projectId,
+      level: ProjectAccessLevel.parse(grant.level),
+    })),
+  };
+}
+
+async function requireWorkspaceMember(tx: DbTransaction, workspaceId: string, humanId: string) {
+  const [member] = await tx
+    .select({
+      humanId: workspaceMemberships.humanId,
+      email: humans.email,
+      isOwner: workspaceMemberships.isOwner,
+      canCreateProjects: workspaceMemberships.canCreateProjects,
+    })
+    .from(workspaceMemberships)
+    .innerJoin(humans, eq(humans.id, workspaceMemberships.humanId))
+    .where(
+      and(
+        eq(workspaceMemberships.workspaceId, workspaceId),
+        eq(workspaceMemberships.humanId, humanId),
+      ),
+    )
+    .limit(1);
+  if (member === undefined) throw new WorkspacesError("member_not_found");
+  return member;
 }
 
 export function createWorkspacesService({
@@ -488,6 +650,8 @@ export function createWorkspacesService({
   createInvitedHuman,
   markEmailVerified,
   deliver,
+  revokeMemberProjectAccess,
+  applyInvitationGrants,
   log,
 }: WorkspacesDeps): WorkspacesService {
   return {
@@ -501,6 +665,7 @@ export function createWorkspacesService({
           kind: workspaces.kind,
           name: workspaces.name,
           membershipIsOwner: workspaceMemberships.isOwner,
+          membershipCanCreateProjects: workspaceMemberships.canCreateProjects,
         })
         .from(workspaces)
         .leftJoin(
@@ -530,6 +695,7 @@ export function createWorkspacesService({
           kind: workspaces.kind,
           name: workspaces.name,
           membershipIsOwner: workspaceMemberships.isOwner,
+          membershipCanCreateProjects: workspaceMemberships.canCreateProjects,
         })
         .from(workspaces)
         .leftJoin(
@@ -561,16 +727,18 @@ export function createWorkspacesService({
         async (tx) => {
           await readSharedWorkspace(tx, workspaceId);
           await requireOwner(tx, workspaceId, actor.humanId);
-          return tx
+          const rows = await tx
             .select({
               humanId: workspaceMemberships.humanId,
               email: humans.email,
               isOwner: workspaceMemberships.isOwner,
+              canCreateProjects: workspaceMemberships.canCreateProjects,
             })
             .from(workspaceMemberships)
             .innerJoin(humans, eq(humans.id, workspaceMemberships.humanId))
             .where(eq(workspaceMemberships.workspaceId, workspaceId))
             .orderBy(workspaceMemberships.createdAt, workspaceMemberships.humanId);
+          return rows.map(toMember);
         },
         { isolationLevel: "repeatable read", accessMode: "read only" },
       );
@@ -596,7 +764,13 @@ export function createWorkspacesService({
         });
         await recordEvent(tx, "workspace_created", id, actor.humanId, actor.humanId);
       });
-      return { id, kind: WorkspaceKind.enum.shared, name: input.name, isOwner: true };
+      return {
+        id,
+        kind: WorkspaceKind.enum.shared,
+        name: input.name,
+        isOwner: true,
+        canCreateProjects: true,
+      };
     },
 
     // An owner invites one address. The invitation can go to an existing account or an
@@ -613,6 +787,7 @@ export function createWorkspacesService({
           const workspace = await lockWorkspaceForMutation(tx, workspaceId);
           await requireOwner(tx, workspaceId, actor.humanId);
           await requireVerifiedInviter(tx, actor.humanId);
+          await requireOfferedProjectsInWorkspace(tx, workspaceId, input.projectGrants);
 
           const [member] = await tx
             .select({ id: workspaceMemberships.id })
@@ -624,11 +799,10 @@ export function createWorkspacesService({
             .limit(1);
           if (member !== undefined) throw new WorkspacesError("already_member");
 
-          // A pending invitation blocks a new one for its full seven days, whatever the
-          // email delivery recorded. Delivery is a separate fact (#20): a failed or
-          // unconfirmed send does not shorten the invitation's life. Replacement here is
-          // only the in-place expiry of a row whose deadline has actually passed; an
-          // explicit resend or revoke uses the management routes.
+          // A pending invitation blocks a new one while it is unexpired and either sent or
+          // still within the in-flight delivery grace window. Expired rows, known-failed
+          // deliveries, and stale unknown deliveries past the grace window are superseded
+          // in place so a failed SMTP attempt never locks an address out for seven days.
           const [blocking] = await tx
             .select({ id: workspaceInvitations.id })
             .from(workspaceInvitations)
@@ -638,6 +812,16 @@ export function createWorkspacesService({
                 eq(workspaceInvitations.email, input.email),
                 eq(workspaceInvitations.status, InvitationStatus.enum.pending),
                 gt(workspaceInvitations.expiresAt, sql`statement_timestamp()`),
+                or(
+                  eq(workspaceInvitations.deliveryStatus, InvitationDelivery.enum.sent),
+                  and(
+                    isNull(workspaceInvitations.deliveryStatus),
+                    gte(
+                      workspaceInvitations.createdAt,
+                      sql`statement_timestamp() - make_interval(secs => ${UNKNOWN_DELIVERY_GRACE_SECONDS})`,
+                    ),
+                  ),
+                ),
               ),
             )
             .limit(1);
@@ -654,7 +838,17 @@ export function createWorkspacesService({
                 eq(workspaceInvitations.workspaceId, workspaceId),
                 eq(workspaceInvitations.email, input.email),
                 eq(workspaceInvitations.status, InvitationStatus.enum.pending),
-                lte(workspaceInvitations.expiresAt, sql`statement_timestamp()`),
+                or(
+                  lte(workspaceInvitations.expiresAt, sql`statement_timestamp()`),
+                  eq(workspaceInvitations.deliveryStatus, InvitationDelivery.enum.failed),
+                  and(
+                    isNull(workspaceInvitations.deliveryStatus),
+                    lt(
+                      workspaceInvitations.createdAt,
+                      sql`statement_timestamp() - make_interval(secs => ${UNKNOWN_DELIVERY_GRACE_SECONDS})`,
+                    ),
+                  ),
+                ),
               ),
             );
 
@@ -668,6 +862,16 @@ export function createWorkspacesService({
             createdAt: sql`statement_timestamp()`,
             expiresAt: sql`statement_timestamp() + make_interval(secs => ${INVITATION_TTL_SECONDS})`,
           });
+          if (input.projectGrants.length > 0) {
+            await tx.insert(workspaceInvitationGrants).values(
+              input.projectGrants.map((grant) => ({
+                id: randomUUID(),
+                invitationId: id,
+                projectId: grant.projectId,
+                level: grant.level,
+              })),
+            );
+          }
           // The mail is sent after the insert commits, like the installation invitation:
           // the row is the durable offer, the delivery attempt is separate.
           return workspace.name;
@@ -679,13 +883,20 @@ export function createWorkspacesService({
         throw error;
       }
 
-      await sendWorkspaceInvitation(db, deliver, log, {
-        id,
-        workspaceName,
-        email: input.email,
-        token,
-        publicUrl,
-      });
+      try {
+        await deliver(invitationMail(workspaceName, input.email, token, publicUrl));
+      } catch (error) {
+        try {
+          await recordDelivery(db, id, InvitationDelivery.enum.failed);
+        } catch (recordingError) {
+          log?.warn(
+            "failed workspace invitation delivery recording failed",
+            errorNameAndCode(recordingError),
+          );
+        }
+        throw error;
+      }
+      await recordDelivery(db, id, InvitationDelivery.enum.sent);
       return { workspaceId, email: input.email, status: InvitationStatus.enum.pending };
     },
 
@@ -717,14 +928,37 @@ export function createWorkspacesService({
           .innerJoin(humans, eq(humans.id, workspaceInvitations.invitedByHumanId))
           .where(eq(workspaceInvitations.workspaceId, workspaceId))
           .orderBy(desc(workspaceInvitations.createdAt), desc(workspaceInvitations.id));
-        return rows.map(toWorkspaceSummary);
+        const ids = rows.map((row) => row.id);
+        const grantsByInvitation = new Map<string, OfferedProjectGrant[]>();
+        if (ids.length > 0) {
+          const grantRows = await tx
+            .select({
+              invitationId: workspaceInvitationGrants.invitationId,
+              projectId: workspaceInvitationGrants.projectId,
+              projectName: projects.name,
+              level: workspaceInvitationGrants.level,
+            })
+            .from(workspaceInvitationGrants)
+            .innerJoin(projects, eq(projects.id, workspaceInvitationGrants.projectId))
+            .where(inArray(workspaceInvitationGrants.invitationId, ids));
+          for (const grant of grantRows) {
+            const grants = grantsByInvitation.get(grant.invitationId) ?? [];
+            grants.push({
+              projectId: grant.projectId,
+              projectName: grant.projectName,
+              level: ProjectAccessLevel.parse(grant.level),
+            });
+            grantsByInvitation.set(grant.invitationId, grants);
+          }
+        }
+        return rows.map((row) => toWorkspaceSummary(row, grantsByInvitation.get(row.id) ?? []));
       });
     },
 
     // Resend rotates the link for a current owner: the old row keeps its history
-    // (revoked if still live, otherwise expired), and the new row starts a fresh
-    // seven-day deadline. An owner who resends is the new offer's inviter, so acceptance
-    // rechecks that owner.
+    // (revoked if still live, otherwise expired), and the new row keeps the same offered
+    // projects and starts a fresh seven-day deadline. An owner who resends is the new
+    // offer's inviter, so acceptance rechecks that owner.
     async resendInvitation(account, workspaceId, invitationId) {
       const actor = requireAccount(account);
       const token = randomBytes(32).toString("base64url");
@@ -775,6 +1009,14 @@ export function createWorkspacesService({
             throw new WorkspacesError("invitation_not_pending");
           }
 
+          const offered = await tx
+            .select({
+              projectId: workspaceInvitationGrants.projectId,
+              level: workspaceInvitationGrants.level,
+            })
+            .from(workspaceInvitationGrants)
+            .where(eq(workspaceInvitationGrants.invitationId, invitationId));
+
           await tx.insert(workspaceInvitations).values({
             id,
             workspaceId,
@@ -785,6 +1027,16 @@ export function createWorkspacesService({
             createdAt: sql`statement_timestamp()`,
             expiresAt: sql`statement_timestamp() + make_interval(secs => ${INVITATION_TTL_SECONDS})`,
           });
+          if (offered.length > 0) {
+            await tx.insert(workspaceInvitationGrants).values(
+              offered.map((grant) => ({
+                id: randomUUID(),
+                invitationId: id,
+                projectId: grant.projectId,
+                level: ProjectAccessLevel.parse(grant.level),
+              })),
+            );
+          }
           return { email: row.email, workspaceName: workspace.name };
         });
       } catch (error) {
@@ -794,7 +1046,7 @@ export function createWorkspacesService({
         throw error;
       }
 
-      await sendWorkspaceInvitation(db, deliver, log, {
+      await deliverWorkspaceInvitation(db, deliver, log, {
         id,
         workspaceName: invitation.workspaceName,
         email: invitation.email,
@@ -867,12 +1119,13 @@ export function createWorkspacesService({
       if (declined.length === 0) throw new WorkspacesError("invitation_invalid");
     },
 
-    // The link's read side: the workspace, address, inviter, and offered access, without
-    // consuming the token. Invalid, expired, used, or known-failed links answer the same
-    // Problem. The recipient sees the whole scope before accepting.
+    // The link's read side: the workspace, address, inviter, and actual offered scope,
+    // without consuming the token. Invalid, expired, used, or known-failed links answer
+    // the same Problem. The recipient sees every offered project before accepting.
     async previewInvitation(token) {
       const [row] = await db
         .select({
+          id: workspaceInvitations.id,
           workspaceId: workspaceInvitations.workspaceId,
           workspaceName: workspaces.name,
           email: workspaceInvitations.email,
@@ -892,6 +1145,15 @@ export function createWorkspacesService({
         )
         .limit(1);
       if (row === undefined) throw new WorkspacesError("invitation_invalid");
+      const offered = await db
+        .select({
+          projectId: workspaceInvitationGrants.projectId,
+          projectName: projects.name,
+          level: workspaceInvitationGrants.level,
+        })
+        .from(workspaceInvitationGrants)
+        .innerJoin(projects, eq(projects.id, workspaceInvitationGrants.projectId))
+        .where(eq(workspaceInvitationGrants.invitationId, row.id));
       return {
         workspaceId: row.workspaceId,
         workspaceName: row.workspaceName,
@@ -903,6 +1165,12 @@ export function createWorkspacesService({
             workspaceId: row.workspaceId,
             role: "member" as const,
           },
+          ...offered.map((grant) => ({
+            kind: "project_access" as const,
+            projectId: grant.projectId,
+            projectName: grant.projectName,
+            level: ProjectAccessLevel.parse(grant.level),
+          })),
         ],
         expiresAt: row.expiresAt.toISOString(),
       };
@@ -950,9 +1218,17 @@ export function createWorkspacesService({
           actor.humanId,
           actor.humanId,
         );
+        const missing = await applyInvitationGrants(
+          tx,
+          invitation.workspaceId,
+          actor.humanId,
+          invitation.invitedByHumanId,
+          invitation.offered,
+        );
+        if (missing.length > 0) throw new WorkspacesError("invitation_scope_invalid");
         return invitation.workspace;
       });
-      return { ...workspace, isOwner: false };
+      return { ...workspace, isOwner: false, canCreateProjects: false };
     },
 
     // A new address: the invitation creates the installation account, its personal
@@ -983,6 +1259,14 @@ export function createWorkspacesService({
             isOwner: false,
           });
           await recordEvent(tx, "member_joined", invitation.workspaceId, humanId, humanId);
+          const missing = await applyInvitationGrants(
+            tx,
+            invitation.workspaceId,
+            humanId,
+            invitation.invitedByHumanId,
+            invitation.offered,
+          );
+          if (missing.length > 0) throw new WorkspacesError("invitation_scope_invalid");
         } catch (error) {
           if (uniqueConstraintName(error) === "humans_email_unique") {
             throw new WorkspacesError("account_exists");
@@ -1002,23 +1286,8 @@ export function createWorkspacesService({
         await lockWorkspaceForMutation(tx, workspaceId);
         await requireOwner(tx, workspaceId, actor.humanId);
 
-        const [member] = await tx
-          .select({
-            humanId: workspaceMemberships.humanId,
-            email: humans.email,
-            isOwner: workspaceMemberships.isOwner,
-          })
-          .from(workspaceMemberships)
-          .innerJoin(humans, eq(humans.id, workspaceMemberships.humanId))
-          .where(
-            and(
-              eq(workspaceMemberships.workspaceId, workspaceId),
-              eq(workspaceMemberships.humanId, humanId),
-            ),
-          )
-          .limit(1);
-        if (member === undefined) throw new WorkspacesError("member_not_found");
-        if (member.isOwner) return member;
+        const member = await requireWorkspaceMember(tx, workspaceId, humanId);
+        if (member.isOwner) return toMember(member);
 
         await tx
           .update(workspaceMemberships)
@@ -1030,7 +1299,45 @@ export function createWorkspacesService({
             ),
           );
         await recordEvent(tx, "owner_appointed", workspaceId, actor.humanId, humanId);
-        return { ...member, isOwner: true };
+        return toMember({ ...member, isOwner: true });
+      });
+    },
+
+    // Owners grant one capability at a time. An owner's Create projects is implicit and
+    // immutable (granting is a no-op, revoking is refused); for non-owners, only a real
+    // change writes an event.
+    async updateMemberCapability(account, workspaceId, humanId, input) {
+      const actor = requireAccount(account);
+      return db.transaction(async (tx) => {
+        await lockWorkspaceForMutation(tx, workspaceId);
+        await requireOwner(tx, workspaceId, actor.humanId);
+
+        const member = await requireWorkspaceMember(tx, workspaceId, humanId);
+        if (member.isOwner) {
+          if (!input.canCreateProjects) {
+            throw new WorkspacesError("workspace_owner_capability");
+          }
+          return toMember(member);
+        }
+        if (member.canCreateProjects === input.canCreateProjects) return toMember(member);
+
+        await tx
+          .update(workspaceMemberships)
+          .set({ canCreateProjects: input.canCreateProjects })
+          .where(
+            and(
+              eq(workspaceMemberships.workspaceId, workspaceId),
+              eq(workspaceMemberships.humanId, humanId),
+            ),
+          );
+        await recordEvent(
+          tx,
+          input.canCreateProjects ? "create_projects_granted" : "create_projects_revoked",
+          workspaceId,
+          actor.humanId,
+          humanId,
+        );
+        return toMember({ ...member, canCreateProjects: input.canCreateProjects });
       });
     },
 
@@ -1076,6 +1383,9 @@ export function createWorkspacesService({
               eq(workspaceMemberships.humanId, humanId),
             ),
           );
+        // Project grants die with the membership, in this transaction, so a rejoin
+        // starts fresh and cannot revive an old level.
+        await revokeMemberProjectAccess(tx, workspaceId, humanId, actor.humanId);
         await recordEvent(
           tx,
           target.isOwner ? "owner_removed" : "member_removed",

@@ -26,9 +26,11 @@ function deliveryLabel(delivery: InvitationSummary["delivery"]): string {
 
 function grantLabel(invitation: InvitationSummary): string {
   return invitation.grants
-    .map((grant) =>
-      grant.kind === "installation_account" ? "Installation account" : "Workspace member",
-    )
+    .map((grant) => {
+      if (grant.kind === "installation_account") return "Installation account";
+      if (grant.kind === "workspace_membership") return "Workspace member";
+      return `${grant.projectName} (${grant.level})`;
+    })
     .join(", ");
 }
 

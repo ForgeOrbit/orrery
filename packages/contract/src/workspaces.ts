@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { Email, NewPassword, WorkspaceKind } from "./common.ts";
-import { InvitationGrant, InvitationStatus } from "./invitations.ts";
+import { InvitationGrant, InvitationStatus, WorkspaceInvitationProjectGrant } from "./invitations.ts";
 
 // Workspaces and their members (issue #24). A human's personal workspace is private;
 // shared workspaces are joined by invitation and have one or more owners. The listing is
@@ -9,13 +9,16 @@ import { InvitationGrant, InvitationStatus } from "./invitations.ts";
 
 // A workspace the signed-in account can access. `isOwner` is true for the owner of a
 // personal workspace and for each owner of a shared one; it is what lets a client show
-// owner-only actions without a second request.
+// owner-only actions without a second request. `canCreateProjects` is the caller's
+// effective Create projects capability: owners always have it, and a member has it only
+// when granted. It never grants access to an existing project by itself.
 export const Workspace = z
   .object({
     id: z.string(),
     kind: WorkspaceKind,
     name: z.string(),
     isOwner: z.boolean(),
+    canCreateProjects: z.boolean(),
   })
   .meta({ id: "Workspace" });
 export type Workspace = z.infer<typeof Workspace>;
@@ -38,9 +41,20 @@ export const WorkspaceMember = z
     humanId: z.string(),
     email: Email,
     isOwner: z.boolean(),
+    // The effective capability: an owner can always create, whatever the stored grant.
+    canCreateProjects: z.boolean(),
   })
   .meta({ id: "WorkspaceMember" });
 export type WorkspaceMember = z.infer<typeof WorkspaceMember>;
+
+// Owners grant one workspace capability at a time here. #28 adds the other three and the
+// delegation ceilings; in this slice an owner grants Create projects directly.
+export const UpdateWorkspaceMemberRequest = z
+  .object({
+    canCreateProjects: z.boolean(),
+  })
+  .meta({ id: "UpdateWorkspaceMemberRequest" });
+export type UpdateWorkspaceMemberRequest = z.infer<typeof UpdateWorkspaceMemberRequest>;
 
 export const WorkspaceMembersResponse = z
   .array(WorkspaceMember)
@@ -48,11 +62,13 @@ export const WorkspaceMembersResponse = z
 export type WorkspaceMembersResponse = z.infer<typeof WorkspaceMembersResponse>;
 
 // An owner invites one email into the workspace. An existing account accepts the
-// membership; a new email registers through the same link. The offered access is
-// membership (owners appoint ownership separately).
+// membership; a new email registers through the same link. The offered access includes
+// workspace membership and any project grants the owner selects; owners appoint
+// ownership separately.
 export const InviteWorkspaceMemberRequest = z
   .object({
     email: Email,
+    projectGrants: z.array(WorkspaceInvitationProjectGrant).max(100).default([]),
   })
   .meta({ id: "InviteWorkspaceMemberRequest" });
 export type InviteWorkspaceMemberRequest = z.infer<typeof InviteWorkspaceMemberRequest>;

@@ -6,7 +6,7 @@ import type { DbTransaction } from "../../platform/db.ts";
 import { errorNameAndCode } from "../../platform/errors.ts";
 import type { Logger } from "../../platform/log.ts";
 import { tokenHash } from "../../platform/tokens.ts";
-import { and, eq, isNull, gt, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, ne, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { emailVerificationTokens, instanceSettings } from "../../db/schema.ts";
 import { decryptSecret, encryptSecret } from "../../platform/secrets.ts";
@@ -340,21 +340,12 @@ export function createSettingsService({
       const settings = toSmtpSettings(stored, storedPassword(stored, encryptionKey));
 
       const token = randomBytes(32).toString("base64url");
-      await db.transaction(async (tx) => {
-        await tx
-          .delete(emailVerificationTokens)
-          .where(
-            and(
-              eq(emailVerificationTokens.humanId, admin.humanId),
-              isNull(emailVerificationTokens.usedAt),
-            ),
-          );
-        await tx.insert(emailVerificationTokens).values({
-          id: randomUUID(),
-          humanId: admin.humanId,
-          tokenHash: tokenHash(token),
-          expiresAt: sql`now() + make_interval(secs => ${VERIFICATION_TTL_SECONDS})`,
-        });
+      const tokenId = randomUUID();
+      await db.insert(emailVerificationTokens).values({
+        id: tokenId,
+        humanId: admin.humanId,
+        tokenHash: tokenHash(token),
+        expiresAt: sql`now() + make_interval(secs => ${VERIFICATION_TTL_SECONDS})`,
       });
       const mail: SmtpMail = {
         from: settings.from,
@@ -367,18 +358,35 @@ export function createSettingsService({
         await sendMail(settings, mail);
       } catch (error) {
         log?.warn("test email failed", errorNameAndCode(error));
-        // The email never left, so its token must not be redeemable. If even that
-        // cleanup fails, the delivery answer still goes out: the log keeps the failed
-        // cleanup's name and code only, never its message.
+        // The email never left, so its token must not be redeemable. Earlier live tokens
+        // were not touched, so a failed resend cannot destroy a previously delivered one.
         try {
-          await db
-            .delete(emailVerificationTokens)
-            .where(eq(emailVerificationTokens.tokenHash, tokenHash(token)));
+          await db.delete(emailVerificationTokens).where(eq(emailVerificationTokens.id, tokenId));
         } catch (cleanupError) {
           log?.warn("token cleanup after a failed send failed", errorNameAndCode(cleanupError));
         }
         throw new SettingsError(deliveryFailureKind(error));
       }
+      // Retire earlier unused tokens only after this delivery succeeds, and only if this
+      // token was not itself retired by a newer concurrent delivery that finished first.
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`select pg_advisory_xact_lock(61683816, hashtext(${admin.humanId}))`);
+        const [stillPresent] = await tx
+          .select({ id: emailVerificationTokens.id })
+          .from(emailVerificationTokens)
+          .where(eq(emailVerificationTokens.id, tokenId))
+          .limit(1);
+        if (stillPresent === undefined) return;
+        await tx
+          .delete(emailVerificationTokens)
+          .where(
+            and(
+              eq(emailVerificationTokens.humanId, admin.humanId),
+              isNull(emailVerificationTokens.usedAt),
+              ne(emailVerificationTokens.id, tokenId),
+            ),
+          );
+      });
       return {
         sentTo: admin.email,
         message:
