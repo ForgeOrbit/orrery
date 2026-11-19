@@ -1,123 +1,174 @@
-# Projects, issues, and knowledge
+# Projects, issues, knowledge, and project access
 
-A signed-in human creates a project in their personal workspace, then runs a complete
-issue cycle and writes basic Markdown knowledge in it. Projects are personal in this
-release (#26): only the personal workspace's owner can list, create, or access one. Shared
-workspaces gain project creation and the Read/Contribute/Manage levels with #27, so they
-have no Projects section or project endpoints yet.
+A signed-in human creates a project in their personal workspace or, in a shared
+workspace, with authority from the workspace. A personal project is private to its owner.
+A shared project uses three cumulative levels (issue #27):
+
+| Level | Allows |
+| --- | --- |
+| Read | View the project, its issues, comments, activity, and knowledge. |
+| Contribute | Read, plus create/edit/close/reopen issues, comment, and create/edit knowledge. |
+| Manage | Contribute, plus rename the project and manage project access grants. |
+
+A workspace owner has Manage on every project in the workspace. A member's explicit grant
+is the only other source; workspace membership alone reveals nothing. The system
+administrator has no project access from the role.
 
 ## Sub-features
 
-- `project-create` a personal workspace's page lists its projects and offers a create form;
-  `POST /api/workspaces/{workspaceId}/projects` returns 201 with the creator recorded.
-- `project-private` signed-out requests to list or fetch a project answer 401
-  `not_signed_in`.
-- `issue-cycle` create an issue (project-local number 1, open), edit its title and Markdown
-  body, comment, close it, and reopen it. `closedAt` is set while closed and null when open.
-- `issue-authorship` each issue keeps its creator and last editor; each comment keeps its
-  author.
-- `knowledge` create and edit a basic Markdown entry; the creator and last editor are kept.
-  This is not the full vault editor (#6).
-- `activity` the project page lists creation, issue, comment, close/reopen, and knowledge
-  events, each with the human who caused it and a title snapshot.
-- `issue-numbers` numbers are per project and never repeat; concurrent creations serialize
-  on the project row.
+- `project-personal` a personal workspace's owner lists, creates, and manages its
+  projects; another human can neither list the workspace's projects nor fetch one by id.
+- `project-shared-owner` a shared workspace owner lists and creates projects and has
+  Manage on every one.
+- `create-projects` an owner grants a member the Create projects capability; the member
+  creates a project and receives an explicit Manage grant on it.
+- `project-levels` Read cannot mutate; Contribute can work but not configure; Manage can
+  rename, list grants, grant a member, and revoke a grant.
+- `project-access-scope` a grant targets a current member of the project's shared
+  workspace; personal projects have no collaborators; grant changes are attributed
+  events in Postgres.
+- `project-denials` cross-workspace requests and another human's personal project answer
+  404; a visible project below the required level answers 403
+  `insufficient_project_access`.
+- `issue-cycle` create an issue (project-local number, open), edit it, comment, close,
+  and reopen it. `closedAt` follows the status.
+- `knowledge` create and edit a basic Markdown entry; this is not the vault editor (#6).
+- `activity` project creation, rename, issue, comment, close/reopen, and knowledge events
+  keep the human who caused them.
 
 ## Preconditions
 
 - A fresh instance with `BOOTSTRAP_SECRET`; the administrator created at `/setup` and
-  signed in (`admin.jar`). No second account or mail delivery is needed.
+  signed in (`admin.jar`).
+- For a second account, use an installation invitation and Mailpit (see
+  [invitations](./invitations.md)); for a workspace member, invite them into the shared
+  workspace and accept or register (see [workspaces](./workspaces.md)).
 - `. $RUN_DIR/env` from the run; `SK=.agents/skills/verify-orrery/scripts`.
 
 ## Recipe
 
-1. Sign in and find the personal workspace:
+1. Sign in and create the shared workspace:
 
    ```bash
    curl -sS -c $RUN_DIR/admin.jar -H 'content-type: application/json' \
      -d '{"email":"admin@orrery.test","password":"browser-checked-admin-password"}' \
      $URL/api/auth/login >/dev/null
-   PERSONAL=$(curl -sS -b $RUN_DIR/admin.jar $URL/api/workspaces \
-     | jq -r '.[] | select(.kind == "personal") | .id')
+   WORKSPACE=$(curl -sS -b $RUN_DIR/admin.jar -H 'content-type: application/json' \
+     -d '{"name":"Live Access Lab"}' $URL/api/workspaces | jq -r .id)
    ```
 
-2. Create the project and capture its id:
+2. Invite the member and read the caught token (Mailpit is up and SMTP is saved):
 
    ```bash
-   PROJECT=$(curl -sS -b $RUN_DIR/admin.jar -H 'content-type: application/json' \
-     -d '{"name":"Live Project"}' \
-     $URL/api/workspaces/$PERSONAL/projects | tee /dev/stderr | jq -r .id)
-   ```
-
-3. Run the issue cycle and capture the issue id:
-
-   ```bash
-   ISSUE=$(curl -sS -b $RUN_DIR/admin.jar -H 'content-type: application/json' \
-     -d '{"title":"Live issue","body":"Draft **body**."}' \
-     $URL/api/projects/$PROJECT/issues | tee /dev/stderr | jq -r .id)
-   curl -sS -b $RUN_DIR/admin.jar -X PATCH -H 'content-type: application/json' \
-     -d '{"title":"Live issue edited","body":"Edited **body**."}' $URL/api/issues/$ISSUE
    curl -sS -b $RUN_DIR/admin.jar -H 'content-type: application/json' \
-     -d '{"body":"A live comment."}' $URL/api/issues/$ISSUE/comments
+     -d '{"email":"live.member@orrery.test"}' \
+     $URL/api/workspaces/$WORKSPACE/invitations
+   ```
+
+   Take the `/workspace-invitation?token=...` link from
+   `http://127.0.0.1:$MAILPIT_HTTP/api/v1/messages`, register it with a password, then
+   sign in as that account into `member.jar`. Find the member id from the owner's member
+   directory:
+
+   ```bash
+   MEMBER_ID=$(curl -sS -b $RUN_DIR/admin.jar $URL/api/workspaces/$WORKSPACE/members \
+     | jq -r '.[] | select(.email=="live.member@orrery.test") | .humanId')
+   ```
+
+3. Grant Create projects, then create a project as each actor:
+
+   ```bash
    curl -sS -b $RUN_DIR/admin.jar -X PATCH -H 'content-type: application/json' \
+     -d '{"canCreateProjects":true}' \
+     $URL/api/workspaces/$WORKSPACE/members/$MEMBER_ID
+   PROJECT=$(curl -sS -b $RUN_DIR/admin.jar -H 'content-type: application/json' \
+     -d '{"name":"Owner Project"}' $URL/api/workspaces/$WORKSPACE/projects | jq -r .id)
+   MEMBER_PROJECT=$(curl -sS -b $RUN_DIR/member.jar -H 'content-type: application/json' \
+     -d '{"name":"Member Project"}' $URL/api/workspaces/$WORKSPACE/projects | jq -r .id)
+   ```
+
+   `MEMBER_PROJECT` must report `"accessLevel":"manage"`; its creator grant is real.
+
+4. Walk the levels against the owner's project. The member id and email are used by the
+   grant route:
+
+   ```bash
+   grant() { curl -sS -b $RUN_DIR/admin.jar -X PATCH -H 'content-type: application/json' \
+     -d "{\"email\":\"live.member@orrery.test\",\"level\":\"$1\"}" \
+     $URL/api/projects/$PROJECT/access; }
+   grant read
+   # Reads: 200. Mutations and management: 403 insufficient_project_access.
+   curl -sS -b $RUN_DIR/member.jar $URL/api/projects/$PROJECT
+   curl -sS -o /dev/null -w '%{http_code}\n' -b $RUN_DIR/member.jar \
+     -X PATCH -H 'content-type: application/json' -d '{"name":"No"}' \
+     $URL/api/projects/$PROJECT
+
+   grant contribute
+   # Create/edit/comment/close/reopen and knowledge: allowed. Rename and access: 403.
+   ISSUE=$(curl -sS -b $RUN_DIR/member.jar -H 'content-type: application/json' \
+     -d '{"title":"Member issue"}' $URL/api/projects/$PROJECT/issues | jq -r .id)
+   curl -sS -b $RUN_DIR/member.jar -X PATCH -H 'content-type: application/json' \
      -d '{"status":"closed"}' $URL/api/issues/$ISSUE
-   curl -sS -b $RUN_DIR/admin.jar -X PATCH -H 'content-type: application/json' \
-     -d '{"status":"open"}' $URL/api/issues/$ISSUE
+
+   grant manage
+   # Rename succeeds and the access list is readable.
+   curl -sS -b $RUN_DIR/member.jar -X PATCH -H 'content-type: application/json' \
+     -d '{"name":"Owner Project Renamed"}' $URL/api/projects/$PROJECT
+   curl -sS -b $RUN_DIR/member.jar $URL/api/projects/$PROJECT/access
    ```
 
-4. Create and edit knowledge, then read the activity:
+5. Prove the denials directly, not through UI controls:
 
    ```bash
-   ENTRY=$(curl -sS -b $RUN_DIR/admin.jar -H 'content-type: application/json' \
-     -d '{"title":"Live knowledge","body":"# Notes\n\nMarkdown."}' \
-     $URL/api/projects/$PROJECT/knowledge | tee /dev/stderr | jq -r .id)
-   curl -sS -b $RUN_DIR/admin.jar -X PATCH -H 'content-type: application/json' \
-     -d '{"title":"Live knowledge edited","body":"## Edited\n\nStill Markdown."}' \
-     $URL/api/knowledge/$ENTRY
-   curl -sS -b $RUN_DIR/admin.jar $URL/api/projects/$PROJECT/activity | jq
+   # Another human's personal project: 404, never its contents.
+   PERSONAL=$(curl -sS -b $RUN_DIR/admin.jar $URL/api/workspaces \
+     | jq -r '.[] | select(.kind=="personal") | .id')
+   PRIVATE=$(curl -sS -b $RUN_DIR/admin.jar -H 'content-type: application/json' \
+     -d '{"name":"Private Project"}' $URL/api/workspaces/$PERSONAL/projects | jq -r .id)
+   curl -sS -o /dev/null -w '%{http_code}\n' -b $RUN_DIR/member.jar \
+     $URL/api/projects/$PRIVATE          # 404
+   curl -sS -o /dev/null -w '%{http_code}\n' -b $RUN_DIR/member.jar \
+     $URL/api/workspaces/$PERSONAL/projects   # 404
    ```
 
-   Expect `project_created`, `issue_created`, `issue_edited`, `issue_commented`,
-   `issue_closed`, `issue_reopened`, `knowledge_created`, `knowledge_edited`, each with
-   `actor.email` equal to the administrator's address.
+   The administrator has no project access from the role: create a second account (its
+   own personal workspace), create a private project there, and fetch it with
+   `admin.jar`; the answer is 404. Cross-workspace members get the same 404 for a project
+   in a workspace they do not belong to.
 
-5. Prove the denial without a session:
+6. Browser proof: sign in as the owner, open the shared project, and grant a member
+   through `Email` + `Access level` + `Grant access`. The `li[data-project-access-for]`
+   row appears. A Read member's project page shows no Create issue, Project settings, or
+   Project access controls (the committed `project-access.spec.ts` drives these).
 
-   ```bash
-   for PATH in \
-     "/api/workspaces/$PERSONAL/projects" \
-     "/api/projects/$PROJECT" \
-     "/api/issues/$ISSUE" \
-     "/api/projects/$PROJECT/knowledge"; do
-     curl -sS -o /dev/null -w "%{http_code} $PATH\n" $URL$PATH
-   done
-   # every line is 401
-   ```
-
-6. Browser proof: the committed `tests/e2e/projects.spec.ts` drives the full cycle
-   (sign in, create project, create/edit/comment/close/reopen issue, create/edit knowledge,
-   read activity) and is the reference for a one-off Playwright script. `browse.mjs` creates
-   a fresh browser per call, so a multi-step cycle needs one script; use the same
-   `getByRole`/`getByLabel` handles, and save screenshots under `$RUN_DIR/evidence/`.
-
-7. Database check:
+7. Database checks:
 
    ```bash
    CONTAINER=$(sed -n 's/^CONTAINER=//p' $RUN_DIR/env)
    docker exec $CONTAINER psql -U orrery -d orrery -c \
-     "select p.name, i.number, i.status, i.created_by_human_id, i.updated_by_human_id from projects p join issues i on i.project_id = p.id order by p.created_at"
+     "select p.name, pag.level, h.email from project_access_grants pag join projects p on p.id=pag.project_id join humans h on h.id=pag.human_id order by p.name, h.email"
    docker exec $CONTAINER psql -U orrery -d orrery -c \
-     "select type, actor_human_id, summary from project_activity order by created_at"
+     "select type, level, previous_level, subject_human_id from project_access_events order by created_at"
+   docker exec $CONTAINER psql -U orrery -d orrery -c \
+     "select type, actor_human_id, subject_human_id from workspace_events order by created_at"
    ```
+
+   Grant changes must be present as proof they were transactional, not UI-only. A direct
+   insert of a grant on a personal project is refused by the trigger
+   `project_access_grant_shared_only`; one for a non-member is refused by
+   `project_access_grant_member`.
 
 ## Gotchas
 
-- The project page shows raw Markdown with preserved whitespace. There is no renderer and
-  no vault editor; that is deliberate for #26.
-- Activity is chronological (oldest first) and its summary is the item's title at the time
-  of the event, so renaming an issue later does not rewrite history.
-- Issue numbers restart at 1 for each project; the id is the stable identity.
-- Shared workspaces have no Projects section and answer project endpoints with 404; that
-  surface arrives with #27.
-- No project appears for a signed-out request: 401, `application/problem+json`, code
-  `not_signed_in`.
+- 404 for no access and for missing ids is deliberate: project and workspace ids cannot
+  be enumerated. 403 `insufficient_project_access` appears only when the caller can
+  already see the project.
+- Workspace owners do not appear in the explicit grant list; their Manage is implicit.
+  The owner also always holds Create projects, whatever the stored member flag says.
+- Removing a member deletes their project grants in that workspace and records
+  revocation events, so a rejoin cannot revive an old level.
+- Issue numbers restart at 1 per project; the id is the stable identity.
+- Activity is chronological and stores a title snapshot; renaming an issue later does
+  not rewrite history.
+- The project page shows raw Markdown with preserved whitespace; there is no renderer and
+  no vault editor.

@@ -303,6 +303,9 @@ describe("workspaces", () => {
       createInvitedHuman: accounts.createInvitedHuman,
       markEmailVerified: accounts.markEmailVerified,
       deliver: settings.deliver,
+      // This suite does not create projects; the projects feature's cleanup is covered
+      // end-to-end in projects/access.test.ts.
+      revokeMemberProjectAccess: async () => {},
       log: silentLogger,
     });
     const app = createApp({
@@ -416,7 +419,7 @@ describe("workspaces", () => {
     const members = await getJson(app, `/api/workspaces/${created.id}/members`, adminCookie);
     expect(members.status).toBe(200);
     expect(WorkspaceMembersResponse.parse(await members.json())).toEqual([
-      { humanId: admin.id, email: EMAIL, isOwner: true },
+      { humanId: admin.id, email: EMAIL, isOwner: true, canCreateProjects: true },
     ]);
 
     // Another signed-in person sees neither the workspace nor its detail.
@@ -515,6 +518,7 @@ describe("workspaces", () => {
       kind: "shared",
       name: "Rocket Team",
       isOwner: false,
+      canCreateProjects: false,
     });
     const [membership] = await database.db
       .select()
@@ -694,6 +698,7 @@ describe("workspaces", () => {
       humanId: member.id,
       email: INVITEE,
       isOwner: true,
+      canCreateProjects: true,
     });
     const [membership] = await database.db
       .select()

@@ -12,10 +12,14 @@ import {
   KnowledgeEntriesResponse,
   KnowledgeEntry,
   Project,
+  ProjectAccessGrant,
+  ProjectAccessGrantsResponse,
   ProjectActivityResponse,
   ProjectsResponse,
+  SetProjectAccessRequest,
   UpdateIssueRequest,
   UpdateKnowledgeEntryRequest,
+  UpdateProjectRequest,
 } from "@orrery/contract";
 import {
   problemContent as problem,
@@ -29,43 +33,128 @@ const workspaceParams = z.object({ workspaceId: z.string().min(1).max(200) });
 const projectParams = z.object({ projectId: z.string().min(1).max(200) });
 const issueParams = z.object({ issueId: z.string().min(1).max(200) });
 const knowledgeParams = z.object({ entryId: z.string().min(1).max(200) });
+const accessParams = projectParams.extend({ humanId: z.string().min(1).max(200) });
 
 const listProjects = createRoute({
   method: "get",
   path: "/api/workspaces/{workspaceId}/projects",
-  summary: "The projects in the caller's personal workspace",
+  summary: "The projects the caller can access in a workspace",
   description:
-    "A personal workspace's owner sees its projects. Projects are personal in this release; a shared workspace has no project surface yet (#27). A workspace outside the caller's personal ownership answers exactly like a missing one.",
+    "A personal workspace's owner sees its projects. A shared workspace's owner sees every project; an ordinary member sees only the projects explicitly granted to them. Membership alone never reveals a project. A workspace outside the caller's access answers exactly like a missing one.",
   request: { params: workspaceParams },
   responses: {
     200: {
-      description: "The projects in the personal workspace",
+      description: "The accessible projects in the workspace",
       content: { "application/json": { schema: ProjectsResponse } },
     },
     400: problem("The workspace id is invalid"),
     401: problem("Not signed in"),
-    404: problem("No personal workspace with this id is accessible to the caller"),
+    404: problem("No workspace with this id is accessible to the caller"),
   },
 });
 
 const createProject = createRoute({
   method: "post",
   path: "/api/workspaces/{workspaceId}/projects",
-  summary: "Create a project in the caller's personal workspace",
+  summary: "Create a project in a workspace",
   description:
-    "The personal workspace's owner creates a project. Projects are personal in this release; a shared workspace has no project surface yet (#27). The project belongs to the workspace; its creator is recorded as authorship. The creation is recorded in the project's activity.",
+    "A personal workspace's owner or a shared workspace's owner can always create a project. A shared member needs the Create projects capability; the member who creates a project receives Manage on it. The project belongs to the workspace, its creator is recorded as authorship, and the creation is recorded in the project's activity.",
   request: {
     params: workspaceParams,
     body: { required: true, content: { "application/json": { schema: CreateProjectRequest } } },
   },
   responses: {
     201: {
-      description: "The project, created in the personal workspace",
+      description: "The project, created in the workspace",
       content: { "application/json": { schema: Project } },
     },
     400: problem("The request is invalid"),
     401: problem("Not signed in"),
-    404: problem("No personal workspace with this id is accessible to the caller"),
+    403: problem("The caller does not have Create projects in this workspace"),
+    404: problem("No workspace with this id is accessible to the caller"),
+  },
+});
+
+const updateProject = createRoute({
+  method: "patch",
+  path: "/api/projects/{projectId}",
+  summary: "Configure a project",
+  description:
+    "Manage access may rename the project. A request that does not change the name returns the project unchanged and records no event.",
+  request: {
+    params: projectParams,
+    body: { required: true, content: { "application/json": { schema: UpdateProjectRequest } } },
+  },
+  responses: {
+    200: {
+      description: "The project after the change",
+      content: { "application/json": { schema: Project } },
+    },
+    400: problem("The request is invalid"),
+    401: problem("Not signed in"),
+    403: problem("Read or Contribute access cannot configure the project"),
+    404: problem("No project with this id is accessible to the caller"),
+  },
+});
+
+const listProjectAccess = createRoute({
+  method: "get",
+  path: "/api/projects/{projectId}/access",
+  summary: "The explicit access grants on a project",
+  description:
+    "Manage only. Workspace owners have implicit Manage and are not listed; a personal project has no collaborators and answers with an empty list.",
+  request: { params: projectParams },
+  responses: {
+    200: {
+      description: "The project's explicit grants",
+      content: { "application/json": { schema: ProjectAccessGrantsResponse } },
+    },
+    400: problem("The project id is invalid"),
+    401: problem("Not signed in"),
+    403: problem("Read or Contribute access cannot manage project access"),
+    404: problem("No project with this id is accessible to the caller"),
+  },
+});
+
+const setProjectAccess = createRoute({
+  method: "patch",
+  path: "/api/projects/{projectId}/access",
+  summary: "Grant or change a member's project access",
+  description:
+    "Manage only. The target must be a current member of the project's shared workspace. The level is one of Read, Contribute, or Manage; a real change records an attributed access event in the same transaction.",
+  request: {
+    params: projectParams,
+    body: { required: true, content: { "application/json": { schema: SetProjectAccessRequest } } },
+  },
+  responses: {
+    200: {
+      description: "The grant after the change",
+      content: { "application/json": { schema: ProjectAccessGrant } },
+    },
+    400: problem("The request is invalid"),
+    401: problem("Not signed in"),
+    403: problem(
+      "Read or Contribute access cannot manage project access, or the project is personal",
+    ),
+    404: problem("No accessible project or workspace member"),
+  },
+});
+
+const removeProjectAccess = createRoute({
+  method: "delete",
+  path: "/api/projects/{projectId}/access/{humanId}",
+  summary: "Revoke a member's project access",
+  description:
+    "Manage only. Revoking is idempotent: a person with no grant is already in the desired state. A real revocation records an attributed access event.",
+  request: { params: accessParams },
+  responses: {
+    204: { description: "The grant was removed" },
+    400: problem("The project or member id is invalid"),
+    401: problem("Not signed in"),
+    403: problem(
+      "Read or Contribute access cannot manage project access, or the project is personal",
+    ),
+    404: problem("No project with this id is accessible to the caller"),
   },
 });
 
@@ -109,7 +198,7 @@ const createIssue = createRoute({
   path: "/api/projects/{projectId}/issues",
   summary: "Create an issue in a project",
   description:
-    "The issue gets the project's next local number, starts open, and records its creator. The creation is recorded in the project's activity.",
+    "Contribute or Manage. The issue gets the project's next local number, starts open, and records its creator. The creation is recorded in the project's activity.",
   request: {
     params: projectParams,
     body: { required: true, content: { "application/json": { schema: CreateIssueRequest } } },
@@ -121,6 +210,7 @@ const createIssue = createRoute({
     },
     400: problem("The request is invalid"),
     401: problem("Not signed in"),
+    403: problem("Read access cannot create an issue"),
     404: problem("No project with this id is accessible to the caller"),
   },
 });
@@ -147,7 +237,7 @@ const updateIssue = createRoute({
   path: "/api/issues/{issueId}",
   summary: "Edit, close, or reopen an issue",
   description:
-    "Every field is optional. A title or body change records an edit; a status change records a close or a reopen. A request that changes nothing returns the issue unchanged and records no event.",
+    "Contribute or Manage. Every field is optional. A title or body change records an edit; a status change records a close or a reopen. A request that changes nothing returns the issue unchanged and records no event.",
   request: {
     params: issueParams,
     body: { required: true, content: { "application/json": { schema: UpdateIssueRequest } } },
@@ -159,6 +249,7 @@ const updateIssue = createRoute({
     },
     400: problem("The request is invalid"),
     401: problem("Not signed in"),
+    403: problem("Read access cannot change the issue"),
     404: problem("No issue with this id is accessible to the caller"),
   },
 });
@@ -185,7 +276,7 @@ const createComment = createRoute({
   path: "/api/issues/{issueId}/comments",
   summary: "Comment on an issue",
   description:
-    "A comment needs no work session (#20), only project access. It records its author and appears in the project's activity.",
+    "Contribute or Manage. A comment needs no work session (#20), only project access. It records its author and appears in the project's activity.",
   request: {
     params: issueParams,
     body: {
@@ -200,6 +291,7 @@ const createComment = createRoute({
     },
     400: problem("The request is invalid"),
     401: problem("Not signed in"),
+    403: problem("Read access cannot comment"),
     404: problem("No issue with this id is accessible to the caller"),
   },
 });
@@ -245,7 +337,7 @@ const createKnowledge = createRoute({
   path: "/api/projects/{projectId}/knowledge",
   summary: "Create a basic Markdown knowledge entry",
   description:
-    "Stores the title and Markdown body as written, records the creator, and adds a creation event to the project's activity.",
+    "Contribute or Manage. Stores the title and Markdown body as written, records the creator, and adds a creation event to the project's activity.",
   request: {
     params: projectParams,
     body: {
@@ -260,6 +352,7 @@ const createKnowledge = createRoute({
     },
     400: problem("The request is invalid"),
     401: problem("Not signed in"),
+    403: problem("Read access cannot create knowledge"),
     404: problem("No project with this id is accessible to the caller"),
   },
 });
@@ -286,7 +379,7 @@ const updateKnowledge = createRoute({
   path: "/api/knowledge/{entryId}",
   summary: "Edit a basic Markdown knowledge entry",
   description:
-    "Every field is optional. A real change records the editor and adds an edit event; a no-op returns the entry unchanged.",
+    "Contribute or Manage. Every field is optional. A real change records the editor and adds an edit event; a no-op returns the entry unchanged.",
   request: {
     params: knowledgeParams,
     body: {
@@ -301,6 +394,7 @@ const updateKnowledge = createRoute({
     },
     400: problem("The request is invalid"),
     401: problem("Not signed in"),
+    403: problem("Read access cannot edit knowledge"),
     404: problem("No knowledge entry with this id is accessible to the caller"),
   },
 });
@@ -310,6 +404,10 @@ export const routes = [
   listProjects,
   createProject,
   getProject,
+  updateProject,
+  listProjectAccess,
+  setProjectAccess,
+  removeProjectAccess,
   listIssues,
   createIssue,
   getIssue,
@@ -330,6 +428,10 @@ const statusFor = {
   project_not_found: 404,
   issue_not_found: 404,
   knowledge_entry_not_found: 404,
+  project_creation_not_allowed: 403,
+  insufficient_project_access: 403,
+  member_not_found: 404,
+  personal_project_access: 403,
 } as const satisfies Record<ProjectsErrorKind, number>;
 
 function isKind<K extends readonly ProjectsErrorKind[]>(
@@ -339,10 +441,15 @@ function isKind<K extends readonly ProjectsErrorKind[]>(
   return kinds.some((kind) => kind === error.kind);
 }
 
-const workspaceKinds = ["not_signed_in", "workspace_not_found"] as const;
-const projectKinds = ["not_signed_in", "project_not_found"] as const;
-const issueKinds = ["not_signed_in", "issue_not_found"] as const;
-const knowledgeKinds = ["not_signed_in", "knowledge_entry_not_found"] as const;
+const workspaceListKinds = ["not_signed_in", "workspace_not_found"] as const;
+const workspaceCreateKinds = [...workspaceListKinds, "project_creation_not_allowed"] as const;
+const projectReadKinds = ["not_signed_in", "project_not_found"] as const;
+const projectWriteKinds = [...projectReadKinds, "insufficient_project_access"] as const;
+const accessKinds = [...projectWriteKinds, "member_not_found", "personal_project_access"] as const;
+const issueReadKinds = ["not_signed_in", "issue_not_found"] as const;
+const issueWriteKinds = [...issueReadKinds, "insufficient_project_access"] as const;
+const knowledgeReadKinds = ["not_signed_in", "knowledge_entry_not_found"] as const;
+const knowledgeWriteKinds = [...knowledgeReadKinds, "insufficient_project_access"] as const;
 
 // Thin: resolve the session, call the service, map the result to HTTP. The service
 // decides who may do what; every error is a Problem built through platform/problem.ts.
@@ -365,7 +472,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
       const { workspaceId } = c.req.valid("param");
       return c.json(await service.listProjects(await sessionReader(c), workspaceId), 200);
     } catch (error) {
-      return failure(c, error, workspaceKinds);
+      return failure(c, error, workspaceListKinds);
     }
   });
 
@@ -377,7 +484,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
         201,
       );
     } catch (error) {
-      return failure(c, error, workspaceKinds);
+      return failure(c, error, workspaceCreateKinds);
     }
   });
 
@@ -386,7 +493,50 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
       const { projectId } = c.req.valid("param");
       return c.json(await service.getProject(await sessionReader(c), projectId), 200);
     } catch (error) {
-      return failure(c, error, projectKinds);
+      return failure(c, error, projectReadKinds);
+    }
+  });
+
+  app.openapi(updateProject, async (c) => {
+    try {
+      const { projectId } = c.req.valid("param");
+      return c.json(
+        await service.updateProject(await sessionReader(c), projectId, c.req.valid("json")),
+        200,
+      );
+    } catch (error) {
+      return failure(c, error, projectWriteKinds);
+    }
+  });
+
+  app.openapi(listProjectAccess, async (c) => {
+    try {
+      const { projectId } = c.req.valid("param");
+      return c.json(await service.listProjectAccess(await sessionReader(c), projectId), 200);
+    } catch (error) {
+      return failure(c, error, accessKinds);
+    }
+  });
+
+  app.openapi(setProjectAccess, async (c) => {
+    try {
+      const { projectId } = c.req.valid("param");
+      return c.json(
+        await service.setProjectAccess(await sessionReader(c), projectId, c.req.valid("json")),
+        200,
+      );
+    } catch (error) {
+      return failure(c, error, accessKinds);
+    }
+  });
+
+  app.openapi(removeProjectAccess, async (c) => {
+    try {
+      const { projectId, humanId } = c.req.valid("param");
+      await service.removeProjectAccess(await sessionReader(c), projectId, humanId);
+      return c.body(null, 204);
+    } catch (error) {
+      return failure(c, error, accessKinds);
     }
   });
 
@@ -395,7 +545,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
       const { projectId } = c.req.valid("param");
       return c.json(await service.listIssues(await sessionReader(c), projectId), 200);
     } catch (error) {
-      return failure(c, error, projectKinds);
+      return failure(c, error, projectReadKinds);
     }
   });
 
@@ -407,7 +557,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
         201,
       );
     } catch (error) {
-      return failure(c, error, projectKinds);
+      return failure(c, error, projectWriteKinds);
     }
   });
 
@@ -416,7 +566,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
       const { issueId } = c.req.valid("param");
       return c.json(await service.getIssue(await sessionReader(c), issueId), 200);
     } catch (error) {
-      return failure(c, error, issueKinds);
+      return failure(c, error, issueReadKinds);
     }
   });
 
@@ -428,7 +578,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
         200,
       );
     } catch (error) {
-      return failure(c, error, issueKinds);
+      return failure(c, error, issueWriteKinds);
     }
   });
 
@@ -437,7 +587,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
       const { issueId } = c.req.valid("param");
       return c.json(await service.listComments(await sessionReader(c), issueId), 200);
     } catch (error) {
-      return failure(c, error, issueKinds);
+      return failure(c, error, issueReadKinds);
     }
   });
 
@@ -449,7 +599,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
         201,
       );
     } catch (error) {
-      return failure(c, error, issueKinds);
+      return failure(c, error, issueWriteKinds);
     }
   });
 
@@ -458,7 +608,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
       const { projectId } = c.req.valid("param");
       return c.json(await service.listActivity(await sessionReader(c), projectId), 200);
     } catch (error) {
-      return failure(c, error, projectKinds);
+      return failure(c, error, projectReadKinds);
     }
   });
 
@@ -467,7 +617,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
       const { projectId } = c.req.valid("param");
       return c.json(await service.listKnowledge(await sessionReader(c), projectId), 200);
     } catch (error) {
-      return failure(c, error, projectKinds);
+      return failure(c, error, projectReadKinds);
     }
   });
 
@@ -479,7 +629,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
         201,
       );
     } catch (error) {
-      return failure(c, error, projectKinds);
+      return failure(c, error, projectWriteKinds);
     }
   });
 
@@ -488,7 +638,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
       const { entryId } = c.req.valid("param");
       return c.json(await service.getKnowledge(await sessionReader(c), entryId), 200);
     } catch (error) {
-      return failure(c, error, knowledgeKinds);
+      return failure(c, error, knowledgeReadKinds);
     }
   });
 
@@ -500,7 +650,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
         200,
       );
     } catch (error) {
-      return failure(c, error, knowledgeKinds);
+      return failure(c, error, knowledgeWriteKinds);
     }
   });
 

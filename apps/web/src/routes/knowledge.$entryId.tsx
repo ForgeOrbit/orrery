@@ -5,16 +5,19 @@ import {
   knowledgeEntriesQuery,
   knowledgeEntryQuery,
   projectActivityQuery,
+  projectQuery,
   ResourceLoadError,
   TitleBodyForm,
   updateKnowledgeEntry,
 } from "../features/projects/index.ts";
 
 // One basic Markdown knowledge entry. It is stored and shown as written; this is not the
-// full vault editor (#6). Editing keeps the creator and records the last editor.
+// full vault editor (#6). Editing keeps the creator and records the last editor, and is
+// offered only when the project's effective level is Contribute or Manage.
 export const Route = createFileRoute("/knowledge/$entryId")({
   loader: async ({ context, params }) => {
-    await context.queryClient.ensureQueryData(knowledgeEntryQuery(params.entryId));
+    const entry = await context.queryClient.ensureQueryData(knowledgeEntryQuery(params.entryId));
+    await context.queryClient.ensureQueryData(projectQuery(entry.projectId));
   },
   component: KnowledgePage,
   errorComponent: ({ error }) => <ResourceLoadError resource="knowledge" error={error} />,
@@ -23,6 +26,8 @@ export const Route = createFileRoute("/knowledge/$entryId")({
 function KnowledgePage() {
   const { entryId } = Route.useParams();
   const { data: entry } = useSuspenseQuery(knowledgeEntryQuery(entryId));
+  const { data: project } = useSuspenseQuery(projectQuery(entry.projectId));
+  const canContribute = project.accessLevel !== "read";
 
   return (
     <main>
@@ -42,7 +47,7 @@ function KnowledgePage() {
           {entry.body}
         </div>
       )}
-      <EditKnowledgeForm key={entry.updatedAt} entry={entry} />
+      {canContribute && <EditKnowledgeForm key={entry.updatedAt} entry={entry} />}
     </main>
   );
 }

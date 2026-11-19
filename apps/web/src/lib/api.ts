@@ -58,3 +58,10 @@ export function patchJson<T>(
 ): Promise<T> {
   return sendJson("PATCH", path, body, parse);
 }
+
+// A DELETE with no success body: 204 is the normal answer. A Problem still becomes the
+// typed error every route renders the same way.
+export async function deleteRequest(path: string): Promise<void> {
+  const res = await fetch(path, { method: "DELETE" });
+  if (!res.ok) return failure(res);
+}

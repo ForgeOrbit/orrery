@@ -1,10 +1,17 @@
 import { z } from "zod";
-import { Email, Timestamp } from "./common.ts";
+import { Email, Timestamp, WorkspaceKind } from "./common.ts";
 
-// Projects and their content (issue #26). A project belongs to exactly one workspace and
-// holds issues, their comments, basic Markdown knowledge entries, and one activity feed.
-// Until #27 adds shared-workspace project levels, only a personal workspace's owner can
-// create, read, or change projects in their personal workspace, keeping them private.
+// Projects and their content (issue #26, shared projects in #27). A project belongs to
+// exactly one workspace and holds issues, their comments, basic Markdown knowledge
+// entries, and one activity feed. A personal project stays with its workspace owner. In
+// a shared workspace the effective level is the caller's grant, or Manage for an owner.
+
+// The cumulative project levels (#20). Manage includes Contribute, and Contribute
+// includes Read. They grant no workspace-wide authority.
+export const ProjectAccessLevel = z
+  .enum(["read", "contribute", "manage"])
+  .meta({ id: "ProjectAccessLevel" });
+export type ProjectAccessLevel = z.infer<typeof ProjectAccessLevel>;
 
 export const IssueStatus = z.enum(["open", "closed"]).meta({ id: "IssueStatus" });
 export type IssueStatus = z.infer<typeof IssueStatus>;
@@ -14,6 +21,7 @@ export type IssueStatus = z.infer<typeof IssueStatus>;
 export const ProjectActivityType = z
   .enum([
     "project_created",
+    "project_renamed",
     "issue_created",
     "issue_edited",
     "issue_commented",
@@ -37,6 +45,12 @@ export const Project = z
     name: z.string(),
     createdAt: Timestamp,
     createdBy: Actor,
+    // The workspace kind is part of the project's own view so a client knows whether
+    // direct access grants apply; personal projects have no collaborators.
+    workspaceKind: WorkspaceKind,
+    // The caller's effective level: the workspace owner's Manage, a shared project
+    // grant, or the personal workspace owner's Manage. It is computed per request.
+    accessLevel: ProjectAccessLevel,
   })
   .meta({ id: "Project" });
 export type Project = z.infer<typeof Project>;
@@ -50,6 +64,54 @@ export const CreateProjectRequest = z
   })
   .meta({ id: "CreateProjectRequest" });
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequest>;
+
+// A project manager's configuration change. Only Manage access may rename a project;
+// the name is the project setting this slice exposes.
+export const UpdateProjectRequest = z
+  .object({
+    name: z.string().trim().min(1, "Name the project.").max(120),
+  })
+  .meta({ id: "UpdateProjectRequest" });
+export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;
+
+// One explicit project access grant. Workspace owners have Manage implicitly and are not
+// listed here; the grant records who granted the level, so access-change history can
+// name both sides.
+export const ProjectAccessGrant = z
+  .object({
+    humanId: z.string(),
+    email: Email,
+    level: ProjectAccessLevel,
+    grantedBy: Actor,
+    createdAt: Timestamp,
+    updatedAt: Timestamp,
+  })
+  .meta({ id: "ProjectAccessGrant" });
+export type ProjectAccessGrant = z.infer<typeof ProjectAccessGrant>;
+
+export const ProjectAccessGrantsResponse = z
+  .array(ProjectAccessGrant)
+  .meta({ id: "ProjectAccessGrantsResponse" });
+export type ProjectAccessGrantsResponse = z.infer<typeof ProjectAccessGrantsResponse>;
+
+// Granting or changing access always targets a current member of the project's shared
+// workspace by email. The level is cumulative; the manager's own level is the ceiling
+// for what they may grant in a later slice, but Manage is the only required level now.
+export const SetProjectAccessRequest = z
+  .object({
+    email: Email,
+    level: ProjectAccessLevel,
+  })
+  .meta({ id: "SetProjectAccessRequest" });
+export type SetProjectAccessRequest = z.infer<typeof SetProjectAccessRequest>;
+
+// Every recorded project access-change event (#27). A grant has a level and no previous
+// level; a level change has both; a revocation has only the previous level. Secrets and
+// emails are not part of the event payload; the subject id is the stable identity.
+export const ProjectAccessEventType = z
+  .enum(["project_access_granted", "project_access_level_changed", "project_access_revoked"])
+  .meta({ id: "ProjectAccessEventType" });
+export type ProjectAccessEventType = z.infer<typeof ProjectAccessEventType>;
 
 // An issue as its readers see it. `number` is the project-local issue number (1, 2, …),
 // not a global identity; the id is the stable one. `closedAt` is set only while closed.

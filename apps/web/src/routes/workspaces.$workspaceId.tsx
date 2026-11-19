@@ -6,23 +6,26 @@ import { createProject, projectQuery, projectsQuery } from "../features/projects
 import {
   appointWorkspaceOwner,
   inviteWorkspaceMember,
+  updateWorkspaceMember,
   workspaceMembersQuery,
   workspaceQuery,
   workspacesQuery,
 } from "../features/workspaces/index.ts";
 
-// One workspace's own view. A personal workspace has no invitations. A shared workspace
-// shows its owners the member directory, owner appointment, and invite form; ordinary
-// members see only their own role, because those controls are owner-only.
+// One workspace's own view. Every workspace lists the projects the caller can access.
+// A shared workspace shows its owners the member directory, capability management,
+// owner appointment, and invite form; ordinary members see their own role and, when
+// granted Create projects, the project form. Those controls are owner-only.
 export const Route = createFileRoute("/workspaces/$workspaceId")({
   loader: async ({ context, params }) => {
     const workspace = await context.queryClient.ensureQueryData(workspaceQuery(params.workspaceId));
-    if (workspace.kind === "personal") {
-      await context.queryClient.ensureQueryData(projectsQuery(params.workspaceId));
-    }
-    if (workspace.kind === "shared" && workspace.isOwner) {
-      await context.queryClient.ensureQueryData(workspaceMembersQuery(params.workspaceId));
-    }
+    const loads = [
+      context.queryClient.ensureQueryData(projectsQuery(params.workspaceId)),
+      ...(workspace.kind === "shared" && workspace.isOwner
+        ? [context.queryClient.ensureQueryData(workspaceMembersQuery(params.workspaceId))]
+        : []),
+    ];
+    await Promise.all(loads);
   },
   component: WorkspacePage,
 });
@@ -42,7 +45,10 @@ function WorkspacePage() {
           ? "Personal workspace"
           : `Shared workspace · ${workspace.isOwner ? "Owner" : "Member"}`}
       </p>
-      {workspace.kind === "personal" && <Projects workspaceId={workspace.id} />}
+      <Projects
+        workspaceId={workspace.id}
+        canCreate={workspace.isOwner || workspace.canCreateProjects}
+      />
       {workspace.kind === "shared" && workspace.isOwner && (
         <>
           <OwnerMembers workspaceId={workspace.id} />
@@ -53,27 +59,29 @@ function WorkspacePage() {
   );
 }
 
-// The personal workspace's projects. Shared workspaces gain a project surface with #27;
-// the server applies the same personal-only boundary.
-function Projects({ workspaceId }: { workspaceId: string }) {
+// The projects the caller can access in this workspace. A shared member sees only their
+// granted projects, so an empty list does not mean the workspace has none; the create
+// form appears only when the server says the caller holds Create projects.
+function Projects({ workspaceId, canCreate }: { workspaceId: string; canCreate: boolean }) {
   const { data: projects } = useSuspenseQuery(projectsQuery(workspaceId));
   return (
     <section>
       <h2>Projects</h2>
       {projects.length === 0 ? (
-        <p>No projects yet.</p>
+        <p>{canCreate ? "No projects yet." : "No projects have been shared with you yet."}</p>
       ) : (
         <ul>
           {projects.map((project) => (
             <li key={project.id} data-project-id={project.id}>
               <Link to="/projects/$projectId" params={{ projectId: project.id }}>
                 {project.name}
-              </Link>
+              </Link>{" "}
+              <span data-project-access-level={project.accessLevel}>{project.accessLevel}</span>
             </li>
           ))}
         </ul>
       )}
-      <CreateProjectForm workspaceId={workspaceId} />
+      {canCreate && <CreateProjectForm workspaceId={workspaceId} />}
     </section>
   );
 }
@@ -122,27 +130,45 @@ function CreateProjectForm({ workspaceId }: { workspaceId: string }) {
 }
 
 // Owner-only directory. The server enforces the same boundary; this only decides what
-// the page offers. Appointing refreshes the member roles and the caller's workspace list.
+// the page offers. Appointing and capability changes refresh the member roles and the
+// caller's workspace list so the effective state comes from the server.
 function OwnerMembers({ workspaceId }: { workspaceId: string }) {
   const { data: members } = useSuspenseQuery(workspaceMembersQuery(workspaceId));
   const queryClient = useQueryClient();
   const [error, setError] = useState<string>();
-  const [appointing, setAppointing] = useState<string>();
+  const [updating, setUpdating] = useState<string>();
+
+  async function refresh() {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: workspaceMembersQuery(workspaceId).queryKey }),
+      queryClient.invalidateQueries({ queryKey: workspaceQuery(workspaceId).queryKey }),
+      queryClient.invalidateQueries({ queryKey: workspacesQuery.queryKey }),
+    ]);
+  }
 
   async function onAppoint(humanId: string) {
-    setAppointing(humanId);
+    setUpdating(humanId);
     setError(undefined);
     try {
       await appointWorkspaceOwner(workspaceId, humanId);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: workspaceMembersQuery(workspaceId).queryKey }),
-        queryClient.invalidateQueries({ queryKey: workspaceQuery(workspaceId).queryKey }),
-        queryClient.invalidateQueries({ queryKey: workspacesQuery.queryKey }),
-      ]);
+      await refresh();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not appoint the owner.");
     } finally {
-      setAppointing(undefined);
+      setUpdating(undefined);
+    }
+  }
+
+  async function onCapability(humanId: string, canCreateProjects: boolean) {
+    setUpdating(humanId);
+    setError(undefined);
+    try {
+      await updateWorkspaceMember(workspaceId, humanId, { canCreateProjects });
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not change the capability.");
+    } finally {
+      setUpdating(undefined);
     }
   }
 
@@ -153,14 +179,24 @@ function OwnerMembers({ workspaceId }: { workspaceId: string }) {
       <ul>
         {members.map((member) => (
           <li key={member.humanId} data-member-id={member.humanId}>
-            {member.email} <span>{member.isOwner ? "Owner" : "Member"}</span>
+            {member.email} <span>{member.isOwner ? "Owner" : "Member"}</span>{" "}
+            <span data-can-create-projects={String(member.canCreateProjects)}>
+              {member.canCreateProjects ? "Can create projects" : "Cannot create projects"}
+            </span>
             {!member.isOwner && (
               <>
                 {" "}
                 <button
                   type="button"
+                  onClick={() => void onCapability(member.humanId, !member.canCreateProjects)}
+                  disabled={updating !== undefined}
+                >
+                  {member.canCreateProjects ? "Revoke Create projects" : "Grant Create projects"}
+                </button>{" "}
+                <button
+                  type="button"
                   onClick={() => void onAppoint(member.humanId)}
-                  disabled={appointing !== undefined}
+                  disabled={updating !== undefined}
                 >
                   Make owner
                 </button>
