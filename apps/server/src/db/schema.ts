@@ -1,6 +1,8 @@
 import {
   InvitationDelivery,
   InvitationStatus,
+  IssueStatus,
+  ProjectActivityType,
   WorkspaceKind,
   SmtpSecurity,
 } from "@orrery/contract";
@@ -315,5 +317,137 @@ export const invitations = pgTable(
     uniqueIndex("one_pending_invitation_per_email")
       .on(t.email)
       .where(sql`${t.status} = ${pendingStatusSql}`),
+  ],
+);
+
+// A project (issue #26): a collection of issues and knowledge owned by one workspace.
+// The creator is recorded as authorship, not as a second owner: the project belongs to
+// the workspace. `next_issue_number` is the per-project counter that gives issues their
+// human-readable numbers; it is incremented under the row lock of an issue creation.
+export const projects = pgTable(
+  "projects",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id),
+    name: text("name").notNull(),
+    createdByHumanId: text("created_by_human_id")
+      .notNull()
+      .references(() => humans.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    nextIssueNumber: integer("next_issue_number").notNull().default(1),
+  },
+  (t) => [
+    check("projects_next_issue_number_positive", sql`${t.nextIssueNumber} > 0`),
+    index("projects_workspace_created").on(t.workspaceId, t.createdAt),
+  ],
+);
+
+// An issue in a project. The body is Markdown, stored as written. `number` is local to
+// the project; the id is the stable identity. `closed_at` is set exactly while the issue
+// is closed, so reopening clears it and an edit while closed leaves it untouched.
+export const issues = pgTable(
+  "issues",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    number: integer("number").notNull(),
+    title: text("title").notNull(),
+    body: text("body").notNull().default(""),
+    status: text("status").$type<IssueStatus>().notNull(),
+    createdByHumanId: text("created_by_human_id")
+      .notNull()
+      .references(() => humans.id),
+    updatedByHumanId: text("updated_by_human_id")
+      .notNull()
+      .references(() => humans.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+  },
+  (t) => [
+    // Issue numbers never repeat inside a project, and two concurrent creations cannot
+    // both take the same one.
+    uniqueIndex("one_issue_number_per_project").on(t.projectId, t.number),
+    check("issues_number_positive", sql`${t.number} > 0`),
+    // DDL cannot bind parameters; the values come from the IssueStatus contract enum.
+    check("issues_status", sql`${t.status} in (${sql.raw(sqlLiteralList(IssueStatus))})`),
+    check(
+      "issues_closed_at_matches_status",
+      sql`(${t.status} = 'closed') = (${t.closedAt} is not null)`,
+    ),
+  ],
+);
+
+// A comment on an issue. Comments are ordinary discussion: they need no work session
+// (#20), and they keep the author who wrote them.
+export const issueComments = pgTable(
+  "issue_comments",
+  {
+    id: text("id").primaryKey(),
+    issueId: text("issue_id")
+      .notNull()
+      .references(() => issues.id),
+    body: text("body").notNull(),
+    createdByHumanId: text("created_by_human_id")
+      .notNull()
+      .references(() => humans.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("issue_comments_issue_created").on(t.issueId, t.createdAt)],
+);
+
+// A basic Markdown knowledge entry (issue #26). This is deliberately not the full vault
+// (#6): a title, a body, and who created and last edited it.
+export const knowledgeEntries = pgTable(
+  "knowledge_entries",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    title: text("title").notNull(),
+    body: text("body").notNull().default(""),
+    createdByHumanId: text("created_by_human_id")
+      .notNull()
+      .references(() => humans.id),
+    updatedByHumanId: text("updated_by_human_id")
+      .notNull()
+      .references(() => humans.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("knowledge_entries_project_created").on(t.projectId, t.createdAt)],
+);
+
+// The project's activity feed (issue #26). Each event is written in the same transaction
+// as the change it describes, so history cannot disagree with the project. The summary is
+// a snapshot of the item's title at that moment, not a pointer that changes later.
+export const projectActivity = pgTable(
+  "project_activity",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    type: text("type").$type<ProjectActivityType>().notNull(),
+    actorHumanId: text("actor_human_id")
+      .notNull()
+      .references(() => humans.id),
+    issueId: text("issue_id").references(() => issues.id),
+    knowledgeEntryId: text("knowledge_entry_id").references(() => knowledgeEntries.id),
+    summary: text("summary").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // DDL cannot bind parameters; the values come from the ProjectActivityType enum.
+    check(
+      "project_activity_type",
+      sql`${t.type} in (${sql.raw(sqlLiteralList(ProjectActivityType))})`,
+    ),
+    index("project_activity_project_created").on(t.projectId, t.createdAt),
   ],
 );

@@ -14,6 +14,9 @@ import { Route as RegisterRouteImport } from './routes/register'
 import { Route as SetupRouteImport } from './routes/setup'
 import { Route as SigninRouteImport } from './routes/signin'
 import { Route as WorkspaceInvitationRouteImport } from './routes/workspace-invitation'
+import { Route as IssuesIssueIdRouteImport } from './routes/issues.$issueId'
+import { Route as KnowledgeEntryIdRouteImport } from './routes/knowledge.$entryId'
+import { Route as ProjectsProjectIdRouteImport } from './routes/projects.$projectId'
 import { Route as WorkspacesWorkspaceIdRouteImport } from './routes/workspaces.$workspaceId'
 
 const IndexRoute = IndexRouteImport.update({
@@ -41,6 +44,21 @@ const WorkspaceInvitationRoute = WorkspaceInvitationRouteImport.update({
   path: '/workspace-invitation',
   getParentRoute: () => rootRouteImport,
 } as any)
+const IssuesIssueIdRoute = IssuesIssueIdRouteImport.update({
+  id: '/issues/$issueId',
+  path: '/issues/$issueId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const KnowledgeEntryIdRoute = KnowledgeEntryIdRouteImport.update({
+  id: '/knowledge/$entryId',
+  path: '/knowledge/$entryId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ProjectsProjectIdRoute = ProjectsProjectIdRouteImport.update({
+  id: '/projects/$projectId',
+  path: '/projects/$projectId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const WorkspacesWorkspaceIdRoute = WorkspacesWorkspaceIdRouteImport.update({
   id: '/workspaces/$workspaceId',
   path: '/workspaces/$workspaceId',
@@ -53,6 +71,9 @@ export interface FileRoutesByFullPath {
   '/setup': typeof SetupRoute
   '/signin': typeof SigninRoute
   '/workspace-invitation': typeof WorkspaceInvitationRoute
+  '/issues/$issueId': typeof IssuesIssueIdRoute
+  '/knowledge/$entryId': typeof KnowledgeEntryIdRoute
+  '/projects/$projectId': typeof ProjectsProjectIdRoute
   '/workspaces/$workspaceId': typeof WorkspacesWorkspaceIdRoute
 }
 export interface FileRoutesByTo {
@@ -61,6 +82,9 @@ export interface FileRoutesByTo {
   '/setup': typeof SetupRoute
   '/signin': typeof SigninRoute
   '/workspace-invitation': typeof WorkspaceInvitationRoute
+  '/issues/$issueId': typeof IssuesIssueIdRoute
+  '/knowledge/$entryId': typeof KnowledgeEntryIdRoute
+  '/projects/$projectId': typeof ProjectsProjectIdRoute
   '/workspaces/$workspaceId': typeof WorkspacesWorkspaceIdRoute
 }
 export interface FileRoutesById {
@@ -70,6 +94,9 @@ export interface FileRoutesById {
   '/setup': typeof SetupRoute
   '/signin': typeof SigninRoute
   '/workspace-invitation': typeof WorkspaceInvitationRoute
+  '/issues/$issueId': typeof IssuesIssueIdRoute
+  '/knowledge/$entryId': typeof KnowledgeEntryIdRoute
+  '/projects/$projectId': typeof ProjectsProjectIdRoute
   '/workspaces/$workspaceId': typeof WorkspacesWorkspaceIdRoute
 }
 export interface FileRouteTypes {
@@ -80,6 +107,9 @@ export interface FileRouteTypes {
     | '/setup'
     | '/signin'
     | '/workspace-invitation'
+    | '/issues/$issueId'
+    | '/knowledge/$entryId'
+    | '/projects/$projectId'
     | '/workspaces/$workspaceId'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -88,6 +118,9 @@ export interface FileRouteTypes {
     | '/setup'
     | '/signin'
     | '/workspace-invitation'
+    | '/issues/$issueId'
+    | '/knowledge/$entryId'
+    | '/projects/$projectId'
     | '/workspaces/$workspaceId'
   id:
     | '__root__'
@@ -96,6 +129,9 @@ export interface FileRouteTypes {
     | '/setup'
     | '/signin'
     | '/workspace-invitation'
+    | '/issues/$issueId'
+    | '/knowledge/$entryId'
+    | '/projects/$projectId'
     | '/workspaces/$workspaceId'
   fileRoutesById: FileRoutesById
 }
@@ -105,6 +141,9 @@ export interface RootRouteChildren {
   SetupRoute: typeof SetupRoute
   SigninRoute: typeof SigninRoute
   WorkspaceInvitationRoute: typeof WorkspaceInvitationRoute
+  IssuesIssueIdRoute: typeof IssuesIssueIdRoute
+  KnowledgeEntryIdRoute: typeof KnowledgeEntryIdRoute
+  ProjectsProjectIdRoute: typeof ProjectsProjectIdRoute
   WorkspacesWorkspaceIdRoute: typeof WorkspacesWorkspaceIdRoute
 }
 
@@ -145,6 +184,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WorkspaceInvitationRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/issues/$issueId': {
+      id: '/issues/$issueId'
+      path: '/issues/$issueId'
+      fullPath: '/issues/$issueId'
+      preLoaderRoute: typeof IssuesIssueIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/knowledge/$entryId': {
+      id: '/knowledge/$entryId'
+      path: '/knowledge/$entryId'
+      fullPath: '/knowledge/$entryId'
+      preLoaderRoute: typeof KnowledgeEntryIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/projects/$projectId': {
+      id: '/projects/$projectId'
+      path: '/projects/$projectId'
+      fullPath: '/projects/$projectId'
+      preLoaderRoute: typeof ProjectsProjectIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/workspaces/$workspaceId': {
       id: '/workspaces/$workspaceId'
       path: '/workspaces/$workspaceId'
@@ -161,6 +221,9 @@ const rootRouteChildren: RootRouteChildren = {
   SetupRoute: SetupRoute,
   SigninRoute: SigninRoute,
   WorkspaceInvitationRoute: WorkspaceInvitationRoute,
+  IssuesIssueIdRoute: IssuesIssueIdRoute,
+  KnowledgeEntryIdRoute: KnowledgeEntryIdRoute,
+  ProjectsProjectIdRoute: ProjectsProjectIdRoute,
   WorkspacesWorkspaceIdRoute: WorkspacesWorkspaceIdRoute,
 }
 export const routeTree = rootRouteImport

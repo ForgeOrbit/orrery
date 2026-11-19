@@ -45,3 +45,17 @@ export async function postJson<T>(
   if (!res.ok) return failure(res);
   return parse(await res.json());
 }
+
+export async function patchJson<T>(
+  path: string,
+  body: unknown,
+  parse: (value: unknown) => T,
+): Promise<T> {
+  const res = await fetch(path, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) return failure(res);
+  return parse(await res.json());
+}
