@@ -80,7 +80,7 @@ const resendInstallationInvitation = createRoute({
     403: problem("Signed in, but not a system administrator"),
     404: problem("No invitation with this id"),
     409: problem(
-      "The invitation is accepted, declined, or revoked; another invitation for this address is already pending; or SMTP is not configured or its stored password is unreadable",
+      "The invitation is accepted, declined, or revoked; the recipient already has an account; another invitation for this address is already pending; or SMTP is not configured or its stored password is unreadable",
     ),
     502: problem("The SMTP server refused the message; the code says why"),
   },
@@ -111,7 +111,7 @@ const declineInstallationInvitation = createRoute({
   path: "/api/invitations/installation/decline",
   summary: "Decline an installation invitation",
   description:
-    "The recipient declines from the emailed link. Holding the token is the capability; only a pending, unexpired invitation changes, and its link then stops working.",
+    "The recipient declines from the emailed link. Holding the token is the capability; only a pending, unexpired invitation without failed delivery changes, and its link then stops working.",
   request: {
     body: {
       required: true,
@@ -183,6 +183,7 @@ const resendKinds = [
   "invitation_not_found",
   "invitation_not_pending",
   "invitation_pending",
+  "account_exists",
 ] as const;
 const revokeKinds = [
   "not_signed_in",

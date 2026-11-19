@@ -157,7 +157,7 @@ const resendWorkspaceInvitation = createRoute({
   path: "/api/workspaces/{workspaceId}/invitations/{invitationId}/resend",
   summary: "Resend a workspace invitation",
   description:
-    "Owners only, and the resending owner's email must be verified, exactly as for an initial invitation. Rotates the link: a still-live pending invitation becomes revoked at replacement time, one past its deadline becomes expired at the deadline it passed, and a new pending invitation from the current owner starts a fresh seven-day deadline. The previous link stops working. A delivery failure is recorded on the new invitation and answered as a delivery Problem; the invitation's lifecycle stays pending. Answers 409 invitation_not_pending when the invitation is accepted, declined, or revoked; invitation_pending when a concurrent invitation already owns the address; smtp_unconfigured when SMTP is missing; and smtp_password_unreadable when the stored password cannot be read. Answers 502 smtp_unreachable, smtp_auth_failed, smtp_tls_failed, or smtp_send_failed when the relay refuses the message.",
+    "Owners only, and the resending owner's email must be verified, exactly as for an initial invitation. Rotates the link: a still-live pending invitation becomes revoked at replacement time, one past its deadline becomes expired at the deadline it passed, and a new pending invitation from the current owner starts a fresh seven-day deadline. The previous link stops working. A delivery failure is recorded on the new invitation and answered as a delivery Problem; the invitation's lifecycle stays pending. Answers 409 invitation_not_pending when the invitation is accepted, declined, or revoked; invitation_scope_invalid when an offered project left the workspace; invitation_pending when a concurrent invitation already owns the address; smtp_unconfigured when SMTP is missing; and smtp_password_unreadable when the stored password cannot be read. Answers 502 smtp_unreachable, smtp_auth_failed, smtp_tls_failed, or smtp_send_failed when the relay refuses the message.",
   request: { params: invitationParams },
   responses: {
     200: {
@@ -169,7 +169,7 @@ const resendWorkspaceInvitation = createRoute({
     403: problem("Not an owner of this workspace, or the owner's email is unverified"),
     404: problem("No accessible shared workspace or invitation"),
     409: problem(
-      "The invitation is accepted, declined, or revoked; another invitation for this address is already pending; or SMTP is not configured or its stored password is unreadable",
+      "The invitation is accepted, declined, or revoked; an offered project left the workspace; the recipient is already a member; another invitation is pending; or SMTP is not configured or its stored password is unreadable",
     ),
     502: problem("The SMTP server refused the message; the code says why"),
   },
@@ -200,7 +200,7 @@ const declineWorkspaceInvitation = createRoute({
   path: "/api/workspace-invitations/decline",
   summary: "Decline a workspace invitation",
   description:
-    "The recipient declines from the emailed link. Holding the token is the capability; only a pending, unexpired invitation changes, and its link then stops working.",
+    "The recipient declines from the emailed link. Holding the token is the capability; only a pending, unexpired invitation without failed delivery changes, and its link then stops working.",
   request: {
     body: {
       required: true,
@@ -218,7 +218,7 @@ const previewWorkspaceInvitation = createRoute({
   path: "/api/workspace-invitations/preview",
   summary: "The workspace and address a workspace invitation link offers",
   description:
-    "A read-only preview of a single-use invitation token. It never consumes the token and changes nothing. It returns the workspace, invited address, inviter, deadline, and the actual offered grants, including every project and level. Invalid, expired, used, or failed-delivery links answer the same Problem.",
+    "A read-only preview of a single-use invitation token. It never consumes the token and changes nothing. It returns the workspace, invited address, inviter, deadline, and the actual offered grants, including every project and level. Invalid, expired, used, or failed-delivery links answer the same Problem. An offer whose project left the workspace answers 409 invitation_scope_invalid without returning project metadata.",
   request: { query: previewQuery },
   responses: {
     200: {
@@ -226,6 +226,7 @@ const previewWorkspaceInvitation = createRoute({
       content: { "application/json": { schema: WorkspaceInvitationPreview } },
     },
     400: problem("The token is invalid, expired, or already used"),
+    409: problem("An offered project no longer belongs to the workspace"),
   },
 });
 
@@ -429,6 +430,8 @@ const resendKinds = [
   "invitation_not_found",
   "invitation_not_pending",
   "invitation_pending",
+  "invitation_scope_invalid",
+  "already_member",
 ] as const;
 const revokeKinds = [
   "not_signed_in",
@@ -438,7 +441,7 @@ const revokeKinds = [
   "invitation_not_pending",
 ] as const;
 const declineKinds = ["invitation_invalid"] as const;
-const previewKinds = ["invitation_invalid"] as const;
+const previewKinds = ["invitation_invalid", "invitation_scope_invalid"] as const;
 const acceptKinds = [
   "not_signed_in",
   "invitation_invalid",

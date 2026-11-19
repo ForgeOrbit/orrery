@@ -68,7 +68,10 @@ export type WorkspaceMembersResponse = z.infer<typeof WorkspaceMembersResponse>;
 export const InviteWorkspaceMemberRequest = z
   .object({
     email: Email,
-    projectGrants: z.array(WorkspaceInvitationProjectGrant).max(100).default([]),
+    projectGrants: z.array(WorkspaceInvitationProjectGrant).max(100).refine(
+      (grants) => new Set(grants.map((grant) => grant.projectId)).size === grants.length,
+      "Offer each project at most once.",
+    ).default([]),
   })
   .meta({ id: "InviteWorkspaceMemberRequest" });
 export type InviteWorkspaceMemberRequest = z.infer<typeof InviteWorkspaceMemberRequest>;

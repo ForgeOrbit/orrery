@@ -56,7 +56,7 @@ export const InvitationGrant = z
     z.object({
       kind: z.literal("project_access"),
       projectId: z.string(),
-      projectName: z.string(),
+      projectName: z.string().nullable().describe("Null when the project no longer belongs to the invited workspace."),
       level: ProjectAccessLevel,
     }),
   ])

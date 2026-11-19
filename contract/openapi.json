@@ -535,7 +535,11 @@
                 "type": "string"
               },
               "projectName": {
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Null when the project no longer belongs to the invited workspace."
               },
               "level": {
                 "$ref": "#/components/schemas/ProjectAccessLevel"
@@ -1895,7 +1899,7 @@
             }
           },
           "409": {
-            "description": "The invitation is accepted, declined, or revoked; another invitation for this address is already pending; or SMTP is not configured or its stored password is unreadable",
+            "description": "The invitation is accepted, declined, or revoked; the recipient already has an account; another invitation for this address is already pending; or SMTP is not configured or its stored password is unreadable",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2000,7 +2004,7 @@
     "/api/invitations/installation/decline": {
       "post": {
         "summary": "Decline an installation invitation",
-        "description": "The recipient declines from the emailed link. Holding the token is the capability; only a pending, unexpired invitation changes, and its link then stops working.",
+        "description": "The recipient declines from the emailed link. Holding the token is the capability; only a pending, unexpired invitation without failed delivery changes, and its link then stops working.",
         "requestBody": {
           "required": true,
           "content": {
@@ -2461,7 +2465,7 @@
     "/api/workspaces/{workspaceId}/invitations/{invitationId}/resend": {
       "post": {
         "summary": "Resend a workspace invitation",
-        "description": "Owners only, and the resending owner's email must be verified, exactly as for an initial invitation. Rotates the link: a still-live pending invitation becomes revoked at replacement time, one past its deadline becomes expired at the deadline it passed, and a new pending invitation from the current owner starts a fresh seven-day deadline. The previous link stops working. A delivery failure is recorded on the new invitation and answered as a delivery Problem; the invitation's lifecycle stays pending. Answers 409 invitation_not_pending when the invitation is accepted, declined, or revoked; invitation_pending when a concurrent invitation already owns the address; smtp_unconfigured when SMTP is missing; and smtp_password_unreadable when the stored password cannot be read. Answers 502 smtp_unreachable, smtp_auth_failed, smtp_tls_failed, or smtp_send_failed when the relay refuses the message.",
+        "description": "Owners only, and the resending owner's email must be verified, exactly as for an initial invitation. Rotates the link: a still-live pending invitation becomes revoked at replacement time, one past its deadline becomes expired at the deadline it passed, and a new pending invitation from the current owner starts a fresh seven-day deadline. The previous link stops working. A delivery failure is recorded on the new invitation and answered as a delivery Problem; the invitation's lifecycle stays pending. Answers 409 invitation_not_pending when the invitation is accepted, declined, or revoked; invitation_scope_invalid when an offered project left the workspace; invitation_pending when a concurrent invitation already owns the address; smtp_unconfigured when SMTP is missing; and smtp_password_unreadable when the stored password cannot be read. Answers 502 smtp_unreachable, smtp_auth_failed, smtp_tls_failed, or smtp_send_failed when the relay refuses the message.",
         "parameters": [
           {
             "schema": {
@@ -2536,7 +2540,7 @@
             }
           },
           "409": {
-            "description": "The invitation is accepted, declined, or revoked; another invitation for this address is already pending; or SMTP is not configured or its stored password is unreadable",
+            "description": "The invitation is accepted, declined, or revoked; an offered project left the workspace; the recipient is already a member; another invitation is pending; or SMTP is not configured or its stored password is unreadable",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2651,7 +2655,7 @@
     "/api/workspace-invitations/decline": {
       "post": {
         "summary": "Decline a workspace invitation",
-        "description": "The recipient declines from the emailed link. Holding the token is the capability; only a pending, unexpired invitation changes, and its link then stops working.",
+        "description": "The recipient declines from the emailed link. Holding the token is the capability; only a pending, unexpired invitation without failed delivery changes, and its link then stops working.",
         "requestBody": {
           "required": true,
           "content": {
@@ -2682,7 +2686,7 @@
     "/api/workspace-invitations/preview": {
       "get": {
         "summary": "The workspace and address a workspace invitation link offers",
-        "description": "A read-only preview of a single-use invitation token. It never consumes the token and changes nothing. It returns the workspace, invited address, inviter, deadline, and the actual offered grants, including every project and level. Invalid, expired, used, or failed-delivery links answer the same Problem.",
+        "description": "A read-only preview of a single-use invitation token. It never consumes the token and changes nothing. It returns the workspace, invited address, inviter, deadline, and the actual offered grants, including every project and level. Invalid, expired, used, or failed-delivery links answer the same Problem. An offer whose project left the workspace answers 409 invitation_scope_invalid without returning project metadata.",
         "parameters": [
           {
             "schema": {
@@ -2706,6 +2710,16 @@
           },
           "400": {
             "description": "The token is invalid, expired, or already used",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An offered project no longer belongs to the workspace",
             "content": {
               "application/problem+json": {
                 "schema": {

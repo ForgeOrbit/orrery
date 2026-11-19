@@ -288,7 +288,7 @@ function toMember(row: {
 // inviter's history and the recipient's preview.
 interface OfferedProjectGrant {
   projectId: string;
-  projectName: string;
+  projectName: string | null;
   level: ProjectAccessLevel;
 }
 
@@ -329,7 +329,8 @@ interface WorkspaceSummaryRow {
 }
 
 async function loadOfferedProjectGrants(
-  db: PostgresJsDatabase,
+  db: PostgresJsDatabase | DbTransaction,
+  workspaceId: string,
   invitationIds: readonly string[],
 ): Promise<Map<string, OfferedProjectGrant[]>> {
   const byInvitation = new Map<string, OfferedProjectGrant[]>();
@@ -342,7 +343,13 @@ async function loadOfferedProjectGrants(
       level: workspaceInvitationGrants.level,
     })
     .from(workspaceInvitationGrants)
-    .innerJoin(projects, eq(projects.id, workspaceInvitationGrants.projectId))
+    .leftJoin(
+      projects,
+      and(
+        eq(projects.id, workspaceInvitationGrants.projectId),
+        eq(projects.workspaceId, workspaceId),
+      ),
+    )
     .where(inArray(workspaceInvitationGrants.invitationId, [...invitationIds]));
   for (const row of rows) {
     const grants = byInvitation.get(row.invitationId) ?? [];
@@ -410,7 +417,7 @@ async function readWorkspaceInvitationSummary(
     )
     .limit(1);
   if (row === undefined) throw new WorkspacesError("invitation_not_found");
-  const grants = await loadOfferedProjectGrants(db, [invitationId]);
+  const grants = await loadOfferedProjectGrants(db, workspaceId, [invitationId]);
   return toWorkspaceSummary(row, grants.get(invitationId) ?? []);
 }
 
@@ -612,7 +619,6 @@ async function redeemWorkspaceInvitation(tx: DbTransaction, token: string) {
     })
     .from(workspaceInvitationGrants)
     .where(eq(workspaceInvitationGrants.invitationId, invitation.id));
-  await requireOfferedProjectsInWorkspace(tx, invitation.workspaceId, offered);
   return {
     ...invitation,
     workspace,
@@ -621,6 +627,16 @@ async function redeemWorkspaceInvitation(tx: DbTransaction, token: string) {
       level: ProjectAccessLevel.parse(grant.level),
     })),
   };
+}
+
+async function requireRecipientNotMember(tx: DbTransaction, workspaceId: string, email: string) {
+  const [member] = await tx
+    .select({ id: workspaceMemberships.id })
+    .from(workspaceMemberships)
+    .innerJoin(humans, eq(humans.id, workspaceMemberships.humanId))
+    .where(and(eq(workspaceMemberships.workspaceId, workspaceId), eq(humans.email, email)))
+    .limit(1);
+  if (member !== undefined) throw new WorkspacesError("already_member");
 }
 
 async function requireWorkspaceMember(tx: DbTransaction, workspaceId: string, humanId: string) {
@@ -789,15 +805,7 @@ export function createWorkspacesService({
           await requireVerifiedInviter(tx, actor.humanId);
           await requireOfferedProjectsInWorkspace(tx, workspaceId, input.projectGrants);
 
-          const [member] = await tx
-            .select({ id: workspaceMemberships.id })
-            .from(workspaceMemberships)
-            .innerJoin(humans, eq(humans.id, workspaceMemberships.humanId))
-            .where(
-              and(eq(workspaceMemberships.workspaceId, workspaceId), eq(humans.email, input.email)),
-            )
-            .limit(1);
-          if (member !== undefined) throw new WorkspacesError("already_member");
+          await requireRecipientNotMember(tx, workspaceId, input.email);
 
           // A pending invitation blocks a new one while it is unexpired and either sent or
           // still within the in-flight delivery grace window. Expired rows, known-failed
@@ -838,8 +846,20 @@ export function createWorkspacesService({
                 eq(workspaceInvitations.workspaceId, workspaceId),
                 eq(workspaceInvitations.email, input.email),
                 eq(workspaceInvitations.status, InvitationStatus.enum.pending),
+                lte(workspaceInvitations.expiresAt, sql`statement_timestamp()`),
+              ),
+            );
+
+          await tx
+            .update(workspaceInvitations)
+            .set({ status: InvitationStatus.enum.revoked, revokedAt: sql`statement_timestamp()` })
+            .where(
+              and(
+                eq(workspaceInvitations.workspaceId, workspaceId),
+                eq(workspaceInvitations.email, input.email),
+                eq(workspaceInvitations.status, InvitationStatus.enum.pending),
+                gt(workspaceInvitations.expiresAt, sql`statement_timestamp()`),
                 or(
-                  lte(workspaceInvitations.expiresAt, sql`statement_timestamp()`),
                   eq(workspaceInvitations.deliveryStatus, InvitationDelivery.enum.failed),
                   and(
                     isNull(workspaceInvitations.deliveryStatus),
@@ -928,29 +948,11 @@ export function createWorkspacesService({
           .innerJoin(humans, eq(humans.id, workspaceInvitations.invitedByHumanId))
           .where(eq(workspaceInvitations.workspaceId, workspaceId))
           .orderBy(desc(workspaceInvitations.createdAt), desc(workspaceInvitations.id));
-        const ids = rows.map((row) => row.id);
-        const grantsByInvitation = new Map<string, OfferedProjectGrant[]>();
-        if (ids.length > 0) {
-          const grantRows = await tx
-            .select({
-              invitationId: workspaceInvitationGrants.invitationId,
-              projectId: workspaceInvitationGrants.projectId,
-              projectName: projects.name,
-              level: workspaceInvitationGrants.level,
-            })
-            .from(workspaceInvitationGrants)
-            .innerJoin(projects, eq(projects.id, workspaceInvitationGrants.projectId))
-            .where(inArray(workspaceInvitationGrants.invitationId, ids));
-          for (const grant of grantRows) {
-            const grants = grantsByInvitation.get(grant.invitationId) ?? [];
-            grants.push({
-              projectId: grant.projectId,
-              projectName: grant.projectName,
-              level: ProjectAccessLevel.parse(grant.level),
-            });
-            grantsByInvitation.set(grant.invitationId, grants);
-          }
-        }
+        const grantsByInvitation = await loadOfferedProjectGrants(
+          tx,
+          workspaceId,
+          rows.map((row) => row.id),
+        );
         return rows.map((row) => toWorkspaceSummary(row, grantsByInvitation.get(row.id) ?? []));
       });
     },
@@ -989,6 +991,23 @@ export function createWorkspacesService({
             )
             .for("update");
           if (row === undefined) throw new WorkspacesError("invitation_not_found");
+          if (
+            row.status !== InvitationStatus.enum.pending &&
+            row.status !== InvitationStatus.enum.expired
+          ) {
+            throw new WorkspacesError("invitation_not_pending");
+          }
+
+          const offered = await tx
+            .select({
+              projectId: workspaceInvitationGrants.projectId,
+              level: workspaceInvitationGrants.level,
+            })
+            .from(workspaceInvitationGrants)
+            .where(eq(workspaceInvitationGrants.invitationId, invitationId));
+
+          await requireRecipientNotMember(tx, workspaceId, row.email);
+          await requireOfferedProjectsInWorkspace(tx, workspaceId, offered);
 
           if (row.status === InvitationStatus.enum.pending) {
             await tx
@@ -1005,17 +1024,7 @@ export function createWorkspacesService({
                     },
               )
               .where(eq(workspaceInvitations.id, invitationId));
-          } else if (row.status !== InvitationStatus.enum.expired) {
-            throw new WorkspacesError("invitation_not_pending");
           }
-
-          const offered = await tx
-            .select({
-              projectId: workspaceInvitationGrants.projectId,
-              level: workspaceInvitationGrants.level,
-            })
-            .from(workspaceInvitationGrants)
-            .where(eq(workspaceInvitationGrants.invitationId, invitationId));
 
           await tx.insert(workspaceInvitations).values({
             id,
@@ -1060,7 +1069,7 @@ export function createWorkspacesService({
     // pending, unexpired row changes; the row keeps its history and revocation time.
     async revokeInvitation(account, workspaceId, invitationId) {
       const actor = requireAccount(account);
-      await db.transaction(async (tx) => {
+      const didRevoke = await db.transaction(async (tx) => {
         await lockWorkspaceForMutation(tx, workspaceId);
         await requireOwner(tx, workspaceId, actor.humanId);
 
@@ -1093,8 +1102,18 @@ export function createWorkspacesService({
             ),
           )
           .returning({ id: workspaceInvitations.id });
-        if (revoked.length === 0) throw new WorkspacesError("invitation_not_pending");
+        if (revoked.length > 0) return true;
+        // Keep the deadline transition even though the requested revocation failed.
+        await tx
+          .update(workspaceInvitations)
+          .set({
+            status: InvitationStatus.enum.expired,
+            expiredAt: workspaceInvitations.expiresAt,
+          })
+          .where(eq(workspaceInvitations.id, invitationId));
+        return false;
       });
+      if (!didRevoke) throw new WorkspacesError("invitation_not_pending");
       return readWorkspaceInvitationSummary(db, workspaceId, invitationId);
     },
 
@@ -1113,6 +1132,7 @@ export function createWorkspacesService({
             eq(workspaceInvitations.tokenHash, tokenHash(input.token)),
             eq(workspaceInvitations.status, InvitationStatus.enum.pending),
             gt(workspaceInvitations.expiresAt, sql`statement_timestamp()`),
+            sql`${workspaceInvitations.deliveryStatus} is distinct from ${InvitationDelivery.enum.failed}`,
           ),
         )
         .returning({ id: workspaceInvitations.id });
@@ -1145,15 +1165,11 @@ export function createWorkspacesService({
         )
         .limit(1);
       if (row === undefined) throw new WorkspacesError("invitation_invalid");
-      const offered = await db
-        .select({
-          projectId: workspaceInvitationGrants.projectId,
-          projectName: projects.name,
-          level: workspaceInvitationGrants.level,
-        })
-        .from(workspaceInvitationGrants)
-        .innerJoin(projects, eq(projects.id, workspaceInvitationGrants.projectId))
-        .where(eq(workspaceInvitationGrants.invitationId, row.id));
+      const grants = await loadOfferedProjectGrants(db, row.workspaceId, [row.id]);
+      const offered = grants.get(row.id) ?? [];
+      if (offered.some((grant) => grant.projectName === null)) {
+        throw new WorkspacesError("invitation_scope_invalid");
+      }
       return {
         workspaceId: row.workspaceId,
         workspaceName: row.workspaceName,
@@ -1169,7 +1185,7 @@ export function createWorkspacesService({
             kind: "project_access" as const,
             projectId: grant.projectId,
             projectName: grant.projectName,
-            level: ProjectAccessLevel.parse(grant.level),
+            level: grant.level,
           })),
         ],
         expiresAt: row.expiresAt.toISOString(),

@@ -1285,6 +1285,19 @@ describe("invitations", () => {
       expect(await problemBody(again)).toMatchObject({ code: "invitation_not_pending" });
     });
 
+    it("refuses decline when installation invitation delivery failed", async () => {
+      const { app, token } = await invitedApp();
+      await database.db
+        .update(invitations)
+        .set({ deliveryStatus: "failed" })
+        .where(eq(invitations.tokenHash, tokenHash(token)));
+      const decline = await postJson(app, "/api/invitations/installation/decline", { token });
+      expect(decline.status).toBe(400);
+      expect(await problemBody(decline)).toMatchObject({ code: "invitation_invalid" });
+      const [row] = await database.db.select().from(invitations);
+      expect(row).toMatchObject({ status: "pending", deliveryStatus: "failed", declinedAt: null });
+    });
+
     it("lets the recipient decline, and the link then never registers", async () => {
       const { app, cookie, fake } = await invitedApp();
       const token = tokenFrom(fake.sent[0]?.text ?? "");

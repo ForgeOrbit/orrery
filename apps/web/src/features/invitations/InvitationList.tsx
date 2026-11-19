@@ -29,7 +29,7 @@ function grantLabel(invitation: InvitationSummary): string {
     .map((grant) => {
       if (grant.kind === "installation_account") return "Installation account";
       if (grant.kind === "workspace_membership") return "Workspace member";
-      return `${grant.projectName} (${grant.level})`;
+      return `${grant.projectName ?? "Project no longer in workspace"} (${grant.level})`;
     })
     .join(", ");
 }

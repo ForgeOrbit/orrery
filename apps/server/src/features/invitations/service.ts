@@ -396,6 +396,15 @@ export function createInvitationsService({
       let email: string;
       try {
         email = await db.transaction(async (tx) => {
+          // Take the email lock before the row lock, as in creation and registration.
+          const [target] = await tx
+            .select({ email: invitations.email })
+            .from(invitations)
+            .where(eq(invitations.id, invitationId))
+            .limit(1);
+          if (target === undefined) throw new InvitationsError("invitation_not_found");
+          await tx.execute(sql`select pg_advisory_xact_lock(61683815, hashtext(${target.email}))`);
+
           const [row] = await tx
             .select({
               id: invitations.id,
@@ -407,6 +416,13 @@ export function createInvitationsService({
             .where(eq(invitations.id, invitationId))
             .for("update");
           if (row === undefined) throw new InvitationsError("invitation_not_found");
+          if (
+            row.status !== InvitationStatus.enum.pending &&
+            row.status !== InvitationStatus.enum.expired
+          ) {
+            throw new InvitationsError("invitation_not_pending");
+          }
+          if (await emailRegistered(row.email, tx)) throw new InvitationsError("account_exists");
 
           if (row.status === InvitationStatus.enum.pending) {
             await tx
@@ -423,8 +439,6 @@ export function createInvitationsService({
                     },
               )
               .where(eq(invitations.id, invitationId));
-          } else if (row.status !== InvitationStatus.enum.expired) {
-            throw new InvitationsError("invitation_not_pending");
           }
 
           await tx.insert(invitations).values({
@@ -505,6 +519,7 @@ export function createInvitationsService({
             eq(invitations.tokenHash, tokenHash(input.token)),
             eq(invitations.status, InvitationStatus.enum.pending),
             gt(invitations.expiresAt, sql`statement_timestamp()`),
+            sql`${invitations.deliveryStatus} is distinct from ${InvitationDelivery.enum.failed}`,
           ),
         )
         .returning({ id: invitations.id });
@@ -520,15 +535,25 @@ export function createInvitationsService({
     // either: the account and its personal workspace are not among #20's sensitive
     // access actions, and membership events begin with #24.
     async registerInstallation(input) {
+      const hash = tokenHash(input.token);
       const email = await db.transaction(async (tx) => {
+        const [target] = await tx
+          .select({ email: invitations.email })
+          .from(invitations)
+          .where(eq(invitations.tokenHash, hash))
+          .limit(1);
+        if (target === undefined) throw new InvitationsError("invitation_invalid");
+        // Account creation already takes this lock. Acquire it before changing the
+        // invitation so concurrent sends and redemptions agree on lock order.
+        await tx.execute(sql`select pg_advisory_xact_lock(61683815, hashtext(${target.email}))`);
         const rows = await tx
           .update(invitations)
-          .set({ status: InvitationStatus.enum.accepted, acceptedAt: sql`now()` })
+          .set({ status: InvitationStatus.enum.accepted, acceptedAt: sql`statement_timestamp()` })
           .where(
             and(
-              eq(invitations.tokenHash, tokenHash(input.token)),
+              eq(invitations.tokenHash, hash),
               eq(invitations.status, InvitationStatus.enum.pending),
-              gt(invitations.expiresAt, sql`now()`),
+              gt(invitations.expiresAt, sql`statement_timestamp()`),
               sql`${invitations.deliveryStatus} is distinct from ${InvitationDelivery.enum.failed}`,
             ),
           )

@@ -124,8 +124,16 @@ test("invites an existing account, and a forwarded link is refused", async () =>
   const workspace = await created.json();
   invitationWorkspaceId = workspace.id;
 
+  const projectResponse = await api.post(`/api/workspaces/${workspace.id}/projects`, {
+    data: { name: "Rocket Guidance" },
+  });
+  expect(projectResponse.status()).toBe(201);
+  const project = await projectResponse.json();
   const sent = await api.post(`/api/workspaces/${workspace.id}/invitations`, {
-    data: { email: EXISTING_EMAIL },
+    data: {
+      email: EXISTING_EMAIL,
+      projectGrants: [{ projectId: project.id, level: "contribute" }],
+    },
   });
   expect(sent.status()).toBe(201);
   expect(await sent.json()).toEqual({
@@ -151,6 +159,14 @@ test("invites an existing account, and a forwarded link is refused", async () =>
     workspaceId: workspace.id,
     workspaceName: "Rocket Team",
     email: EXISTING_EMAIL,
+    grants: expect.arrayContaining([
+      {
+        kind: "project_access",
+        projectId: project.id,
+        projectName: "Rocket Guidance",
+        level: "contribute",
+      },
+    ]),
   });
 
   // Forwarded to the administrator's signed-in browser, the link cannot attach the
@@ -612,11 +628,14 @@ test("accepts a workspace invitation through sign-in, then an owner appoints", a
   ).toBeVisible();
   // The whole offer, before accepting: inviter, workspace, access, and deadline.
   await expect(page.getByText(`${ADMIN_EMAIL} invited ${EXISTING_EMAIL} to`)).toBeVisible();
+  await expect(page.getByText("Offered access: workspace membership.")).toBeVisible();
   await expect(
-    page.getByText(
-      "Offered access: Workspace member. Workspace membership alone does not grant project access.",
-    ),
+    page.getByText("Workspace membership alone does not grant project access."),
   ).toBeVisible();
+  const projectGrant = page.getByText("Rocket Guidance: contribute", { exact: true });
+  await expect(projectGrant).toBeVisible();
+  const projectId = await projectGrant.getAttribute("data-project-grant-id");
+  if (projectId === null) throw new Error("offered project has no identifier");
   await expect(page.getByText(/This invitation expires/)).toBeVisible();
   await page.getByRole("link", { name: "Sign in" }).click();
   await expect(page).toHaveURL(/\/signin\?next=/);
@@ -636,6 +655,9 @@ test("accepts a workspace invitation through sign-in, then an owner appoints", a
   // A member gets no owner controls: no directory and no appointment action.
   await expect(page.getByRole("heading", { name: "Members" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Make owner" })).toHaveCount(0);
+  const project = await page.request.get(`/api/projects/${projectId}`);
+  expect(project.status()).toBe(200);
+  expect(await project.json()).toMatchObject({ name: "Rocket Guidance" });
 
   // The owner sees the directory and appoints the member. The role refreshes in place.
   const adminContext = await browser.newContext();

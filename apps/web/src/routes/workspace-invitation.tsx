@@ -49,10 +49,15 @@ function InvalidInvitationLink() {
 function InvitationLoadError({ error }: { error: unknown }) {
   const invalid = error instanceof ApiProblemError && error.code === "invitation_invalid";
   if (invalid) return <InvalidInvitationLink />;
+  const stale = error instanceof ApiProblemError && error.code === "invitation_scope_invalid";
   return (
     <main>
       <h1>Workspace invitation</h1>
-      <p role="alert">Could not load this invitation. Check your connection and try again.</p>
+      <p role="alert">
+        {stale
+          ? "An offered project is no longer in this workspace. Ask for a new invitation."
+          : "Could not load this invitation. Check your connection and try again."}
+      </p>
       <p>
         <Link to="/">Go to your workspaces</Link>
       </p>
