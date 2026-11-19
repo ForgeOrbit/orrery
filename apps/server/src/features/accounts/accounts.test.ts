@@ -66,9 +66,18 @@ describe("accounts", () => {
   });
 
   afterEach(async () => {
-    await database.db.execute(
-      sql`truncate humans, workspaces, browser_sessions, instance_setup, instance_settings, email_verification_tokens, invitations`,
-    );
+    await database.db.transaction(async (tx) => {
+      await tx.execute(sql`delete from workspace_events`);
+      await tx.execute(sql`delete from workspace_invitations`);
+      await tx.execute(sql`delete from workspace_memberships`);
+      await tx.execute(sql`delete from workspaces`);
+      await tx.execute(sql`delete from invitations`);
+      await tx.execute(sql`delete from browser_sessions`);
+      await tx.execute(sql`delete from instance_setup`);
+      await tx.execute(sql`delete from instance_settings`);
+      await tx.execute(sql`delete from email_verification_tokens`);
+      await tx.execute(sql`delete from humans`);
+    });
   });
 
   function makeApp(

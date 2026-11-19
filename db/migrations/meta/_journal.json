@@ -22,6 +22,48 @@
       "when": 1795061906448,
       "tag": "0002_invitations",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1795070204295,
+      "tag": "0003_lush_wolfpack",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1795070209254,
+      "tag": "0004_workspace_owner_invariant",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1795071785166,
+      "tag": "0005_workspace_owner_invariant_serialized",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1795073767188,
+      "tag": "0006_strong_ben_urich",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1795073772423,
+      "tag": "0007_workspace_owner_guards",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1795076247318,
+      "tag": "0008_workspace_ownership_write_order",
+      "breakpoints": true
     }
   ]
 }

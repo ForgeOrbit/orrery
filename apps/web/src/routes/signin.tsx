@@ -4,7 +4,23 @@ import type { FormEvent } from "react";
 import { useState } from "react";
 import { sessionQuery, signIn, type Session } from "../features/accounts/index.ts";
 
+// Only the internal workspace-invitation path is accepted as a post-sign-in destination.
+// It is not a general redirect: complete URLs, schemes, and every other route are ignored.
+const INVITATION_NEXT = /^\/workspace-invitation\?token=([A-Za-z0-9_-]+)$/;
+
+function invitationTokenFrom(next: string | undefined): string | undefined {
+  if (next === undefined) return undefined;
+  return INVITATION_NEXT.exec(next)?.[1];
+}
+
 export const Route = createFileRoute("/signin")({
+  validateSearch: (search: Record<string, unknown>) => {
+    const next =
+      typeof search.next === "string" && INVITATION_NEXT.test(search.next)
+        ? search.next
+        : undefined;
+    return next === undefined ? {} : { next };
+  },
   beforeLoad: async ({ context }) => {
     const session = await context.queryClient.fetchQuery(sessionQuery);
     if (session.signedIn) throw redirect({ to: "/" });
@@ -13,6 +29,7 @@ export const Route = createFileRoute("/signin")({
 });
 
 function SignInPage() {
+  const { next } = Route.useSearch();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
@@ -28,7 +45,12 @@ function SignInPage() {
       const account = await signIn({ email, password });
       const session: Session = { signedIn: true, email: account.email };
       queryClient.setQueryData(sessionQuery.queryKey, session);
-      await navigate({ to: "/" });
+      const token = invitationTokenFrom(next);
+      if (token !== undefined) {
+        await navigate({ to: "/workspace-invitation", search: { token } });
+      } else {
+        await navigate({ to: "/" });
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Sign-in failed.");
       setPassword("");

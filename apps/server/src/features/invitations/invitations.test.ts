@@ -139,9 +139,18 @@ describe("invitations", () => {
   });
 
   afterEach(async () => {
-    await database.db.execute(
-      sql`truncate invitations, humans, workspaces, browser_sessions, instance_setup, instance_settings, email_verification_tokens`,
-    );
+    await database.db.transaction(async (tx) => {
+      await tx.execute(sql`delete from workspace_events`);
+      await tx.execute(sql`delete from workspace_invitations`);
+      await tx.execute(sql`delete from workspace_memberships`);
+      await tx.execute(sql`delete from workspaces`);
+      await tx.execute(sql`delete from invitations`);
+      await tx.execute(sql`delete from browser_sessions`);
+      await tx.execute(sql`delete from instance_setup`);
+      await tx.execute(sql`delete from instance_settings`);
+      await tx.execute(sql`delete from email_verification_tokens`);
+      await tx.execute(sql`delete from humans`);
+    });
   });
 
   // A signed-in account that is not a system administrator, created directly: the point

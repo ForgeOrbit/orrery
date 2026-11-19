@@ -8,6 +8,7 @@ import { sql } from "drizzle-orm";
 import {
   boolean,
   check,
+  index,
   integer,
   pgTable,
   text,
@@ -75,6 +76,128 @@ export const workspaces = pgTable(
     uniqueIndex("one_personal_workspace_per_human")
       .on(t.personalOwnerHumanId)
       .where(sql`${t.kind} = ${personalKindSql}`),
+  ],
+);
+
+// Per-workspace serialization point for ownership changes. Every supported writer
+// updates this row before touching memberships, so a transaction with a stale snapshot
+// fails serialization instead of committing a workspace with no owner. The row is
+// created by a trigger with its workspace and removed with it.
+export const workspaceOwnershipGuards = pgTable("workspace_ownership_guards", {
+  workspaceId: text("workspace_id")
+    .primaryKey()
+    .references(() => workspaces.id, { onDelete: "cascade" }),
+  version: integer("version").notNull().default(0),
+});
+
+// Membership of a shared workspace (issue #24). The shape is deliberately small: a
+// membership is a human's presence in the workspace, and `is_owner` carries the one
+// role this slice grants. The capability columns from #28 extend this table without
+// changing identity. Personal workspaces do not use memberships; their single owner is
+// `workspaces.personal_owner_human_id`.
+export const workspaceMemberships = pgTable(
+  "workspace_memberships",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id),
+    humanId: text("human_id")
+      .notNull()
+      .references(() => humans.id),
+    isOwner: boolean("is_owner").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // One membership per person per workspace: accepting twice cannot double access.
+    uniqueIndex("one_membership_per_workspace_and_human").on(t.workspaceId, t.humanId),
+    // The listing starts from the caller's memberships.
+    index("workspace_memberships_human_id").on(t.humanId),
+  ],
+);
+
+// A workspace invitation (issue #24). It reuses the invitation lifecycle from #23 —
+// pending, accepted, or expired in place, with delivery tracked separately — but targets
+// a shared workspace instead of the installation. The emailed link carries a random
+// token; only its SHA-256 hash is stored. Expiry is seven days, evaluated in database
+// time when the token is redeemed.
+export const workspaceInvitations = pgTable(
+  "workspace_invitations",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id),
+    // Normalized by the contract's Email schema; the CHECK enforces it for every writer.
+    email: text("email").notNull(),
+    status: text("status").$type<InvitationStatus>().notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    invitedByHumanId: text("invited_by_human_id")
+      .notNull()
+      .references(() => humans.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    deliveryStatus: text("delivery_status").$type<InvitationDelivery>(),
+    deliveryAttemptedAt: timestamp("delivery_attempted_at", { withTimezone: true }),
+  },
+  (t) => [
+    check("workspace_invitations_email_normalized", sql`${t.email} = lower(btrim(${t.email}))`),
+    check(
+      "workspace_invitations_status",
+      sql`${t.status} in (${sql.raw(sqlLiteralList(InvitationStatus))})`,
+    ),
+    check(
+      "workspace_invitations_delivery_status",
+      sql`(${t.deliveryStatus} is null or ${t.deliveryStatus} in (${sql.raw(
+        sqlLiteralList(InvitationDelivery),
+      )}))`,
+    ),
+    // One pending invitation per address per workspace; the same person can be invited
+    // to a different workspace without the links colliding.
+    uniqueIndex("one_pending_workspace_invitation_per_email")
+      .on(t.workspaceId, t.email)
+      .where(sql`${t.status} = ${pendingStatusSql}`),
+  ],
+);
+
+// The access-change events this slice records (issue #24): creating a workspace, joining
+// by invitation, appointing or removing an owner, and removing an ordinary member.
+// History visibility arrives in #32; the events are written now so it can be built on
+// real history rather than a later backfill. Content never carries secrets.
+export const workspaceEventTypes = [
+  "workspace_created",
+  "member_joined",
+  "owner_appointed",
+  "member_removed",
+  "owner_removed",
+] as const;
+export type WorkspaceEventType = (typeof workspaceEventTypes)[number];
+
+export const workspaceEvents = pgTable(
+  "workspace_events",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id),
+    type: text("type").$type<WorkspaceEventType>().notNull(),
+    // The human who performed the action, and the human it concerned. They are the same
+    // for a join or a workspace creation; different for an appointment or removal.
+    actorHumanId: text("actor_human_id")
+      .notNull()
+      .references(() => humans.id),
+    subjectHumanId: text("subject_human_id")
+      .notNull()
+      .references(() => humans.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "workspace_event_type",
+      sql`${t.type} in (${sql.raw(workspaceEventTypes.map((value) => `'${value}'`).join(", "))})`,
+    ),
+    index("workspace_events_workspace_created").on(t.workspaceId, t.createdAt),
   ],
 );
 
