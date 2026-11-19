@@ -19,7 +19,7 @@ Operators and orchestrators check Orrery with `/healthz` (the process is up) and
 Preconditions: healthy instance, `doctor` exits 0.
 
 - **Live and ready.** `curl -sS -w '\n%{http_code}\n' $URL/healthz $URL/readyz`. Two `200` lines with `"status":"ok"`.
-- **Degraded.** `docker stop $CONTAINER`, then `curl -sS -w '\n%{http_code}\n' $URL/readyz` returns `503` with `"status":"degraded"`, and `$URL/healthz` is still `200`. Run `docker start $CONTAINER` afterwards and confirm `/readyz` returns 200 again (it may take a second or two while the connection pool recovers).
+- **Degraded.** `docker stop $CONTAINER`, then `curl -sS -m 40 -w '\n%{http_code}\n' $URL/readyz` returns `503` with `"status":"degraded"`, and `$URL/healthz` is still `200`. Run `docker start $CONTAINER` afterwards and poll `/readyz` back to 200 (recovery is usually immediate; the first degraded query can wait on the connection timeout, hence `-m 40`).
 - **Proof.** Save the outputs to `$RUN_DIR/evidence/health-*.txt`, and note the `docker stop`/`start` commands.
 
 ## Gotchas

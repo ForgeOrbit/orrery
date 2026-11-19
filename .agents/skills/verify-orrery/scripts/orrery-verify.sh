@@ -38,6 +38,13 @@ EOF
   # 1. Postgres, throwaway, loopback only, random port (other containers may own 5432/8080/8081).
   docker run -d --name "$CONTAINER" -e POSTGRES_USER=orrery -e POSTGRES_PASSWORD="$PGPASS" \
     -e POSTGRES_DB=orrery -p "127.0.0.1:$PGPORT:5432" postgres:18 >/dev/null
+  # The image runs a temporary server while it initializes, then restarts it. Waiting
+  # only on pg_isready can catch the temporary one and probe during the restart, so wait
+  # for the init-complete marker first; the image prints it just before the real start.
+  for _ in $(seq 1 60); do
+    docker logs "$CONTAINER" 2>&1 | grep -q "PostgreSQL init process complete" && break
+    sleep 1
+  done
   for _ in $(seq 1 60); do
     docker exec "$CONTAINER" pg_isready -U orrery -d orrery >/dev/null 2>&1 && break
     sleep 1
@@ -94,6 +101,13 @@ down)
     if kill -0 "$PID" 2>/dev/null && tr '\0' ' ' </proc/"$PID"/cmdline | grep -q 'src/main.ts'; then kill "$PID"; fi
   fi
   docker rm -fv "$CONTAINER" >/dev/null 2>&1 || true
+  # The mail features' catcher is part of the run; never leave it behind.
+  if [ -f "$RUN_DIR/mailpit.env" ]; then
+    # shellcheck disable=SC1091
+    . "$RUN_DIR/mailpit.env"
+    docker rm -f "$MAILPIT_CONTAINER" >/dev/null 2>&1 || true
+    rm -f "$RUN_DIR/mailpit.env"
+  fi
   rm -rf "$RUN_DIR/web-dist"
   echo "stopped. evidence kept in $RUN_DIR/evidence"
   ;;
