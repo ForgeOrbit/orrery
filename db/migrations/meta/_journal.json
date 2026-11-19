@@ -43,6 +43,20 @@
       "when": 1795071785166,
       "tag": "0005_workspace_owner_invariant_serialized",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1795073767188,
+      "tag": "0006_strong_ben_urich",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1795073772423,
+      "tag": "0007_workspace_owner_guards",
+      "breakpoints": true
     }
   ]
 }

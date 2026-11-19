@@ -1,5 +1,6 @@
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { WorkspaceInvitationToken } from "@orrery/contract";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { sessionQuery, signIn, type Session } from "../features/accounts/index.ts";
@@ -23,7 +24,7 @@ export const Route = createFileRoute("/workspace-invitation")({
   loaderDeps: ({ search: { token } }) => ({ token }),
   loader: async ({ context, deps }) => {
     await context.queryClient.ensureQueryData(sessionQuery);
-    if (deps.token !== "") {
+    if (deps.token !== "" && WorkspaceInvitationToken.safeParse(deps.token).success) {
       await context.queryClient.ensureQueryData(workspaceInvitationPreviewQuery(deps.token));
     }
   },
@@ -31,18 +32,27 @@ export const Route = createFileRoute("/workspace-invitation")({
   errorComponent: ({ error }) => <InvitationLoadError error={error} />,
 });
 
+function InvalidInvitationLink() {
+  return (
+    <main>
+      <h1>Workspace invitation</h1>
+      <p role="alert">This invitation is invalid, expired, or already used.</p>
+      <p>
+        <Link to="/">Go to your workspaces</Link>
+      </p>
+    </main>
+  );
+}
+
 // The loader sends the failure it actually saw. Only an invitation Problem gets the
 // invalid-link copy; a network failure or an installation error gets a different message.
 function InvitationLoadError({ error }: { error: unknown }) {
   const invalid = error instanceof ApiProblemError && error.code === "invitation_invalid";
+  if (invalid) return <InvalidInvitationLink />;
   return (
     <main>
       <h1>Workspace invitation</h1>
-      {invalid ? (
-        <p role="alert">This invitation is invalid, expired, or already used.</p>
-      ) : (
-        <p role="alert">Could not load this invitation. Check your connection and try again.</p>
-      )}
+      <p role="alert">Could not load this invitation. Check your connection and try again.</p>
       <p>
         <Link to="/">Go to your workspaces</Link>
       </p>
@@ -59,6 +69,11 @@ function WorkspaceInvitationPage() {
         <p role="alert">This invitation link is incomplete. Ask for a fresh invitation.</p>
       </main>
     );
+  }
+  if (!WorkspaceInvitationToken.safeParse(token).success) {
+    // Malformed and overlong values never reach the API; they are invalid links, not a
+    // server or connection failure.
+    return <InvalidInvitationLink />;
   }
   return <Invitation token={token} />;
 }

@@ -10,6 +10,7 @@ import {
   Workspace,
   WorkspaceInvitation,
   WorkspaceInvitationPreview,
+  WorkspaceInvitationToken,
   WorkspaceMember,
   WorkspaceMembersResponse,
   WorkspacesResponse,
@@ -25,7 +26,7 @@ import { WorkspacesError, type WorkspacesErrorKind, type WorkspacesService } fro
 
 const workspaceParams = z.object({ workspaceId: z.string().min(1).max(200) });
 const memberParams = workspaceParams.extend({ humanId: z.string().min(1).max(200) });
-const previewQuery = z.object({ token: z.string().min(1).max(1024) });
+const previewQuery = z.object({ token: WorkspaceInvitationToken });
 
 const listWorkspaces = createRoute({
   method: "get",

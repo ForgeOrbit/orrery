@@ -281,6 +281,15 @@ test("distinguishes an invalid invitation link from a load failure", async ({ pa
   await expect(page.getByRole("alert")).toHaveText(
     "This invitation is invalid, expired, or already used.",
   );
+
+  // Malformed and overlong tokens are rejected at the route boundary with the same
+  // invalid-link copy, without a server request or a connectivity message.
+  for (const token of ["bad token", "a".repeat(1_025)]) {
+    await page.goto(`/workspace-invitation?token=${encodeURIComponent(token)}`);
+    await expect(page.getByRole("alert")).toHaveText(
+      "This invitation is invalid, expired, or already used.",
+    );
+  }
 });
 
 test("ignores a sign-in redirect that is not the invitation page", async ({ page }) => {

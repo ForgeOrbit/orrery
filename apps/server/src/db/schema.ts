@@ -79,6 +79,17 @@ export const workspaces = pgTable(
   ],
 );
 
+// Per-workspace serialization point for ownership changes. Every supported writer
+// updates this row before touching memberships, so a transaction with a stale snapshot
+// fails serialization instead of committing a workspace with no owner. The row is
+// created by a trigger with its workspace and removed with it.
+export const workspaceOwnershipGuards = pgTable("workspace_ownership_guards", {
+  workspaceId: text("workspace_id")
+    .primaryKey()
+    .references(() => workspaces.id, { onDelete: "cascade" }),
+  version: integer("version").notNull().default(0),
+});
+
 // Membership of a shared workspace (issue #24). The shape is deliberately small: a
 // membership is a human's presence in the workspace, and `is_owner` carries the one
 // role this slice grants. The capability columns from #28 extend this table without

@@ -80,12 +80,21 @@ export const WorkspaceInvitationPreview = z
   .meta({ id: "WorkspaceInvitationPreview" });
 export type WorkspaceInvitationPreview = z.infer<typeof WorkspaceInvitationPreview>;
 
+// The token carried by a workspace invitation link. Emailed tokens are base64url, so the
+// shape is fixed here once for the REST body, the preview query, and the web route. A
+// malformed or overlong value is an invalid link, not a server failure.
+export const WorkspaceInvitationToken = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]{1,1024}$/)
+  .meta({ id: "WorkspaceInvitationToken" });
+export type WorkspaceInvitationToken = z.infer<typeof WorkspaceInvitationToken>;
+
 // Redeems a workspace invitation as the signed-in account. The account's verified email
 // must equal the invited address; a forwarded link cannot attach the membership to
 // another account.
 export const AcceptWorkspaceInvitationRequest = z
   .object({
-    token: z.string().min(1).max(1024),
+    token: WorkspaceInvitationToken,
   })
   .meta({ id: "AcceptWorkspaceInvitationRequest" });
 export type AcceptWorkspaceInvitationRequest = z.infer<typeof AcceptWorkspaceInvitationRequest>;
@@ -94,7 +103,7 @@ export type AcceptWorkspaceInvitationRequest = z.infer<typeof AcceptWorkspaceInv
 // The account, its personal workspace, and this membership are created in one flow.
 export const RegisterThroughWorkspaceInvitationRequest = z
   .object({
-    token: z.string().min(1).max(1024),
+    token: WorkspaceInvitationToken,
     password: NewPassword,
   })
   .meta({ id: "RegisterThroughWorkspaceInvitationRequest" });

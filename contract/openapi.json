@@ -481,13 +481,15 @@
           "email"
         ]
       },
+      "WorkspaceInvitationToken": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,1024}$"
+      },
       "AcceptWorkspaceInvitationRequest": {
         "type": "object",
         "properties": {
           "token": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 1024
+            "$ref": "#/components/schemas/WorkspaceInvitationToken"
           }
         },
         "required": [
@@ -498,9 +500,7 @@
         "type": "object",
         "properties": {
           "token": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 1024
+            "$ref": "#/components/schemas/WorkspaceInvitationToken"
           },
           "password": {
             "$ref": "#/components/schemas/NewPassword"
@@ -1379,9 +1379,7 @@
         "parameters": [
           {
             "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024
+              "$ref": "#/components/schemas/WorkspaceInvitationToken"
             },
             "required": true,
             "name": "token",

@@ -23,6 +23,7 @@ import {
   workspaceEvents,
   workspaceInvitations,
   workspaceMemberships,
+  workspaceOwnershipGuards,
   workspaces,
   type WorkspaceEventType,
 } from "../../db/schema.ts";
@@ -127,10 +128,9 @@ async function recordEvent(
   });
 }
 
-// Locks the workspace row for the rest of the transaction. Every ownership or invitation
-// change takes this lock before touching invitations or memberships, so competing
-// writers serialize per workspace and see each other's committed result.
-async function lockSharedWorkspace(
+// A read-only shared workspace lookup: no guard or row lock, because it decides nothing
+// and changing ownership concurrently may only make this response momentarily stale.
+async function readSharedWorkspace(
   tx: DbTransaction,
   workspaceId: string,
   missingKind: "workspace_not_found" | "invitation_invalid" = "workspace_not_found",
@@ -139,11 +139,30 @@ async function lockSharedWorkspace(
     .select({ id: workspaces.id, kind: workspaces.kind, name: workspaces.name })
     .from(workspaces)
     .where(eq(workspaces.id, workspaceId))
-    .for("update")
     .limit(1);
   if (workspace === undefined || workspace.kind !== WorkspaceKind.enum.shared) {
     throw new WorkspacesError(missingKind);
   }
+  return workspace;
+}
+
+// The single mutation boundary for a workspace: advance its ownership guard before
+// reading authority or touching invitations/memberships. Direct SQL writers reach the
+// same row through the BEFORE triggers in migration 0007, so both take one lock order.
+// The update also makes a stale REPEATABLE READ writer fail serialization.
+async function lockWorkspaceForMutation(
+  tx: DbTransaction,
+  workspaceId: string,
+  missingKind: "workspace_not_found" | "invitation_invalid" = "workspace_not_found",
+) {
+  const workspace = await readSharedWorkspace(tx, workspaceId, missingKind);
+  await tx
+    .insert(workspaceOwnershipGuards)
+    .values({ workspaceId, version: 0 })
+    .onConflictDoUpdate({
+      target: workspaceOwnershipGuards.workspaceId,
+      set: { version: sql`${workspaceOwnershipGuards.version} + 1` },
+    });
   return workspace;
 }
 
@@ -251,7 +270,7 @@ export interface WorkspacesService {
 async function recordDelivery(db: PostgresJsDatabase, id: string, delivery: InvitationDelivery) {
   await db
     .update(workspaceInvitations)
-    .set({ deliveryStatus: delivery, deliveryAttemptedAt: sql`now()` })
+    .set({ deliveryStatus: delivery, deliveryAttemptedAt: sql`statement_timestamp()` })
     .where(eq(workspaceInvitations.id, id));
 }
 
@@ -269,17 +288,17 @@ async function redeemWorkspaceInvitation(tx: DbTransaction, token: string) {
     .limit(1);
   if (located === undefined) throw new WorkspacesError("invitation_invalid");
 
-  const workspace = await lockSharedWorkspace(tx, located.workspaceId, "invitation_invalid");
+  const workspace = await lockWorkspaceForMutation(tx, located.workspaceId, "invitation_invalid");
 
   const [invitation] = await tx
     .update(workspaceInvitations)
-    .set({ status: InvitationStatus.enum.accepted, acceptedAt: sql`now()` })
+    .set({ status: InvitationStatus.enum.accepted, acceptedAt: sql`statement_timestamp()` })
     .where(
       and(
         eq(workspaceInvitations.tokenHash, tokenHash(token)),
         eq(workspaceInvitations.workspaceId, located.workspaceId),
         eq(workspaceInvitations.status, InvitationStatus.enum.pending),
-        gt(workspaceInvitations.expiresAt, sql`now()`),
+        gt(workspaceInvitations.expiresAt, sql`statement_timestamp()`),
         sql`${workspaceInvitations.deliveryStatus} is distinct from ${InvitationDelivery.enum.failed}`,
       ),
     )
@@ -370,7 +389,7 @@ export function createWorkspacesService({
     async members(account, workspaceId) {
       const actor = requireAccount(account);
       return db.transaction(async (tx) => {
-        await lockSharedWorkspace(tx, workspaceId);
+        await readSharedWorkspace(tx, workspaceId);
         await requireOwner(tx, workspaceId, actor.humanId);
         return tx
           .select({
@@ -418,7 +437,7 @@ export function createWorkspacesService({
       let workspaceName: string;
       try {
         workspaceName = await db.transaction(async (tx) => {
-          const workspace = await lockSharedWorkspace(tx, workspaceId);
+          const workspace = await lockWorkspaceForMutation(tx, workspaceId);
           await requireOwner(tx, workspaceId, actor.humanId);
 
           const [inviter] = await tx
@@ -455,7 +474,7 @@ export function createWorkspacesService({
                 eq(workspaceInvitations.workspaceId, workspaceId),
                 eq(workspaceInvitations.email, input.email),
                 eq(workspaceInvitations.status, InvitationStatus.enum.pending),
-                gt(workspaceInvitations.expiresAt, sql`now()`),
+                gt(workspaceInvitations.expiresAt, sql`statement_timestamp()`),
               ),
             )
             .limit(1);
@@ -469,7 +488,7 @@ export function createWorkspacesService({
                 eq(workspaceInvitations.workspaceId, workspaceId),
                 eq(workspaceInvitations.email, input.email),
                 eq(workspaceInvitations.status, InvitationStatus.enum.pending),
-                lte(workspaceInvitations.expiresAt, sql`now()`),
+                lte(workspaceInvitations.expiresAt, sql`statement_timestamp()`),
               ),
             );
 
@@ -480,7 +499,8 @@ export function createWorkspacesService({
             status: InvitationStatus.enum.pending,
             tokenHash: tokenHash(token),
             invitedByHumanId: actor.humanId,
-            expiresAt: sql`now() + make_interval(secs => ${INVITATION_TTL_SECONDS})`,
+            createdAt: sql`statement_timestamp()`,
+            expiresAt: sql`statement_timestamp() + make_interval(secs => ${INVITATION_TTL_SECONDS})`,
           });
           // The mail is sent after the insert commits, like the installation invitation:
           // the row is the durable offer, the delivery attempt is separate.
@@ -525,7 +545,7 @@ export function createWorkspacesService({
           and(
             eq(workspaceInvitations.tokenHash, tokenHash(token)),
             eq(workspaceInvitations.status, InvitationStatus.enum.pending),
-            gt(workspaceInvitations.expiresAt, sql`now()`),
+            gt(workspaceInvitations.expiresAt, sql`statement_timestamp()`),
             sql`${workspaceInvitations.deliveryStatus} is distinct from ${InvitationDelivery.enum.failed}`,
           ),
         )
@@ -625,7 +645,7 @@ export function createWorkspacesService({
     async appointOwner(account, workspaceId, humanId) {
       const actor = requireAccount(account);
       return db.transaction(async (tx) => {
-        await lockSharedWorkspace(tx, workspaceId);
+        await lockWorkspaceForMutation(tx, workspaceId);
         await requireOwner(tx, workspaceId, actor.humanId);
 
         const [member] = await tx
@@ -666,7 +686,7 @@ export function createWorkspacesService({
     async removeMember(account, workspaceId, humanId) {
       const actor = requireAccount(account);
       await db.transaction(async (tx) => {
-        await lockSharedWorkspace(tx, workspaceId);
+        await lockWorkspaceForMutation(tx, workspaceId);
         await requireOwner(tx, workspaceId, actor.humanId);
 
         const [target] = await tx

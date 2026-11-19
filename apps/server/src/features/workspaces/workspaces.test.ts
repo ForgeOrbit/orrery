@@ -168,6 +168,39 @@ async function verifyHuman(humanId: string) {
     .where(eq(humans.id, humanId));
 }
 
+// A one-way latch for coordinating two database sessions without using a sleep as the
+// synchronization signal.
+function createGate() {
+  let release!: () => void;
+  const opened = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return {
+    opened,
+    release: () => release(),
+  };
+}
+
+// Waits until a statement in another session is blocked on a lock whose query contains
+// the given text. Polling pg_stat_activity coordinates the test deterministically.
+async function waitForLockWait(pattern: string) {
+  await expect
+    .poll(
+      async () => {
+        const [row] = await currentDatabase().sql<{ count: number }[]>`
+          select count(*)::int as count
+          from pg_stat_activity
+          where wait_event_type = 'Lock'
+            and query ilike ${`%${pattern}%`}
+            and pid <> pg_backend_pid()
+        `;
+        return row?.count ?? 0;
+      },
+      { timeout: 5_000, interval: 25 },
+    )
+    .toBeGreaterThan(0);
+}
+
 async function workspaceInviteToken(
   sent: { to: string; text: string }[],
   email: string,
@@ -217,9 +250,18 @@ describe("workspaces", () => {
   });
 
   afterEach(async () => {
-    await database.db.execute(
-      sql`truncate workspace_events, workspace_invitations, workspace_memberships, invitations, humans, workspaces, browser_sessions, instance_setup, instance_settings, email_verification_tokens`,
-    );
+    await database.db.transaction(async (tx) => {
+      await tx.execute(sql`delete from workspace_events`);
+      await tx.execute(sql`delete from workspace_invitations`);
+      await tx.execute(sql`delete from workspace_memberships`);
+      await tx.execute(sql`delete from workspaces`);
+      await tx.execute(sql`delete from invitations`);
+      await tx.execute(sql`delete from browser_sessions`);
+      await tx.execute(sql`delete from instance_setup`);
+      await tx.execute(sql`delete from instance_settings`);
+      await tx.execute(sql`delete from email_verification_tokens`);
+      await tx.execute(sql`delete from humans`);
+    });
   });
 
   // Wired like features/index.ts, with a fake transport that keeps the emails, so the
@@ -1041,39 +1083,32 @@ describe("workspaces", () => {
     ).toHaveLength(0);
   });
 
-  it("serializes concurrent owner removals from direct database writers", async () => {
+  it("serializes repeatable-read owner removals through the guard version", async () => {
     const { admin } = await readyApp();
     const [second] = await insertHuman({ email: "second.owner@example.com", verified: true });
-    const workspaceId = await directSharedWorkspace([admin.id, second.id], "Race Team");
+    const workspaceId = await directSharedWorkspace([admin.id, second.id], "Repeatable Team");
 
-    const results = await Promise.allSettled([
-      database.db.transaction((tx) =>
-        tx
-          .delete(workspaceMemberships)
-          .where(
-            and(
-              eq(workspaceMemberships.workspaceId, workspaceId),
-              eq(workspaceMemberships.humanId, admin.id),
-            ),
-          ),
-      ),
-      database.db.transaction((tx) =>
-        tx
-          .delete(workspaceMemberships)
-          .where(
-            and(
-              eq(workspaceMemberships.workspaceId, workspaceId),
-              eq(workspaceMemberships.humanId, second.id),
-            ),
-          ),
-      ),
-    ]);
+    let ready = 0;
+    let open!: () => void;
+    const bothReady = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const removeAs = (humanId: string) =>
+      database.sql.begin("isolation level repeatable read", async (tx) => {
+        // Establish each transaction's snapshot before either one writes.
+        await tx`select count(*) from workspace_memberships where workspace_id = ${workspaceId}`;
+        ready += 1;
+        if (ready === 2) open();
+        await bothReady;
+        await tx`delete from workspace_memberships where workspace_id = ${workspaceId} and human_id = ${humanId}`;
+      });
 
+    const results = await Promise.allSettled([removeAs(admin.id), removeAs(second.id)]);
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     const loser = results.find((result) => result.status === "rejected");
-    if (loser?.status !== "rejected") throw new Error("expected one rejected removal");
+    if (loser?.status !== "rejected") throw new Error("expected one stale writer to fail");
     expect(rootCause(loser.reason)?.message ?? String(loser.reason)).toContain(
-      "must keep at least one owner",
+      "could not serialize access",
     );
     const owners = await database.db
       .select()
@@ -1085,5 +1120,202 @@ describe("workspaces", () => {
         ),
       );
     expect(owners).toHaveLength(1);
+  });
+
+  it("refuses truncating ownership tables and leaves every shared workspace owned", async () => {
+    const { admin } = await readyApp();
+    const workspaceId = await directSharedWorkspace([admin.id], "Truncate Guard");
+
+    expect(await rejection(database.sql`truncate workspace_memberships`)).toContain(
+      "cannot be truncated",
+    );
+    expect(await rejection(database.sql`truncate workspaces cascade`)).toContain(
+      "cannot be truncated",
+    );
+    const owners = await database.db
+      .select()
+      .from(workspaceMemberships)
+      .where(
+        and(
+          eq(workspaceMemberships.workspaceId, workspaceId),
+          eq(workspaceMemberships.isOwner, true),
+        ),
+      );
+    expect(owners).toHaveLength(1);
+  });
+
+  it("keeps one lock order when a service removal meets a direct membership write", async () => {
+    const { app, adminCookie } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const [member] = await insertHuman({ email: "mixed.member@example.com", verified: true });
+    await database.db.insert(workspaceMemberships).values({
+      id: randomUUID(),
+      workspaceId: workspace.id,
+      humanId: member.id,
+      isOwner: false,
+    });
+
+    const release = createGate();
+    let deleted!: () => void;
+    const hasDeleted = new Promise<void>((resolve) => {
+      deleted = resolve;
+    });
+    const holder = database.sql.begin(async (tx) => {
+      await tx`
+        delete from workspace_memberships
+        where workspace_id = ${workspace.id} and human_id = ${member.id}
+      `;
+      deleted();
+      await release.opened;
+    });
+
+    await hasDeleted;
+    const removal = deleteRequest(
+      app,
+      `/api/workspaces/${workspace.id}/members/${member.id}`,
+      adminCookie,
+    );
+    try {
+      await waitForLockWait("workspace_ownership_guards");
+    } finally {
+      release.release();
+    }
+    await holder;
+
+    const res = await removal;
+    expect(res.status).toBe(404);
+    expect(await problemBody(res)).toMatchObject({ code: "member_not_found" });
+    expect(
+      await database.db
+        .select()
+        .from(workspaceMemberships)
+        .where(eq(workspaceMemberships.humanId, member.id)),
+    ).toHaveLength(0);
+  });
+
+  it("locks both guards in id order for opposite cross-workspace membership moves", async () => {
+    const { admin } = await readyApp();
+    const [second] = await insertHuman({ email: "second.owner@example.com", verified: true });
+    const [third] = await insertHuman({ email: "third.member@example.com", verified: true });
+    const [fourth] = await insertHuman({ email: "fourth.member@example.com", verified: true });
+    const workspaceA = await directSharedWorkspace([admin.id], "Order A");
+    const workspaceB = await directSharedWorkspace([second.id], "Order B");
+    const fromA = randomUUID();
+    const fromB = randomUUID();
+    await database.db.insert(workspaceMemberships).values([
+      { id: fromA, workspaceId: workspaceA, humanId: third.id, isOwner: false },
+      { id: fromB, workspaceId: workspaceB, humanId: fourth.id, isOwner: false },
+    ]);
+
+    await Promise.all([
+      database.db
+        .update(workspaceMemberships)
+        .set({ workspaceId: workspaceB })
+        .where(eq(workspaceMemberships.id, fromA)),
+      database.db
+        .update(workspaceMemberships)
+        .set({ workspaceId: workspaceA })
+        .where(eq(workspaceMemberships.id, fromB)),
+    ]);
+
+    expect(
+      await database.db
+        .select()
+        .from(workspaceMemberships)
+        .where(eq(workspaceMemberships.id, fromA)),
+    ).toMatchObject([{ workspaceId: workspaceB }]);
+    expect(
+      await database.db
+        .select()
+        .from(workspaceMemberships)
+        .where(eq(workspaceMemberships.id, fromB)),
+    ).toMatchObject([{ workspaceId: workspaceA }]);
+    for (const workspaceId of [workspaceA, workspaceB]) {
+      const owners = await database.db
+        .select()
+        .from(workspaceMemberships)
+        .where(
+          and(
+            eq(workspaceMemberships.workspaceId, workspaceId),
+            eq(workspaceMemberships.isOwner, true),
+          ),
+        );
+      expect(owners).toHaveLength(1);
+    }
+  });
+
+  it("refuses redemption when the workspace lock wait crosses the invitation deadline", async () => {
+    const { app, sent, adminCookie } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const { cookie: memberCookie } = await verifiedCookie(app, INVITEE);
+    await invite(app, adminCookie, workspace.id, INVITEE);
+    const token = await workspaceInviteToken(sent, INVITEE, "Rocket Team");
+    await database.db
+      .update(workspaceInvitations)
+      .set({ expiresAt: sql`statement_timestamp() + interval '1 second'` })
+      .where(eq(workspaceInvitations.workspaceId, workspace.id));
+
+    const release = createGate();
+    let locked!: () => void;
+    const hasLocked = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    const holder = database.sql.begin(async (tx) => {
+      await tx`
+        select workspace_id
+        from workspace_ownership_guards
+        where workspace_id = ${workspace.id}
+        for update
+      `;
+      locked();
+      await release.opened;
+    });
+
+    await hasLocked;
+    const acceptance = postJson(
+      app,
+      "/api/workspace-invitations/acceptance",
+      { token },
+      memberCookie,
+    );
+    let timedOut: unknown;
+    try {
+      await waitForLockWait("workspace_ownership_guards");
+      const [waiting] = await database.sql<{ query_start: string }[]>`
+        select query_start
+        from pg_stat_activity
+        where wait_event_type = 'Lock'
+          and query ilike '%workspace_ownership_guards%'
+          and pid <> pg_backend_pid()
+        order by query_start
+        limit 1
+      `;
+      const [invitation] = await database.db
+        .select({ expiresAt: workspaceInvitations.expiresAt })
+        .from(workspaceInvitations)
+        .where(eq(workspaceInvitations.workspaceId, workspace.id));
+      if (waiting === undefined || invitation === undefined) {
+        throw new Error("the blocked redemption or its invitation was not found");
+      }
+      // The request had started before the deadline, then waited on the guard.
+      expect(new Date(waiting.query_start).getTime()).toBeLessThan(invitation.expiresAt.getTime());
+      await new Promise((resolve) => setTimeout(resolve, 1_200));
+    } catch (error) {
+      timedOut = error;
+    } finally {
+      release.release();
+    }
+    await holder;
+    const refused = await acceptance;
+    if (timedOut !== undefined) throw timedOut;
+
+    expect(refused.status).toBe(400);
+    expect(await problemBody(refused)).toMatchObject({ code: "invitation_invalid" });
+    expect(
+      await database.db
+        .select()
+        .from(workspaceMemberships)
+        .where(eq(workspaceMemberships.workspaceId, workspace.id)),
+    ).toHaveLength(1); // the creator only
   });
 });
