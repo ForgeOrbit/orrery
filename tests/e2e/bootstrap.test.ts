@@ -8,8 +8,8 @@
 //
 // When the stack was started with BOOTSTRAP_SECRET, pass the same value as
 // ORRERY_SETUP_SECRET so each refusal can expect its exact status.
-import { appendFile } from "node:fs/promises";
 import { beforeAll, describe, expect, it } from "vitest";
+import { recordSecret } from "./admin.ts";
 
 const baseUrl = process.env.ORRERY_URL;
 if (!baseUrl)
@@ -19,16 +19,14 @@ if (!baseUrl)
 // without one, so setup is unavailable (403) rather than secret-checked (401).
 const refusedWith = process.env.ORRERY_SETUP_SECRET === undefined ? 403 : 401;
 
-// Every secret this suite sends or knows, recorded for the post-run log check
-// (scripts/check-e2e-logs.mjs): the stack's secret when known, and the refusal bodies.
-// test:e2e empties the file before each run.
-const secretsUsed = new URL("./.secrets-used", import.meta.url).pathname;
-
+// Every secret this suite sends or knows is recorded in one place (./admin.ts), for
+// the post-run log check (scripts/check-e2e-logs.mjs).
 beforeAll(async () => {
-  const values = ["definitely-not-the-secret", "a-valid-password"];
+  for (const value of ["definitely-not-the-secret", "a-valid-password"]) {
+    await recordSecret(value);
+  }
   const setupSecret = process.env.ORRERY_SETUP_SECRET;
-  if (setupSecret !== undefined) values.push(setupSecret);
-  await appendFile(secretsUsed, `${values.join("\n")}\n`, "utf8");
+  if (setupSecret !== undefined) await recordSecret(setupSecret);
 });
 
 const postJson = (path: string, body: unknown) =>

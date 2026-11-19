@@ -38,6 +38,18 @@ services:
       timeout: 3s
       retries: 10
 
+  # The test email catcher (issue #22): the installation's outgoing mail lands here,
+  # stored, never forwarded anywhere. The e2e suite proves real delivery by reading this
+  # API. The web UI (http://localhost:8025) doubles as a debugging inbox. Remove this
+  # service for a production deployment: nothing else in the stack depends on it.
+  mailpit:
+    image: axllent/mailpit
+    restart: unless-stopped
+    ports:
+      # Host-side only, so only this machine can read the mail or the UI. The orrery
+      # container reaches the SMTP listener at mailpit:1025 over the compose network.
+      - "127.0.0.1:${MAILPIT_HTTP_PORT:-8025}:8025"
+
   # Optional HTTPS with an automatic Let's Encrypt certificate. Agents on members' machines need
   # Orrery over HTTPS. Skip this profile if you already run a reverse proxy; point it at :8080.
   caddy:
