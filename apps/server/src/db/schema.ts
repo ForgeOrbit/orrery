@@ -30,10 +30,10 @@ export const humans = pgTable(
   (t) => [check("humans_email_normalized", sql`${t.email} = lower(btrim(${t.email}))`)],
 );
 
-// The allowed values of a text column backed by a contract enum, quoted for a CHECK
-// constraint. Raw SQL by necessity (DDL has no parameters); safe because the values are
-// enum members, never input.
-function kindList(enumeration: { options: readonly string[] }): string {
+// A list of values as quoted SQL literals, for a CHECK constraint over a text column
+// backed by a contract enum. Raw SQL by necessity (DDL has no parameters); safe because
+// the values are enum members, never input.
+function sqlLiteralList(enumeration: { options: readonly string[] }): string {
   return enumeration.options.map((value) => `'${value}'`).join(", ");
 }
 
@@ -55,7 +55,7 @@ export const workspaces = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    check("workspace_kind", sql`${t.kind} in (${sql.raw(kindList(WorkspaceKind))})`),
+    check("workspace_kind", sql`${t.kind} in (${sql.raw(sqlLiteralList(WorkspaceKind))})`),
     // Exactly the personal kind carries a personal owner; the literal comes from the
     // enum value, raw for the same DDL reason as the kind list above.
     check(
@@ -97,9 +97,9 @@ export const instanceSetup = pgTable(
 
 // Persistent instance settings (ADR-0001): what the system administrator configures
 // through the app, unlike deployment essentials, which come from environment variables.
-// SMTP is one singleton row, written wholesale by an administrator; the password is the
-// one secret in it. The database's operator is trusted (see identity-and-access.md), so
-// the password is stored as needed for SMTP authentication, never hashed.
+// SMTP is one singleton row, written wholesale by an administrator. The password is the
+// one secret in it, and it is never plaintext at rest: ADR-0004 encrypts it with the
+// deployment's key, and only the ciphertext is stored.
 export const instanceSettings = pgTable(
   "instance_settings",
   {
@@ -108,7 +108,7 @@ export const instanceSettings = pgTable(
     smtpPort: integer("smtp_port").notNull(),
     smtpSecurity: text("smtp_security").$type<SmtpSecurity>().notNull(),
     smtpUsername: text("smtp_username"),
-    smtpPassword: text("smtp_password"),
+    smtpPasswordEncrypted: text("smtp_password_encrypted"),
     smtpFrom: text("smtp_from").notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     updatedByHumanId: text("updated_by_human_id")
@@ -121,7 +121,7 @@ export const instanceSettings = pgTable(
     // from the SmtpSecurity contract enum, never from input.
     check(
       "instance_settings_smtp_security",
-      sql`${t.smtpSecurity} in (${sql.raw(kindList(SmtpSecurity))})`,
+      sql`${t.smtpSecurity} in (${sql.raw(sqlLiteralList(SmtpSecurity))})`,
     ),
   ],
 );
