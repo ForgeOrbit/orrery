@@ -4,4 +4,5 @@ export * from "./auth.ts";
 export * from "./common.ts";
 export * from "./health.ts";
 export * from "./mcp-tools.ts";
+export * from "./settings.ts";
 export * from "./setup.ts";
