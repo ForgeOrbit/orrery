@@ -1,0 +1,5 @@
+ALTER TABLE "workspace_events" DROP CONSTRAINT "workspace_event_type";--> statement-breakpoint
+ALTER TABLE "workspace_memberships" ADD COLUMN "can_invite_members" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "workspace_memberships" ADD COLUMN "can_remove_members" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "workspace_memberships" ADD COLUMN "can_manage_member_permissions" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "workspace_events" ADD CONSTRAINT "workspace_event_type" CHECK ("workspace_events"."type" in ('workspace_created', 'member_joined', 'owner_appointed', 'member_removed', 'owner_removed', 'create_projects_granted', 'create_projects_revoked', 'invite_members_granted', 'invite_members_revoked', 'remove_members_granted', 'remove_members_revoked', 'manage_member_permissions_granted', 'manage_member_permissions_revoked'));

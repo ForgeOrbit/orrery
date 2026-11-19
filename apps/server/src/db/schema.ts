@@ -95,10 +95,10 @@ export const workspaceOwnershipGuards = pgTable("workspace_ownership_guards", {
 });
 
 // Membership of a shared workspace (issue #24). A membership is a human's presence in
-// the workspace; `is_owner` carries full authority and `can_create_projects` is the one
-// delegated capability this slice grants (#27). #28 adds the other three capability
-// columns without changing identity. Personal workspaces do not use memberships; their
-// single owner is `workspaces.personal_owner_human_id`.
+// the workspace; `is_owner` carries full authority and the four `can_*` columns are the
+// independently delegated workspace capabilities (#20, #28). They are all false by
+// default, so membership alone never grants workspace-wide authority. Personal workspaces
+// do not use memberships; their single owner is `workspaces.personal_owner_human_id`.
 export const workspaceMemberships = pgTable(
   "workspace_memberships",
   {
@@ -111,6 +111,9 @@ export const workspaceMemberships = pgTable(
       .references(() => humans.id),
     isOwner: boolean("is_owner").notNull().default(false),
     canCreateProjects: boolean("can_create_projects").notNull().default(false),
+    canInviteMembers: boolean("can_invite_members").notNull().default(false),
+    canRemoveMembers: boolean("can_remove_members").notNull().default(false),
+    canManageMemberPermissions: boolean("can_manage_member_permissions").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -170,10 +173,11 @@ export const workspaceInvitations = pgTable(
 );
 
 // The workspace access-change events recorded so far: #24's creation, joining,
-// appointment, and removal, plus #27's Create projects capability grants. Project-level
-// grants live in project_access_events below, because they are scoped to a project.
-// History visibility arrives in #32; the events are written now so it can be built on
-// real history rather than a later backfill. Content never carries secrets.
+// appointment, and removal, plus #27's Create projects grants and #28's other three
+// capability grants. Project-level grants live in project_access_events below, because
+// they are scoped to a project. History visibility arrives in #32; the events are written
+// now so it can be built on real history rather than a later backfill. Content never
+// carries secrets.
 export const workspaceEventTypes = [
   "workspace_created",
   "member_joined",
@@ -182,6 +186,12 @@ export const workspaceEventTypes = [
   "owner_removed",
   "create_projects_granted",
   "create_projects_revoked",
+  "invite_members_granted",
+  "invite_members_revoked",
+  "remove_members_granted",
+  "remove_members_revoked",
+  "manage_member_permissions_granted",
+  "manage_member_permissions_revoked",
 ] as const;
 export type WorkspaceEventType = (typeof workspaceEventTypes)[number];
 

@@ -23,6 +23,7 @@ import type { SessionAccount } from "../accounts/index.ts";
 import type { OutgoingMail } from "../settings/index.ts";
 import {
   humans,
+  projectAccessGrants,
   projects,
   workspaceEvents,
   workspaceInvitationGrants,
@@ -82,7 +83,7 @@ const messages = {
   account_exists: "This email already has an account. Sign in to accept the invitation.",
   member_not_found: "This person is not a member of the workspace.",
   last_owner: "A workspace must keep at least one owner.",
-  workspace_owner_capability: "Workspace owners always have Create projects.",
+  workspace_owner_capability: "Workspace owners always hold every capability.",
 } as const satisfies Record<WorkspacesErrorKind, string>;
 
 export class WorkspacesError extends Error {
@@ -187,14 +188,42 @@ async function lockWorkspaceForMutation(
   return workspace;
 }
 
-// The caller's authority is read after the workspace lock, never from a stale snapshot:
-// an owner removed by the transaction ahead of this one is no longer an owner here.
-// A caller who is not a member at all answers workspace_not_found (404), matching GET,
-// so owner endpoints cannot be used to enumerate shared workspace ids.
-async function requireOwner(tx: DbTransaction, workspaceId: string, humanId: string) {
+// A membership with every effective capability and the account's verified mark. The
+// service reads authority after the workspace lock, never from a stale snapshot: an owner
+// removed by the transaction ahead of this one is no longer an owner here. The missing
+// kind is the caller's choice: a non-member actor answers workspace_not_found (404) so
+// no endpoint can enumerate shared workspaces, while a missing target answers
+// member_not_found (404). Redemption reports a missing inviter as inviter_not_authorized.
+interface WorkspaceMembershipRow {
+  humanId: string;
+  email: string;
+  isOwner: boolean;
+  canCreateProjects: boolean;
+  canInviteMembers: boolean;
+  canRemoveMembers: boolean;
+  canManageMemberPermissions: boolean;
+  emailVerifiedAt: Date | null;
+}
+
+async function readMembership(
+  tx: DbTransaction,
+  workspaceId: string,
+  humanId: string,
+  missingKind: "workspace_not_found" | "member_not_found" | "inviter_not_authorized",
+): Promise<WorkspaceMembershipRow> {
   const [membership] = await tx
-    .select({ isOwner: workspaceMemberships.isOwner })
+    .select({
+      humanId: workspaceMemberships.humanId,
+      email: humans.email,
+      isOwner: workspaceMemberships.isOwner,
+      canCreateProjects: workspaceMemberships.canCreateProjects,
+      canInviteMembers: workspaceMemberships.canInviteMembers,
+      canRemoveMembers: workspaceMemberships.canRemoveMembers,
+      canManageMemberPermissions: workspaceMemberships.canManageMemberPermissions,
+      emailVerifiedAt: humans.emailVerifiedAt,
+    })
     .from(workspaceMemberships)
+    .innerJoin(humans, eq(humans.id, workspaceMemberships.humanId))
     .where(
       and(
         eq(workspaceMemberships.workspaceId, workspaceId),
@@ -202,8 +231,67 @@ async function requireOwner(tx: DbTransaction, workspaceId: string, humanId: str
       ),
     )
     .limit(1);
-  if (membership === undefined) throw new WorkspacesError("workspace_not_found");
+  if (membership === undefined) throw new WorkspacesError(missingKind);
+  return membership;
+}
+
+async function requireOwner(tx: DbTransaction, workspaceId: string, humanId: string) {
+  const membership = await readMembership(tx, workspaceId, humanId, "workspace_not_found");
   if (!membership.isOwner) throw new WorkspacesError("not_workspace_owner");
+}
+
+// Owners hold all four capabilities. A delegate's authority is only what is stored.
+const workspaceCapabilities = [
+  "canCreateProjects",
+  "canInviteMembers",
+  "canRemoveMembers",
+  "canManageMemberPermissions",
+] as const;
+type WorkspaceCapability = (typeof workspaceCapabilities)[number];
+
+const capabilityEvents: Record<
+  WorkspaceCapability,
+  { granted: WorkspaceEventType; revoked: WorkspaceEventType }
+> = {
+  canCreateProjects: {
+    granted: "create_projects_granted",
+    revoked: "create_projects_revoked",
+  },
+  canInviteMembers: { granted: "invite_members_granted", revoked: "invite_members_revoked" },
+  canRemoveMembers: { granted: "remove_members_granted", revoked: "remove_members_revoked" },
+  canManageMemberPermissions: {
+    granted: "manage_member_permissions_granted",
+    revoked: "manage_member_permissions_revoked",
+  },
+};
+
+// A delegated inviter may only offer a project they currently Manage in this workspace.
+// Owners may offer any project in the workspace. The caller decides the error kind: a
+// management action is refused as not_workspace_owner, while redemption reports that the
+// invitation's authority has been withdrawn as inviter_not_authorized.
+async function requireProjectManageScope(
+  tx: DbTransaction,
+  workspaceId: string,
+  actor: WorkspaceMembershipRow,
+  offered: readonly { projectId: string }[],
+  deniedKind: "not_workspace_owner" | "inviter_not_authorized",
+) {
+  if (actor.isOwner || offered.length === 0) return;
+  const ids = [...new Set(offered.map((grant) => grant.projectId))];
+  const rows = await tx
+    .select({ projectId: projectAccessGrants.projectId })
+    .from(projectAccessGrants)
+    .innerJoin(projects, eq(projects.id, projectAccessGrants.projectId))
+    .where(
+      and(
+        eq(projectAccessGrants.humanId, actor.humanId),
+        eq(projectAccessGrants.level, ProjectAccessLevel.enum.manage),
+        eq(projects.workspaceId, workspaceId),
+        inArray(projectAccessGrants.projectId, ids),
+      ),
+    );
+  const managed = new Set(rows.map((row) => row.projectId));
+  if (ids.some((id) => !managed.has(id))) throw new WorkspacesError(deniedKind);
 }
 
 // The same verified-inviter policy for creating and rotating an offer (#20): the
@@ -222,41 +310,36 @@ async function requireVerifiedInviter(tx: DbTransaction, humanId: string) {
 }
 
 // #20's acceptance rule: the inviter's authority is rechecked when the offer is taken
-// up, not only when it was sent. An inviter who left the workspace or lost ownership
-// cannot still hand out access.
+// up, not only when it was sent. They must still be a verified member with either
+// ownership or Invite members, and a delegate must still Manage every offered project.
+// The check runs under the workspace lock inside redemption; a failure rolls the token
+// back to pending rather than burning it.
 async function requireInviterStillAuthorized(
   tx: DbTransaction,
   workspaceId: string,
   inviterHumanId: string,
+  offered: readonly { projectId: string }[],
 ) {
-  const [inviter] = await tx
-    .select({
-      isOwner: workspaceMemberships.isOwner,
-      emailVerifiedAt: humans.emailVerifiedAt,
-    })
-    .from(workspaceMemberships)
-    .innerJoin(humans, eq(humans.id, workspaceMemberships.humanId))
-    .where(
-      and(
-        eq(workspaceMemberships.workspaceId, workspaceId),
-        eq(workspaceMemberships.humanId, inviterHumanId),
-      ),
-    )
-    .limit(1);
-  if (inviter?.isOwner !== true || inviter.emailVerifiedAt === null) {
+  const inviter = await readMembership(tx, workspaceId, inviterHumanId, "inviter_not_authorized");
+  if (inviter.emailVerifiedAt === null) throw new WorkspacesError("inviter_not_authorized");
+  if (!inviter.isOwner && !inviter.canInviteMembers) {
     throw new WorkspacesError("inviter_not_authorized");
   }
+  await requireProjectManageScope(tx, workspaceId, inviter, offered, "inviter_not_authorized");
 }
 
 // The listing projection: personal owners are owners by definition; a shared workspace
-// is the caller's membership, with its owner flag and delegated Create projects
-// capability. Owners always hold the capability, whatever the stored column says.
+// is the caller's membership. Owners hold all four capabilities whatever the stored
+// columns say; a member holds only what was granted.
 function toWorkspace(row: {
   id: string;
   kind: Workspace["kind"];
   name: string;
   membershipIsOwner: boolean | null;
   membershipCanCreateProjects: boolean | null;
+  membershipCanInviteMembers: boolean | null;
+  membershipCanRemoveMembers: boolean | null;
+  membershipCanManageMemberPermissions: boolean | null;
 }): Workspace {
   const isOwner = row.kind === WorkspaceKind.enum.personal || row.membershipIsOwner === true;
   return {
@@ -265,22 +348,23 @@ function toWorkspace(row: {
     name: row.name,
     isOwner,
     canCreateProjects: isOwner || row.membershipCanCreateProjects === true,
+    canInviteMembers: isOwner || row.membershipCanInviteMembers === true,
+    canRemoveMembers: isOwner || row.membershipCanRemoveMembers === true,
+    canManageMemberPermissions: isOwner || row.membershipCanManageMemberPermissions === true,
   };
 }
 
-// A member row's effective capability. An owner can always create, so a stored false
-// never hides that.
-function toMember(row: {
-  humanId: string;
-  email: string;
-  isOwner: boolean;
-  canCreateProjects: boolean;
-}): WorkspaceMember {
+// A member row's effective capabilities: an owner holds all four whatever the stored
+// columns say, so a stored false never hides an implicit authority.
+function toMember(row: WorkspaceMembershipRow): WorkspaceMember {
   return {
     humanId: row.humanId,
     email: row.email,
     isOwner: row.isOwner,
     canCreateProjects: row.isOwner || row.canCreateProjects,
+    canInviteMembers: row.isOwner || row.canInviteMembers,
+    canRemoveMembers: row.isOwner || row.canRemoveMembers,
+    canManageMemberPermissions: row.isOwner || row.canManageMemberPermissions,
   };
 }
 
@@ -611,7 +695,6 @@ async function redeemWorkspaceInvitation(tx: DbTransaction, token: string) {
     });
   if (invitation === undefined) throw new WorkspacesError("invitation_invalid");
 
-  await requireInviterStillAuthorized(tx, invitation.workspaceId, invitation.invitedByHumanId);
   const offered = await tx
     .select({
       projectId: workspaceInvitationGrants.projectId,
@@ -619,6 +702,12 @@ async function redeemWorkspaceInvitation(tx: DbTransaction, token: string) {
     })
     .from(workspaceInvitationGrants)
     .where(eq(workspaceInvitationGrants.invitationId, invitation.id));
+  await requireInviterStillAuthorized(
+    tx,
+    invitation.workspaceId,
+    invitation.invitedByHumanId,
+    offered,
+  );
   return {
     ...invitation,
     workspace,
@@ -640,24 +729,7 @@ async function requireRecipientNotMember(tx: DbTransaction, workspaceId: string,
 }
 
 async function requireWorkspaceMember(tx: DbTransaction, workspaceId: string, humanId: string) {
-  const [member] = await tx
-    .select({
-      humanId: workspaceMemberships.humanId,
-      email: humans.email,
-      isOwner: workspaceMemberships.isOwner,
-      canCreateProjects: workspaceMemberships.canCreateProjects,
-    })
-    .from(workspaceMemberships)
-    .innerJoin(humans, eq(humans.id, workspaceMemberships.humanId))
-    .where(
-      and(
-        eq(workspaceMemberships.workspaceId, workspaceId),
-        eq(workspaceMemberships.humanId, humanId),
-      ),
-    )
-    .limit(1);
-  if (member === undefined) throw new WorkspacesError("member_not_found");
-  return member;
+  return readMembership(tx, workspaceId, humanId, "member_not_found");
 }
 
 export function createWorkspacesService({
@@ -682,6 +754,9 @@ export function createWorkspacesService({
           name: workspaces.name,
           membershipIsOwner: workspaceMemberships.isOwner,
           membershipCanCreateProjects: workspaceMemberships.canCreateProjects,
+          membershipCanInviteMembers: workspaceMemberships.canInviteMembers,
+          membershipCanRemoveMembers: workspaceMemberships.canRemoveMembers,
+          membershipCanManageMemberPermissions: workspaceMemberships.canManageMemberPermissions,
         })
         .from(workspaces)
         .leftJoin(
@@ -712,6 +787,9 @@ export function createWorkspacesService({
           name: workspaces.name,
           membershipIsOwner: workspaceMemberships.isOwner,
           membershipCanCreateProjects: workspaceMemberships.canCreateProjects,
+          membershipCanInviteMembers: workspaceMemberships.canInviteMembers,
+          membershipCanRemoveMembers: workspaceMemberships.canRemoveMembers,
+          membershipCanManageMemberPermissions: workspaceMemberships.canManageMemberPermissions,
         })
         .from(workspaces)
         .leftJoin(
@@ -735,20 +813,37 @@ export function createWorkspacesService({
       return toWorkspace(row);
     },
 
-    // The member directory an owner uses to appoint or remove people. Owners only: an
-    // ordinary member does not need everyone else's address to do their work.
+    // The member directory. Owners and members holding permission management or removal
+    // authority need it to do their work; an ordinary member gets no list of addresses.
+    // A non-member still answers workspace_not_found rather than a membership-related 404.
     async members(account, workspaceId) {
       const actor = requireAccount(account);
       return db.transaction(
         async (tx) => {
           await readSharedWorkspace(tx, workspaceId);
-          await requireOwner(tx, workspaceId, actor.humanId);
+          const membership = await readMembership(
+            tx,
+            workspaceId,
+            actor.humanId,
+            "workspace_not_found",
+          );
+          if (
+            !membership.isOwner &&
+            !membership.canManageMemberPermissions &&
+            !membership.canRemoveMembers
+          ) {
+            throw new WorkspacesError("not_workspace_owner");
+          }
           const rows = await tx
             .select({
               humanId: workspaceMemberships.humanId,
               email: humans.email,
               isOwner: workspaceMemberships.isOwner,
               canCreateProjects: workspaceMemberships.canCreateProjects,
+              canInviteMembers: workspaceMemberships.canInviteMembers,
+              canRemoveMembers: workspaceMemberships.canRemoveMembers,
+              canManageMemberPermissions: workspaceMemberships.canManageMemberPermissions,
+              emailVerifiedAt: humans.emailVerifiedAt,
             })
             .from(workspaceMemberships)
             .innerJoin(humans, eq(humans.id, workspaceMemberships.humanId))
@@ -786,13 +881,16 @@ export function createWorkspacesService({
         name: input.name,
         isOwner: true,
         canCreateProjects: true,
+        canInviteMembers: true,
+        canRemoveMembers: true,
+        canManageMemberPermissions: true,
       };
     },
 
-    // An owner invites one address. The invitation can go to an existing account or an
-    // address with no account yet; the email does not reveal which. The inviter must be
-    // verified (a new-email invitation creates the account, #20) and still an owner at
-    // acceptance, which is rechecked there.
+    // An owner or a delegated inviter invites one address. The invitation can go to an
+    // existing account or an address with no account yet; the email does not reveal which.
+    // The inviter must be verified (#20), and a delegate may only offer projects they
+    // Manage. Authority is rechecked again when the offer is accepted.
     async invite(account, workspaceId, input) {
       const actor = requireAccount(account);
       const token = randomBytes(32).toString("base64url");
@@ -801,9 +899,24 @@ export function createWorkspacesService({
       try {
         workspaceName = await db.transaction(async (tx) => {
           const workspace = await lockWorkspaceForMutation(tx, workspaceId);
-          await requireOwner(tx, workspaceId, actor.humanId);
+          const inviter = await readMembership(
+            tx,
+            workspaceId,
+            actor.humanId,
+            "workspace_not_found",
+          );
+          if (!inviter.isOwner && !inviter.canInviteMembers) {
+            throw new WorkspacesError("not_workspace_owner");
+          }
           await requireVerifiedInviter(tx, actor.humanId);
           await requireOfferedProjectsInWorkspace(tx, workspaceId, input.projectGrants);
+          await requireProjectManageScope(
+            tx,
+            workspaceId,
+            inviter,
+            input.projectGrants,
+            "not_workspace_owner",
+          );
 
           await requireRecipientNotMember(tx, workspaceId, input.email);
 
@@ -920,14 +1033,17 @@ export function createWorkspacesService({
       return { workspaceId, email: input.email, status: InvitationStatus.enum.pending };
     },
 
-    // Every invitation in this workspace, newest first, for its owners. Delivery is
-    // reported separately from the lifecycle; a pending row whose deadline passed is
-    // stored and reported as expired.
+    // Every invitation in this workspace, newest first, for owners and delegated
+    // inviters. Delivery is reported separately from the lifecycle; a pending row whose
+    // deadline passed is stored and reported as expired.
     async invitations(account, workspaceId) {
       const actor = requireAccount(account);
       return db.transaction(async (tx) => {
         await readSharedWorkspace(tx, workspaceId);
-        await requireOwner(tx, workspaceId, actor.humanId);
+        const inviter = await readMembership(tx, workspaceId, actor.humanId, "workspace_not_found");
+        if (!inviter.isOwner && !inviter.canInviteMembers) {
+          throw new WorkspacesError("not_workspace_owner");
+        }
         await tx
           .update(workspaceInvitations)
           .set({
@@ -957,10 +1073,10 @@ export function createWorkspacesService({
       });
     },
 
-    // Resend rotates the link for a current owner: the old row keeps its history
-    // (revoked if still live, otherwise expired), and the new row keeps the same offered
-    // projects and starts a fresh seven-day deadline. An owner who resends is the new
-    // offer's inviter, so acceptance rechecks that owner.
+    // Resend rotates the link for an owner or delegated inviter: the old row keeps its
+    // history (revoked if still live, otherwise expired), and the new row keeps the same
+    // offered projects and starts a fresh seven-day deadline. The resender is the new
+    // offer's inviter, so acceptance rechecks their authority and project scope.
     async resendInvitation(account, workspaceId, invitationId) {
       const actor = requireAccount(account);
       const token = randomBytes(32).toString("base64url");
@@ -969,8 +1085,16 @@ export function createWorkspacesService({
       try {
         invitation = await db.transaction(async (tx) => {
           const workspace = await lockWorkspaceForMutation(tx, workspaceId);
-          await requireOwner(tx, workspaceId, actor.humanId);
-          // Rotating is a new offer: the current owner must satisfy the same verified
+          const inviter = await readMembership(
+            tx,
+            workspaceId,
+            actor.humanId,
+            "workspace_not_found",
+          );
+          if (!inviter.isOwner && !inviter.canInviteMembers) {
+            throw new WorkspacesError("not_workspace_owner");
+          }
+          // Rotating is a new offer: the current inviter must satisfy the same verified
           // inviter policy as an initial invitation. The check runs before the old row
           // is touched, so a refusal leaves the original link valid.
           await requireVerifiedInviter(tx, actor.humanId);
@@ -1008,6 +1132,7 @@ export function createWorkspacesService({
 
           await requireRecipientNotMember(tx, workspaceId, row.email);
           await requireOfferedProjectsInWorkspace(tx, workspaceId, offered);
+          await requireProjectManageScope(tx, workspaceId, inviter, offered, "not_workspace_owner");
 
           if (row.status === InvitationStatus.enum.pending) {
             await tx
@@ -1065,13 +1190,17 @@ export function createWorkspacesService({
       return readWorkspaceInvitationSummary(db, workspaceId, id);
     },
 
-    // Revoke is the owner's answer to an offer that should no longer be live. Only a
-    // pending, unexpired row changes; the row keeps its history and revocation time.
+    // Revoke is an owner's or delegated inviter's answer to an offer that should no
+    // longer be live. Only a pending, unexpired row changes; the row keeps its history and
+    // revocation time. A delegate cannot touch an offer with projects they do not Manage.
     async revokeInvitation(account, workspaceId, invitationId) {
       const actor = requireAccount(account);
       const didRevoke = await db.transaction(async (tx) => {
         await lockWorkspaceForMutation(tx, workspaceId);
-        await requireOwner(tx, workspaceId, actor.humanId);
+        const inviter = await readMembership(tx, workspaceId, actor.humanId, "workspace_not_found");
+        if (!inviter.isOwner && !inviter.canInviteMembers) {
+          throw new WorkspacesError("not_workspace_owner");
+        }
 
         const [row] = await tx
           .select({ id: workspaceInvitations.id, status: workspaceInvitations.status })
@@ -1087,6 +1216,11 @@ export function createWorkspacesService({
         if (row.status !== InvitationStatus.enum.pending) {
           throw new WorkspacesError("invitation_not_pending");
         }
+        const offered = await tx
+          .select({ projectId: workspaceInvitationGrants.projectId })
+          .from(workspaceInvitationGrants)
+          .where(eq(workspaceInvitationGrants.invitationId, invitationId));
+        await requireProjectManageScope(tx, workspaceId, inviter, offered, "not_workspace_owner");
         const revoked = await tx
           .update(workspaceInvitations)
           .set({
@@ -1244,7 +1378,14 @@ export function createWorkspacesService({
         if (missing.length > 0) throw new WorkspacesError("invitation_scope_invalid");
         return invitation.workspace;
       });
-      return { ...workspace, isOwner: false, canCreateProjects: false };
+      return {
+        ...workspace,
+        isOwner: false,
+        canCreateProjects: false,
+        canInviteMembers: false,
+        canRemoveMembers: false,
+        canManageMemberPermissions: false,
+      };
     },
 
     // A new address: the invitation creates the installation account, its personal
@@ -1319,64 +1460,113 @@ export function createWorkspacesService({
       });
     },
 
-    // Owners grant one capability at a time. An owner's Create projects is implicit and
-    // immutable (granting is a no-op, revoking is refused); for non-owners, only a real
-    // change writes an event.
+    // The four capabilities are independent, and only a real change writes an event.
+    // An owner may change any of them on a non-owner but cannot reduce an owner's
+    // implicit authority. A permission manager may change only capabilities they hold,
+    // on someone else, and never appoint or remove another permission manager. A caller
+    // who is not a member answers workspace_not_found, never a membership-related 404.
     async updateMemberCapability(account, workspaceId, humanId, input) {
       const actor = requireAccount(account);
       return db.transaction(async (tx) => {
         await lockWorkspaceForMutation(tx, workspaceId);
-        await requireOwner(tx, workspaceId, actor.humanId);
+        const actorMembership = await readMembership(
+          tx,
+          workspaceId,
+          actor.humanId,
+          "workspace_not_found",
+        );
+        const requested: Partial<Record<WorkspaceCapability, boolean>> = {};
+        for (const capability of workspaceCapabilities) {
+          const value = input[capability];
+          if (value !== undefined) requested[capability] = value;
+        }
+        if (Object.keys(requested).length === 0) throw new WorkspacesError("not_workspace_owner");
 
         const member = await requireWorkspaceMember(tx, workspaceId, humanId);
+
         if (member.isOwner) {
-          if (!input.canCreateProjects) {
+          if (!actorMembership.isOwner) throw new WorkspacesError("not_workspace_owner");
+          // Setting true on an owner is a no-op; setting anything false would contradict
+          // the implicit authority every owner holds.
+          if (Object.values(requested).some((value) => !value)) {
             throw new WorkspacesError("workspace_owner_capability");
           }
           return toMember(member);
         }
-        if (member.canCreateProjects === input.canCreateProjects) return toMember(member);
+
+        if (!actorMembership.isOwner) {
+          if (!actorMembership.canManageMemberPermissions) {
+            throw new WorkspacesError("not_workspace_owner");
+          }
+          if (actorMembership.humanId === humanId) {
+            throw new WorkspacesError("not_workspace_owner");
+          }
+          // Only owners appoint or remove permission managers.
+          if (requested.canManageMemberPermissions !== undefined) {
+            throw new WorkspacesError("not_workspace_owner");
+          }
+          // Revocation has the same ceiling as granting: a delegate cannot change a
+          // capability they do not themselves hold, in either direction.
+          for (const capability of workspaceCapabilities) {
+            if (requested[capability] !== undefined && !actorMembership[capability]) {
+              throw new WorkspacesError("not_workspace_owner");
+            }
+          }
+        }
+
+        const updates: Partial<typeof workspaceMemberships.$inferInsert> = {};
+        const changed: { capability: WorkspaceCapability; granted: boolean }[] = [];
+        for (const capability of workspaceCapabilities) {
+          const value = requested[capability];
+          if (value === undefined || member[capability] === value) continue;
+          updates[capability] = value;
+          changed.push({ capability, granted: value });
+        }
+        if (changed.length === 0) return toMember(member);
 
         await tx
           .update(workspaceMemberships)
-          .set({ canCreateProjects: input.canCreateProjects })
+          .set(updates)
           .where(
             and(
               eq(workspaceMemberships.workspaceId, workspaceId),
               eq(workspaceMemberships.humanId, humanId),
             ),
           );
-        await recordEvent(
-          tx,
-          input.canCreateProjects ? "create_projects_granted" : "create_projects_revoked",
-          workspaceId,
-          actor.humanId,
-          humanId,
-        );
-        return toMember({ ...member, canCreateProjects: input.canCreateProjects });
+        const next: WorkspaceMembershipRow = { ...member };
+        for (const change of changed) {
+          next[change.capability] = change.granted;
+          const type = change.granted
+            ? capabilityEvents[change.capability].granted
+            : capabilityEvents[change.capability].revoked;
+          await recordEvent(tx, type, workspaceId, actor.humanId, humanId);
+        }
+        return toMember(next);
       });
     },
 
-    // Removing a membership, owner or not. Owners are counted after the workspace lock,
-    // so two racing removals cannot both conclude that another owner remains. The
-    // database trigger from the migration is the second line of defence.
+    // Owners may remove anyone, subject to the last-owner rule. A delegated remover can
+    // only remove an ordinary member: owners and permission managers stay protected,
+    // including when the protected person is the actor. Owners are counted after the
+    // workspace lock so two racing removals cannot both conclude another owner remains;
+    // the database trigger is the second line of defence.
     async removeMember(account, workspaceId, humanId) {
       const actor = requireAccount(account);
       await db.transaction(async (tx) => {
         await lockWorkspaceForMutation(tx, workspaceId);
-        await requireOwner(tx, workspaceId, actor.humanId);
-
-        const [target] = await tx
-          .select({ isOwner: workspaceMemberships.isOwner })
-          .from(workspaceMemberships)
-          .where(
-            and(
-              eq(workspaceMemberships.workspaceId, workspaceId),
-              eq(workspaceMemberships.humanId, humanId),
-            ),
-          )
-          .limit(1);
-        if (target === undefined) throw new WorkspacesError("member_not_found");
+        const actorMembership = await readMembership(
+          tx,
+          workspaceId,
+          actor.humanId,
+          "workspace_not_found",
+        );
+        const target = await requireWorkspaceMember(tx, workspaceId, humanId);
+        if (!actorMembership.isOwner && !actorMembership.canRemoveMembers) {
+          throw new WorkspacesError("not_workspace_owner");
+        }
+        if (!actorMembership.isOwner && (target.isOwner || target.canManageMemberPermissions)) {
+          throw new WorkspacesError("not_workspace_owner");
+        }
 
         if (target.isOwner) {
           const [owners] = await tx

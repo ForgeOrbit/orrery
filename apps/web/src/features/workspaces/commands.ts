@@ -11,7 +11,7 @@ import {
   type RegisterThroughWorkspaceInvitationRequest,
   type UpdateWorkspaceMemberRequest,
 } from "@orrery/contract";
-import { patchJson, post, postJson, postNoContent } from "../../lib/api.ts";
+import { deleteRequest, patchJson, post, postJson, postNoContent } from "../../lib/api.ts";
 
 // Mutations for this feature. Each posts JSON through the app's one request helper,
 // which parses the response with the contract's schemas and turns a Problem (RFC 9457)
@@ -56,8 +56,8 @@ export function appointWorkspaceOwner(
   );
 }
 
-// Owners grant or revoke one member's Create projects capability. The response is the
-// member with the effective value (owners always hold it).
+// Grant or revoke any of a member's four workspace capabilities. The response is the
+// member with its effective values; the server decides which the caller may change.
 export function updateWorkspaceMember(
   workspaceId: string,
   humanId: string,
@@ -67,6 +67,14 @@ export function updateWorkspaceMember(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(humanId)}`,
     input,
     (value) => WorkspaceMember.parse(value),
+  );
+}
+
+// Removes a member. Owners may remove anyone except the last owner; a delegated remover
+// cannot remove an owner or a permission manager.
+export function removeWorkspaceMember(workspaceId: string, humanId: string): Promise<void> {
+  return deleteRequest(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(humanId)}`,
   );
 }
 
