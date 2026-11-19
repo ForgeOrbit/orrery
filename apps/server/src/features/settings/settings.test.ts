@@ -156,6 +156,22 @@ async function issuedToken(app: Hono, fake: { sent: SentMail[] }) {
   return { cookie, token: token ?? "" };
 }
 
+// The raw settings service over the real database, for the deliver seam: its caller is
+// another feature, never HTTP, so no route exercises it.
+function deliverService(
+  db: Database["db"],
+  fake: ReturnType<typeof createFakeSender>,
+  key: Buffer = TEST_KEY,
+) {
+  return createSettingsService({
+    db,
+    publicUrl: PUBLIC_URL,
+    encryptionKey: key,
+    markEmailVerified: async () => {},
+    sendMail: fake.sender,
+  });
+}
+
 describe("settings", () => {
   let pg: StartedPostgreSqlContainer;
   let database: Database;
@@ -174,7 +190,7 @@ describe("settings", () => {
 
   afterEach(async () => {
     await database.db.execute(
-      sql`truncate humans, workspaces, browser_sessions, instance_setup, instance_settings, email_verification_tokens`,
+      sql`truncate humans, workspaces, browser_sessions, instance_setup, instance_settings, email_verification_tokens, invitations`,
     );
   });
 
@@ -916,6 +932,72 @@ describe("settings", () => {
       );
       expect(own.status).toBe(200);
       expect(await own.json()).toEqual({ email: "member@example.com", emailVerified: true });
+    });
+  });
+
+  // The mail path other features borrow (issue #23's invitations first): settings keeps
+  // the relay, its secrets, and the From address; the caller decides the content.
+  describe("deliver", () => {
+    it("refuses to deliver before SMTP is configured", async () => {
+      const app = makeApp();
+      await bootstrapAdmin(app);
+      const service = deliverService(database.db, createFakeSender());
+
+      await expect(
+        service.deliver({ to: "member@example.com", subject: "s", text: "t" }),
+      ).rejects.toMatchObject({ kind: "smtp_unconfigured" });
+    });
+
+    it("delivers through the configured relay, with the stored From and password", async () => {
+      const fake = createFakeSender();
+      const app = makeApp(SECRET, { sendMail: fake.sender });
+      await bootstrapAdmin(app);
+      await saveSettings(app, await adminCookie(app));
+      const service = deliverService(database.db, fake);
+
+      await service.deliver({
+        to: "member@example.com",
+        subject: "Your Orrery invitation",
+        text: "Follow the link.",
+      });
+
+      expect(fake.sent).toHaveLength(1);
+      expect(fake.sent[0]?.mail).toEqual({
+        from: FROM,
+        to: "member@example.com",
+        subject: "Your Orrery invitation",
+        text: "Follow the link.",
+      });
+      // The saved settings drove the send, decrypted password included, exactly like
+      // the test email.
+      expect(fake.sent[0]?.settings).toEqual({ ...SETTINGS, from: FROM });
+    });
+
+    it("classifies a relay failure the way sendTestEmail does", async () => {
+      const fake = createFakeSender();
+      const app = makeApp(SECRET, { sendMail: fake.sender });
+      await bootstrapAdmin(app);
+      await saveSettings(app, await adminCookie(app));
+      const service = deliverService(database.db, fake);
+
+      fake.failWith(() => codedError("ECONNREFUSED", "connect ECONNREFUSED 127.0.0.1:25"));
+      await expect(
+        service.deliver({ to: "member@example.com", subject: "s", text: "t" }),
+      ).rejects.toMatchObject({ kind: "smtp_unreachable" });
+    });
+
+    it("refuses to deliver when the stored password cannot be read", async () => {
+      const fake = createFakeSender();
+      const app = makeApp(SECRET, { sendMail: fake.sender });
+      await bootstrapAdmin(app);
+      await saveSettings(app, await adminCookie(app));
+      // A different key cannot read the stored ciphertext.
+      const service = deliverService(database.db, fake, OTHER_KEY);
+
+      await expect(
+        service.deliver({ to: "member@example.com", subject: "s", text: "t" }),
+      ).rejects.toMatchObject({ kind: "smtp_password_unreadable" });
+      expect(fake.sent).toHaveLength(0);
     });
   });
 });

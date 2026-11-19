@@ -10,6 +10,7 @@ import type {
 import { and, eq, gt, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
+import { uniqueConstraintName } from "../../platform/errors.ts";
 import { browserSessions, humans, instanceSetup, workspaces } from "../../db/schema.ts";
 
 // The service is the only file in a feature that decides anything. rest.ts and mcp.ts call it.
@@ -80,27 +81,6 @@ function tokenHash(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
-// Returns the constraint name of a Postgres unique violation (SQLSTATE 23505), walking
-// through driver and ORM wrappers, or undefined for anything else.
-function uniqueConstraintName(error: unknown): string | undefined {
-  let current: unknown = error;
-  for (let depth = 0; current !== null && typeof current === "object" && depth < 3; depth++) {
-    const candidate = current as {
-      code?: unknown;
-      constraint?: unknown;
-      constraint_name?: unknown;
-      cause?: unknown;
-    };
-    if (candidate.code === "23505") {
-      const name = candidate.constraint ?? candidate.constraint_name;
-      if (typeof name === "string") return name;
-      return undefined;
-    }
-    current = candidate.cause;
-  }
-  return undefined;
-}
-
 export type AccountsErrorKind =
   | "setup_unavailable"
   | "invalid_secret"
@@ -168,6 +148,14 @@ export interface AccountsService {
   // transaction: the humans table is accounts' to write, but the flow that earns the
   // mark (issue #22's token redemption) is another feature's.
   markEmailVerified(humanId: string, tx: DbTransaction): Promise<void>;
+  // Creates an invited human and their personal workspace, inside the caller's
+  // transaction (issue #23): accounts owns those tables and the password hash, while
+  // invitations owns the flow. The verified-email mark is the caller's to apply, through
+  // markEmailVerified, in the same transaction.
+  createInvitedHuman(
+    input: { email: string; password: string },
+    tx: DbTransaction,
+  ): Promise<{ humanId: string }>;
 }
 
 export function createAccountsService({
@@ -277,6 +265,23 @@ export function createAccountsService({
         .update(humans)
         .set({ emailVerifiedAt: sql`now()` })
         .where(eq(humans.id, humanId));
+    },
+
+    // Inside the caller's transaction: the invited human (issue #23) with their
+    // personal workspace, bound to the invited email and starting as an ordinary
+    // account. A duplicate email surfaces as its unique constraint, which the caller
+    // answers in its own words.
+    async createInvitedHuman(input: { email: string; password: string }, tx: DbTransaction) {
+      const humanId = randomUUID();
+      const passwordHash = await hashPassword(input.password);
+      await tx.insert(humans).values({ id: humanId, email: input.email, passwordHash });
+      await tx.insert(workspaces).values({
+        id: randomUUID(),
+        kind: WorkspaceKind.enum.personal,
+        name: "Personal",
+        personalOwnerHumanId: humanId,
+      });
+      return { humanId };
     },
   };
 }
