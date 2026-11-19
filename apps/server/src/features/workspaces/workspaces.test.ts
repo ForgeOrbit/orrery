@@ -428,8 +428,8 @@ describe("workspaces", () => {
     expect(hidden.status).toBe(404);
     expect(await problemBody(hidden)).toMatchObject({ code: "workspace_not_found" });
     const hiddenMembers = await getJson(app, `/api/workspaces/${created.id}/members`, otherCookie);
-    expect(hiddenMembers.status).toBe(403);
-    expect(await problemBody(hiddenMembers)).toMatchObject({ code: "not_workspace_owner" });
+    expect(hiddenMembers.status).toBe(404);
+    expect(await problemBody(hiddenMembers)).toMatchObject({ code: "workspace_not_found" });
   });
 
   it("requires a verified owner to invite", async () => {
@@ -449,7 +449,8 @@ describe("workspaces", () => {
     expect(await problemBody(unverified)).toMatchObject({ code: "inviter_unverified" });
     expect(await database.db.select().from(workspaceInvitations)).toHaveLength(0);
 
-    // A signed-in non-member is not an owner and cannot invite either.
+    // A signed-in non-member gets workspace_not_found so shared workspace ids cannot be
+    // enumerated via the invitation endpoint.
     const { cookie: outsiderCookie } = await verifiedCookie(app, "outsider@example.com");
     await verifyHuman(admin.id);
     const outsider = await postJson(
@@ -458,8 +459,8 @@ describe("workspaces", () => {
       { email: INVITEE_INPUT },
       outsiderCookie,
     );
-    expect(outsider.status).toBe(403);
-    expect(await problemBody(outsider)).toMatchObject({ code: "not_workspace_owner" });
+    expect(outsider.status).toBe(404);
+    expect(await problemBody(outsider)).toMatchObject({ code: "workspace_not_found" });
   });
 
   it("lets an existing verified account accept, matching normalized emails on both sides", async () => {
@@ -805,7 +806,7 @@ describe("workspaces", () => {
       deleteRequest(app, `/api/workspaces/${workspace.id}/members/${second.id}`, adminCookie),
       deleteRequest(app, `/api/workspaces/${workspace.id}/members/${admin.id}`, secondCookie),
     ]);
-    expect([first.status, other.status].toSorted((a, b) => a - b)).toEqual([204, 403]);
+    expect([first.status, other.status].toSorted((a, b) => a - b)).toEqual([204, 404]);
 
     const remaining = await database.db
       .select()
@@ -927,7 +928,7 @@ describe("workspaces", () => {
     ).toHaveLength(1); // the creator only
   });
 
-  it("keeps invitation expiry separate from a failed delivery", async () => {
+  it("supersedes a failed workspace invitation in place instead of locking the email out for seven days", async () => {
     const made = await readyApp();
     const { app, sent, adminCookie } = made;
     const workspace = await createWorkspace(app, adminCookie);
@@ -948,30 +949,15 @@ describe("workspaces", () => {
       7 * 24 * 60 * 60 * 1000,
     );
 
-    // Delivery failure is not expiry: the pending offer still blocks a replacement and
-    // the failed link never redeems.
+    // The failed link can never preview or redeem.
     const token = tokenFrom(sent[0]?.text ?? "") ?? "";
-    const blocking = await postJson(
-      app,
-      `/api/workspaces/${workspace.id}/invitations`,
-      { email: INVITEE_INPUT },
-      adminCookie,
-    );
-    expect(blocking.status).toBe(409);
-    expect(await problemBody(blocking)).toMatchObject({ code: "invitation_pending" });
-    const [stillPending] = await database.db.select().from(workspaceInvitations);
-    expect(stillPending).toMatchObject({ status: "pending", deliveryStatus: "failed" });
     const preview = await getJson(app, `/api/workspace-invitations/preview?token=${token}`);
     expect(preview.status).toBe(400);
     expect(await problemBody(preview)).toMatchObject({ code: "invitation_invalid" });
 
-    // Once the seven-day deadline passes, the row is expired in place and a fresh
-    // invitation can be sent. Delivery status did not shorten or extend the deadline.
+    // Once SMTP recovers, re-inviting immediately supersedes the failed row in place
+    // rather than blocking for seven days.
     made.repairDelivery();
-    await database.db
-      .update(workspaceInvitations)
-      .set({ expiresAt: sql`now() - interval '1 second'` })
-      .where(eq(workspaceInvitations.workspaceId, workspace.id));
     const replacement = await invite(app, adminCookie, workspace.id, INVITEE);
     expect(replacement.status).toBe("pending");
     const rows = await database.db.select().from(workspaceInvitations);

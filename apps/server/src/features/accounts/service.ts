@@ -154,7 +154,8 @@ export interface AccountsService {
   ): Promise<{ humanId: string }>;
   // Whether an email already belongs to an account: the guard for anything that must not
   // double an account (invitations now). Accounts owns humans, so the check lives here.
-  emailRegistered(email: string): Promise<boolean>;
+  // Passing a transaction evaluates the check inside the caller's transaction boundary.
+  emailRegistered(email: string, tx?: DbTransaction): Promise<boolean>;
 }
 
 // One place creates a human with their personal workspace (issue #23): bootstrap's
@@ -292,6 +293,9 @@ export function createAccountsService({
     // account. A duplicate email surfaces as its unique constraint, which the caller
     // answers in its own words.
     async createInvitedHuman(input: { email: string; password: string }, tx: DbTransaction) {
+      // Serialize invited account creation with installation-invitation creation for the
+      // same email so a concurrent invite cannot commit after the account is created.
+      await tx.execute(sql`select pg_advisory_xact_lock(61683815, hashtext(${input.email}))`);
       const humanId = randomUUID();
       const passwordHash = await hashPassword(input.password);
       await insertHumanWithPersonalWorkspace(tx, {
@@ -304,8 +308,9 @@ export function createAccountsService({
 
     // The registration surface's guard: whoever must not double an account asks here
     // instead of querying humans themselves.
-    async emailRegistered(email: string) {
-      const rows = await db
+    async emailRegistered(email: string, tx?: DbTransaction) {
+      const runner = tx ?? db;
+      const rows = await runner
         .select({ id: humans.id })
         .from(humans)
         .where(eq(humans.email, email))
