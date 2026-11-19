@@ -142,13 +142,19 @@ test("the link's GET is inert; the POST registers; reuse fails", async () => {
   expect(again.status()).toBe(400);
   expect(await again.json()).toMatchObject({ code: "invitation_invalid" });
 
-  // The account works: the invited person signs in with the password they chose.
-  const login = await api.post("/api/auth/login", {
-    data: { email: INVITEE_EMAIL, password: INVITEE_PASSWORD },
-  });
-  expect(login.status()).toBe(200);
-  const session = await api.get("/api/auth/session");
-  expect(await session.json()).toMatchObject({ email: INVITEE_EMAIL, emailVerified: true });
+  // The account works: the invited person signs in with the password they chose, in
+  // their own context — the shared one stays the administrator's.
+  const newcomer = await request.newContext({ baseURL: baseUrl });
+  try {
+    const login = await newcomer.post("/api/auth/login", {
+      data: { email: INVITEE_EMAIL, password: INVITEE_PASSWORD },
+    });
+    expect(login.status()).toBe(200);
+    const session = await newcomer.get("/api/auth/session");
+    expect(await session.json()).toEqual({ email: INVITEE_EMAIL, emailVerified: true });
+  } finally {
+    await newcomer.dispose();
+  }
 });
 
 test("registration is invitation-only: no public sign-up exists", async () => {
@@ -198,8 +204,9 @@ test("accepting an invitation in the browser", async ({ page }) => {
   await page.getByRole("button", { name: "Register" }).click();
   await expect(page.getByText(`Signed in as ${BROWSER_INVITEE_EMAIL}.`)).toBeVisible();
   await expect(page.getByRole("heading", { name: "Your workspaces" })).toBeVisible();
+  // The new personal workspace, and nothing else in the list.
   await expect(page.getByRole("listitem")).toHaveCount(1);
-  await expect(page.getByRole("listitem", { name: "Personal" })).toBeVisible();
+  await expect(page.getByRole("list")).toContainText("Personal");
 
   // The cookies the server just set are secrets the logs must never contain.
   for (const cookie of await page.context().cookies()) {
