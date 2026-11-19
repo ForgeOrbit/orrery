@@ -8,9 +8,9 @@
 //   ORRERY_RESTART_CMD    optional; a command that restarts the server, for example
 //                         docker compose -f <repo>/compose.yaml restart orrery
 import { exec as execCallback } from "node:child_process";
-import { appendFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { expect, test, type Page } from "@playwright/test";
+import { ADMIN_EMAIL as email, ADMIN_PASSWORD as password, recordSecret } from "./admin.ts";
 
 const exec = promisify(execCallback);
 
@@ -20,15 +20,8 @@ const restartCommand = process.env.ORRERY_RESTART_CMD;
 
 test.skip(!setupSecret, "Set ORRERY_SETUP_SECRET to the instance's BOOTSTRAP_SECRET.");
 
-const email = "admin@orrery.test";
-const password = "browser-checked-admin-password";
-
-// Every secret this suite sends or receives, recorded for the post-run log check
-// (scripts/check-e2e-logs.mjs): the bootstrap secret, the passwords, and the session
-// cookies the server hands back. test:e2e empties the file before each run.
-const secretsUsed = new URL("./.secrets-used", import.meta.url).pathname;
-const recordSecret = (value: string) => appendFile(secretsUsed, `${value}\n`, "utf8");
-
+// Every secret this suite sends or receives is recorded in one place (./admin.ts), for
+// the post-run log check (scripts/check-e2e-logs.mjs).
 test.beforeAll(async () => {
   await recordSecret(setupSecret);
   await recordSecret(password);

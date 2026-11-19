@@ -3,13 +3,13 @@ import type { ScryptOptions } from "node:crypto";
 import { WorkspaceKind } from "@orrery/contract";
 import type {
   LoginRequest,
-  SessionResponse,
   SetupAdminRequest,
   SetupAdminResponse,
   SetupStatus,
 } from "@orrery/contract";
 import { and, eq, gt, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import type { DbTransaction } from "../../platform/db.ts";
 import { browserSessions, humans, instanceSetup, workspaces } from "../../db/schema.ts";
 
 // The service is the only file in a feature that decides anything. rest.ts and mcp.ts call it.
@@ -131,6 +131,16 @@ export function rejectLogin(): AccountsError {
   return new AccountsError("invalid_credentials");
 }
 
+// The account behind a live browser session: what any feature needs to authorize a
+// request. The cookie's token is accounts' transport detail; this is its account-level
+// answer.
+export interface SessionAccount {
+  humanId: string;
+  email: string;
+  isSystemAdministrator: boolean;
+  emailVerifiedAt: Date | null;
+}
+
 // What the service decides about browser sessions: how long they last, and whether the
 // deployment's public URL makes cookies Secure. The cookie's transport attributes are
 // rest.ts's business.
@@ -152,8 +162,12 @@ export interface AccountsService {
   setupStatus(): Promise<SetupStatus>;
   setupAdmin(input: SetupAdminRequest): Promise<SetupAdminResponse>;
   login(input: LoginRequest): Promise<{ token: string; email: string }>;
-  session(token: string): Promise<SessionResponse | null>;
+  session(token: string): Promise<SessionAccount | null>;
   sessionPolicy(): SessionPolicy;
+  // Marks an account's email verified, at database time, inside the caller's
+  // transaction: the humans table is accounts' to write, but the flow that earns the
+  // mark (issue #22's token redemption) is another feature's.
+  markEmailVerified(humanId: string, tx: DbTransaction): Promise<void>;
 }
 
 export function createAccountsService({
@@ -238,7 +252,12 @@ export function createAccountsService({
 
     async session(token: string) {
       const [row] = await db
-        .select({ email: humans.email })
+        .select({
+          humanId: humans.id,
+          email: humans.email,
+          isSystemAdministrator: humans.isSystemAdministrator,
+          emailVerifiedAt: humans.emailVerifiedAt,
+        })
         .from(browserSessions)
         .innerJoin(humans, eq(humans.id, browserSessions.humanId))
         .where(
@@ -249,6 +268,15 @@ export function createAccountsService({
         )
         .limit(1);
       return row ?? null;
+    },
+
+    // Inside the caller's transaction: the mark commits with the flow that earned it
+    // or not at all.
+    async markEmailVerified(humanId: string, tx: DbTransaction) {
+      await tx
+        .update(humans)
+        .set({ emailVerifiedAt: sql`now()` })
+        .where(eq(humans.id, humanId));
     },
   };
 }

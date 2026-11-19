@@ -66,7 +66,9 @@ describe("accounts", () => {
   });
 
   afterEach(async () => {
-    await database.db.execute(sql`truncate humans, workspaces, browser_sessions, instance_setup`);
+    await database.db.execute(
+      sql`truncate humans, workspaces, browser_sessions, instance_setup, instance_settings, email_verification_tokens`,
+    );
   });
 
   function makeApp(
@@ -318,7 +320,8 @@ describe("accounts", () => {
         headers: { cookie: cookie?.split(";")[0] },
       });
       expect(withSession.status).toBe(200);
-      expect(await withSession.json()).toEqual({ email: EMAIL });
+      // Bootstrap never requires SMTP (ADR-0001): the administrator signs in unverified.
+      expect(await withSession.json()).toEqual({ email: EMAIL, emailVerified: false });
 
       const noSession = await app.request("/api/auth/session");
       expect(noSession.status).toBe(401);
@@ -409,7 +412,7 @@ describe("accounts", () => {
 
       const stillSignedIn = await second.request("/api/auth/session", { headers: { cookie } });
       expect(stillSignedIn.status).toBe(200);
-      expect(await stillSignedIn.json()).toEqual({ email: EMAIL });
+      expect(await stillSignedIn.json()).toEqual({ email: EMAIL, emailVerified: false });
 
       const relogin = await postJson(second, "/api/auth/login", {
         email: EMAIL,

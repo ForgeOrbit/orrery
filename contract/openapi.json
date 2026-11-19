@@ -170,10 +170,141 @@
         "properties": {
           "email": {
             "$ref": "#/components/schemas/Email"
+          },
+          "emailVerified": {
+            "type": "boolean"
           }
         },
         "required": [
-          "email"
+          "email",
+          "emailVerified"
+        ]
+      },
+      "SmtpSettingsResponse": {
+        "type": "object",
+        "properties": {
+          "host": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "port": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "security": {
+            "$ref": "#/components/schemas/SmtpSecurity"
+          },
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hasPassword": {
+            "type": "boolean"
+          },
+          "from": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "host",
+          "port",
+          "security",
+          "username",
+          "hasPassword",
+          "from"
+        ]
+      },
+      "SmtpSecurity": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "enum": [
+          "none",
+          "starttls",
+          "tls",
+          null
+        ]
+      },
+      "SmtpSettings": {
+        "type": "object",
+        "properties": {
+          "host": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "security": {
+            "$ref": "#/components/schemas/SmtpSecurity"
+          },
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 255
+          },
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "from": {
+            "$ref": "#/components/schemas/Email"
+          }
+        },
+        "required": [
+          "host",
+          "port",
+          "security",
+          "username",
+          "password",
+          "from"
+        ]
+      },
+      "TestEmailResponse": {
+        "type": "object",
+        "properties": {
+          "sentTo": {
+            "$ref": "#/components/schemas/Email"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sentTo",
+          "message"
+        ]
+      },
+      "VerifyEmailRequest": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
+        "required": [
+          "token"
         ]
       }
     },
@@ -373,6 +504,216 @@
           },
           "401": {
             "description": "No valid session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/settings/smtp": {
+      "get": {
+        "summary": "The installation's SMTP settings, without the password",
+        "description": "System administrators only. Every field is null while SMTP has not been configured; hasPassword says whether a secret is stored without ever returning it.",
+        "responses": {
+          "200": {
+            "description": "The saved settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SmtpSettingsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but not a system administrator",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Replace the installation's SMTP settings",
+        "description": "System administrators only. Replaces the whole configuration, password included: the stored password is never returned, so an update supplies it again, and it is stored encrypted at rest (ADR-0004). An explicit null means no username or no password. Security 'none' refuses credentials, and a password requires the deployment's encryption key.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SmtpSettings"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The saved settings, without the password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SmtpSettingsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The settings are invalid, or security 'none' carries credentials",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but not a system administrator",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No encryption key is configured for a password",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/settings/smtp/test": {
+      "post": {
+        "summary": "Send a test email to the administrator's own address",
+        "description": "System administrators only, after SMTP is configured. The email carries a single-use token; redeeming it verifies the administrator's address. A delivery failure is a Problem whose code names the reason (smtp_unreachable, smtp_auth_failed, smtp_tls_failed, smtp_send_failed); a stored password the key cannot read is 409 smtp_password_unreadable.",
+        "responses": {
+          "200": {
+            "description": "The test email was sent to the administrator's own address",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestEmailResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but not a system administrator",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "SMTP is not configured, or its stored password cannot be read with the configured key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The SMTP server refused the message; the code says why",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/settings/email-verification": {
+      "post": {
+        "summary": "Redeem the verification token from the test email",
+        "description": "For the signed-in account the token was issued to. The token is single-use and short-lived, and only this POST consumes it; opening the link in the email changes nothing.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyEmailRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The account, with its email verified",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The token is invalid, expired, already used, or issued to another account",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
             "content": {
               "application/problem+json": {
                 "schema": {

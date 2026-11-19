@@ -6,11 +6,14 @@ import { PROBLEM_CONTENT_TYPE, Problem } from "@orrery/contract";
 import { afterAll, expect, it } from "vitest";
 import { loadConfig } from "../platform/config.ts";
 import { createDb } from "../platform/db.ts";
+import { createLogger } from "../platform/log.ts";
 import { createFeatures, routes } from "./index.ts";
 
 // postgres.js connects lazily, so building the features never touches this address.
 const config = loadConfig({ DATABASE_URL: "postgres://unused@127.0.0.1:1/unused" });
 const database = createDb(config.DATABASE_URL);
+// The registry test builds features, not requests: it stays quiet.
+const log = createLogger("error");
 afterAll(async () => {
   await database.sql.end();
 });
@@ -19,7 +22,7 @@ const key = (method: string, path: string) =>
   `${method.toUpperCase()} ${path.replaceAll(/\{(\w+)\}/g, ":$1")}`;
 
 it("lists every mounted REST route in the contract", async () => {
-  const mounted = createFeatures(database, config)
+  const mounted = createFeatures(database, config, log)
     .flatMap((f) => f.rest?.routes ?? [])
     .filter((r) => r.method !== "ALL") // middleware, not an endpoint
     .map((r) => key(r.method, r.path));

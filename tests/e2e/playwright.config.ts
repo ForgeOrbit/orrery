@@ -1,6 +1,6 @@
 // The browser test setup for Orrery: Playwright drives the web app like a person would.
 // Later tickets add specs here; they all run against the same ORRERY_URL as the REST
-// checks (docker compose up -d --build --wait, then pnpm test:e2e).
+// checks (docker compose --profile mail-test up -d --build --wait, then pnpm test:e2e).
 //
 // On machines without a Playwright-managed browser download, set CHROMIUM_PATH to a
 // system Chromium instead.

@@ -20,10 +20,13 @@ export const LoginResponse = z
   .meta({ id: "LoginResponse" });
 export type LoginResponse = z.infer<typeof LoginResponse>;
 
-// The signed-in account behind the browser's session cookie.
+// The signed-in account behind the browser's session cookie. `emailVerified` reports
+// whether the mailbox has been verified (issue #22); an administrator signs in before
+// verifying, so the two states are independent.
 export const SessionResponse = z
   .object({
     email: Email,
+    emailVerified: z.boolean(),
   })
   .meta({ id: "SessionResponse" });
 export type SessionResponse = z.infer<typeof SessionResponse>;

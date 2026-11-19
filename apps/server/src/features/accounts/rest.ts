@@ -18,6 +18,7 @@ import {
   AccountsError,
   type AccountsErrorKind,
   type AccountsService,
+  type SessionAccount,
   rejectLogin,
 } from "./service.ts";
 
@@ -102,6 +103,8 @@ const failure = (c: Context, error: AccountsError) =>
 // Thin: call the service, map the result to HTTP. No rules here.
 export function createAccountsRest(service: AccountsService) {
   const policy = service.sessionPolicy();
+  // The session route and every borrowing feature resolve sessions the same way.
+  const readSession = createSessionReader(service);
 
   // Validation failures answer as a validation_failed Problem, like every other error.
   const app = new OpenAPIHono({ defaultHook: validationHook });
@@ -157,13 +160,26 @@ export function createAccountsRest(service: AccountsService) {
   );
 
   app.openapi(session, async (c) => {
-    const token = getCookie(c, SESSION_COOKIE);
-    const account = token === undefined ? null : await service.session(token);
+    const account = await readSession(c);
     if (account === null) {
       return problemResponse(c, { status: 401, code: "not_signed_in", title: "Not signed in." });
     }
-    return c.json(account, 200);
+    // The declared resource is the SessionResponse, not the service's fuller account:
+    // the client learns its email and whether that address is verified, nothing else.
+    return c.json({ email: account.email, emailVerified: account.emailVerifiedAt !== null }, 200);
   });
 
   return app;
+}
+
+// Resolves the signed-in account behind a request's session cookie, or null when the
+// request is not signed in. The cookie is accounts' transport detail: other features
+// borrow this reader through the feature's index instead of learning the cookie's name.
+export type SessionReader = (c: Context) => Promise<SessionAccount | null>;
+
+export function createSessionReader(service: AccountsService): SessionReader {
+  return async (c) => {
+    const token = getCookie(c, SESSION_COOKIE);
+    return token === undefined ? null : service.session(token);
+  };
 }

@@ -13,6 +13,10 @@ services:
       # One-time secret for initial setup (issue #21), at least 32 characters.
       # Empty or unset keeps setup closed: nobody can create the administrator.
       BOOTSTRAP_SECRET: ${BOOTSTRAP_SECRET:-}
+      # The key that encrypts instance secrets at rest (ADR-0004): base64 for exactly
+      # 32 bytes. Empty or unset means no key, and an SMTP password cannot be saved
+      # until it is set. Generate with: openssl rand -base64 32
+      ORRERY_ENCRYPTION_KEY: ${ORRERY_ENCRYPTION_KEY:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "${ORRERY_PORT:-8080}:8080"
@@ -37,6 +41,20 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # The test email catcher (issue #22): the installation's outgoing mail lands here,
+  # stored, never forwarded anywhere. The e2e suite proves real delivery by reading this
+  # API, and the web UI doubles as a debugging inbox. Only `--profile mail-test` starts
+  # it (like Caddy's tls profile), so a plain `docker compose up -d` runs a production
+  # stack with no catcher listening.
+  mailpit:
+    image: axllent/mailpit:v1.34.0
+    profiles: [mail-test]
+    restart: unless-stopped
+    ports:
+      # Host-side only, so only this machine can read the mail or the UI. The orrery
+      # container reaches the SMTP listener at mailpit:1025 over the compose network.
+      - "127.0.0.1:${MAILPIT_HTTP_PORT:-8025}:8025"
 
   # Optional HTTPS with an automatic Let's Encrypt certificate. Agents on members' machines need
   # Orrery over HTTPS. Skip this profile if you already run a reverse proxy; point it at :8080.

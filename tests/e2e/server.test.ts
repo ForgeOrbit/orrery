@@ -2,7 +2,7 @@
 // so any implementation of the server (TypeScript today, Go or Rust later) must pass them.
 // (Not BASE_URL: Vitest sets that one to "/" for itself.)
 //
-//   docker compose up -d --build
+//   docker compose --profile mail-test up -d --build --wait
 //   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { describe, expect, it } from "vitest";
