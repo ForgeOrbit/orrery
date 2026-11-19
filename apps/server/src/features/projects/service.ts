@@ -348,54 +348,36 @@ async function requireKnowledge(tx: DbTransaction, entryId: string, humanId: str
   return row;
 }
 
-async function issueById(tx: DbTransaction, issueId: string) {
-  const [row] = await tx
-    .select(issueColumns)
-    .from(issues)
-    .innerJoin(issueCreator, eq(issueCreator.id, issues.createdByHumanId))
-    .innerJoin(issueEditor, eq(issueEditor.id, issues.updatedByHumanId))
-    .where(eq(issues.id, issueId))
-    .limit(1);
-  if (row === undefined) throw new ProjectsError("issue_not_found");
-  return toIssue(row);
-}
-
-async function commentById(tx: DbTransaction, commentId: string) {
-  const [row] = await tx
-    .select(commentColumns)
-    .from(issueComments)
-    .innerJoin(commentAuthor, eq(commentAuthor.id, issueComments.createdByHumanId))
-    .where(eq(issueComments.id, commentId))
-    .limit(1);
-  if (row === undefined) throw new Error("the comment was not created");
-  return toComment(row);
-}
-
-async function knowledgeById(tx: DbTransaction, entryId: string) {
-  const [row] = await tx
-    .select(knowledgeColumns)
-    .from(knowledgeEntries)
-    .innerJoin(knowledgeCreator, eq(knowledgeCreator.id, knowledgeEntries.createdByHumanId))
-    .innerJoin(knowledgeEditor, eq(knowledgeEditor.id, knowledgeEntries.updatedByHumanId))
-    .where(eq(knowledgeEntries.id, entryId))
-    .limit(1);
-  if (row === undefined) throw new ProjectsError("knowledge_entry_not_found");
-  return toKnowledge(row);
-}
+type RecordActivityInput =
+  | {
+      projectId: string;
+      type: "project_created";
+      actorHumanId: string;
+      summary: string;
+    }
+  | {
+      projectId: string;
+      type:
+        | "issue_created"
+        | "issue_edited"
+        | "issue_commented"
+        | "issue_closed"
+        | "issue_reopened";
+      actorHumanId: string;
+      summary: string;
+      issueId: string;
+    }
+  | {
+      projectId: string;
+      type: "knowledge_created" | "knowledge_edited";
+      actorHumanId: string;
+      summary: string;
+      knowledgeEntryId: string;
+    };
 
 // One activity event, written inside the caller's transaction so the change and its
 // history commit together or not at all. The summary is the item's title at this moment.
-async function recordActivity(
-  tx: DbTransaction,
-  input: {
-    projectId: string;
-    type: ProjectActivityType;
-    actorHumanId: string;
-    summary: string;
-    issueId?: string;
-    knowledgeEntryId?: string;
-  },
-) {
+async function recordActivity(tx: DbTransaction, input: RecordActivityInput) {
   await tx.insert(projectActivity).values({
     id: randomUUID(),
     projectId: input.projectId,
@@ -403,8 +385,8 @@ async function recordActivity(
     actorHumanId: input.actorHumanId,
     summary: input.summary,
     createdAt: sql`statement_timestamp()`,
-    ...(input.issueId === undefined ? {} : { issueId: input.issueId }),
-    ...(input.knowledgeEntryId === undefined ? {} : { knowledgeEntryId: input.knowledgeEntryId }),
+    ...("issueId" in input ? { issueId: input.issueId } : {}),
+    ...("knowledgeEntryId" in input ? { knowledgeEntryId: input.knowledgeEntryId } : {}),
   });
 }
 
@@ -562,18 +544,32 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
         if (counter === undefined) throw new ProjectsError("project_not_found");
 
         const id = randomUUID();
-        await tx.insert(issues).values({
-          id,
-          projectId,
-          number: counter.number,
-          title: input.title,
-          body: input.body ?? "",
-          status: IssueStatus.enum.open,
-          createdByHumanId: actor.humanId,
-          updatedByHumanId: actor.humanId,
-          createdAt: sql`statement_timestamp()`,
-          updatedAt: sql`statement_timestamp()`,
-        });
+        const [created] = await tx
+          .insert(issues)
+          .values({
+            id,
+            projectId,
+            number: counter.number,
+            title: input.title,
+            body: input.body ?? "",
+            status: IssueStatus.enum.open,
+            createdByHumanId: actor.humanId,
+            updatedByHumanId: actor.humanId,
+            createdAt: sql`statement_timestamp()`,
+            updatedAt: sql`statement_timestamp()`,
+          })
+          .returning({
+            id: issues.id,
+            projectId: issues.projectId,
+            number: issues.number,
+            title: issues.title,
+            body: issues.body,
+            status: issues.status,
+            createdAt: issues.createdAt,
+            updatedAt: issues.updatedAt,
+            closedAt: issues.closedAt,
+          });
+        if (created === undefined) throw new Error("the issue was not created");
         await recordActivity(tx, {
           projectId,
           type: "issue_created",
@@ -581,7 +577,20 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
           issueId: id,
           summary: input.title,
         });
-        return issueById(tx, id);
+        const author = { humanId: actor.humanId, email: actor.email };
+        return {
+          id: created.id,
+          projectId: created.projectId,
+          number: created.number,
+          title: created.title,
+          body: created.body,
+          status: IssueStatus.parse(created.status),
+          createdAt: created.createdAt.toISOString(),
+          updatedAt: created.updatedAt.toISOString(),
+          closedAt: created.closedAt === null ? null : created.closedAt.toISOString(),
+          createdBy: author,
+          updatedBy: author,
+        };
       });
     },
 
@@ -606,7 +615,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
               ? current.closedAt
               : sql`statement_timestamp()`
             : null;
-        await tx
+        const [updated] = await tx
           .update(issues)
           .set({
             title,
@@ -616,7 +625,12 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
             updatedAt: sql`statement_timestamp()`,
             closedAt,
           })
-          .where(eq(issues.id, issueId));
+          .where(eq(issues.id, issueId))
+          .returning({
+            updatedAt: issues.updatedAt,
+            closedAt: issues.closedAt,
+          });
+        if (updated === undefined) throw new ProjectsError("issue_not_found");
 
         if (titleChanged || bodyChanged) {
           await recordActivity(tx, {
@@ -636,7 +650,19 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
             summary: title,
           });
         }
-        return issueById(tx, issueId);
+        return {
+          id: current.id,
+          projectId: current.projectId,
+          number: current.number,
+          title,
+          body,
+          status: IssueStatus.parse(status),
+          createdAt: current.createdAt.toISOString(),
+          updatedAt: updated.updatedAt.toISOString(),
+          closedAt: updated.closedAt === null ? null : updated.closedAt.toISOString(),
+          createdBy: { humanId: current.createdByHumanId, email: current.createdByEmail },
+          updatedBy: { humanId: actor.humanId, email: actor.email },
+        };
       });
     },
 
@@ -664,13 +690,22 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
       return db.transaction(async (tx) => {
         const issue = await requireIssue(tx, issueId, actor.humanId);
         const id = randomUUID();
-        await tx.insert(issueComments).values({
-          id,
-          issueId,
-          body: input.body,
-          createdByHumanId: actor.humanId,
-          createdAt: sql`statement_timestamp()`,
-        });
+        const [created] = await tx
+          .insert(issueComments)
+          .values({
+            id,
+            issueId,
+            body: input.body,
+            createdByHumanId: actor.humanId,
+            createdAt: sql`statement_timestamp()`,
+          })
+          .returning({
+            id: issueComments.id,
+            issueId: issueComments.issueId,
+            body: issueComments.body,
+            createdAt: issueComments.createdAt,
+          });
+        if (created === undefined) throw new Error("the comment was not created");
         await recordActivity(tx, {
           projectId: issue.projectId,
           type: "issue_commented",
@@ -678,7 +713,13 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
           issueId,
           summary: issue.title,
         });
-        return commentById(tx, id);
+        return {
+          id: created.id,
+          issueId: created.issueId,
+          body: created.body,
+          createdAt: created.createdAt.toISOString(),
+          author: { humanId: actor.humanId, email: actor.email },
+        };
       });
     },
 
@@ -730,16 +771,27 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
       return db.transaction(async (tx) => {
         await requireProject(tx, projectId, actor.humanId);
         const id = randomUUID();
-        await tx.insert(knowledgeEntries).values({
-          id,
-          projectId,
-          title: input.title,
-          body: input.body ?? "",
-          createdByHumanId: actor.humanId,
-          updatedByHumanId: actor.humanId,
-          createdAt: sql`statement_timestamp()`,
-          updatedAt: sql`statement_timestamp()`,
-        });
+        const [created] = await tx
+          .insert(knowledgeEntries)
+          .values({
+            id,
+            projectId,
+            title: input.title,
+            body: input.body ?? "",
+            createdByHumanId: actor.humanId,
+            updatedByHumanId: actor.humanId,
+            createdAt: sql`statement_timestamp()`,
+            updatedAt: sql`statement_timestamp()`,
+          })
+          .returning({
+            id: knowledgeEntries.id,
+            projectId: knowledgeEntries.projectId,
+            title: knowledgeEntries.title,
+            body: knowledgeEntries.body,
+            createdAt: knowledgeEntries.createdAt,
+            updatedAt: knowledgeEntries.updatedAt,
+          });
+        if (created === undefined) throw new Error("the knowledge entry was not created");
         await recordActivity(tx, {
           projectId,
           type: "knowledge_created",
@@ -747,7 +799,17 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
           knowledgeEntryId: id,
           summary: input.title,
         });
-        return knowledgeById(tx, id);
+        const author = { humanId: actor.humanId, email: actor.email };
+        return {
+          id: created.id,
+          projectId: created.projectId,
+          title: created.title,
+          body: created.body,
+          createdAt: created.createdAt.toISOString(),
+          updatedAt: created.updatedAt.toISOString(),
+          createdBy: author,
+          updatedBy: author,
+        };
       });
     },
 
@@ -758,7 +820,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
         const title = input.title ?? current.title;
         const body = input.body ?? current.body;
         if (title === current.title && body === current.body) return toKnowledge(current);
-        await tx
+        const [updated] = await tx
           .update(knowledgeEntries)
           .set({
             title,
@@ -766,7 +828,9 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
             updatedByHumanId: actor.humanId,
             updatedAt: sql`statement_timestamp()`,
           })
-          .where(eq(knowledgeEntries.id, entryId));
+          .where(eq(knowledgeEntries.id, entryId))
+          .returning({ updatedAt: knowledgeEntries.updatedAt });
+        if (updated === undefined) throw new ProjectsError("knowledge_entry_not_found");
         await recordActivity(tx, {
           projectId: current.projectId,
           type: "knowledge_edited",
@@ -774,7 +838,16 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
           knowledgeEntryId: entryId,
           summary: title,
         });
-        return knowledgeById(tx, entryId);
+        return {
+          id: current.id,
+          projectId: current.projectId,
+          title,
+          body,
+          createdAt: current.createdAt.toISOString(),
+          updatedAt: updated.updatedAt.toISOString(),
+          createdBy: { humanId: current.createdByHumanId, email: current.createdByEmail },
+          updatedBy: { humanId: actor.humanId, email: actor.email },
+        };
       });
     },
   };

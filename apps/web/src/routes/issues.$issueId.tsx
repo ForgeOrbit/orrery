@@ -10,6 +10,7 @@ import {
   issuesQuery,
   projectActivityQuery,
   ResourceLoadError,
+  TitleBodyForm,
   updateIssue,
 } from "../features/projects/index.ts";
 
@@ -113,55 +114,30 @@ function IssueStatusButton({ issue }: { issue: Issue }) {
 // server's values, so no effect is needed to synchronize it.
 function EditIssueForm({ issue }: { issue: Issue }) {
   const queryClient = useQueryClient();
-  const [title, setTitle] = useState(issue.title);
-  const [body, setBody] = useState(issue.body);
-  const [error, setError] = useState<string>();
-  const [submitting, setSubmitting] = useState(false);
-
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSubmitting(true);
-    setError(undefined);
-    try {
-      const updated = await updateIssue(issue.id, { title, body });
-      queryClient.setQueryData(issueQuery(issue.id).queryKey, updated);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: issuesQuery(issue.projectId).queryKey }),
-        queryClient.invalidateQueries({ queryKey: projectActivityQuery(issue.projectId).queryKey }),
-      ]);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not save the issue.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
 
   return (
     <section>
       <h2>Edit issue</h2>
-      <form onSubmit={(event) => void onSubmit(event)}>
-        <label htmlFor="edit-issue-title">Title</label>
-        <input
-          id="edit-issue-title"
-          name="title"
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
-          required
-          maxLength={200}
-        />
-        <label htmlFor="edit-issue-body">Body</label>
-        <textarea
-          id="edit-issue-body"
-          name="body"
-          value={body}
-          onChange={(event) => setBody(event.target.value)}
-          rows={6}
-        />
-        {error !== undefined && <p role="alert">{error}</p>}
-        <button type="submit" disabled={submitting}>
-          Save issue
-        </button>
-      </form>
+      <TitleBodyForm
+        idPrefix="edit-issue"
+        titleLabel="Title"
+        bodyLabel="Body"
+        bodyRows={6}
+        submitLabel="Save issue"
+        fallbackError="Could not save the issue."
+        initialTitle={issue.title}
+        initialBody={issue.body}
+        onSubmit={async ({ title, body }) => {
+          const updated = await updateIssue(issue.id, { title, body });
+          queryClient.setQueryData(issueQuery(issue.id).queryKey, updated);
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: issuesQuery(issue.projectId).queryKey }),
+            queryClient.invalidateQueries({
+              queryKey: projectActivityQuery(issue.projectId).queryKey,
+            }),
+          ]);
+        }}
+      />
     </section>
   );
 }

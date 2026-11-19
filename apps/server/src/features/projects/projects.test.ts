@@ -22,6 +22,7 @@ import {
   knowledgeEntries,
   projectActivity,
   projects,
+  workspaceMemberships,
   workspaces,
 } from "../../db/schema.ts";
 import { createDb, type Database } from "../../platform/db.ts";
@@ -649,5 +650,41 @@ describe("projects", () => {
     expect(await database.db.select().from(issues)).toHaveLength(1);
     expect(await database.db.select().from(issueComments)).toHaveLength(0);
     expect(await database.db.select().from(knowledgeEntries)).toHaveLength(0);
+  });
+
+  it("refuses listing and creating projects on a shared workspace until #27", async () => {
+    const { app, adminCookie } = await readyApp();
+    const [admin] = await database.db.select().from(humans).where(eq(humans.email, EMAIL));
+    if (admin === undefined) throw new Error("expected bootstrapped admin");
+
+    const sharedId = randomUUID();
+    await database.db.transaction(async (tx) => {
+      await tx.insert(workspaces).values({
+        id: sharedId,
+        kind: "shared",
+        name: "Shared Team",
+      });
+      await tx.insert(workspaceMemberships).values({
+        id: randomUUID(),
+        workspaceId: sharedId,
+        humanId: admin.id,
+        isOwner: true,
+      });
+    });
+
+    const listRes = await getJson(app, `/api/workspaces/${sharedId}/projects`, adminCookie);
+    expect(listRes.status).toBe(404);
+    expect(listRes.headers.get("content-type")).toBe("application/problem+json");
+    expect(await problemBody(listRes)).toMatchObject({ code: "workspace_not_found" });
+
+    const createRes = await postJson(
+      app,
+      `/api/workspaces/${sharedId}/projects`,
+      { name: "Not Yet" },
+      adminCookie,
+    );
+    expect(createRes.status).toBe(404);
+    expect(createRes.headers.get("content-type")).toBe("application/problem+json");
+    expect(await problemBody(createRes)).toMatchObject({ code: "workspace_not_found" });
   });
 });

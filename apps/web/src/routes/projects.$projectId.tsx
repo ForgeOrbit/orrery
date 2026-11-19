@@ -1,8 +1,6 @@
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import type { ProjectActivityType } from "@orrery/contract";
-import type { FormEvent } from "react";
-import { useState } from "react";
 import {
   createIssue,
   createKnowledgeEntry,
@@ -13,6 +11,7 @@ import {
   projectActivityQuery,
   projectQuery,
   ResourceLoadError,
+  TitleBodyForm,
 } from "../features/projects/index.ts";
 
 // One project's view: its issues, its basic Markdown knowledge, and the activity that
@@ -104,112 +103,52 @@ function ProjectPage() {
 function CreateIssueForm({ projectId }: { projectId: string }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
-  const [error, setError] = useState<string>();
-  const [submitting, setSubmitting] = useState(false);
-
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSubmitting(true);
-    setError(undefined);
-    try {
-      const issue = await createIssue(projectId, { title, body });
-      queryClient.setQueryData(issueQuery(issue.id).queryKey, issue);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: issuesQuery(projectId).queryKey }),
-        queryClient.invalidateQueries({ queryKey: projectActivityQuery(projectId).queryKey }),
-      ]);
-      setTitle("");
-      setBody("");
-      await navigate({ to: "/issues/$issueId", params: { issueId: issue.id } });
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not create the issue.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
 
   return (
-    <form onSubmit={(event) => void onSubmit(event)}>
-      <label htmlFor="issue-title">Issue title</label>
-      <input
-        id="issue-title"
-        name="title"
-        value={title}
-        onChange={(event) => setTitle(event.target.value)}
-        required
-        maxLength={200}
-      />
-      <label htmlFor="issue-body">Description</label>
-      <textarea
-        id="issue-body"
-        name="body"
-        value={body}
-        onChange={(event) => setBody(event.target.value)}
-        rows={4}
-      />
-      {error !== undefined && <p role="alert">{error}</p>}
-      <button type="submit" disabled={submitting}>
-        Create issue
-      </button>
-    </form>
+    <TitleBodyForm
+      idPrefix="issue"
+      titleLabel="Issue title"
+      bodyLabel="Description"
+      bodyRows={4}
+      submitLabel="Create issue"
+      fallbackError="Could not create the issue."
+      resetOnSuccess
+      onSubmit={async ({ title, body }) => {
+        const issue = await createIssue(projectId, { title, body });
+        queryClient.setQueryData(issueQuery(issue.id).queryKey, issue);
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: issuesQuery(projectId).queryKey }),
+          queryClient.invalidateQueries({ queryKey: projectActivityQuery(projectId).queryKey }),
+        ]);
+        await navigate({ to: "/issues/$issueId", params: { issueId: issue.id } });
+      }}
+    />
   );
 }
 
 function CreateKnowledgeForm({ projectId }: { projectId: string }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
-  const [error, setError] = useState<string>();
-  const [submitting, setSubmitting] = useState(false);
-
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSubmitting(true);
-    setError(undefined);
-    try {
-      const entry = await createKnowledgeEntry(projectId, { title, body });
-      queryClient.setQueryData(knowledgeEntryQuery(entry.id).queryKey, entry);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: knowledgeEntriesQuery(projectId).queryKey }),
-        queryClient.invalidateQueries({ queryKey: projectActivityQuery(projectId).queryKey }),
-      ]);
-      setTitle("");
-      setBody("");
-      await navigate({ to: "/knowledge/$entryId", params: { entryId: entry.id } });
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not create the entry.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
 
   return (
-    <form onSubmit={(event) => void onSubmit(event)}>
-      <label htmlFor="knowledge-title">Knowledge title</label>
-      <input
-        id="knowledge-title"
-        name="title"
-        value={title}
-        onChange={(event) => setTitle(event.target.value)}
-        required
-        maxLength={200}
-      />
-      <label htmlFor="knowledge-body">Markdown</label>
-      <textarea
-        id="knowledge-body"
-        name="body"
-        value={body}
-        onChange={(event) => setBody(event.target.value)}
-        rows={6}
-      />
-      {error !== undefined && <p role="alert">{error}</p>}
-      <button type="submit" disabled={submitting}>
-        Create knowledge
-      </button>
-    </form>
+    <TitleBodyForm
+      idPrefix="knowledge"
+      titleLabel="Knowledge title"
+      bodyLabel="Markdown"
+      bodyRows={6}
+      submitLabel="Create knowledge"
+      fallbackError="Could not create the entry."
+      resetOnSuccess
+      onSubmit={async ({ title, body }) => {
+        const entry = await createKnowledgeEntry(projectId, { title, body });
+        queryClient.setQueryData(knowledgeEntryQuery(entry.id).queryKey, entry);
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: knowledgeEntriesQuery(projectId).queryKey }),
+          queryClient.invalidateQueries({ queryKey: projectActivityQuery(projectId).queryKey }),
+        ]);
+        await navigate({ to: "/knowledge/$entryId", params: { entryId: entry.id } });
+      }}
+    />
   );
 }
 

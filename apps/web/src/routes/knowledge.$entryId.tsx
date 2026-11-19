@@ -1,13 +1,12 @@
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import type { KnowledgeEntry } from "@orrery/contract";
-import type { FormEvent } from "react";
-import { useState } from "react";
 import {
   knowledgeEntriesQuery,
   knowledgeEntryQuery,
   projectActivityQuery,
   ResourceLoadError,
+  TitleBodyForm,
   updateKnowledgeEntry,
 } from "../features/projects/index.ts";
 
@@ -52,57 +51,32 @@ function KnowledgePage() {
 // server's values, so no effect is needed to synchronize it.
 function EditKnowledgeForm({ entry }: { entry: KnowledgeEntry }) {
   const queryClient = useQueryClient();
-  const [title, setTitle] = useState(entry.title);
-  const [body, setBody] = useState(entry.body);
-  const [error, setError] = useState<string>();
-  const [submitting, setSubmitting] = useState(false);
-
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSubmitting(true);
-    setError(undefined);
-    try {
-      const updated = await updateKnowledgeEntry(entry.id, { title, body });
-      queryClient.setQueryData(knowledgeEntryQuery(entry.id).queryKey, updated);
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: knowledgeEntriesQuery(entry.projectId).queryKey,
-        }),
-        queryClient.invalidateQueries({ queryKey: projectActivityQuery(entry.projectId).queryKey }),
-      ]);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not save the entry.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
 
   return (
     <section>
       <h2>Edit knowledge</h2>
-      <form onSubmit={(event) => void onSubmit(event)}>
-        <label htmlFor="edit-knowledge-title">Title</label>
-        <input
-          id="edit-knowledge-title"
-          name="title"
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
-          required
-          maxLength={200}
-        />
-        <label htmlFor="edit-knowledge-body">Markdown</label>
-        <textarea
-          id="edit-knowledge-body"
-          name="body"
-          value={body}
-          onChange={(event) => setBody(event.target.value)}
-          rows={10}
-        />
-        {error !== undefined && <p role="alert">{error}</p>}
-        <button type="submit" disabled={submitting}>
-          Save knowledge
-        </button>
-      </form>
+      <TitleBodyForm
+        idPrefix="edit-knowledge"
+        titleLabel="Title"
+        bodyLabel="Markdown"
+        bodyRows={10}
+        submitLabel="Save knowledge"
+        fallbackError="Could not save the entry."
+        initialTitle={entry.title}
+        initialBody={entry.body}
+        onSubmit={async ({ title, body }) => {
+          const updated = await updateKnowledgeEntry(entry.id, { title, body });
+          queryClient.setQueryData(knowledgeEntryQuery(entry.id).queryKey, updated);
+          await Promise.all([
+            queryClient.invalidateQueries({
+              queryKey: knowledgeEntriesQuery(entry.projectId).queryKey,
+            }),
+            queryClient.invalidateQueries({
+              queryKey: projectActivityQuery(entry.projectId).queryKey,
+            }),
+          ]);
+        }}
+      />
     </section>
   );
 }

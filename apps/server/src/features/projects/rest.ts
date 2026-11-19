@@ -339,8 +339,7 @@ function isKind<K extends readonly ProjectsErrorKind[]>(
   return kinds.some((kind) => kind === error.kind);
 }
 
-const listProjectsKinds = ["not_signed_in", "workspace_not_found"] as const;
-const createProjectKinds = ["not_signed_in", "workspace_not_found"] as const;
+const workspaceKinds = ["not_signed_in", "workspace_not_found"] as const;
 const projectKinds = ["not_signed_in", "project_not_found"] as const;
 const issueKinds = ["not_signed_in", "issue_not_found"] as const;
 const knowledgeKinds = ["not_signed_in", "knowledge_entry_not_found"] as const;
@@ -366,7 +365,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
       const { workspaceId } = c.req.valid("param");
       return c.json(await service.listProjects(await sessionReader(c), workspaceId), 200);
     } catch (error) {
-      return failure(c, error, listProjectsKinds);
+      return failure(c, error, workspaceKinds);
     }
   });
 
@@ -378,7 +377,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
         201,
       );
     } catch (error) {
-      return failure(c, error, createProjectKinds);
+      return failure(c, error, workspaceKinds);
     }
   });
 

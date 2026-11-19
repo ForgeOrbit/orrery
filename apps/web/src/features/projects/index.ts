@@ -9,6 +9,7 @@ export {
   updateKnowledgeEntry,
 } from "./commands.ts";
 export { ResourceLoadError } from "./LoadError.tsx";
+export { TitleBodyForm } from "./TitleBodyForm.tsx";
 export {
   issueCommentsQuery,
   issueQuery,
