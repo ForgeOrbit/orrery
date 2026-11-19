@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Orrery Formal Verification Model Checker (M1-M7).
+Orrery Formal Verification Model Checker (M1-M9).
 
 Extracts critical concurrency, locking, and state-transition guards directly from
 Orrery's server source and SQL migrations, then runs an exhaustive BFS finite-state
@@ -70,8 +70,9 @@ def extract_code_facts() -> dict[str, bool]:
     m1_db_advisory_lock = "pg_advisory_xact_lock(61683814, 24)" in mig_0008
     m1_db_trigger = "ensure_shared_workspace_has_owner()" in mig_0007
 
-    # M2a: Workspace invite supersedes failed deliveries
-    invite_fn = slice_between(ws_src, "async invite(", "async previewInvitation(")
+    # M2a: Workspace invite supersedes failed deliveries. End before the invitation
+    # history methods so a later method cannot satisfy this fact by accident.
+    invite_fn = slice_between(ws_src, "async invite(", "    // Every invitation in this workspace")
     m2a_supersedes_failed = (
         "InvitationDelivery.enum.failed" in invite_fn
         and "InvitationStatus.enum.expired" in invite_fn
@@ -139,6 +140,43 @@ def extract_code_facts() -> dict[str, bool]:
         and "revokeMemberProjectAccess(tx" in remove_member_fn
     )
 
+    # M9: The common redemption path and the projects writer both recheck the offered
+    # project's current workspace; every offer is persisted and copied on resend.
+    redeem_fn = slice_between(
+        ws_src,
+        "async function redeemWorkspaceInvitation(",
+        "export function createWorkspacesService",
+    )
+    accept_fn = slice_between(ws_src, "async acceptInvitation(", "async registerThroughInvitation(")
+    register_fn = slice_between(ws_src, "async registerThroughInvitation(", "async appointOwner(")
+    resend_fn = slice_between(ws_src, "async resendInvitation(", "async revokeInvitation(")
+    apply_grants_fn = slice_between(
+        proj_src,
+        "async function applyInvitationGrantsInTransaction(",
+        "async function lockWorkspaceOwnershipWrites",
+    )
+    m9_offer_persisted = "insert(workspaceInvitationGrants)" in invite_fn
+    m9_redemption_scope = (
+        "requireOfferedProjectsInWorkspace(tx, invitation.workspaceId, offered)" in redeem_fn
+    )
+    m9_existing_applies = (
+        "await applyInvitationGrants(" in accept_fn
+        and 'WorkspacesError("invitation_scope_invalid")' in accept_fn
+    )
+    m9_registration_applies = (
+        "await applyInvitationGrants(" in register_fn
+        and 'WorkspacesError("invitation_scope_invalid")' in register_fn
+    )
+    m9_apply_validates = (
+        "currentWorkspaceByProject.get(projectId) !== workspaceId" in apply_grants_fn
+        and "if (invalid.length > 0) return invalid" in apply_grants_fn
+    )
+    m9_resend_copies = (
+        "workspaceInvitationGrants" in resend_fn
+        and "projectId: grant.projectId" in resend_fn
+        and "insert(workspaceInvitationGrants)" in resend_fn
+    )
+
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
         "m2a_supersedes_failed": m2a_supersedes_failed,
@@ -150,6 +188,12 @@ def extract_code_facts() -> dict[str, bool]:
         "m6_singleton_tx": m6_singleton_tx,
         "m7_non_member_404": m7_non_member_404,
         "m8_access_serialized": m8_access_serialized,
+        "m9_offer_persisted": m9_offer_persisted,
+        "m9_redemption_scope": m9_redemption_scope,
+        "m9_existing_applies": m9_existing_applies,
+        "m9_registration_applies": m9_registration_applies,
+        "m9_apply_validates": m9_apply_validates,
+        "m9_resend_copies": m9_resend_copies,
     }
 
 
@@ -662,6 +706,96 @@ def check_m8(facts: dict[str, bool]) -> CheckResult:
     )
 
 
+def check_m9(facts: dict[str, bool]) -> CheckResult:
+    # The offer is a project in the invited workspace. It can be moved to another
+    # workspace after the invitation is created, and it can be resent before acceptance.
+    # Either acceptance path commits the membership and the offered grants together; a
+    # moved project must reject the whole transaction and leave the token pending.
+    offer_persisted = facts["m9_offer_persisted"]
+    existing_checked = (
+        facts["m9_redemption_scope"]
+        and facts["m9_existing_applies"]
+        and facts["m9_apply_validates"]
+    )
+    registration_checked = (
+        facts["m9_redemption_scope"]
+        and facts["m9_registration_applies"]
+        and facts["m9_apply_validates"]
+    )
+    resend_copies = facts["m9_resend_copies"]
+    initial = ("invited", offer_persisted, "pending", False, False, False)
+
+    def next_states(state):
+        project_workspace, offer_present, token, membership, grant, resent = state
+        out = []
+        if project_workspace == "invited" and token == "pending":
+            out.append(
+                (
+                    "project transfer: project.workspace_id changes after the offer",
+                    ("other", offer_present, token, membership, grant, resent),
+                )
+            )
+        if token == "pending" and not resent:
+            if offer_present and not resend_copies:
+                out.append(
+                    (
+                        "resendInvitation: replacement loses the offered project",
+                        (project_workspace, False, token, membership, grant, True),
+                    )
+                )
+            else:
+                out.append(
+                    (
+                        "resendInvitation: replacement copies the offered project",
+                        (project_workspace, offer_present, token, membership, grant, True),
+                    )
+                )
+        if token == "pending":
+            for path, checked in (
+                ("acceptInvitation", existing_checked),
+                ("registerThroughInvitation", registration_checked),
+            ):
+                if offer_present and project_workspace != "invited" and checked:
+                    # The common redemption path rejects before committing, so the
+                    # token and every row stay as they were.
+                    continue
+                out.append(
+                    (
+                        f"{path}: commit membership + offered project grant",
+                        (project_workspace, offer_present, "accepted", True, offer_present, resent),
+                    )
+                )
+        return out
+
+    def inv(state):
+        project_workspace, offer_present, token, membership, grant, resent = state
+        if not offer_persisted:
+            return False, "Invitation creation does not persist any offered project grant!"
+        if grant and project_workspace != "invited":
+            return False, "A project grant was applied after its project left the invited workspace!"
+        if token == "accepted" and not membership:
+            return False, "Invitation acceptance committed without the workspace membership!"
+        if token == "accepted" and offer_present and project_workspace == "invited" and not grant:
+            return False, "A valid offered project grant was not applied on acceptance!"
+        if resent and not offer_present:
+            return False, "Resend lost the offered project grant!"
+        return True, ""
+
+    return bfs_check(
+        "M9",
+        "Workspace Invitation Project Grants (#25)",
+        "Offered project grants survive resend and are applied only while the project remains in the invited workspace",
+        "safety",
+        initial,
+        next_states,
+        inv,
+        [
+            "apps/server/src/features/workspaces/service.ts",
+            "apps/server/src/features/projects/service.ts",
+        ],
+    )
+
+
 def main() -> None:
     facts = extract_code_facts()
     results = [
@@ -674,6 +808,7 @@ def main() -> None:
         check_m6(facts),
         check_m7(facts),
         check_m8(facts),
+        check_m9(facts),
     ]
 
     if "--json" in sys.argv:

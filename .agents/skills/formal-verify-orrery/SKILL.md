@@ -9,7 +9,7 @@ Exhaustive finite-state model checking for Orrery's highest-stakes concurrency, 
 
 ## Sync Commit & Coverage Record
 
-- **Last verified commit:** `1d677e9`
+- **Last verified commit:** `2749062`
 - **Check whether a change touches verified code:**
   ```bash
   git diff --name-only 1d677e9 -- \
@@ -58,12 +58,15 @@ We use a **zero-dependency Python 3 exhaustive BFS model checker** paired with s
 | **M5** | `settings/service.ts` (`sendTestEmail`) | Settled `200 OK` test-email calls leave a live redeemable verification token. | Admin receives a `200 OK` email whose token was already deleted. | 2 concurrent `sendTestEmail` calls for one admin. |
 | **M6** | `accounts/service.ts` (`setupAdmin`) | Concurrent bootstrap attempts create at most one administrator and one personal workspace. | Multiple bootstrap admins or half-bootstrapped installation. | 2 concurrent `setupAdmin` requests. |
 | **M7** | `workspaces/service.ts` (`requireOwner`) | Non-members receive `404 workspace_not_found` (never `403`) on all shared-workspace endpoints. | Workspace-ID enumeration oracle across owner endpoints. | All 5 shared-workspace endpoints probed by a non-member. |
+| **M8** | `projects/service.ts` (`setProjectAccess`, `removeProjectAccess`, `revokeMemberProjectAccess`), `workspaces/service.ts` (`removeMember`), `0012` | No orphaned project grant survives a concurrent member removal. | A removed member's old project access reviving on rejoin. | 1 member, 1 grant, grant/remove race. |
+| **M9** | `workspaces/service.ts` (`invite`, `resendInvitation`, `redeemWorkspaceInvitation`, `acceptInvitation`, `registerThroughInvitation`), `projects/service.ts` (`applyInvitationGrantsInTransaction`) | An invitation's project grants are persisted, survive a resend, and are applied only while the project still belongs to the invited workspace. A moved project rejects the whole redemption and leaves the token pending. | A stale invitation creating cross-workspace access, or a resend silently dropping the offered scope. | 1 offer, invited/other project workspace, 2 acceptance paths, 0–1 resend. |
 
 ## What Is Not Covered
 
 - **SQL/Drizzle runtime semantics & deadlocks across unrelated tables**: The model checks the extracted design and lock ordering, not PostgreSQL's query planner or migration SQL syntax. Always pair this skill with `pnpm test` (real Postgres via Testcontainers) and `/verify-orrery` for end-to-end runtime proof.
 - **UI & HTTP transport**: Cookie flags, Zod validation, and React state are outside this model; cover them with `pnpm check`, `pnpm test`, and `/verify-orrery`.
 - **Unbounded actor counts**: M1 is bounded to 3 humans / 2 concurrent writers; M4 is bounded to 3 concurrent `PATCH`es.
+- **Project transfer (#46)**: M9 models a project moving out of the invited workspace before acceptance, but the transfer operation itself is not implemented or modeled. The browser preview and REST contract for project scope are covered by `verify-orrery`, not this model.
 
 ## Interpreting Failures & Maintaining the Skill
 
