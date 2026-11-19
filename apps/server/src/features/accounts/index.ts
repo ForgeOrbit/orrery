@@ -9,9 +9,9 @@ export { startupWarnings } from "./service.ts";
 export type { AccountsService, SessionPolicy, SessionAccount } from "./service.ts";
 export { createSessionReader, type SessionReader } from "./rest.ts";
 
-// The accounts feature, plus what other features borrow: the session reader they
-// authorize with, and the humans write one of their flows earns. The cookie stays this
-// feature's transport detail; borrowers never learn its name.
+// The accounts feature, plus what other features need from it: resolving the account
+// behind a session cookie, and marking an email verified inside another feature's
+// transaction. The cookie's name stays private to this feature.
 export interface AccountsFeature extends Feature {
   sessionReader: SessionReader;
   markEmailVerified: AccountsService["markEmailVerified"];

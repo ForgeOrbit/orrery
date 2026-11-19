@@ -3,7 +3,7 @@
 // They assume a freshly created stack; the full setup + restart flow lives in
 // bootstrap.spec.ts (Playwright), which consumes bootstrap.
 //
-//   docker compose up -d --build --wait
+//   docker compose --profile mail-test up -d --build --wait
 //   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 //
 // When the stack was started with BOOTSTRAP_SECRET, pass the same value as

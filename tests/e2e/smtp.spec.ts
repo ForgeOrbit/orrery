@@ -8,7 +8,7 @@
 // Runs after bootstrap.spec.ts (alphabetical file order, one worker), which created the
 // administrator and closed setup. Errors answer as RFC 9457 Problems (ADR-0003).
 //
-//   docker compose up -d --build --wait
+//   docker compose --profile mail-test up -d --build --wait
 //   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { exec as execCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -21,8 +21,8 @@ const baseUrl = process.env.ORRERY_URL;
 if (!baseUrl)
   throw new Error("Set ORRERY_URL to a running Orrery, for example http://localhost:8080");
 
-// The Mailpit catcher the stack ships with (compose.yaml). Its API is how this suite
-// proves actual delivery. Override when the catcher listens elsewhere.
+// The Mailpit catcher the mail-test compose profile starts (compose.yaml). Its API is
+// how this suite proves actual delivery. Override when the catcher listens elsewhere.
 const mailpit = process.env.MAILPIT_URL ?? "http://localhost:8025";
 const restartCommand = process.env.ORRERY_RESTART_CMD;
 
