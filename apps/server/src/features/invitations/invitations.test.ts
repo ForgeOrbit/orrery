@@ -18,7 +18,11 @@ import { type Logger, createLogger } from "../../platform/log.ts";
 import { migrate } from "../../platform/migrate.ts";
 import { tokenHash } from "../../platform/tokens.ts";
 import { createInvitationsFeature } from "./index.ts";
-import { createInvitationsService, InvitationsError } from "./service.ts";
+import {
+  createInvitationsService,
+  InvitationsError,
+  UNKNOWN_DELIVERY_GRACE_SECONDS,
+} from "./service.ts";
 import type { SmtpMail, SmtpSender } from "../settings/index.ts";
 
 // Runs against a real Postgres (see AGENTS.md): token redemption, seven-day expiry,
@@ -413,7 +417,7 @@ describe("invitations", () => {
       expect(ok.status).toBe(200);
     });
 
-    it("still blocks a fresh invitation while delivery is merely unknown", async () => {
+    it("still blocks a fresh invitation while an unknown delivery is inside the grace window", async () => {
       const app = makeApp();
       await bootstrapAdmin(app);
       const cookie = await adminCookie(app);
@@ -421,14 +425,16 @@ describe("invitations", () => {
       if (admin === undefined) throw new Error("the administrator was not found");
 
       // No attempt recorded — the crash window between creating an invitation and
-      // trying to send it. The email may have left, so the safe answer is the same 409
-      // as a delivered one, never a silent supersede.
+      // trying to send it. Just inside the grace window the email may still be in
+      // flight, so the safe answer is the same 409 as a delivered one, never a silent
+      // supersede.
       await database.db.insert(invitations).values({
         id: randomUUID(),
         email: INVITEE,
         status: "pending",
         tokenHash: tokenHash("unknown-delivery"),
         invitedByHumanId: admin.id,
+        createdAt: sql`now() - make_interval(secs => ${UNKNOWN_DELIVERY_GRACE_SECONDS - 1})`,
         expiresAt: sql`now() + interval '1 hour'`,
       });
 
@@ -442,6 +448,62 @@ describe("invitations", () => {
       expect(await problemBody(res)).toMatchObject({ status: 409, code: "invitation_pending" });
       const [row] = await database.db.select().from(invitations);
       expect(row?.status).toBe("pending");
+    });
+
+    it("re-invites in place once an unknown delivery is past the grace window, and the old token never redeems", async () => {
+      const { app, cookie, fake } = await armedApp();
+      const [admin] = await database.db.select().from(humans).where(eq(humans.email, EMAIL));
+      if (admin === undefined) throw new Error("the administrator was not found");
+
+      // No attempt recorded, and long enough ago that any send has certainly finished
+      // or died: the row is stale, not in flight. Just past the window, the same
+      // treatment as an expired or failed row applies.
+      await database.db.insert(invitations).values({
+        id: randomUUID(),
+        email: INVITEE,
+        status: "pending",
+        tokenHash: tokenHash("unknown-delivery-stale"),
+        invitedByHumanId: admin.id,
+        createdAt: sql`now() - make_interval(secs => ${UNKNOWN_DELIVERY_GRACE_SECONDS + 1})`,
+        expiresAt: sql`now() + interval '1 hour'`,
+      });
+
+      const res = await postJson(
+        app,
+        "/api/invitations/installation",
+        { email: INVITEE_INPUT },
+        cookie,
+      );
+      expect(res.status).toBe(201);
+
+      // The stale row expired in place; exactly one pending row remains, the new one.
+      const rows = await database.db
+        .select()
+        .from(invitations)
+        .where(eq(invitations.email, INVITEE));
+      expect(rows).toHaveLength(2);
+      const stale = rows.find((row) => row.tokenHash === tokenHash("unknown-delivery-stale"));
+      expect(stale?.status).toBe("expired");
+      const live = rows.filter((row) => row.status === "pending");
+      expect(live).toHaveLength(1);
+      expect(live[0]?.tokenHash).not.toBe(tokenHash("unknown-delivery-stale"));
+
+      // The old token can no longer redeem, even though its delivery was never recorded.
+      const oldToken = await postJson(app, "/api/invitations/installation/registration", {
+        token: "unknown-delivery-stale",
+        password: INVITEE_PASSWORD,
+      });
+      expect(oldToken.status).toBe(400);
+      expect(await problemBody(oldToken)).toMatchObject({ code: "invitation_invalid" });
+
+      // The fresh token registers.
+      const fresh = tokenFrom(fake.sent[0]?.text ?? "");
+      expect(fresh).not.toBe("");
+      const ok = await postJson(app, "/api/invitations/installation/registration", {
+        token: fresh,
+        password: INVITEE_PASSWORD,
+      });
+      expect(ok.status).toBe(200);
     });
 
     it("settles two concurrent invitations for the same email with one winner", async () => {
@@ -480,6 +542,54 @@ describe("invitations", () => {
         .from(invitations)
         .where(eq(invitations.email, "race@example.com"));
       expect(rows).toHaveLength(1);
+    });
+
+    it("settles two concurrent re-invites of one expired row with exactly one new pending row", async () => {
+      const { app, cookie, fake } = await armedApp();
+      const [admin] = await database.db.select().from(humans).where(eq(humans.email, EMAIL));
+      if (admin === undefined) throw new Error("the administrator was not found");
+
+      // One expired invitation, the row both requests try to replace. Placed directly,
+      // like the other boundary fixtures.
+      await database.db.insert(invitations).values({
+        id: randomUUID(),
+        email: INVITEE,
+        status: "pending",
+        tokenHash: tokenHash("expired-before-the-race"),
+        invitedByHumanId: admin.id,
+        expiresAt: sql`now() - interval '1 second'`,
+        deliveryStatus: "sent",
+      });
+
+      // Two administrators (or one, twice) re-invite the same email at once. The
+      // expired row is free to supersede, so only the partial unique index decides.
+      const results = await Promise.all([
+        postJson(app, "/api/invitations/installation", { email: INVITEE_INPUT }, cookie),
+        postJson(app, "/api/invitations/installation", { email: INVITEE_INPUT }, cookie),
+      ]);
+      const statuses = results.map((res) => res.status);
+      expect(statuses.filter((status) => status === 201)).toHaveLength(1);
+      expect(statuses.filter((status) => status === 409)).toHaveLength(1);
+
+      // The loser answers the same Problem as any other pending invitation.
+      const conflict = results.find((res) => res.status === 409);
+      if (conflict === undefined) throw new Error("expected one conflict");
+      expect(conflict.headers.get("content-type")).toBe("application/problem+json");
+      expect(await problemBody(conflict)).toMatchObject({
+        status: 409,
+        code: "invitation_pending",
+      });
+
+      // Exactly one new pending row: the expired row was superseded once, never twice,
+      // and only the winner sent an email.
+      const rows = await database.db
+        .select()
+        .from(invitations)
+        .where(eq(invitations.email, INVITEE));
+      expect(rows).toHaveLength(2);
+      expect(rows.filter((row) => row.status === "expired")).toHaveLength(1);
+      expect(rows.filter((row) => row.status === "pending")).toHaveLength(1);
+      expect(fake.sent).toHaveLength(1);
     });
 
     it("records a failed delivery, which never redeems and does not block a fresh invitation", async () => {
@@ -639,6 +749,38 @@ describe("invitations", () => {
         ?.split(";")[0];
       const session = await app.request("/api/auth/session", { headers: { cookie: cookie ?? "" } });
       expect(await session.json()).toEqual({ email: INVITEE, emailVerified: true });
+    });
+
+    it("redeems an invitation whose delivery is still unknown", async () => {
+      const app = makeApp();
+      await bootstrapAdmin(app);
+      const [admin] = await database.db.select().from(humans).where(eq(humans.email, EMAIL));
+      if (admin === undefined) throw new Error("the administrator was not found");
+
+      // The crash window: the send may have happened, but recording it did not. Holding
+      // the token proves the email arrived, so only a known failure refuses redemption.
+      await database.db.insert(invitations).values({
+        id: randomUUID(),
+        email: INVITEE,
+        status: "pending",
+        tokenHash: tokenHash("unknown-delivery-redeems"),
+        invitedByHumanId: admin.id,
+        expiresAt: sql`now() + interval '1 hour'`,
+      });
+
+      const res = await postJson(app, "/api/invitations/installation/registration", {
+        token: "unknown-delivery-redeems",
+        password: INVITEE_PASSWORD,
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ email: INVITEE, emailVerified: true });
+
+      // One account and one personal workspace, exactly like a recorded delivery.
+      const [human] = await database.db.select().from(humans).where(eq(humans.email, INVITEE));
+      expect(human?.emailVerifiedAt).not.toBeNull();
+      expect(await database.db.select().from(workspaces)).toHaveLength(2);
+      const [row] = await database.db.select().from(invitations);
+      expect(row).toMatchObject({ status: "accepted", deliveryStatus: null });
     });
 
     it("changes nothing on a mere link visit: GET never consumes the token", async () => {

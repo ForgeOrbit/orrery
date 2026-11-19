@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { InvitationDelivery, InvitationStatus } from "@orrery/contract";
 import type { InstallationInvitation } from "@orrery/contract";
-import { and, eq, gt, isNull, lt, or, sql } from "drizzle-orm";
+import { and, eq, gt, gte, isNull, lt, lte, or, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
 import { errorNameAndCode, uniqueConstraintName } from "../../platform/errors.ts";
@@ -16,6 +16,13 @@ import { invitations } from "../../db/schema.ts";
 // How long an invitation lives (#20): seven days, evaluated in database time at
 // redemption, never by a deployed clock.
 const INVITATION_TTL_SECONDS = 7 * 24 * 60 * 60;
+
+// How long an unknown delivery keeps blocking a fresh invitation. The mail transport
+// caps a send well below this (settings' sender: 10s to connect, 10s for the greeting,
+// 20s on the socket), so past it the send has finished or died and the row is stale
+// rather than in flight. Ten minutes is short next to the seven-day lifetime, so a crash
+// cannot block the address for long. Database time only, like every deadline here.
+export const UNKNOWN_DELIVERY_GRACE_SECONDS = 10 * 60;
 
 export type InvitationsErrorKind =
   | "not_signed_in"
@@ -134,9 +141,11 @@ export function createInvitationsService({
       if (await emailRegistered(input.email)) throw new InvitationsError("account_exists");
 
       // A pending invitation blocks a new one while it is valid and not known-failed;
-      // an expired one, or one whose email never left, is superseded in place below.
-      // Unknown delivery (no attempt recorded) blocks too: that email may have left,
-      // and silently invalidating a possibly-delivered link is the worse failure.
+      // an expired one, one whose email never left, or one whose delivery stayed unknown
+      // past the grace window is superseded in place below. Unknown delivery inside the
+      // window blocks too: a send may still be in flight, and silently invalidating a
+      // possibly-delivered link is the worse failure. Holding the token redeems either
+      // way; only a known failure refuses.
       const blocking = await db
         .select({ id: invitations.id })
         .from(invitations)
@@ -147,7 +156,13 @@ export function createInvitationsService({
             gt(invitations.expiresAt, sql`now()`),
             or(
               eq(invitations.deliveryStatus, InvitationDelivery.enum.sent),
-              isNull(invitations.deliveryStatus),
+              and(
+                isNull(invitations.deliveryStatus),
+                gte(
+                  invitations.createdAt,
+                  sql`now() - make_interval(secs => ${UNKNOWN_DELIVERY_GRACE_SECONDS})`,
+                ),
+              ),
             ),
           ),
         )
@@ -158,10 +173,10 @@ export function createInvitationsService({
       const id = randomUUID();
       try {
         await db.transaction(async (tx) => {
-          // Supersede in place: any pending row for this email that is expired or
-          // delivery-failed becomes expired, in the new invitation's own transaction,
-          // so the one-pending rule holds for the new link and the old token dies
-          // with its row.
+          // Supersede in place: any pending row for this email that is expired,
+          // delivery-failed, or left with an unknown delivery past the grace window
+          // becomes expired, in the new invitation's own transaction, so the one-pending
+          // rule holds for the new link and the old token dies with its row.
           await tx
             .update(invitations)
             .set({ status: InvitationStatus.enum.expired })
@@ -170,8 +185,15 @@ export function createInvitationsService({
                 eq(invitations.email, input.email),
                 eq(invitations.status, InvitationStatus.enum.pending),
                 or(
-                  lt(invitations.expiresAt, sql`now()`),
+                  lte(invitations.expiresAt, sql`now()`),
                   eq(invitations.deliveryStatus, InvitationDelivery.enum.failed),
+                  and(
+                    isNull(invitations.deliveryStatus),
+                    lt(
+                      invitations.createdAt,
+                      sql`now() - make_interval(secs => ${UNKNOWN_DELIVERY_GRACE_SECONDS})`,
+                    ),
+                  ),
                 ),
               ),
             );
@@ -211,19 +233,21 @@ export function createInvitationsService({
         throw error;
       }
       // A delivery that left but could not be recorded answers as an error on purpose:
-      // the invitation's delivery state stays unknown, which blocks both redemption
-      // and a fresh invitation, and the administrator learns the request failed.
+      // the invitation's delivery stays unknown, so the administrator learns the request
+      // failed. The link still redeems, because holding the token proves the email
+      // arrived; past the grace window a fresh invitation supersedes the row.
       await recordDelivery(db, id, InvitationDelivery.enum.sent);
       return { email: input.email, status: InvitationStatus.enum.pending };
     },
 
     // One conditional update, evaluated in database time: the invitation must be
-    // pending, unexpired, and actually delivered, and only this POST consumes its
-    // token. The account, its personal workspace, and the verified mark join the same
-    // transaction, so a half-registered human cannot exist, and a reused, expired, or
-    // never-delivered link changes nothing. No history event here either: the account
-    // and its personal workspace are not among #20's sensitive access actions, and
-    // membership events begin with #24.
+    // pending, unexpired, and not known-failed, and only this POST consumes its token.
+    // An unknown delivery may redeem — holding the token proves the email arrived — so
+    // only a recorded failure refuses. The account, its personal workspace, and the
+    // verified mark join the same transaction, so a half-registered human cannot exist,
+    // and a reused, expired, or failed link changes nothing. No history event here
+    // either: the account and its personal workspace are not among #20's sensitive
+    // access actions, and membership events begin with #24.
     async registerInstallation(input) {
       const email = await db.transaction(async (tx) => {
         const rows = await tx
@@ -234,7 +258,7 @@ export function createInvitationsService({
               eq(invitations.tokenHash, tokenHash(input.token)),
               eq(invitations.status, InvitationStatus.enum.pending),
               gt(invitations.expiresAt, sql`now()`),
-              eq(invitations.deliveryStatus, InvitationDelivery.enum.sent),
+              sql`${invitations.deliveryStatus} is distinct from ${InvitationDelivery.enum.failed}`,
             ),
           )
           .returning({ email: invitations.email });

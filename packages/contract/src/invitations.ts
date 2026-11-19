@@ -16,9 +16,11 @@ export const InvitationStatus = z
 export type InvitationStatus = z.infer<typeof InvitationStatus>;
 
 // Whether the invitation email actually left (#20: pending does not imply delivered).
-// `sent` is the only state that may redeem; `failed` records a delivery the relay
-// refused. Null means no attempt has been recorded yet — such an invitation never
-// redeems either.
+// `sent` records a delivery the relay accepted; `failed` records one it refused and is
+// the only state that never redeems. Null means no attempt has been recorded yet — a
+// crash or a failed recording — and such an invitation may still redeem, because
+// holding the token proves the email arrived. A null row past the grace window is
+// superseded like an expired one.
 export const InvitationDelivery = z.enum(["sent", "failed"]).meta({ id: "InvitationDelivery" });
 export type InvitationDelivery = z.infer<typeof InvitationDelivery>;
 
