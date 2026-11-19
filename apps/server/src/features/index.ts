@@ -6,6 +6,7 @@ import type { Feature } from "../platform/feature.ts";
 import type { Logger } from "../platform/log.ts";
 import { createAccountsFeature, accountsRoutes } from "./accounts/index.ts";
 import { createInvitationsFeature, invitationsRoutes } from "./invitations/index.ts";
+import { createProjectsFeature, projectsRoutes } from "./projects/index.ts";
 import { createSettingsFeature, settingsRoutes } from "./settings/index.ts";
 import { createSystemFeature, systemRoutes } from "./system/index.ts";
 import { createWorkspacesFeature, workspacesRoutes } from "./workspaces/index.ts";
@@ -53,6 +54,12 @@ export function createFeatures(database: Database, config: Config, log: Logger):
       deliver: settings.deliver,
       log,
     }),
+    // Projects borrow the accounts session reader and nothing else: a personal
+    // workspace's owner is the access boundary in #26 (shared-workspace access lands in #27).
+    createProjectsFeature({
+      db: database.db,
+      sessionReader: accounts.sessionReader,
+    }),
   ];
 }
 
@@ -63,4 +70,5 @@ export const routes = [
   ...settingsRoutes,
   ...invitationsRoutes,
   ...workspacesRoutes,
+  ...projectsRoutes,
 ];
