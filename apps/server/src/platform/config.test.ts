@@ -36,7 +36,8 @@ describe("loadConfig: ORRERY_ENCRYPTION_KEY", () => {
   it("decodes a 32-byte base64 key to the 32 bytes", () => {
     const key = loadConfig({
       ...baseEnv,
-      ORRERY_ENCRYPTION_KEY: "5JxZLMqonzkGHjJwLLuzM6d6fQ6m7onmSI+7yeB9NW0=",
+      // Valid 32-byte base64, deliberately fake (same value as ci.yml).
+      ORRERY_ENCRYPTION_KEY: "dGhpcy1rZXktaXMtanVzdC1hLXRlc3QtZml4dHVyZSE=",
     }).ORRERY_ENCRYPTION_KEY;
     expect(key).toBeInstanceOf(Buffer);
     expect(key?.byteLength).toBe(32);
