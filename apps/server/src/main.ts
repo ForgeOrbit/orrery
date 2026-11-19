@@ -26,7 +26,7 @@ for (const warning of await startupWarnings({
 }
 
 const app = createApp({
-  features: createFeatures(database, config),
+  features: createFeatures(database, config, log),
   publicUrl: config.PUBLIC_URL,
   webDist: config.WEB_DIST,
   log,
