@@ -33,12 +33,15 @@ const SETTINGS = {
 } as const;
 const SUBJECT = "Your Orrery invitation";
 
-// Two invited people: one registers through the API, one through the browser. Their
-// passwords and tokens are secrets the stack's logs must never contain.
+// Two invited people: one registers through the API, one through the browser. A third
+// registers through the browser while its sign-in is refused once. Their passwords and
+// tokens are secrets the stack's logs must never contain.
 const INVITEE_EMAIL = "newcomer@orrery.test";
 const INVITEE_PASSWORD = "invited-newcomer-password";
 const BROWSER_INVITEE_EMAIL = "browser.person@orrery.test";
 const BROWSER_INVITEE_PASSWORD = "browser-checked-invitee-password";
+const RESILIENT_INVITEE_EMAIL = "resilient.person@orrery.test";
+const RESILIENT_INVITEE_PASSWORD = "resilient-person-password";
 
 // The fresh tokens from the last delivered invitation emails; the send tests fill
 // these in, the later tests consume them. Tests run in file order.
@@ -47,7 +50,7 @@ let browserInviteeToken = "";
 
 let api: APIRequestContext;
 test.beforeAll(async () => {
-  for (const value of [INVITEE_PASSWORD, BROWSER_INVITEE_PASSWORD]) {
+  for (const value of [INVITEE_PASSWORD, BROWSER_INVITEE_PASSWORD, RESILIENT_INVITEE_PASSWORD]) {
     await recordSecret(value);
   }
   api = await request.newContext({ baseURL: baseUrl });
@@ -223,6 +226,8 @@ test("another person cannot access the new personal workspace", async ({ page })
   const newcomer = await request.newContext({ baseURL: baseUrl });
   const browserPerson = await request.newContext({ baseURL: baseUrl });
   const anonymous = await request.newContext({ baseURL: baseUrl });
+  let newcomerWorkspaceId: string | undefined;
+  let browserPersonWorkspaceId: string | undefined;
   try {
     for (const [context, email, password] of [
       [newcomer, INVITEE_EMAIL, INVITEE_PASSWORD],
@@ -241,15 +246,14 @@ test("another person cannot access the new personal workspace", async ({ page })
     expect(newcomerList).toHaveLength(1);
     expect(browserPersonList).toHaveLength(1);
     expect(adminList).toHaveLength(1);
-    const [newcomerWorkspace] = newcomerList;
-    const [browserWorkspace] = browserPersonList;
-    const [adminWorkspace] = adminList;
-    const ids = [newcomerWorkspace?.id, browserWorkspace?.id, adminWorkspace?.id];
+    newcomerWorkspaceId = newcomerList[0]?.id;
+    browserPersonWorkspaceId = browserPersonList[0]?.id;
+    const ids = [newcomerWorkspaceId, browserPersonWorkspaceId, adminList[0]?.id];
     expect(new Set(ids).size).toBe(3);
-    expect(adminList.map((w) => w.id)).not.toContain(newcomerWorkspace?.id);
-    expect(adminList.map((w) => w.id)).not.toContain(browserWorkspace?.id);
-    expect(browserPersonList.map((w) => w.id)).not.toContain(newcomerWorkspace?.id);
-    expect(newcomerList.map((w) => w.id)).not.toContain(browserWorkspace?.id);
+    expect(adminList.map((w) => w.id)).not.toContain(newcomerWorkspaceId);
+    expect(adminList.map((w) => w.id)).not.toContain(browserPersonWorkspaceId);
+    expect(browserPersonList.map((w) => w.id)).not.toContain(newcomerWorkspaceId);
+    expect(newcomerList.map((w) => w.id)).not.toContain(browserPersonWorkspaceId);
 
     // Without a session there is no listing at all.
     const refused = await anonymous.get("/api/workspaces");
@@ -262,7 +266,7 @@ test("another person cannot access the new personal workspace", async ({ page })
   }
 
   // In the browser: the other person signs in and sees their own workspace, and no
-  // trace of the first person's account or workspace.
+  // trace of the first person's account or workspace — proven by id, not by wording.
   await page.goto("/signin");
   await page.getByLabel("Email").fill(INVITEE_EMAIL);
   await page.getByLabel("Password").fill(INVITEE_PASSWORD);
@@ -270,8 +274,50 @@ test("another person cannot access the new personal workspace", async ({ page })
   await expect(page.getByText(`Signed in as ${INVITEE_EMAIL}.`)).toBeVisible();
   await expect(page.getByRole("heading", { name: "Your workspaces" })).toBeVisible();
   await expect(page.getByRole("listitem")).toHaveCount(1);
+  // The shown workspace is the newcomer's own, never the browser person's.
+  const shown = await page.locator("main li[data-workspace-id]").getAttribute("data-workspace-id");
+  expect(shown).toBe(newcomerWorkspaceId);
+  expect(shown).not.toBe(browserPersonWorkspaceId);
   const content = await page.content();
   expect(content).not.toContain(BROWSER_INVITEE_EMAIL);
+  for (const cookie of await page.context().cookies()) {
+    await recordSecret(cookie.value);
+  }
+});
+
+test("registration completes even when the follow-up sign-in fails", async ({ page }) => {
+  // A third invitation, for a person whose sign-in the browser will refuse once.
+  const invited = await api.post("/api/invitations/installation", {
+    data: { email: RESILIENT_INVITEE_EMAIL },
+  });
+  expect(invited.status()).toBe(201);
+  await expect
+    .poll(async () => caughtInvitationToken(api, RESILIENT_INVITEE_EMAIL), { timeout: 15_000 })
+    .toBeTruthy();
+  const token = await caughtInvitationToken(api, RESILIENT_INVITEE_EMAIL);
+  if (token === undefined) throw new Error("the catcher never received the invitation");
+  await recordSecret(token);
+
+  // Refuse only the sign-in that follows registration: registration itself must run.
+  await page.route("**/api/auth/login", (route) => route.abort());
+  await page.goto(`/register?token=${token}`);
+  await page.getByLabel("Password").fill(RESILIENT_INVITEE_PASSWORD);
+  await page.getByRole("button", { name: "Register" }).click();
+
+  // The account was created; the person is told so and sent to sign in, with no form
+  // left whose resubmit would fail with invitation_invalid.
+  await expect(page.getByText("Your account was created")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Sign in" })).toBeVisible();
+  await expect(page.getByLabel("Password")).toHaveCount(0);
+
+  // The account is real: once the browser stops refusing, signing in works.
+  await page.unroute("**/api/auth/login");
+  await page.getByRole("link", { name: "Sign in" }).click();
+  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+  await page.getByLabel("Email").fill(RESILIENT_INVITEE_EMAIL);
+  await page.getByLabel("Password").fill(RESILIENT_INVITEE_PASSWORD);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByText(`Signed in as ${RESILIENT_INVITEE_EMAIL}.`)).toBeVisible();
   for (const cookie of await page.context().cookies()) {
     await recordSecret(cookie.value);
   }
@@ -283,7 +329,7 @@ async function workspacesOf(context: APIRequestContext) {
   expect(res.status()).toBe(200);
   const body: unknown = await res.json();
   if (!Array.isArray(body)) throw new Error("the workspaces listing is not a list");
-  return body.flatMap((workspace): { id: unknown }[] => {
+  return body.flatMap((workspace): { id: string }[] => {
     if (typeof workspace !== "object" || workspace === null) return [];
     const id: unknown = Reflect.get(workspace, "id");
     if (typeof id !== "string") return [];
