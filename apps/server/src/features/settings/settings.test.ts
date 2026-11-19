@@ -7,7 +7,7 @@ import {
   type SmtpSettings,
 } from "@orrery/contract";
 import type { Hono } from "hono";
-import { eq, sql } from "drizzle-orm";
+import { eq, isNull, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createAccountsFeature } from "../accounts/index.ts";
 import {
@@ -20,12 +20,13 @@ import { createDb, type Database } from "../../platform/db.ts";
 import { createApp } from "../../platform/http.ts";
 import { type Logger, createLogger } from "../../platform/log.ts";
 import { migrate } from "../../platform/migrate.ts";
-import { createSettingsFeature } from "./index.ts";
+import { createSettingsFeature, startupWarnings } from "./index.ts";
 import type { SmtpMail, SmtpSender } from "./service.ts";
 
 // Runs against a real Postgres (see AGENTS.md): settings persistence, authorization,
-// and single-use token redemption are database behavior, not mock behavior. Delivery
-// itself is faked here; the black-box e2e suite proves real delivery through Mailpit.
+// encryption at rest, and single-use token redemption are database behavior, not mock
+// behavior. Delivery itself is faked here; the black-box e2e suite proves real delivery
+// through Mailpit.
 
 const SECRET = "correct horse battery staple staple";
 const EMAIL = "admin@example.com";
@@ -54,6 +55,10 @@ const SETTINGS_RESPONSE = {
 // How long a verification token lives. An implementation default (issue #22), fixed here
 // so the boundary tests can pin it.
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+// The deployment's key for secrets at rest (ADR-0004). A distinct second key proves a
+// changed key cannot read a stored password.
+const TEST_KEY = randomBytes(32);
+const OTHER_KEY = randomBytes(32);
 
 // The request log goes to the console; tests that don't capture it stay quiet.
 const silentLogger: Logger = createLogger("error");
@@ -78,6 +83,11 @@ const getJson = (app: Hono, path: string, cookie?: string) =>
 const problemBody = async (res: Response) => Problem.parse(await res.json());
 
 const tokenHash = (token: string) => createHash("sha256").update(token).digest("hex");
+
+// The token as the email's one identifiable line carries it, tolerant of the CRLF the
+// SMTP wire adds on the way through a real relay.
+const tokenFrom = (text: string) =>
+  text.match(/Single-use token, valid for 24 hours:\r?\n\r?\n([A-Za-z0-9_-]+)/)?.[1];
 
 // A fake SMTP sender: records what the service handed it, and can be told to fail the
 // way a real one would, with the same error codes the service classifies.
@@ -140,7 +150,7 @@ async function issuedToken(app: Hono, fake: { sent: SentMail[] }) {
   await saveSettings(app, cookie);
   const res = await postJson(app, "/api/settings/smtp/test", {}, cookie);
   expect(res.status).toBe(200);
-  const token = fake.sent[0]?.mail.text.match(/token=([A-Za-z0-9_-]+)/)?.[1];
+  const token = tokenFrom(fake.sent[0]?.mail.text ?? "");
   expect(token).not.toBe("");
   return { cookie, token: token ?? "" };
 }
@@ -167,9 +177,10 @@ describe("settings", () => {
     );
   });
 
+  // encryptionKey: null means the deployment set no key; omitted means the test key.
   function makeApp(
     setupSecret: string | undefined = SECRET,
-    opts: { sendMail?: SmtpSender; log?: Logger } = {},
+    opts: { sendMail?: SmtpSender; log?: Logger; encryptionKey?: Buffer | null } = {},
   ) {
     const log = opts.log ?? silentLogger;
     const accounts = createAccountsFeature({
@@ -180,7 +191,9 @@ describe("settings", () => {
     const settings = createSettingsFeature({
       db: database.db,
       publicUrl: PUBLIC_URL,
+      encryptionKey: opts.encryptionKey === null ? undefined : (opts.encryptionKey ?? TEST_KEY),
       sessionReader: accounts.sessionReader,
+      markEmailVerified: accounts.markEmailVerified,
       // exactOptionalPropertyTypes: pass the sender only when the test provides one,
       // so the service's real SMTP default stays in play otherwise.
       ...(opts.sendMail === undefined ? {} : { sendMail: opts.sendMail }),
@@ -279,7 +292,7 @@ describe("settings", () => {
       });
     });
 
-    it("saves settings, answers them without the password, and stores the password", async () => {
+    it("saves settings, answers them without the password, and stores only ciphertext", async () => {
       const app = makeApp();
       await bootstrapAdmin(app);
       const res = await saveSettings(app, await adminCookie(app));
@@ -288,21 +301,26 @@ describe("settings", () => {
       expect(JSON.parse(text)).toEqual(SETTINGS_RESPONSE);
       expect(text).not.toContain(SMTP_PASSWORD);
 
+      // At rest there is a versioned ciphertext, never the plaintext (ADR-0004).
       const [row] = await database.db.select().from(instanceSettings);
+      expect(row?.smtpPasswordEncrypted).toMatch(
+        /^v1:[A-Za-z0-9_-]+:[A-Za-z0-9_-]+:[A-Za-z0-9_-]+$/,
+      );
+      expect(row?.smtpPasswordEncrypted).not.toBe(SMTP_PASSWORD);
+      expect(row?.smtpPasswordEncrypted ?? "").not.toContain(SMTP_PASSWORD);
       expect(row).toMatchObject({
         id: true,
         smtpHost: "smtp.example.test",
         smtpPort: 587,
         smtpSecurity: "starttls",
         smtpUsername: "postmaster",
-        smtpPassword: SMTP_PASSWORD,
         smtpFrom: FROM,
       });
       const [admin] = await database.db.select().from(humans).where(eq(humans.email, EMAIL));
       expect(row?.updatedByHumanId).toBe(admin?.id);
     });
 
-    it("replaces settings wholesale, clearing the password when none is supplied", async () => {
+    it("replaces settings wholesale, clearing the stored password when none is supplied", async () => {
       const app = makeApp();
       await bootstrapAdmin(app);
       const cookie = await adminCookie(app);
@@ -328,8 +346,72 @@ describe("settings", () => {
       });
 
       const [row] = await database.db.select().from(instanceSettings);
-      expect(row?.smtpPassword).toBeNull();
+      expect(row?.smtpPasswordEncrypted).toBeNull();
       expect(row?.smtpHost).toBe("relay.example.test");
+    });
+
+    it("refuses security none together with credentials, in either field", async () => {
+      const app = makeApp();
+      await bootstrapAdmin(app);
+      const cookie = await adminCookie(app);
+
+      // A password alone or a username alone is enough to refuse: neither may travel
+      // in clear text.
+      const withPassword = await putJson(
+        app,
+        "/api/settings/smtp",
+        { ...SETTINGS, security: "none", username: null },
+        cookie,
+      );
+      expect(withPassword.status).toBe(400);
+      expect(await problemBody(withPassword)).toMatchObject({
+        code: "insecure_smtp_credentials",
+        title: expect.stringContaining("clear text"),
+      });
+
+      const withUsername = await putJson(
+        app,
+        "/api/settings/smtp",
+        { ...SETTINGS, security: "none", password: null },
+        cookie,
+      );
+      expect(withUsername.status).toBe(400);
+      expect(await problemBody(withUsername)).toMatchObject({ code: "insecure_smtp_credentials" });
+
+      // Security none itself is fine without credentials; the refusal is about the
+      // combination, not the mode.
+      const plain = await putJson(
+        app,
+        "/api/settings/smtp",
+        { ...SETTINGS, security: "none", username: null, password: null },
+        cookie,
+      );
+      expect(plain.status).toBe(200);
+      expect(await plain.json()).toMatchObject({ security: "none", hasPassword: false });
+      expect(await database.db.select().from(instanceSettings)).toHaveLength(1);
+    });
+
+    it("refuses to store a password when no encryption key is set, and still saves without one", async () => {
+      const app = makeApp(SECRET, { encryptionKey: null });
+      await bootstrapAdmin(app);
+      const cookie = await adminCookie(app);
+
+      const withPassword = await putJson(app, "/api/settings/smtp", SETTINGS, cookie);
+      expect(withPassword.status).toBe(409);
+      const refused = await problemBody(withPassword);
+      expect(refused).toMatchObject({ code: "encryption_key_missing" });
+      expect(refused.title).toContain("ORRERY_ENCRYPTION_KEY");
+      expect(await database.db.select().from(instanceSettings)).toHaveLength(0);
+
+      // Without a password there is nothing to encrypt: the settings save fine.
+      const withoutPassword = await putJson(
+        app,
+        "/api/settings/smtp",
+        { ...SETTINGS, username: null, password: null },
+        cookie,
+      );
+      expect(withoutPassword.status).toBe(200);
+      expect(await withoutPassword.json()).toMatchObject({ hasPassword: false });
     });
 
     it("refuses invalid settings with a validation Problem, and saves nothing", async () => {
@@ -392,6 +474,65 @@ describe("settings", () => {
     });
   });
 
+  describe("encryption at rest (ADR-0004)", () => {
+    it("round-trips the password: saved encrypted, decrypted only to be sent", async () => {
+      const fake = createFakeSender();
+      const app = makeApp(SECRET, { sendMail: fake.sender });
+      await bootstrapAdmin(app);
+      const cookie = await adminCookie(app);
+      await saveSettings(app, cookie);
+
+      const res = await postJson(app, "/api/settings/smtp/test", {}, cookie);
+      expect(res.status).toBe(200);
+      // The sender alone sees the plaintext, and only for this send.
+      expect(fake.sent[0]?.settings.password).toBe(SMTP_PASSWORD);
+      // The storage never did.
+      const [row] = await database.db.select().from(instanceSettings);
+      expect(row?.smtpPasswordEncrypted).not.toContain(SMTP_PASSWORD);
+    });
+
+    it("answers smtp_password_unreadable when the key changed or is gone", async () => {
+      const fake = createFakeSender();
+      const app = makeApp(SECRET, { sendMail: fake.sender });
+      await bootstrapAdmin(app);
+      const cookie = await adminCookie(app);
+      await saveSettings(app, cookie);
+
+      // A different key cannot read the stored ciphertext.
+      const rekeyed = makeApp(SECRET, { sendMail: fake.sender, encryptionKey: OTHER_KEY });
+      const wrongKey = await postJson(rekeyed, "/api/settings/smtp/test", {}, cookie);
+      expect(wrongKey.status).toBe(502);
+      const unreadable = await problemBody(wrongKey);
+      expect(unreadable).toMatchObject({ code: "smtp_password_unreadable" });
+      expect(unreadable.title).toContain("Re-enter the password");
+
+      // No key at all cannot read it either. Either way, nothing crashes and the
+      // response says exactly what to do.
+      const keyless = makeApp(SECRET, { sendMail: fake.sender, encryptionKey: null });
+      const noKey = await postJson(keyless, "/api/settings/smtp/test", {}, cookie);
+      expect(noKey.status).toBe(502);
+      expect(await problemBody(noKey)).toMatchObject({ code: "smtp_password_unreadable" });
+      expect(fake.sent).toHaveLength(0);
+    });
+
+    it("warns at startup when a password is stored but no key is set", async () => {
+      const app = makeApp();
+      await bootstrapAdmin(app);
+      const cookie = await adminCookie(app);
+      await saveSettings(app, cookie);
+
+      const [admin] = await database.db.select().from(humans).where(eq(humans.email, EMAIL));
+
+      const withoutKey = await startupWarnings({ db: database.db, encryptionKey: undefined });
+      expect(withoutKey).toHaveLength(1);
+      expect(withoutKey[0]).toContain("ORRERY_ENCRYPTION_KEY");
+
+      const withKey = await startupWarnings({ db: database.db, encryptionKey: TEST_KEY });
+      expect(withKey).toEqual([]);
+      expect(admin?.id).not.toBe("");
+    });
+  });
+
   describe("test email", () => {
     it("refuses to send before SMTP is configured", async () => {
       const app = makeApp();
@@ -420,18 +561,23 @@ describe("settings", () => {
       expect(body.sentTo).toBe(EMAIL);
       expect(body.message).toContain("token");
 
-      // The saved settings drove the send, password included: the sender needs it.
+      // The saved settings drove the send, decrypted password included.
       expect(fake.sent).toHaveLength(1);
       expect(fake.sent[0]?.settings).toEqual({ ...SETTINGS, from: FROM });
       const mail = fake.sent[0]?.mail;
       expect(mail?.to).toBe(EMAIL);
       expect(mail?.from).toBe(FROM);
 
+      // The email says how to complete verification, with no link to follow: the
+      // token is redeemed by a POST, and nothing else (issue #22 review).
+      expect(mail?.text).toContain(PUBLIC_URL);
+      expect(mail?.text).toContain("/api/settings/email-verification");
+      expect(mail?.text).not.toContain("verify-email?token");
+
       // The email carries a single-use token, valid for the default 24 hours.
-      const token = mail?.text.match(/token=([A-Za-z0-9_-]+)/)?.[1];
+      const token = tokenFrom(mail?.text ?? "");
       expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
       expect(mail?.text).toContain(EMAIL);
-      expect(mail?.text).toContain(PUBLIC_URL);
       const [row] = await database.db.select().from(emailVerificationTokens);
       if (row === undefined) throw new Error("the token was not stored");
       expect(row.tokenHash).toBe(tokenHash(token ?? ""));
@@ -463,8 +609,19 @@ describe("settings", () => {
           code: "smtp_auth_failed",
         },
         {
-          error: () => codedError("ESOCKET", "wrong version number"),
+          // Node's own TLS error codes are unambiguous.
+          error: () => codedError("ERR_SSL_WRONG_VERSION_NUMBER", "wrong version number"),
           code: "smtp_tls_failed",
+        },
+        {
+          // So is a certificate failure in the exchange, even wrapped as ESOCKET.
+          error: () => codedError("ESOCKET", "unable to verify the first certificate"),
+          code: "smtp_tls_failed",
+        },
+        {
+          // A wrapped ESOCKET that says nothing about TLS is not a TLS failure.
+          error: () => codedError("ESOCKET", "some other socket quirk"),
+          code: "smtp_send_failed",
         },
         {
           error: () => new Error("some unclassified relay quirk"),
@@ -481,8 +638,68 @@ describe("settings", () => {
         // The raw error text never reaches the Problem.
         expect(JSON.stringify(body)).not.toContain("ECONNREFUSED");
         expect(JSON.stringify(body)).not.toContain("Authentication failed");
-        expect(JSON.stringify(body)).not.toContain("unclassified relay quirk");
+        expect(JSON.stringify(body)).not.toContain("relay quirk");
       }
+    });
+
+    it("leaves no live token behind when the send fails", async () => {
+      const fake = createFakeSender();
+      const app = makeApp(SECRET, { sendMail: fake.sender });
+      await bootstrapAdmin(app);
+      const cookie = await adminCookie(app);
+      await saveSettings(app, cookie);
+
+      fake.failWith(() => codedError("ECONNREFUSED", "connect ECONNREFUSED 127.0.0.1:25"));
+      const res = await postJson(app, "/api/settings/smtp/test", {}, cookie);
+      expect(res.status).toBe(502);
+
+      // The email never left, so its token is gone too: nothing unused remains.
+      const unused = await database.db
+        .select()
+        .from(emailVerificationTokens)
+        .where(isNull(emailVerificationTokens.usedAt));
+      expect(unused).toHaveLength(0);
+      // The token the unsent email carried is refused like any other.
+      const token = tokenFrom(fake.sent[0]?.mail.text ?? "");
+      const redeem = await postJson(app, "/api/settings/email-verification", { token }, cookie);
+      expect(redeem.status).toBe(400);
+    });
+
+    it("invalidates the account's earlier unused tokens when a new one is issued", async () => {
+      const fake = createFakeSender();
+      const app = makeApp(SECRET, { sendMail: fake.sender });
+      await bootstrapAdmin(app);
+      const cookie = await adminCookie(app);
+      await saveSettings(app, cookie);
+
+      const first = await postJson(app, "/api/settings/smtp/test", {}, cookie);
+      expect(first.status).toBe(200);
+      const firstToken = tokenFrom(fake.sent[0]?.mail.text ?? "");
+      expect(firstToken).not.toBe("");
+
+      const second = await postJson(app, "/api/settings/smtp/test", {}, cookie);
+      expect(second.status).toBe(200);
+      const secondToken = tokenFrom(fake.sent[1]?.mail.text ?? "");
+      expect(secondToken).not.toBe("");
+      expect(secondToken).not.toBe(firstToken);
+
+      // The newer issue retired the older token: one live token per account.
+      const older = await postJson(
+        app,
+        "/api/settings/email-verification",
+        { token: firstToken },
+        cookie,
+      );
+      expect(older.status).toBe(400);
+      expect(await problemBody(older)).toMatchObject({ code: "verification_token_invalid" });
+
+      const newer = await postJson(
+        app,
+        "/api/settings/email-verification",
+        { token: secondToken },
+        cookie,
+      );
+      expect(newer.status).toBe(200);
     });
 
     it("records requests without the SMTP password or the verification token", async () => {
@@ -498,7 +715,7 @@ describe("settings", () => {
         const cookie = await adminCookie(app);
         await saveSettings(app, cookie);
         await postJson(app, "/api/settings/smtp/test", {}, cookie);
-        const token = fake.sent[0]?.mail.text.match(/token=([A-Za-z0-9_-]+)/)?.[1] ?? "";
+        const token = tokenFrom(fake.sent[0]?.mail.text ?? "") ?? "";
         expect(token).not.toBe("");
         await postJson(app, "/api/settings/email-verification", { token }, cookie);
 

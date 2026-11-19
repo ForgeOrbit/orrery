@@ -1,7 +1,8 @@
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
-import { startupWarnings } from "./features/accounts/index.ts";
+import { startupWarnings as accountWarnings } from "./features/accounts/index.ts";
 import { createFeatures } from "./features/index.ts";
+import { startupWarnings as settingsWarnings } from "./features/settings/index.ts";
 import { loadConfig } from "./platform/config.ts";
 import { createDb } from "./platform/db.ts";
 import { createApp } from "./platform/http.ts";
@@ -17,11 +18,11 @@ const migrationsDir = fileURLToPath(new URL("../../../db/migrations", import.met
 const applied = await migrate(database.sql, migrationsDir);
 if (applied.length > 0) log.info("migrations applied", { applied });
 
-// The accounts feature decides what to warn about at startup; main only reports it.
-for (const warning of await startupWarnings({
-  db: database.db,
-  setupSecret: config.BOOTSTRAP_SECRET,
-})) {
+// Each feature decides what to warn about at startup; main only reports it.
+for (const warning of [
+  ...(await accountWarnings({ db: database.db, setupSecret: config.BOOTSTRAP_SECRET })),
+  ...(await settingsWarnings({ db: database.db, encryptionKey: config.ORRERY_ENCRYPTION_KEY })),
+]) {
   log.warn(warning);
 }
 

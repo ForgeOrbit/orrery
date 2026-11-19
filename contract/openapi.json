@@ -554,7 +554,7 @@
       },
       "put": {
         "summary": "Replace the installation's SMTP settings",
-        "description": "System administrators only. Replaces the whole configuration, password included: the stored password is never returned, so an update supplies it again. An explicit null means no username or no password.",
+        "description": "System administrators only. Replaces the whole configuration, password included: the stored password is never returned, so an update supplies it again, and it is stored encrypted at rest (ADR-0004). An explicit null means no username or no password. Security 'none' refuses credentials, and a password requires the deployment's encryption key.",
         "requestBody": {
           "required": true,
           "content": {
@@ -577,7 +577,7 @@
             }
           },
           "400": {
-            "description": "The settings are invalid",
+            "description": "The settings are invalid, or security 'none' carries credentials",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -605,6 +605,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "No encryption key is configured for a password",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         }
       }
@@ -612,7 +622,7 @@
     "/api/settings/smtp/test": {
       "post": {
         "summary": "Send a test email to the administrator's own address",
-        "description": "System administrators only, after SMTP is configured. The email carries a single-use token; redeeming it verifies the administrator's address. A delivery failure is a Problem whose code names the reason (smtp_unreachable, smtp_auth_failed, smtp_tls_failed, smtp_send_failed).",
+        "description": "System administrators only, after SMTP is configured. The email carries a single-use token; redeeming it verifies the administrator's address. A delivery failure is a Problem whose code names the reason (smtp_unreachable, smtp_auth_failed, smtp_tls_failed, smtp_send_failed, smtp_password_unreadable).",
         "responses": {
           "200": {
             "description": "The test email was sent to the administrator's own address",

@@ -6,13 +6,14 @@ import {
   TestEmailResponse,
   VerifyEmailRequest,
 } from "@orrery/contract";
+import type { Context } from "hono";
 import {
   problemContent as problem,
   problemResponse,
   validationHook,
 } from "../../platform/problem.ts";
 import type { SessionReader } from "../accounts/index.ts";
-import { SettingsError, type SettingsService } from "./service.ts";
+import { SettingsError, type SettingsErrorKind, type SettingsService } from "./service.ts";
 
 const smtp = createRoute({
   method: "get",
@@ -35,7 +36,7 @@ const saveSmtp = createRoute({
   path: "/api/settings/smtp",
   summary: "Replace the installation's SMTP settings",
   description:
-    "System administrators only. Replaces the whole configuration, password included: the stored password is never returned, so an update supplies it again. An explicit null means no username or no password.",
+    "System administrators only. Replaces the whole configuration, password included: the stored password is never returned, so an update supplies it again, and it is stored encrypted at rest (ADR-0004). An explicit null means no username or no password. Security 'none' refuses credentials, and a password requires the deployment's encryption key.",
   request: {
     body: { required: true, content: { "application/json": { schema: SmtpSettings } } },
   },
@@ -44,9 +45,10 @@ const saveSmtp = createRoute({
       description: "The saved settings, without the password",
       content: { "application/json": { schema: SmtpSettingsResponse } },
     },
-    400: problem("The settings are invalid"),
+    400: problem("The settings are invalid, or security 'none' carries credentials"),
     401: problem("Not signed in"),
     403: problem("Signed in, but not a system administrator"),
+    409: problem("No encryption key is configured for a password"),
   },
 });
 
@@ -55,7 +57,7 @@ const sendTestEmail = createRoute({
   path: "/api/settings/smtp/test",
   summary: "Send a test email to the administrator's own address",
   description:
-    "System administrators only, after SMTP is configured. The email carries a single-use token; redeeming it verifies the administrator's address. A delivery failure is a Problem whose code names the reason (smtp_unreachable, smtp_auth_failed, smtp_tls_failed, smtp_send_failed).",
+    "System administrators only, after SMTP is configured. The email carries a single-use token; redeeming it verifies the administrator's address. A delivery failure is a Problem whose code names the reason (smtp_unreachable, smtp_auth_failed, smtp_tls_failed, smtp_send_failed, smtp_password_unreadable).",
   responses: {
     200: {
       description: "The test email was sent to the administrator's own address",
@@ -90,34 +92,68 @@ const verifyEmail = createRoute({
 // Route definitions, for the generated OpenAPI document.
 export const routes = [smtp, saveSmtp, sendTestEmail, verifyEmail];
 
-// Each route answers exactly the SettingsError kinds its service call can throw, at the
-// status its route declares. Any other kind is a programming error: it stays a 500
-// instead of silently gaining a status.
-const sessionStatus = (error: SettingsError): 401 | 403 | undefined =>
-  error.kind === "not_signed_in" ? 401 : error.kind === "not_admin" ? 403 : undefined;
-const testStatus = (error: SettingsError): 401 | 403 | 409 | 502 | undefined =>
-  error.kind === "not_signed_in"
-    ? 401
-    : error.kind === "not_admin"
-      ? 403
-      : error.kind === "smtp_unconfigured"
-        ? 409
-        : error.kind === "smtp_unreachable" ||
-            error.kind === "smtp_auth_failed" ||
-            error.kind === "smtp_tls_failed" ||
-            error.kind === "smtp_send_failed"
-          ? 502
-          : undefined;
-const verifyStatus = (error: SettingsError): 401 | 400 | undefined =>
-  error.kind === "not_signed_in"
-    ? 401
-    : error.kind === "verification_token_invalid"
-      ? 400
-      : undefined;
+// Every error kind's HTTP status, the same shape as accounts/rest.ts.
+const statusFor = {
+  not_signed_in: 401,
+  not_admin: 403,
+  insecure_smtp_credentials: 400,
+  encryption_key_missing: 409,
+  smtp_unconfigured: 409,
+  smtp_password_unreadable: 502,
+  verification_token_invalid: 400,
+  smtp_unreachable: 502,
+  smtp_auth_failed: 502,
+  smtp_tls_failed: 502,
+  smtp_send_failed: 502,
+} as const satisfies Record<SettingsErrorKind, number>;
+
+// The kinds each route's service calls can throw: a route answers exactly these. Any
+// other kind is a programming error.
+const sessionKinds = ["not_signed_in", "not_admin"] as const;
+const saveKinds = [
+  "not_signed_in",
+  "not_admin",
+  "insecure_smtp_credentials",
+  "encryption_key_missing",
+] as const;
+const testKinds = [
+  "not_signed_in",
+  "not_admin",
+  "smtp_unconfigured",
+  "smtp_password_unreadable",
+  "smtp_unreachable",
+  "smtp_auth_failed",
+  "smtp_tls_failed",
+  "smtp_send_failed",
+] as const;
+const verifyKinds = ["not_signed_in", "verification_token_invalid"] as const;
+
+// True when the error's kind is one of the route's kinds. A type guard is the honest
+// way to narrow; no assertions.
+function isKind<K extends readonly SettingsErrorKind[]>(
+  error: SettingsError,
+  kinds: K,
+): error is SettingsError & { kind: K[number] } {
+  return kinds.some((kind) => kind === error.kind);
+}
+
+// Every route's error answer in one place: a Problem for the kinds the route declares,
+// at statusFor's status. A kind the route does not answer is a programming error: it
+// stays a 500 instead of silently gaining a status.
+function failure<K extends readonly SettingsErrorKind[]>(c: Context, error: unknown, kinds: K) {
+  if (error instanceof SettingsError && isKind(error, kinds)) {
+    return problemResponse(c, {
+      status: statusFor[error.kind],
+      code: error.kind,
+      title: error.message,
+    });
+  }
+  throw error;
+}
 
 // Thin: resolve the session, call the service, map the result to HTTP. The service
-// decides who may do what; this layer only carries it. Every error is a Problem whose
-// code is the service error's kind and whose title is its message (ADR-0003).
+// decides who may do what; this layer only carries it, and every error is a Problem
+// built through platform/problem.ts (ADR-0003).
 export function createSettingsRest(service: SettingsService, sessionReader: SessionReader) {
   // Validation failures answer as a validation_failed Problem, like every other error.
   const app = new OpenAPIHono({ defaultHook: validationHook });
@@ -126,13 +162,7 @@ export function createSettingsRest(service: SettingsService, sessionReader: Sess
     try {
       return c.json(await service.smtp(await sessionReader(c)), 200);
     } catch (error) {
-      if (error instanceof SettingsError) {
-        const status = sessionStatus(error);
-        if (status !== undefined) {
-          return problemResponse(c, { status, code: error.kind, title: error.message });
-        }
-      }
-      throw error;
+      return failure(c, error, sessionKinds);
     }
   });
 
@@ -140,13 +170,7 @@ export function createSettingsRest(service: SettingsService, sessionReader: Sess
     try {
       return c.json(await service.saveSmtp(await sessionReader(c), c.req.valid("json")), 200);
     } catch (error) {
-      if (error instanceof SettingsError) {
-        const status = sessionStatus(error);
-        if (status !== undefined) {
-          return problemResponse(c, { status, code: error.kind, title: error.message });
-        }
-      }
-      throw error;
+      return failure(c, error, saveKinds);
     }
   });
 
@@ -154,13 +178,7 @@ export function createSettingsRest(service: SettingsService, sessionReader: Sess
     try {
       return c.json(await service.sendTestEmail(await sessionReader(c)), 200);
     } catch (error) {
-      if (error instanceof SettingsError) {
-        const status = testStatus(error);
-        if (status !== undefined) {
-          return problemResponse(c, { status, code: error.kind, title: error.message });
-        }
-      }
-      throw error;
+      return failure(c, error, testKinds);
     }
   });
 
@@ -168,13 +186,7 @@ export function createSettingsRest(service: SettingsService, sessionReader: Sess
     try {
       return c.json(await service.verifyEmail(await sessionReader(c), c.req.valid("json")), 200);
     } catch (error) {
-      if (error instanceof SettingsError) {
-        const status = verifyStatus(error);
-        if (status !== undefined) {
-          return problemResponse(c, { status, code: error.kind, title: error.message });
-        }
-      }
-      throw error;
+      return failure(c, error, verifyKinds);
     }
   });
 

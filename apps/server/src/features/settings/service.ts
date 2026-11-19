@@ -1,11 +1,13 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createTransport } from "nodemailer";
-import type { SmtpSettings, SmtpSettingsResponse } from "@orrery/contract";
+import type { SmtpSecurity, SmtpSettings, SmtpSettingsResponse } from "@orrery/contract";
 import type { SessionAccount } from "../accounts/index.ts";
+import type { DbTransaction } from "../../platform/db.ts";
 import type { Logger } from "../../platform/log.ts";
 import { and, eq, isNull, gt, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { emailVerificationTokens, humans, instanceSettings } from "../../db/schema.ts";
+import { emailVerificationTokens, instanceSettings } from "../../db/schema.ts";
+import { decryptSecret, encryptSecret } from "../../platform/secrets.ts";
 
 // The service is the only file in a feature that decides anything. rest.ts calls it.
 
@@ -26,7 +28,10 @@ export type SmtpSender = (settings: SmtpSettings, mail: SmtpMail) => Promise<voi
 export type SettingsErrorKind =
   | "not_signed_in"
   | "not_admin"
+  | "insecure_smtp_credentials"
+  | "encryption_key_missing"
   | "smtp_unconfigured"
+  | "smtp_password_unreadable"
   | "verification_token_invalid"
   | "smtp_unreachable"
   | "smtp_auth_failed"
@@ -38,7 +43,13 @@ export type SettingsErrorKind =
 const messages = {
   not_signed_in: "Not signed in.",
   not_admin: "Only a system administrator can manage installation settings.",
+  insecure_smtp_credentials:
+    "SMTP security 'none' sends the username and password in clear text. Choose starttls or tls, or save no credentials.",
+  encryption_key_missing:
+    "No encryption key is configured, so a password cannot be saved. Set ORRERY_ENCRYPTION_KEY on the server and try again.",
   smtp_unconfigured: "SMTP is not configured yet. Save the SMTP settings first.",
+  smtp_password_unreadable:
+    "The stored SMTP password cannot be read with the configured key. Re-enter the password in the settings.",
   verification_token_invalid: "This verification token is invalid, expired, or already used.",
   smtp_unreachable:
     "Could not reach the SMTP server. Check the host and port, and that the server accepts connections from this Orrery server.",
@@ -62,14 +73,19 @@ export class SettingsError extends Error {
 // the token exists to be redeemed minutes after the test email arrives.
 const VERIFICATION_TTL_SECONDS = 24 * 60 * 60;
 
-// The browser session cookie holds a random token; only its SHA-256 is stored, exactly
-// like accounts' session tokens.
+// The verification token is random and travels by email in the clear; only its
+// SHA-256 is stored, exactly like accounts' session tokens.
 const tokenHash = (token: string) => createHash("sha256").update(token).digest("hex");
 
 export interface SettingsDeps {
   db: PostgresJsDatabase;
-  // The URL people use to reach the server; the verification email links into it.
+  // The URL people use to reach the server; the verification email names its API.
   publicUrl: string;
+  // The deployment's key for secrets at rest (ADR-0004). Undefined means none is set:
+  // a password cannot be saved, and a stored one cannot be sent.
+  encryptionKey: Buffer | undefined;
+  // Accounts owns the humans table; a redeemed token earns this write.
+  markEmailVerified: (humanId: string, tx: DbTransaction) => Promise<void>;
   // Sends the mail. Falls back to the real SMTP transport when omitted.
   sendMail?: SmtpSender;
   log?: Logger;
@@ -85,6 +101,62 @@ export interface SettingsService {
   ): Promise<{ email: string; emailVerified: true }>;
 }
 
+// One row of the settings table as every reader needs it, mapped once: the secret stays
+// encrypted, and the response says only whether one is stored.
+interface StoredSettings {
+  host: string;
+  port: number;
+  security: SmtpSecurity;
+  username: string | null;
+  passwordEncrypted: string | null;
+  from: string;
+}
+
+function toSettings(row: typeof instanceSettings.$inferSelect): StoredSettings {
+  return {
+    host: row.smtpHost,
+    port: row.smtpPort,
+    security: row.smtpSecurity,
+    username: row.smtpUsername,
+    passwordEncrypted: row.smtpPasswordEncrypted,
+    from: row.smtpFrom,
+  };
+}
+
+function toResponse(stored: StoredSettings): SmtpSettingsResponse {
+  return {
+    host: stored.host,
+    port: stored.port,
+    security: stored.security,
+    username: stored.username,
+    hasPassword: stored.passwordEncrypted !== null,
+    from: stored.from,
+  };
+}
+
+// The settings as the sender needs them: the password decrypted for this send only,
+// never stored or logged again.
+function toSmtpSettings(stored: StoredSettings, password: string | null): SmtpSettings {
+  return {
+    host: stored.host,
+    port: stored.port,
+    security: stored.security,
+    username: stored.username,
+    password,
+    from: stored.from,
+  };
+}
+
+// The response while nothing is saved: every field unset.
+const UNSET_RESPONSE: SmtpSettingsResponse = {
+  host: null,
+  port: null,
+  security: null,
+  username: null,
+  hasPassword: false,
+  from: null,
+};
+
 // An error's code (ECONNREFUSED, EAUTH, ...), read without asserting a shape: errors
 // arrive from drivers and libraries that each wrap them differently.
 function errorCode(error: unknown): string | undefined {
@@ -93,34 +165,27 @@ function errorCode(error: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
+// The socket-level causes that make a relay unreachable, as one list for both checks:
+// nodemailer wraps them as ESOCKET with the cause in the message, and other callers
+// surface them as the error's own code.
+const UNREACHABLE_CODES =
+  /ECONNREFUSED|ECONNRESET|ECONNABORTED|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|EPIPE|ECONNECTION/;
+
 // What kind of failure a relay error is, without the error's own text: the kind names
 // what to check, the log keeps the rest.
 function deliveryFailureKind(error: unknown): SettingsErrorKind {
   const code = errorCode(error);
   if (code === "EAUTH") return "smtp_auth_failed";
   const message = error instanceof Error ? error.message : "";
-  // nodemailer wraps low-level socket failures as ESOCKET, with the real cause in the
-  // message ("connect ECONNREFUSED ..."), so look there before blaming TLS.
+  if (UNREACHABLE_CODES.test(message)) return "smtp_unreachable";
+  if (code !== undefined && UNREACHABLE_CODES.test(code)) return "smtp_unreachable";
+  // TLS only when the failure is clearly TLS: node's own SSL error codes, or a
+  // certificate, handshake, or SSL/TLS message from the exchange itself.
   if (
-    /ECONNREFUSED|ECONNRESET|ECONNABORTED|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|EPIPE/.test(
-      message,
-    )
-  ) {
-    return "smtp_unreachable";
-  }
-  if (
-    (code !== undefined && (code === "ESOCKET" || code.startsWith("ERR_SSL"))) ||
-    /SSL|TLS|certificate/i.test(message)
+    (code !== undefined && code.startsWith("ERR_SSL")) ||
+    /SSL|TLS|certificate|handshake/i.test(message)
   ) {
     return "smtp_tls_failed";
-  }
-  if (
-    code !== undefined &&
-    /^(ECONNREFUSED|ECONNRESET|ECONNABORTED|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|EPIPE|ECONNECTION)$/.test(
-      code,
-    )
-  ) {
-    return "smtp_unreachable";
   }
   return "smtp_send_failed";
 }
@@ -141,8 +206,8 @@ function verificationEmail(email: string, token: string, publicUrl: string): Smt
     "",
     token,
     "",
-    `Complete verification at ${publicUrl}/verify-email?token=${token}`,
-    "Opening the link alone changes nothing; the token is only used when you confirm.",
+    `Sign in, then redeem it with a POST to ${publicUrl}/api/settings/email-verification to finish verification.`,
+    "Nothing completes this until that POST; the token is only used when you do.",
     "",
     "If you did not expect this email, ignore it.",
   ].join("\n");
@@ -156,9 +221,20 @@ function requireAdministrator(account: SessionAccount | null): SessionAccount {
   return account;
 }
 
+// The stored password decrypted for one send, or the reason it cannot be.
+function storedPassword(stored: StoredSettings, key: Buffer | undefined): string | null {
+  if (stored.passwordEncrypted === null) return null;
+  if (key === undefined) throw new SettingsError("smtp_password_unreadable");
+  const password = decryptSecret(key, stored.passwordEncrypted);
+  if (password === undefined) throw new SettingsError("smtp_password_unreadable");
+  return password;
+}
+
 export function createSettingsService({
   db,
   publicUrl,
+  encryptionKey,
+  markEmailVerified,
   sendMail = sendWithSmtp,
   log,
 }: SettingsDeps): SettingsService {
@@ -166,76 +242,91 @@ export function createSettingsService({
     async smtp(account) {
       requireAdministrator(account);
       const [row] = await db.select().from(instanceSettings).limit(1);
-      if (row === undefined) {
-        return {
-          host: null,
-          port: null,
-          security: null,
-          username: null,
-          hasPassword: false,
-          from: null,
-        };
-      }
-      return {
-        host: row.smtpHost,
-        port: row.smtpPort,
-        security: row.smtpSecurity,
-        username: row.smtpUsername,
-        hasPassword: row.smtpPassword !== null,
-        from: row.smtpFrom,
-      };
+      return row === undefined ? UNSET_RESPONSE : toResponse(toSettings(row));
     },
 
-    // Saves the complete configuration, password included, in one upsert on the
-    // singleton row: concurrent saves settle on one row, last writer wins.
+    // Saves the complete configuration in one upsert on the singleton row: concurrent
+    // saves settle on one row, last writer wins. A password is encrypted at rest with
+    // the deployment's key (ADR-0004) and never stored in the clear.
     async saveSmtp(account, input) {
       const admin = requireAdministrator(account);
-      const saved = {
-        smtpHost: input.host,
-        smtpPort: input.port,
-        smtpSecurity: input.security,
-        smtpUsername: input.username,
-        smtpPassword: input.password,
-        smtpFrom: input.from,
-        updatedAt: sql`now()`,
-        updatedByHumanId: admin.humanId,
-      };
-      await db
-        .insert(instanceSettings)
-        .values({ id: true, ...saved })
-        .onConflictDoUpdate({ target: instanceSettings.id, set: saved });
-      return {
+      // Security "none" together with credentials would authenticate in clear text;
+      // refuse the combination rather than send a usable password unprotected.
+      if (input.security === "none" && (input.username !== null || input.password !== null)) {
+        throw new SettingsError("insecure_smtp_credentials");
+      }
+      if (input.password !== null && encryptionKey === undefined) {
+        throw new SettingsError("encryption_key_missing");
+      }
+      const encrypted =
+        input.password === null || encryptionKey === undefined
+          ? null
+          : encryptSecret(encryptionKey, input.password);
+      const stored: StoredSettings = {
         host: input.host,
         port: input.port,
         security: input.security,
         username: input.username,
-        hasPassword: input.password !== null,
+        passwordEncrypted: encrypted,
         from: input.from,
       };
+      await db
+        .insert(instanceSettings)
+        .values({
+          id: true,
+          smtpHost: stored.host,
+          smtpPort: stored.port,
+          smtpSecurity: stored.security,
+          smtpUsername: stored.username,
+          smtpPasswordEncrypted: stored.passwordEncrypted,
+          smtpFrom: stored.from,
+          updatedAt: sql`now()`,
+          updatedByHumanId: admin.humanId,
+        })
+        .onConflictDoUpdate({
+          target: instanceSettings.id,
+          set: {
+            smtpHost: stored.host,
+            smtpPort: stored.port,
+            smtpSecurity: stored.security,
+            smtpUsername: stored.username,
+            smtpPasswordEncrypted: stored.passwordEncrypted,
+            smtpFrom: stored.from,
+            updatedAt: sql`now()`,
+            updatedByHumanId: admin.humanId,
+          },
+        });
+      return toResponse(stored);
     },
 
     // The test email doubles as the verification email (issue #22): it goes to the
     // administrator's own address and carries a fresh single-use token. Receiving it
-    // proves both the delivery settings and ownership of the mailbox.
+    // proves both the delivery settings and ownership of the mailbox. Issuing the
+    // token invalidates the account's earlier unused tokens, and a send that fails
+    // leaves no live token behind: one that was never delivered must not redeem.
     async sendTestEmail(account) {
       const admin = requireAdministrator(account);
       const [row] = await db.select().from(instanceSettings).limit(1);
       if (row === undefined) throw new SettingsError("smtp_unconfigured");
-      const settings: SmtpSettings = {
-        host: row.smtpHost,
-        port: row.smtpPort,
-        security: row.smtpSecurity,
-        username: row.smtpUsername,
-        password: row.smtpPassword,
-        from: row.smtpFrom,
-      };
+      const stored = toSettings(row);
+      const settings = toSmtpSettings(stored, storedPassword(stored, encryptionKey));
 
       const token = randomBytes(32).toString("base64url");
-      await db.insert(emailVerificationTokens).values({
-        id: randomUUID(),
-        humanId: admin.humanId,
-        tokenHash: tokenHash(token),
-        expiresAt: sql`now() + make_interval(secs => ${VERIFICATION_TTL_SECONDS})`,
+      await db.transaction(async (tx) => {
+        await tx
+          .delete(emailVerificationTokens)
+          .where(
+            and(
+              eq(emailVerificationTokens.humanId, admin.humanId),
+              isNull(emailVerificationTokens.usedAt),
+            ),
+          );
+        await tx.insert(emailVerificationTokens).values({
+          id: randomUUID(),
+          humanId: admin.humanId,
+          tokenHash: tokenHash(token),
+          expiresAt: sql`now() + make_interval(secs => ${VERIFICATION_TTL_SECONDS})`,
+        });
       });
       const mail: SmtpMail = {
         from: settings.from,
@@ -247,9 +338,10 @@ export function createSettingsService({
       try {
         await sendMail(settings, mail);
       } catch (error) {
-        // The log line carries the error's name and code only, which cannot contain
-        // secrets; the administrator answers with the classified kind, never the raw
-        // error text.
+        // The email never left, so its token must not be redeemable.
+        await db
+          .delete(emailVerificationTokens)
+          .where(eq(emailVerificationTokens.tokenHash, tokenHash(token)));
         log?.warn("test email failed", errorNameAndCode(error));
         throw new SettingsError(deliveryFailureKind(error));
       }
@@ -262,7 +354,8 @@ export function createSettingsService({
 
     // One conditional update, evaluated in database time: the token must be unused and
     // unexpired. The redemption and the verified mark share one transaction, and a token
-    // issued to another account is refused without being consumed.
+    // issued to another account is refused without being consumed. Accounts owns the
+    // humans write, inside this transaction.
     async verifyEmail(account, input) {
       if (account === null) throw new SettingsError("not_signed_in");
       await db.transaction(async (tx) => {
@@ -281,10 +374,7 @@ export function createSettingsService({
         if (row === undefined || row.humanId !== account.humanId) {
           throw new SettingsError("verification_token_invalid");
         }
-        await tx
-          .update(humans)
-          .set({ emailVerifiedAt: sql`now()` })
-          .where(eq(humans.id, row.humanId));
+        await markEmailVerified(row.humanId, tx);
       });
       return { email: account.email, emailVerified: true as const };
     },
@@ -324,3 +414,20 @@ export const sendWithSmtp: SmtpSender = async (settings, mail) => {
     transport.close();
   }
 };
+
+// The one startup warning settings owns: a stored SMTP password that no key can read is
+// silently unusable, and the operator should learn that at startup, not at the first
+// failed send. main.ts reports whatever this returns; the decision stays here.
+export async function startupWarnings({
+  db,
+  encryptionKey,
+}: Pick<SettingsDeps, "db" | "encryptionKey">): Promise<string[]> {
+  if (encryptionKey !== undefined) return [];
+  const [row] = await db
+    .select({ passwordEncrypted: instanceSettings.smtpPasswordEncrypted })
+    .from(instanceSettings)
+    .limit(1);
+  return row?.passwordEncrypted != null
+    ? ["an SMTP password is stored but ORRERY_ENCRYPTION_KEY is not set, so it cannot be sent"]
+    : [];
+}
