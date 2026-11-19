@@ -232,6 +232,10 @@ Keep one cookie jar per account; the shortcuts below use `$J` for the acting acc
   event sets with counts, not exact order.
 - A non-member probe of any shared-workspace endpoint answers 404 `workspace_not_found`,
   including PATCH and DELETE; only an existing member without the capability answers 403.
+- A delegated inviter's invitation history is filtered to offers whose every offered project
+  they currently Manage; an owner sees every offer. A dead offer (withdrawn inviter
+  authority) does not block the same address for seven days: creating a fresh invitation
+  supersedes it, and the original inviter may revoke their own dead offer directly.
 - `workspace_ownership_guards` serializes ownership changes. Remove members in the
   documented order (events, invitations, memberships, workspace) if cleaning up by hand;
   membership removal normally goes through the service.

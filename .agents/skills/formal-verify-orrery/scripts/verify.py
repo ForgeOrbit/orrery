@@ -170,8 +170,32 @@ def extract_code_facts() -> dict[str, Any]:
             )
         )
 
+    # The invitation-management endpoints share requireInviter(), which performs the same
+    # non-enumerating actor lookup. Check both the helper and that each endpoint calls it.
+    require_inviter_fn = slice_between(ws_src, "async function requireInviter(", "async function requireProjectManageScope(")
+    m7_require_inviter_404 = bool(
+        re.search(
+            r'readMembership\(\s*tx,\s*workspaceId,\s*humanId,\s*"workspace_not_found"\s*,?\s*\)',
+            require_inviter_fn,
+        )
+    ) and bool(
+        re.search(
+            r'if \(!inviter\.isOwner && !inviter\.canInviteMembers\) \{\s*throw new WorkspacesError\("not_workspace_owner"\)',
+            require_inviter_fn,
+        )
+    )
+
+    def inviter_lookup_is_not_found(source: str) -> bool:
+        return (
+            "await requireInviter(tx, workspaceId, actor.humanId)" in source
+            or actor_lookup_is_not_found(source)
+        )
+
     members_fn = slice_between(ws_src, "async members(account, workspaceId) {", "async create(account, input) {")
     get_fn = slice_between(ws_src, "async get(account, workspaceId) {", "// The member directory")
+    invitations_fn = slice_between(ws_src, "async invitations(account, workspaceId) {", "async resendInvitation(")
+    resend_fn = slice_between(ws_src, "async resendInvitation(", "async revokeInvitation(")
+    revoke_fn = slice_between(ws_src, "async revokeInvitation(", "async declineInvitation(")
     appoint_fn = slice_between(ws_src, "async appointOwner(", "async updateMemberCapability(")
     update_member_fn = slice_between(ws_src, "async updateMemberCapability(", "async removeMember(")
     m7_get_404 = (
@@ -180,16 +204,10 @@ def extract_code_facts() -> dict[str, Any]:
     )
     m7_endpoint_reads = {
         "GET /api/workspaces/:id/members": actor_lookup_is_not_found(members_fn),
-        "POST /api/workspaces/:id/invitations": actor_lookup_is_not_found(invite_fn),
-        "GET /api/workspaces/:id/invitations": actor_lookup_is_not_found(
-            slice_between(ws_src, "async invitations(account, workspaceId) {", "async resendInvitation(")
-        ),
-        "POST /api/workspaces/:id/invitations/:id/resend": actor_lookup_is_not_found(
-            slice_between(ws_src, "async resendInvitation(", "async revokeInvitation(")
-        ),
-        "POST /api/workspaces/:id/invitations/:id/revoke": actor_lookup_is_not_found(
-            slice_between(ws_src, "async revokeInvitation(", "async declineInvitation(")
-        ),
+        "POST /api/workspaces/:id/invitations": inviter_lookup_is_not_found(invite_fn),
+        "GET /api/workspaces/:id/invitations": inviter_lookup_is_not_found(invitations_fn),
+        "POST /api/workspaces/:id/invitations/:id/resend": inviter_lookup_is_not_found(resend_fn),
+        "POST /api/workspaces/:id/invitations/:id/revoke": inviter_lookup_is_not_found(revoke_fn),
         "POST /api/workspaces/:id/owners": (
             "await requireOwner(tx, workspaceId, actor.humanId)" in appoint_fn
         ),
@@ -199,6 +217,7 @@ def extract_code_facts() -> dict[str, Any]:
     m7_non_member_404 = (
         m7_read_membership_404
         and m7_require_owner_404
+        and m7_require_inviter_404
         and m7_get_404
         and all(m7_endpoint_reads.values())
     )
@@ -260,7 +279,7 @@ def extract_code_facts() -> dict[str, Any]:
     revoke_fn = slice_between(ws_src, "async revokeInvitation(", "async declineInvitation(")
     redeem_fn = slice_between(ws_src, "async function redeemWorkspaceInvitation(", "async function requireRecipientNotMember(")
     require_project_manage_fn = slice_between(ws_src, "async function requireProjectManageScope(", "async function requireVerifiedInviter(")
-    require_inviter_fn = slice_between(ws_src, "async function requireInviterStillAuthorized(", "// The listing projection")
+    still_authorized_fn = slice_between(ws_src, "async function requireInviterStillAuthorized(", "// The listing projection")
     m10_owner_only_manager = bool(
         re.search(
             r'if \(requested\.canManageMemberPermissions !== undefined\) \{\s*throw new WorkspacesError\("not_workspace_owner"\)',
@@ -315,23 +334,23 @@ def extract_code_facts() -> dict[str, Any]:
     m10_redemption_membership = bool(
         re.search(
             r'readMembership\(\s*tx,\s*workspaceId,\s*inviterHumanId,\s*"inviter_not_authorized"\s*,?\s*\)',
-            require_inviter_fn,
+            still_authorized_fn,
         )
     )
     m10_redemption_capability = bool(
         re.search(
             r'if \(!inviter\.isOwner && !inviter\.canInviteMembers\) \{\s*throw new WorkspacesError\("inviter_not_authorized"\)',
-            require_inviter_fn,
+            still_authorized_fn,
         )
     )
     m10_redemption_verified = (
         'if (inviter.emailVerifiedAt === null) throw new WorkspacesError("inviter_not_authorized")'
-        in require_inviter_fn
+        in still_authorized_fn
     )
     m10_redemption_project_scope = bool(
         re.search(
             r'await requireProjectManageScope\(tx, workspaceId, inviter, offered, "inviter_not_authorized"\)',
-            require_inviter_fn,
+            still_authorized_fn,
         )
     )
     m10_redeem_checks_inviter = bool(
@@ -339,6 +358,17 @@ def extract_code_facts() -> dict[str, Any]:
     )
     m10_accept_redeems = "await redeemWorkspaceInvitation(tx, token)" in accept_fn
     m10_register_redeems = "await redeemWorkspaceInvitation(tx, input.token)" in register_fn
+    # #28 review fixes: a delegate's history is scoped to projects they Manage, a dead
+    # pending offer cannot block an address, and an inviter may always revoke their own.
+    m10_list_scoping = (
+        "await loadManagedProjectIds(tx, workspaceId, actor.humanId)" in invitations_fn
+        and "offered.every((grant) => managed.has(grant.projectId))" in invitations_fn
+    )
+    m10_dead_offer_supersedes = (
+        "await inviterStillAuthorized(" in invite_fn
+        and "eq(workspaceInvitations.id, blocking.id)" in invite_fn
+    )
+    m10_self_revoke = "if (row.invitedByHumanId !== actor.humanId)" in revoke_fn
 
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
@@ -365,6 +395,7 @@ def extract_code_facts() -> dict[str, Any]:
         "m7_get_404": m7_get_404,
         "m7_read_membership_404": m7_read_membership_404,
         "m7_require_owner_404": m7_require_owner_404,
+        "m7_require_inviter_404": m7_require_inviter_404,
         "m10_owner_only_manager": m10_owner_only_manager,
         "m10_no_owner_modify": m10_no_owner_modify,
         "m10_no_self_modify": m10_no_self_modify,
@@ -382,6 +413,9 @@ def extract_code_facts() -> dict[str, Any]:
         "m10_redeem_checks_inviter": m10_redeem_checks_inviter,
         "m10_accept_redeems": m10_accept_redeems,
         "m10_register_redeems": m10_register_redeems,
+        "m10_list_scoping": m10_list_scoping,
+        "m10_dead_offer_supersedes": m10_dead_offer_supersedes,
+        "m10_self_revoke": m10_self_revoke,
     }
 
 
@@ -823,7 +857,11 @@ def check_m7(facts: dict[str, Any]) -> CheckResult:
         ("GET /api/workspaces/:id", facts["m7_get_404"]),
         *[(path, facts["m7_endpoint_reads"][path]) for path in sorted(facts["m7_endpoint_reads"])],
     ]
-    helper_ok = facts["m7_read_membership_404"] and facts["m7_require_owner_404"]
+    helper_ok = (
+        facts["m7_read_membership_404"]
+        and facts["m7_require_owner_404"]
+        and facts["m7_require_inviter_404"]
+    )
     init = ("start",)
 
     def next_states(state):
@@ -1026,7 +1064,9 @@ def check_m10(facts: dict[str, Any]) -> CheckResult:
         ("removeMember(ordinary member without Remove members, other member)", True, facts["m10_remove_authority"]),
         ("invite(delegated inviter without Manage, projectGrants:[unmanaged project])", True, facts["m10_invite_scope"] and project_guard),
         ("resendInvitation(delegated inviter, offer with an unmanaged project)", True, facts["m10_resend_scope"] and project_guard),
-        ("revokeInvitation(delegated inviter, offer with an unmanaged project)", True, facts["m10_revoke_scope"] and project_guard),
+        ("revokeInvitation(delegated inviter, another inviter's offer with an unmanaged project)", True, facts["m10_revoke_scope"] and project_guard),
+        ("invitations(delegated inviter, history includes an offer on an unmanaged project)", True, facts["m10_list_scoping"]),
+        ("invite(delegated inviter, a dead pending offer from an unauthorized inviter blocks the address)", True, facts["m10_dead_offer_supersedes"]),
         ("acceptInvitation(inviter lost canInviteMembers)", True, accept_check and facts["m10_redemption_capability"]),
         ("registerThroughInvitation(inviter lost canInviteMembers)", True, register_check and facts["m10_redemption_capability"]),
         ("acceptInvitation(inviter lost Manage on the offered project)", True, accept_check and facts["m10_redemption_project_scope"] and project_guard),
@@ -1041,6 +1081,7 @@ def check_m10(facts: dict[str, Any]) -> CheckResult:
         ("removeMember(member with Remove members, ordinary member)", False, True),
         ("invite(delegated inviter with Manage, projectGrants:[managed project])", False, True),
         ("invite(delegated inviter, projectGrants:[])", False, True),
+        ("revokeInvitation(original inviter revokes their own offer after losing Manage)", False, facts["m10_self_revoke"]),
     ]
     init = ("start",)
 
@@ -1049,7 +1090,9 @@ def check_m10(facts: dict[str, Any]) -> CheckResult:
             return []
         out = []
         for idx, (label, forbidden, guard) in enumerate(attempts):
-            result = "rejected" if forbidden and guard else "committed"
+            # Forbidden attempts must be rejected; allowed attempts must commit. Both
+            # directions are sensitive to the extracted guard.
+            result = "rejected" if guard == forbidden else "committed"
             out.append((f"{label} -> {result}", ("probed", idx, result)))
         return out
 
