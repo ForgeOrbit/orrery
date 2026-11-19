@@ -3,7 +3,6 @@ import type { ScryptOptions } from "node:crypto";
 import { WorkspaceKind } from "@orrery/contract";
 import type {
   LoginRequest,
-  SessionResponse,
   SetupAdminRequest,
   SetupAdminResponse,
   SetupStatus,
@@ -131,6 +130,16 @@ export function rejectLogin(): AccountsError {
   return new AccountsError("invalid_credentials");
 }
 
+// The account behind a live browser session: what any feature needs to authorize a
+// request. The cookie's token is accounts' transport detail; this is its account-level
+// answer.
+export interface SessionAccount {
+  humanId: string;
+  email: string;
+  isSystemAdministrator: boolean;
+  emailVerifiedAt: Date | null;
+}
+
 // What the service decides about browser sessions: how long they last, and whether the
 // deployment's public URL makes cookies Secure. The cookie's transport attributes are
 // rest.ts's business.
@@ -152,7 +161,7 @@ export interface AccountsService {
   setupStatus(): Promise<SetupStatus>;
   setupAdmin(input: SetupAdminRequest): Promise<SetupAdminResponse>;
   login(input: LoginRequest): Promise<{ token: string; email: string }>;
-  session(token: string): Promise<SessionResponse | null>;
+  session(token: string): Promise<SessionAccount | null>;
   sessionPolicy(): SessionPolicy;
 }
 
@@ -238,7 +247,12 @@ export function createAccountsService({
 
     async session(token: string) {
       const [row] = await db
-        .select({ email: humans.email })
+        .select({
+          humanId: humans.id,
+          email: humans.email,
+          isSystemAdministrator: humans.isSystemAdministrator,
+          emailVerifiedAt: humans.emailVerifiedAt,
+        })
         .from(browserSessions)
         .innerJoin(humans, eq(humans.id, browserSessions.humanId))
         .where(
