@@ -1176,7 +1176,7 @@ describe("workspaces", () => {
       adminCookie,
     );
     try {
-      await waitForLockWait("workspace_ownership_guards");
+      await waitForLockWait("lock_workspace_ownership_writes");
     } finally {
       release.release();
     }
@@ -1191,6 +1191,38 @@ describe("workspaces", () => {
         .from(workspaceMemberships)
         .where(eq(workspaceMemberships.humanId, member.id)),
     ).toHaveLength(0);
+  });
+
+  it("lets an ownership writer finish before a competing direct delete takes the member row", async () => {
+    const { admin } = await readyApp();
+    const [member] = await insertHuman({ email: "waiting.member@example.com", verified: true });
+    const workspaceId = await directSharedWorkspace([admin.id], "Write Order");
+    await database.db.insert(workspaceMemberships).values({
+      id: randomUUID(),
+      workspaceId,
+      humanId: member.id,
+      isOwner: false,
+    });
+
+    const release = createGate();
+    const acquired = createGate();
+    const holder = database.sql.begin(async (tx) => {
+      await tx`select lock_workspace_ownership_writes()`;
+      acquired.release();
+      await release.opened;
+      return tx`delete from workspace_memberships where workspace_id = ${workspaceId} and human_id = ${member.id} returning human_id`;
+    });
+    await acquired.opened;
+    const competing =
+      database.sql`delete from workspace_memberships where workspace_id = ${workspaceId} and human_id = ${member.id} returning human_id`.execute();
+    try {
+      await waitForLockWait("delete from workspace_memberships");
+    } finally {
+      release.release();
+      const results = await Promise.all([holder, competing]);
+      expect(results[0]).toMatchObject([{ human_id: member.id }]);
+      expect(results[1]).toHaveLength(0);
+    }
   });
 
   it("locks both guards in id order for opposite cross-workspace membership moves", async () => {
@@ -1244,78 +1276,83 @@ describe("workspaces", () => {
     }
   });
 
-  it("refuses redemption when the workspace lock wait crosses the invitation deadline", async () => {
-    const { app, sent, adminCookie } = await readyApp();
-    const workspace = await createWorkspace(app, adminCookie);
-    const { cookie: memberCookie } = await verifiedCookie(app, INVITEE);
-    await invite(app, adminCookie, workspace.id, INVITEE);
-    const token = await workspaceInviteToken(sent, INVITEE, "Rocket Team");
-    await database.db
-      .update(workspaceInvitations)
-      .set({ expiresAt: sql`statement_timestamp() + interval '1 second'` })
-      .where(eq(workspaceInvitations.workspaceId, workspace.id));
+  it.each(["workspace_ownership_guards", "workspace_invitations"] as const)(
+    "refuses redemption when a lock on %s outlasts the deadline",
+    async (table) => {
+      const { app, sent, adminCookie } = await readyApp();
+      const workspace = await createWorkspace(app, adminCookie);
+      const { cookie: memberCookie } = await verifiedCookie(app, INVITEE);
+      await invite(app, adminCookie, workspace.id, INVITEE);
+      const token = await workspaceInviteToken(sent, INVITEE, "Rocket Team");
+      await database.db
+        .update(workspaceInvitations)
+        .set({ expiresAt: sql`statement_timestamp() + interval '1 second'` })
+        .where(eq(workspaceInvitations.workspaceId, workspace.id));
 
-    const release = createGate();
-    let locked!: () => void;
-    const hasLocked = new Promise<void>((resolve) => {
-      locked = resolve;
-    });
-    const holder = database.sql.begin(async (tx) => {
-      await tx`
+      const release = createGate();
+      let locked!: () => void;
+      const hasLocked = new Promise<void>((resolve) => {
+        locked = resolve;
+      });
+      const holder = database.sql.begin(async (tx) => {
+        await tx`
         select workspace_id
-        from workspace_ownership_guards
+        from ${tx(table)}
         where workspace_id = ${workspace.id}
         for update
       `;
-      locked();
-      await release.opened;
-    });
+        locked();
+        await release.opened;
+      });
 
-    await hasLocked;
-    const acceptance = postJson(
-      app,
-      "/api/workspace-invitations/acceptance",
-      { token },
-      memberCookie,
-    );
-    let timedOut: unknown;
-    try {
-      await waitForLockWait("workspace_ownership_guards");
-      const [waiting] = await database.sql<{ query_start: string }[]>`
+      await hasLocked;
+      const acceptance = postJson(
+        app,
+        "/api/workspace-invitations/acceptance",
+        { token },
+        memberCookie,
+      );
+      let timedOut: unknown;
+      try {
+        await waitForLockWait(table);
+        const [waiting] = await database.sql<{ query_start: string }[]>`
         select query_start
         from pg_stat_activity
         where wait_event_type = 'Lock'
-          and query ilike '%workspace_ownership_guards%'
+          and query ilike ${`%${table}%`}
           and pid <> pg_backend_pid()
         order by query_start
         limit 1
       `;
-      const [invitation] = await database.db
-        .select({ expiresAt: workspaceInvitations.expiresAt })
-        .from(workspaceInvitations)
-        .where(eq(workspaceInvitations.workspaceId, workspace.id));
-      if (waiting === undefined || invitation === undefined) {
-        throw new Error("the blocked redemption or its invitation was not found");
+        const [invitation] = await database.db
+          .select({ expiresAt: workspaceInvitations.expiresAt })
+          .from(workspaceInvitations)
+          .where(eq(workspaceInvitations.workspaceId, workspace.id));
+        if (waiting === undefined || invitation === undefined) {
+          throw new Error("the blocked redemption or its invitation was not found");
+        }
+        // The request had started before the deadline, then waited on the guard.
+        expect(new Date(waiting.query_start).getTime()).toBeLessThan(
+          invitation.expiresAt.getTime(),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 1_200));
+      } catch (error) {
+        timedOut = error;
+      } finally {
+        release.release();
       }
-      // The request had started before the deadline, then waited on the guard.
-      expect(new Date(waiting.query_start).getTime()).toBeLessThan(invitation.expiresAt.getTime());
-      await new Promise((resolve) => setTimeout(resolve, 1_200));
-    } catch (error) {
-      timedOut = error;
-    } finally {
-      release.release();
-    }
-    await holder;
-    const refused = await acceptance;
-    if (timedOut !== undefined) throw timedOut;
+      await holder;
+      const refused = await acceptance;
+      if (timedOut !== undefined) throw timedOut;
 
-    expect(refused.status).toBe(400);
-    expect(await problemBody(refused)).toMatchObject({ code: "invitation_invalid" });
-    expect(
-      await database.db
-        .select()
-        .from(workspaceMemberships)
-        .where(eq(workspaceMemberships.workspaceId, workspace.id)),
-    ).toHaveLength(1); // the creator only
-  });
+      expect(refused.status).toBe(400);
+      expect(await problemBody(refused)).toMatchObject({ code: "invitation_invalid" });
+      expect(
+        await database.db
+          .select()
+          .from(workspaceMemberships)
+          .where(eq(workspaceMemberships.workspaceId, workspace.id)),
+      ).toHaveLength(1); // the creator only
+    },
+  );
 });

@@ -23,10 +23,9 @@ export const Route = createFileRoute("/workspace-invitation")({
   }),
   loaderDeps: ({ search: { token } }) => ({ token }),
   loader: async ({ context, deps }) => {
+    if (!WorkspaceInvitationToken.safeParse(deps.token).success) return;
     await context.queryClient.ensureQueryData(sessionQuery);
-    if (deps.token !== "" && WorkspaceInvitationToken.safeParse(deps.token).success) {
-      await context.queryClient.ensureQueryData(workspaceInvitationPreviewQuery(deps.token));
-    }
+    await context.queryClient.ensureQueryData(workspaceInvitationPreviewQuery(deps.token));
   },
   component: WorkspaceInvitationPage,
   errorComponent: ({ error }) => <InvitationLoadError error={error} />,

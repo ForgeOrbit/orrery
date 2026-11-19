@@ -57,6 +57,13 @@
       "when": 1795073772423,
       "tag": "0007_workspace_owner_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1795076247318,
+      "tag": "0008_workspace_ownership_write_order",
+      "breakpoints": true
     }
   ]
 }

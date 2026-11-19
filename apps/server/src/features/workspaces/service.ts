@@ -146,15 +146,18 @@ async function readSharedWorkspace(
   return workspace;
 }
 
-// The single mutation boundary for a workspace: advance its ownership guard before
-// reading authority or touching invitations/memberships. Direct SQL writers reach the
-// same row through the BEFORE triggers in migration 0007, so both take one lock order.
-// The update also makes a stale REPEATABLE READ writer fail serialization.
+// Acquire the same transaction lock as direct ownership statements before taking any
+// row locks. The per-workspace version below still detects stale REPEATABLE READ writers.
+async function lockOwnershipWrites(tx: DbTransaction) {
+  await tx.execute(sql`select lock_workspace_ownership_writes()`);
+}
+
 async function lockWorkspaceForMutation(
   tx: DbTransaction,
   workspaceId: string,
   missingKind: "workspace_not_found" | "invitation_invalid" = "workspace_not_found",
 ) {
+  await lockOwnershipWrites(tx);
   const workspace = await readSharedWorkspace(tx, workspaceId, missingKind);
   await tx
     .insert(workspaceOwnershipGuards)
@@ -290,6 +293,20 @@ async function redeemWorkspaceInvitation(tx: DbTransaction, token: string) {
 
   const workspace = await lockWorkspaceForMutation(tx, located.workspaceId, "invitation_invalid");
 
+  // Email delivery can update this row without taking the ownership lock. Wait for
+  // it before starting the statement that samples the deadline and acceptance time.
+  const [locked] = await tx
+    .select({ id: workspaceInvitations.id })
+    .from(workspaceInvitations)
+    .where(
+      and(
+        eq(workspaceInvitations.tokenHash, tokenHash(token)),
+        eq(workspaceInvitations.workspaceId, located.workspaceId),
+      ),
+    )
+    .for("update");
+  if (locked === undefined) throw new WorkspacesError("invitation_invalid");
+
   const [invitation] = await tx
     .update(workspaceInvitations)
     .set({ status: InvitationStatus.enum.accepted, acceptedAt: sql`statement_timestamp()` })
@@ -388,20 +405,23 @@ export function createWorkspacesService({
     // ordinary member does not need everyone else's address to do their work.
     async members(account, workspaceId) {
       const actor = requireAccount(account);
-      return db.transaction(async (tx) => {
-        await readSharedWorkspace(tx, workspaceId);
-        await requireOwner(tx, workspaceId, actor.humanId);
-        return tx
-          .select({
-            humanId: workspaceMemberships.humanId,
-            email: humans.email,
-            isOwner: workspaceMemberships.isOwner,
-          })
-          .from(workspaceMemberships)
-          .innerJoin(humans, eq(humans.id, workspaceMemberships.humanId))
-          .where(eq(workspaceMemberships.workspaceId, workspaceId))
-          .orderBy(workspaceMemberships.createdAt, workspaceMemberships.humanId);
-      });
+      return db.transaction(
+        async (tx) => {
+          await readSharedWorkspace(tx, workspaceId);
+          await requireOwner(tx, workspaceId, actor.humanId);
+          return tx
+            .select({
+              humanId: workspaceMemberships.humanId,
+              email: humans.email,
+              isOwner: workspaceMemberships.isOwner,
+            })
+            .from(workspaceMemberships)
+            .innerJoin(humans, eq(humans.id, workspaceMemberships.humanId))
+            .where(eq(workspaceMemberships.workspaceId, workspaceId))
+            .orderBy(workspaceMemberships.createdAt, workspaceMemberships.humanId);
+        },
+        { isolationLevel: "repeatable read", accessMode: "read only" },
+      );
     },
 
     // Creating a shared workspace and its first owner is one transaction: a workspace
@@ -410,6 +430,7 @@ export function createWorkspacesService({
       const actor = requireAccount(account);
       const id = randomUUID();
       await db.transaction(async (tx) => {
+        await lockOwnershipWrites(tx);
         await tx.insert(workspaces).values({
           id,
           kind: WorkspaceKind.enum.shared,
