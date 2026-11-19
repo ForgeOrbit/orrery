@@ -81,17 +81,6 @@ export function isDeliveryKind(error: SettingsError): error is SettingsError & {
   return deliveryKinds.some((kind) => kind === error.kind);
 }
 
-// Every delivery kind's HTTP status, wherever the send happened: one map, because the
-// codes mean the same thing on every route that sends mail.
-export const deliveryStatusFor = {
-  smtp_unconfigured: 409,
-  smtp_password_unreadable: 409,
-  smtp_unreachable: 502,
-  smtp_auth_failed: 502,
-  smtp_tls_failed: 502,
-  smtp_send_failed: 502,
-} as const satisfies Record<DeliveryErrorKind, number>;
-
 // Each kind is the REST error's stable code and its message the Problem's title
 // (ADR-0003), so clients branch on the code and people read the title.
 const messages = {

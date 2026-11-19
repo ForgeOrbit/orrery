@@ -11,7 +11,7 @@ import {
   validationHook,
 } from "../../platform/problem.ts";
 import type { SessionReader } from "../accounts/index.ts";
-import { deliveryStatusFor, isDeliveryKind, SettingsError } from "../settings/index.ts";
+import { deliveryProblem } from "../settings/index.ts";
 import { InvitationsError, type InvitationsErrorKind, type InvitationsService } from "./service.ts";
 
 const inviteInstallation = createRoute({
@@ -19,7 +19,7 @@ const inviteInstallation = createRoute({
   path: "/api/invitations/installation",
   summary: "Send an installation invitation",
   description:
-    "System administrators only, after SMTP is configured. Emails the invited address a single-use registration link, valid for seven days. Following the link (GET) changes nothing; the recipient registers with a POST. One pending invitation per email; re-inviting supersedes an expired or undelivered one in place. A delivery failure keeps the invitation recorded with delivery failed — it can never redeem — and answers a Problem whose code names the reason (smtp_unreachable, smtp_auth_failed, smtp_tls_failed, smtp_send_failed).",
+    "System administrators only, after SMTP is configured. Emails the invited address a single-use registration link, valid for seven days. Following the link (GET) changes nothing; the recipient registers with a POST. One pending invitation per email; re-inviting supersedes an expired, delivery-failed, or long-undelivered one in place. An invitation whose delivery is unknown may still redeem — holding the token proves the email arrived — and only a recorded failure never redeems. Answers 400 validation_failed; 401 not_signed_in; 403 not_admin; 409 account_exists, invitation_pending, smtp_unconfigured, or smtp_password_unreadable; and 502 smtp_unreachable, smtp_auth_failed, smtp_tls_failed, or smtp_send_failed.",
   request: {
     body: {
       required: true,
@@ -113,15 +113,10 @@ export function createInvitationsRest(service: InvitationsService, sessionReader
           title: error.message,
         });
       }
-      // The sending route also answers every delivery failure with settings' own code,
-      // so a client can tell the reasons apart wherever the send happened.
-      if (error instanceof SettingsError && isDeliveryKind(error)) {
-        return problemResponse(c, {
-          status: deliveryStatusFor[error.kind],
-          code: error.kind,
-          title: error.message,
-        });
-      }
+      // The sending route also answers every delivery failure with settings' own code
+      // and status, so a client can tell the reasons apart wherever the send happened.
+      const delivery = deliveryProblem(c, error);
+      if (delivery !== undefined) return delivery;
       throw error;
     }
   });

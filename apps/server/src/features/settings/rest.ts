@@ -14,7 +14,6 @@ import {
 } from "../../platform/problem.ts";
 import type { SessionReader } from "../accounts/index.ts";
 import {
-  deliveryStatusFor,
   isDeliveryKind,
   SettingsError,
   type DeliveryErrorKind,
@@ -113,6 +112,32 @@ const statusFor = {
   verification_token_invalid: 400,
 } as const satisfies Record<Exclude<SettingsErrorKind, DeliveryErrorKind>, number>;
 
+// Every delivery kind's HTTP status, wherever the send happened: one map, because the
+// codes mean the same thing on every route that sends mail. The service classifies the
+// failure; this layer alone decides its status.
+const deliveryStatusFor = {
+  smtp_unconfigured: 409,
+  smtp_password_unreadable: 409,
+  smtp_unreachable: 502,
+  smtp_auth_failed: 502,
+  smtp_tls_failed: 502,
+  smtp_send_failed: 502,
+} as const satisfies Record<DeliveryErrorKind, number>;
+
+// A delivery failure as its Problem, or undefined when the error is not one. Exported
+// through settings/index.ts, so a feature that borrows the mail path answers the same
+// codes at the same statuses without importing this file.
+export function deliveryProblem(c: Context, error: unknown) {
+  if (error instanceof SettingsError && isDeliveryKind(error)) {
+    return problemResponse(c, {
+      status: deliveryStatusFor[error.kind],
+      code: error.kind,
+      title: error.message,
+    });
+  }
+  return undefined;
+}
+
 // The kinds each route's service calls can throw: a route answers exactly these. The
 // sending route's delivery kinds are answered through the shared guard, not listed here.
 const sessionKinds = ["not_signed_in", "not_admin"] as const;
@@ -159,14 +184,7 @@ function failureWithDelivery<K extends readonly Exclude<SettingsErrorKind, Deliv
   error: unknown,
   kinds: K,
 ) {
-  if (error instanceof SettingsError && isDeliveryKind(error)) {
-    return problemResponse(c, {
-      status: deliveryStatusFor[error.kind],
-      code: error.kind,
-      title: error.message,
-    });
-  }
-  return failure(c, error, kinds);
+  return deliveryProblem(c, error) ?? failure(c, error, kinds);
 }
 
 // Thin: resolve the session, call the service, map the result to HTTP. The service

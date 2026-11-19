@@ -5,8 +5,9 @@ import { createSettingsRest, routes } from "./rest.ts";
 import { type SettingsDeps, createSettingsService, type OutgoingMail } from "./service.ts";
 
 export { routes as settingsRoutes };
+export { deliveryProblem } from "./rest.ts";
 export type { SmtpMail, SmtpSender, SettingsService } from "./service.ts";
-export { SettingsError, deliveryStatusFor, isDeliveryKind, startupWarnings } from "./service.ts";
+export { SettingsError, isDeliveryKind, startupWarnings } from "./service.ts";
 export type { SettingsErrorKind, DeliveryErrorKind, OutgoingMail } from "./service.ts";
 
 // What settings borrows from accounts: the session reader it authorizes with, on top
