@@ -54,12 +54,54 @@
       "Problem": {
         "type": "object",
         "properties": {
-          "message": {
+          "type": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "minimum": 400,
+            "maximum": 599
+          },
+          "detail": {
+            "type": "string"
+          },
+          "code": {
+            "$ref": "#/components/schemas/ProblemCode"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FieldError"
+            }
+          }
+        },
+        "required": [
+          "type",
+          "title",
+          "status",
+          "code"
+        ]
+      },
+      "ProblemCode": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*$"
+      },
+      "FieldError": {
+        "type": "object",
+        "properties": {
+          "pointer": {
+            "type": "string"
+          },
+          "detail": {
             "type": "string"
           }
         },
         "required": [
-          "message"
+          "pointer",
+          "detail"
         ]
       },
       "SetupAdminRequest": {
@@ -227,7 +269,7 @@
           "400": {
             "description": "Invalid secret, email, or password",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
                 }
@@ -237,7 +279,7 @@
           "401": {
             "description": "The setup secret is wrong",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
                 }
@@ -247,7 +289,7 @@
           "403": {
             "description": "No setup secret is configured on this installation",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
                 }
@@ -257,7 +299,7 @@
           "409": {
             "description": "Setup is already complete",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
                 }
@@ -295,7 +337,7 @@
           "400": {
             "description": "The request body is not JSON",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
                 }
@@ -305,7 +347,7 @@
           "401": {
             "description": "Wrong, unknown, or malformed email or password",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
                 }
@@ -332,7 +374,7 @@
           "401": {
             "description": "No valid session",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
                 }

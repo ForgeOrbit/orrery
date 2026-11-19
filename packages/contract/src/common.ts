@@ -39,7 +39,37 @@ export const WorkspaceKind = z
   .meta({ id: "WorkspaceKind" });
 export type WorkspaceKind = z.infer<typeof WorkspaceKind>;
 
-// Every error response, in every transport, is a Problem: a short, human-readable
-// message and nothing else, so internals (and secrets) never leak into responses.
-export const Problem = z.object({ message: z.string() }).meta({ id: "Problem" });
+// Every REST error response is an RFC 9457 Problem Details object, served as
+// application/problem+json (ADR-0003). `code` is the stable, machine-readable reason
+// clients branch on; `type` is the same reason as a URI; `title` is its human summary.
+// Nothing else is ever included, so internals (and secrets) never leak into responses.
+export const PROBLEM_CONTENT_TYPE = "application/problem+json";
+
+export const ProblemCode = z
+  .string()
+  .regex(/^[a-z][a-z0-9_]*$/)
+  .meta({ id: "ProblemCode" });
+export type ProblemCode = z.infer<typeof ProblemCode>;
+
+// The problem type URI for a code. A URN: a stable identifier that needs no domain,
+// because every Orrery installation is self-hosted.
+export const problemType = (code: ProblemCode) => `urn:orrery:problem:${code}`;
+
+// One invalid request field. `pointer` is an RFC 6901 JSON Pointer into the request
+// body, for example "/email".
+export const FieldError = z
+  .object({ pointer: z.string(), detail: z.string() })
+  .meta({ id: "FieldError" });
+export type FieldError = z.infer<typeof FieldError>;
+
+export const Problem = z
+  .object({
+    type: z.string(),
+    title: z.string(),
+    status: z.int().min(400).max(599),
+    detail: z.string().optional(),
+    code: ProblemCode,
+    errors: z.array(FieldError).optional(),
+  })
+  .meta({ id: "Problem" });
 export type Problem = z.infer<typeof Problem>;

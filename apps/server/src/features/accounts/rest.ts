@@ -1,8 +1,8 @@
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import type { Context } from "hono";
 import {
   LoginRequest,
   LoginResponse,
-  Problem,
   SessionResponse,
   SetupAdminRequest,
   SetupAdminResponse,
@@ -10,16 +10,16 @@ import {
 } from "@orrery/contract";
 import { getCookie, setCookie } from "hono/cookie";
 import {
+  problemContent as problem,
+  problemResponse,
+  validationHook,
+} from "../../platform/problem.ts";
+import {
   AccountsError,
   type AccountsErrorKind,
   type AccountsService,
   rejectLogin,
 } from "./service.ts";
-
-const problem = (description: string) => ({
-  description,
-  content: { "application/json": { schema: Problem } },
-});
 
 const setupStatus = createRoute({
   method: "get",
@@ -95,17 +95,16 @@ const statusFor = {
   invalid_credentials: 401,
 } as const satisfies Record<AccountsErrorKind, number>;
 
+// An accounts error as its Problem: the error kind is the code, its message the title.
+const failure = (c: Context, error: AccountsError) =>
+  problemResponse(c, { status: statusFor[error.kind], code: error.kind, title: error.message });
+
 // Thin: call the service, map the result to HTTP. No rules here.
 export function createAccountsRest(service: AccountsService) {
   const policy = service.sessionPolicy();
 
-  const app = new OpenAPIHono({
-    // Turn validation failures into the same Problem shape as every other error.
-    defaultHook: (result, c) => {
-      if (result.success) return undefined;
-      return c.json({ message: result.error.issues[0]?.message ?? "Invalid request." }, 400);
-    },
-  });
+  // Validation failures answer as a validation_failed Problem, like every other error.
+  const app = new OpenAPIHono({ defaultHook: validationHook });
 
   app.openapi(setupStatus, async (c) => c.json(await service.setupStatus(), 200));
 
@@ -115,7 +114,7 @@ export function createAccountsRest(service: AccountsService) {
     } catch (error) {
       // The service only throws the three setup kinds here; anything else is a bug.
       if (error instanceof AccountsError && error.kind !== "invalid_credentials") {
-        return c.json({ message: error.message }, statusFor[error.kind]);
+        return failure(c, error);
       }
       throw error;
     }
@@ -136,7 +135,11 @@ export function createAccountsRest(service: AccountsService) {
         // The service decides that login failures are uniform: whatever went wrong, the
         // only error kind login can produce is invalid_credentials.
         if (error instanceof AccountsError && error.kind === "invalid_credentials") {
-          return c.json({ message: error.message }, statusFor[error.kind]);
+          return problemResponse(c, {
+            status: statusFor.invalid_credentials,
+            code: error.kind,
+            title: error.message,
+          });
         }
         throw error;
       }
@@ -144,14 +147,21 @@ export function createAccountsRest(service: AccountsService) {
     // The service decides that a malformed or overlong attempt is wrong credentials too.
     (result, c) => {
       if (result.success) return undefined;
-      return c.json({ message: rejectLogin().message }, statusFor.invalid_credentials);
+      const rejected = rejectLogin();
+      return problemResponse(c, {
+        status: statusFor.invalid_credentials,
+        code: rejected.kind,
+        title: rejected.message,
+      });
     },
   );
 
   app.openapi(session, async (c) => {
     const token = getCookie(c, SESSION_COOKIE);
     const account = token === undefined ? null : await service.session(token);
-    if (account === null) return c.json({ message: "Not signed in." }, 401);
+    if (account === null) {
+      return problemResponse(c, { status: 401, code: "not_signed_in", title: "Not signed in." });
+    }
     return c.json(account, 200);
   });
 

@@ -54,6 +54,10 @@ describe("initial setup, while it is still open", () => {
       password: "a-valid-password",
     });
     expect(wrong.status).toBe(refusedWith);
+    expect(wrong.headers.get("content-type")).toBe("application/problem+json");
+    expect(await wrong.json()).toMatchObject({
+      code: refusedWith === 401 ? "invalid_secret" : "setup_unavailable",
+    });
 
     const empty = await postJson("/api/setup/admin", {
       secret: "",
@@ -61,6 +65,10 @@ describe("initial setup, while it is still open", () => {
       password: "a-valid-password",
     });
     expect(empty.status).toBe(400);
+    expect(await empty.json()).toMatchObject({
+      code: "validation_failed",
+      errors: [{ pointer: "/secret", detail: expect.any(String) }],
+    });
 
     const missing = await postJson("/api/setup/admin", {
       email: "admin@example.com",
@@ -77,6 +85,13 @@ describe("initial setup, while it is still open", () => {
   it("answers the session check with 401 when nobody is signed in", async () => {
     const res = await fetch(new URL("/api/auth/session", baseUrl));
     expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({ message: expect.any(String) });
+    // Every REST error is an RFC 9457 Problem with a stable code (ADR-0003).
+    expect(res.headers.get("content-type")).toBe("application/problem+json");
+    expect(await res.json()).toEqual({
+      type: "urn:orrery:problem:not_signed_in",
+      title: expect.any(String),
+      status: 401,
+      code: "not_signed_in",
+    });
   });
 });
