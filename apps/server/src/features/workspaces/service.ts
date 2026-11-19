@@ -4,13 +4,14 @@ import {
   InvitationStatus,
   WorkspaceKind,
   type CreateWorkspaceRequest,
+  type InvitationSummary,
   type InviteWorkspaceMemberRequest,
   type Workspace,
   type WorkspaceInvitation,
   type WorkspaceInvitationPreview,
   type WorkspaceMember,
 } from "@orrery/contract";
-import { and, eq, gt, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, lte, or, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
 import { errorNameAndCode, uniqueConstraintName } from "../../platform/errors.ts";
@@ -43,6 +44,8 @@ export type WorkspacesErrorKind =
   | "invitation_recipient_mismatch"
   | "email_unverified"
   | "invitation_pending"
+  | "invitation_not_found"
+  | "invitation_not_pending"
   | "already_member"
   | "account_exists"
   | "member_not_found"
@@ -61,6 +64,8 @@ const messages = {
   invitation_recipient_mismatch: "This invitation was sent to a different email address.",
   email_unverified: "Verify this account's email before accepting the invitation.",
   invitation_pending: "An invitation for this email is already pending in this workspace.",
+  invitation_not_found: "This workspace invitation does not exist.",
+  invitation_not_pending: "Only a pending or expired invitation can be changed.",
   already_member: "This person is already a member of the workspace.",
   account_exists: "This email already has an account. Sign in to accept the invitation.",
   member_not_found: "This person is not a member of the workspace.",
@@ -254,6 +259,18 @@ export interface WorkspacesService {
     workspaceId: string,
     input: InviteWorkspaceMemberRequest,
   ): Promise<WorkspaceInvitation>;
+  invitations(account: SessionAccount | null, workspaceId: string): Promise<InvitationSummary[]>;
+  resendInvitation(
+    account: SessionAccount | null,
+    workspaceId: string,
+    invitationId: string,
+  ): Promise<InvitationSummary>;
+  revokeInvitation(
+    account: SessionAccount | null,
+    workspaceId: string,
+    invitationId: string,
+  ): Promise<InvitationSummary>;
+  declineInvitation(input: { token: string }): Promise<void>;
   previewInvitation(token: string): Promise<WorkspaceInvitationPreview>;
   acceptInvitation(account: SessionAccount | null, token: string): Promise<Workspace>;
   registerThroughInvitation(input: {
@@ -275,6 +292,123 @@ async function recordDelivery(db: PostgresJsDatabase, id: string, delivery: Invi
     .update(workspaceInvitations)
     .set({ deliveryStatus: delivery, deliveryAttemptedAt: sql`statement_timestamp()` })
     .where(eq(workspaceInvitations.id, id));
+}
+
+// The projection the inviter's history shares: recipient, inviter, target, offered
+// grants, lifecycle timestamps, and delivery as a separate fact. The token stays in the
+// email.
+const summarySelection = {
+  id: workspaceInvitations.id,
+  workspaceId: workspaceInvitations.workspaceId,
+  workspaceName: workspaces.name,
+  email: workspaceInvitations.email,
+  status: workspaceInvitations.status,
+  invitedByHumanId: workspaceInvitations.invitedByHumanId,
+  invitedByEmail: humans.email,
+  createdAt: workspaceInvitations.createdAt,
+  expiresAt: workspaceInvitations.expiresAt,
+  acceptedAt: workspaceInvitations.acceptedAt,
+  declinedAt: workspaceInvitations.declinedAt,
+  expiredAt: workspaceInvitations.expiredAt,
+  revokedAt: workspaceInvitations.revokedAt,
+  deliveryStatus: workspaceInvitations.deliveryStatus,
+  deliveryAttemptedAt: workspaceInvitations.deliveryAttemptedAt,
+} as const;
+
+interface WorkspaceSummaryRow {
+  id: string;
+  workspaceId: string;
+  workspaceName: string;
+  email: string;
+  status: InvitationStatus;
+  invitedByHumanId: string;
+  invitedByEmail: string;
+  createdAt: Date;
+  expiresAt: Date;
+  acceptedAt: Date | null;
+  declinedAt: Date | null;
+  expiredAt: Date | null;
+  revokedAt: Date | null;
+  deliveryStatus: InvitationDelivery | null;
+  deliveryAttemptedAt: Date | null;
+}
+
+function toWorkspaceSummary(row: WorkspaceSummaryRow): InvitationSummary {
+  return {
+    id: row.id,
+    email: row.email,
+    status: row.status,
+    target: { kind: "workspace", id: row.workspaceId, name: row.workspaceName },
+    grants: [
+      {
+        kind: "workspace_membership",
+        workspaceId: row.workspaceId,
+        role: "member",
+      },
+    ],
+    invitedBy: { humanId: row.invitedByHumanId, email: row.invitedByEmail },
+    delivery: {
+      status: row.deliveryStatus,
+      attemptedAt: row.deliveryAttemptedAt?.toISOString() ?? null,
+    },
+    createdAt: row.createdAt.toISOString(),
+    expiresAt: row.expiresAt.toISOString(),
+    acceptedAt: row.acceptedAt?.toISOString() ?? null,
+    declinedAt: row.declinedAt?.toISOString() ?? null,
+    expiredAt: row.expiredAt?.toISOString() ?? null,
+    revokedAt: row.revokedAt?.toISOString() ?? null,
+  };
+}
+
+async function readWorkspaceInvitationSummary(
+  db: PostgresJsDatabase,
+  workspaceId: string,
+  invitationId: string,
+): Promise<InvitationSummary> {
+  const [row] = await db
+    .select(summarySelection)
+    .from(workspaceInvitations)
+    .innerJoin(workspaces, eq(workspaces.id, workspaceInvitations.workspaceId))
+    .innerJoin(humans, eq(humans.id, workspaceInvitations.invitedByHumanId))
+    .where(
+      and(
+        eq(workspaceInvitations.workspaceId, workspaceId),
+        eq(workspaceInvitations.id, invitationId),
+      ),
+    )
+    .limit(1);
+  if (row === undefined) throw new WorkspacesError("invitation_not_found");
+  return toWorkspaceSummary(row);
+}
+
+// Sends one workspace invitation and records the attempt separately from the lifecycle.
+// A known failure never redeems and answers with settings' own Problem.
+async function sendWorkspaceInvitation(
+  db: PostgresJsDatabase,
+  deliver: (mail: OutgoingMail) => Promise<void>,
+  log: Logger | undefined,
+  input: {
+    id: string;
+    workspaceName: string;
+    email: string;
+    token: string;
+    publicUrl: string;
+  },
+) {
+  try {
+    await deliver(invitationMail(input.workspaceName, input.email, input.token, input.publicUrl));
+  } catch (error) {
+    try {
+      await recordDelivery(db, input.id, InvitationDelivery.enum.failed);
+    } catch (recordingError) {
+      log?.warn(
+        "failed workspace invitation delivery recording failed",
+        errorNameAndCode(recordingError),
+      );
+    }
+    throw error;
+  }
+  await recordDelivery(db, input.id, InvitationDelivery.enum.sent);
 }
 
 // One token transition for both redemption paths. The workspace is located from the
@@ -327,6 +461,9 @@ async function redeemWorkspaceInvitation(tx: DbTransaction, token: string) {
   if (invitation === undefined) throw new WorkspacesError("invitation_invalid");
 
   await requireInviterStillAuthorized(tx, invitation.workspaceId, invitation.invitedByHumanId);
+  // The workspace lock above also proves the target still exists and is shared. Project
+  // grants arrive with project access (#27); when they do, their ownership check belongs
+  // here, before the token is consumed, alongside the inviter recheck.
   return { ...invitation, workspace };
 }
 
@@ -485,8 +622,8 @@ export function createWorkspacesService({
           // A pending invitation blocks a new one for its full seven days, whatever the
           // email delivery recorded. Delivery is a separate fact (#20): a failed or
           // unconfirmed send does not shorten the invitation's life. Replacement here is
-          // only the in-place expiry of a row whose deadline has actually passed; full
-          // resend/revoke management remains #25.
+          // only the in-place expiry of a row whose deadline has actually passed; an
+          // explicit resend or revoke uses the management routes.
           const [blocking] = await tx
             .select({ id: workspaceInvitations.id })
             .from(workspaceInvitations)
@@ -503,7 +640,10 @@ export function createWorkspacesService({
 
           await tx
             .update(workspaceInvitations)
-            .set({ status: InvitationStatus.enum.expired })
+            .set({
+              status: InvitationStatus.enum.expired,
+              expiredAt: workspaceInvitations.expiresAt,
+            })
             .where(
               and(
                 eq(workspaceInvitations.workspaceId, workspaceId),
@@ -534,34 +674,205 @@ export function createWorkspacesService({
         throw error;
       }
 
-      try {
-        await deliver(invitationMail(workspaceName, input.email, token, publicUrl));
-      } catch (error) {
-        try {
-          await recordDelivery(db, id, InvitationDelivery.enum.failed);
-        } catch (recordingError) {
-          log?.warn(
-            "failed workspace invitation delivery recording failed",
-            errorNameAndCode(recordingError),
-          );
-        }
-        throw error;
-      }
-      await recordDelivery(db, id, InvitationDelivery.enum.sent);
+      await sendWorkspaceInvitation(db, deliver, log, {
+        id,
+        workspaceName,
+        email: input.email,
+        token,
+        publicUrl,
+      });
       return { workspaceId, email: input.email, status: InvitationStatus.enum.pending };
     },
 
-    // The link's read side: the workspace and address the link offers, without consuming
-    // the token. Invalid, expired, used, or known-failed links answer the same Problem.
+    // Every invitation in this workspace, newest first, for its owners. Delivery is
+    // reported separately from the lifecycle; a pending row whose deadline passed is
+    // stored and reported as expired.
+    async invitations(account, workspaceId) {
+      const actor = requireAccount(account);
+      return db.transaction(async (tx) => {
+        await readSharedWorkspace(tx, workspaceId);
+        await requireOwner(tx, workspaceId, actor.humanId);
+        await tx
+          .update(workspaceInvitations)
+          .set({
+            status: InvitationStatus.enum.expired,
+            expiredAt: workspaceInvitations.expiresAt,
+          })
+          .where(
+            and(
+              eq(workspaceInvitations.workspaceId, workspaceId),
+              eq(workspaceInvitations.status, InvitationStatus.enum.pending),
+              lte(workspaceInvitations.expiresAt, sql`statement_timestamp()`),
+            ),
+          );
+        const rows = await tx
+          .select(summarySelection)
+          .from(workspaceInvitations)
+          .innerJoin(workspaces, eq(workspaces.id, workspaceInvitations.workspaceId))
+          .innerJoin(humans, eq(humans.id, workspaceInvitations.invitedByHumanId))
+          .where(eq(workspaceInvitations.workspaceId, workspaceId))
+          .orderBy(desc(workspaceInvitations.createdAt), desc(workspaceInvitations.id));
+        return rows.map(toWorkspaceSummary);
+      });
+    },
+
+    // Resend rotates the link for a current owner: the old row keeps its history
+    // (revoked if still live, otherwise expired), and the new row starts a fresh
+    // seven-day deadline. An owner who resends is the new offer's inviter, so acceptance
+    // rechecks that owner.
+    async resendInvitation(account, workspaceId, invitationId) {
+      const actor = requireAccount(account);
+      const token = randomBytes(32).toString("base64url");
+      const id = randomUUID();
+      let invitation: { email: string; workspaceName: string };
+      try {
+        invitation = await db.transaction(async (tx) => {
+          const workspace = await lockWorkspaceForMutation(tx, workspaceId);
+          await requireOwner(tx, workspaceId, actor.humanId);
+
+          const [row] = await tx
+            .select({
+              id: workspaceInvitations.id,
+              email: workspaceInvitations.email,
+              status: workspaceInvitations.status,
+              live: sql<boolean>`${workspaceInvitations.expiresAt} > statement_timestamp()`,
+            })
+            .from(workspaceInvitations)
+            .where(
+              and(
+                eq(workspaceInvitations.workspaceId, workspaceId),
+                eq(workspaceInvitations.id, invitationId),
+              ),
+            )
+            .for("update");
+          if (row === undefined) throw new WorkspacesError("invitation_not_found");
+
+          if (row.status === InvitationStatus.enum.pending) {
+            await tx
+              .update(workspaceInvitations)
+              .set(
+                row.live
+                  ? {
+                      status: InvitationStatus.enum.revoked,
+                      revokedAt: sql`statement_timestamp()`,
+                    }
+                  : {
+                      status: InvitationStatus.enum.expired,
+                      expiredAt: workspaceInvitations.expiresAt,
+                    },
+              )
+              .where(eq(workspaceInvitations.id, invitationId));
+          } else if (row.status !== InvitationStatus.enum.expired) {
+            throw new WorkspacesError("invitation_not_pending");
+          }
+
+          await tx.insert(workspaceInvitations).values({
+            id,
+            workspaceId,
+            email: row.email,
+            status: InvitationStatus.enum.pending,
+            tokenHash: tokenHash(token),
+            invitedByHumanId: actor.humanId,
+            createdAt: sql`statement_timestamp()`,
+            expiresAt: sql`statement_timestamp() + make_interval(secs => ${INVITATION_TTL_SECONDS})`,
+          });
+          return { email: row.email, workspaceName: workspace.name };
+        });
+      } catch (error) {
+        if (uniqueConstraintName(error) === "one_pending_workspace_invitation_per_email") {
+          throw new WorkspacesError("invitation_pending");
+        }
+        throw error;
+      }
+
+      await sendWorkspaceInvitation(db, deliver, log, {
+        id,
+        workspaceName: invitation.workspaceName,
+        email: invitation.email,
+        token,
+        publicUrl,
+      });
+      return readWorkspaceInvitationSummary(db, workspaceId, id);
+    },
+
+    // Revoke is the owner's answer to an offer that should no longer be live. Only a
+    // pending, unexpired row changes; the row keeps its history and revocation time.
+    async revokeInvitation(account, workspaceId, invitationId) {
+      const actor = requireAccount(account);
+      await db.transaction(async (tx) => {
+        await lockWorkspaceForMutation(tx, workspaceId);
+        await requireOwner(tx, workspaceId, actor.humanId);
+
+        const [row] = await tx
+          .select({ id: workspaceInvitations.id, status: workspaceInvitations.status })
+          .from(workspaceInvitations)
+          .where(
+            and(
+              eq(workspaceInvitations.workspaceId, workspaceId),
+              eq(workspaceInvitations.id, invitationId),
+            ),
+          )
+          .for("update");
+        if (row === undefined) throw new WorkspacesError("invitation_not_found");
+        if (row.status !== InvitationStatus.enum.pending) {
+          throw new WorkspacesError("invitation_not_pending");
+        }
+        const revoked = await tx
+          .update(workspaceInvitations)
+          .set({
+            status: InvitationStatus.enum.revoked,
+            revokedAt: sql`statement_timestamp()`,
+          })
+          .where(
+            and(
+              eq(workspaceInvitations.workspaceId, workspaceId),
+              eq(workspaceInvitations.id, invitationId),
+              eq(workspaceInvitations.status, InvitationStatus.enum.pending),
+              gt(workspaceInvitations.expiresAt, sql`statement_timestamp()`),
+            ),
+          )
+          .returning({ id: workspaceInvitations.id });
+        if (revoked.length === 0) throw new WorkspacesError("invitation_not_pending");
+      });
+      return readWorkspaceInvitationSummary(db, workspaceId, invitationId);
+    },
+
+    // The recipient declines from the emailed link. Holding the token is the capability;
+    // only a pending, unexpired offer changes, so a forwarded copy cannot disturb an
+    // accepted or revoked one.
+    async declineInvitation(input) {
+      const declined = await db
+        .update(workspaceInvitations)
+        .set({
+          status: InvitationStatus.enum.declined,
+          declinedAt: sql`statement_timestamp()`,
+        })
+        .where(
+          and(
+            eq(workspaceInvitations.tokenHash, tokenHash(input.token)),
+            eq(workspaceInvitations.status, InvitationStatus.enum.pending),
+            gt(workspaceInvitations.expiresAt, sql`statement_timestamp()`),
+          ),
+        )
+        .returning({ id: workspaceInvitations.id });
+      if (declined.length === 0) throw new WorkspacesError("invitation_invalid");
+    },
+
+    // The link's read side: the workspace, address, inviter, and offered access, without
+    // consuming the token. Invalid, expired, used, or known-failed links answer the same
+    // Problem. The recipient sees the whole scope before accepting.
     async previewInvitation(token) {
       const [row] = await db
         .select({
           workspaceId: workspaceInvitations.workspaceId,
           workspaceName: workspaces.name,
           email: workspaceInvitations.email,
+          invitedByEmail: humans.email,
+          expiresAt: workspaceInvitations.expiresAt,
         })
         .from(workspaceInvitations)
         .innerJoin(workspaces, eq(workspaces.id, workspaceInvitations.workspaceId))
+        .innerJoin(humans, eq(humans.id, workspaceInvitations.invitedByHumanId))
         .where(
           and(
             eq(workspaceInvitations.tokenHash, tokenHash(token)),
@@ -572,7 +883,20 @@ export function createWorkspacesService({
         )
         .limit(1);
       if (row === undefined) throw new WorkspacesError("invitation_invalid");
-      return row;
+      return {
+        workspaceId: row.workspaceId,
+        workspaceName: row.workspaceName,
+        email: row.email,
+        invitedByEmail: row.invitedByEmail,
+        grants: [
+          {
+            kind: "workspace_membership" as const,
+            workspaceId: row.workspaceId,
+            role: "member" as const,
+          },
+        ],
+        expiresAt: row.expiresAt.toISOString(),
+      };
     },
 
     // The workspace is locked, then the token is consumed by one shared transition

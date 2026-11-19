@@ -7,11 +7,11 @@ import { Email, NewPassword } from "./common.ts";
 // redeems it. Registration is invitation-only: there is no public sign-up.
 
 // The lifecycle states an invitation records (#20 tracks them separately from email
-// delivery and account verification). `expired` is set in place when a newer invitation
-// supersedes one whose seven days passed (or whose email never left); time itself is
-// still evaluated in database time at redemption. Decline and revoke arrive with #25.
+// delivery and account verification). A pending invitation becomes accepted, declined,
+// expired, or revoked, once, and never returns to pending. Expiry is evaluated in
+// database time; resending keeps the old row in this history and issues a new one.
 export const InvitationStatus = z
-  .enum(["pending", "accepted", "expired"])
+  .enum(["pending", "accepted", "declined", "expired", "revoked"])
   .meta({ id: "InvitationStatus" });
 export type InvitationStatus = z.infer<typeof InvitationStatus>;
 
@@ -32,8 +32,82 @@ export const InviteInstallationRequest = z
   .meta({ id: "InviteInstallationRequest" });
 export type InviteInstallationRequest = z.infer<typeof InviteInstallationRequest>;
 
-// The invitation as its inviter sees it. The token is a secret that travels by email
-// only; it never appears in a response.
+// The invitation token from an installation invitation email. Emailed tokens are
+// base64url, so the shape is fixed once for registration and decline. A malformed or
+// overlong value is an invalid link, not a server failure.
+export const InvitationToken = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]{1,1024}$/)
+  .meta({ id: "InvitationToken" });
+export type InvitationToken = z.infer<typeof InvitationToken>;
+
+// What an invitation offers. Project grants arrive with project access; today an
+// installation invitation offers an account and a workspace invitation offers a
+// workspace membership, so the recipient sees the whole scope before accepting.
+export const InvitationGrant = z
+  .discriminatedUnion("kind", [
+    z.object({ kind: z.literal("installation_account") }),
+    z.object({
+      kind: z.literal("workspace_membership"),
+      workspaceId: z.string(),
+      role: z.literal("member"),
+    }),
+  ])
+  .meta({ id: "InvitationGrant" });
+export type InvitationGrant = z.infer<typeof InvitationGrant>;
+
+// What the invitation targets: this installation, or one shared workspace.
+export const InvitationTarget = z
+  .discriminatedUnion("kind", [
+    z.object({ kind: z.literal("installation") }),
+    z.object({
+      kind: z.literal("workspace"),
+      id: z.string(),
+      name: z.string(),
+    }),
+  ])
+  .meta({ id: "InvitationTarget" });
+export type InvitationTarget = z.infer<typeof InvitationTarget>;
+
+// Delivery, separate from the lifecycle (#20): an invitation can be pending while its
+// email never left, and the UI must show those as two facts. Null means no attempt has
+// been recorded yet.
+export const InvitationDeliveryState = z
+  .object({
+    status: InvitationDelivery.nullable(),
+    attemptedAt: z.iso.datetime().nullable(),
+  })
+  .meta({ id: "InvitationDeliveryState" });
+export type InvitationDeliveryState = z.infer<typeof InvitationDeliveryState>;
+
+// One invitation as an inviter manages it: recipient, inviter, target, offered grants,
+// lifecycle timestamps, and delivery, all in one record. The token is never included.
+export const InvitationSummary = z
+  .object({
+    id: z.string(),
+    email: Email,
+    status: InvitationStatus,
+    target: InvitationTarget,
+    grants: z.array(InvitationGrant),
+    invitedBy: z.object({ humanId: z.string(), email: Email }),
+    delivery: InvitationDeliveryState,
+    createdAt: z.iso.datetime(),
+    expiresAt: z.iso.datetime(),
+    acceptedAt: z.iso.datetime().nullable(),
+    declinedAt: z.iso.datetime().nullable(),
+    expiredAt: z.iso.datetime().nullable(),
+    revokedAt: z.iso.datetime().nullable(),
+  })
+  .meta({ id: "InvitationSummary" });
+export type InvitationSummary = z.infer<typeof InvitationSummary>;
+
+export const InvitationSummaries = z
+  .array(InvitationSummary)
+  .meta({ id: "InvitationSummaries" });
+export type InvitationSummaries = z.infer<typeof InvitationSummaries>;
+
+// The invitation as its inviter sees it right after sending it. The token is a secret
+// that travels by email only; it never appears in a response.
 export const InstallationInvitation = z
   .object({
     email: Email,
@@ -52,3 +126,12 @@ export const InvitationRegistrationRequest = z
   })
   .meta({ id: "InvitationRegistrationRequest" });
 export type InvitationRegistrationRequest = z.infer<typeof InvitationRegistrationRequest>;
+
+// The recipient declines from the emailed link. Holding the token is the capability;
+// the POST changes the lifecycle and makes the link unusable.
+export const DeclineInvitationRequest = z
+  .object({
+    token: InvitationToken,
+  })
+  .meta({ id: "DeclineInvitationRequest" });
+export type DeclineInvitationRequest = z.infer<typeof DeclineInvitationRequest>;

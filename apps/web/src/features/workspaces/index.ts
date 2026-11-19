@@ -4,11 +4,15 @@ export {
   acceptWorkspaceInvitation,
   appointWorkspaceOwner,
   createWorkspace,
+  declineWorkspaceInvitation,
   inviteWorkspaceMember,
   registerThroughWorkspaceInvitation,
+  resendWorkspaceInvitation,
+  revokeWorkspaceInvitation,
 } from "./commands.ts";
 export {
   workspaceInvitationPreviewQuery,
+  workspaceInvitationsQuery,
   workspaceMembersQuery,
   workspaceQuery,
   workspacesQuery,

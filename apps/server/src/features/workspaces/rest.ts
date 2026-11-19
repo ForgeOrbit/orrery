@@ -4,6 +4,9 @@ import {
   AcceptWorkspaceInvitationRequest,
   AppointWorkspaceOwnerRequest,
   CreateWorkspaceRequest,
+  DeclineWorkspaceInvitationRequest,
+  InvitationSummaries,
+  InvitationSummary,
   InviteWorkspaceMemberRequest,
   RegisterThroughWorkspaceInvitationRequest,
   SessionResponse,
@@ -26,6 +29,7 @@ import { WorkspacesError, type WorkspacesErrorKind, type WorkspacesService } fro
 
 const workspaceParams = z.object({ workspaceId: z.string().min(1).max(200) });
 const memberParams = workspaceParams.extend({ humanId: z.string().min(1).max(200) });
+const invitationParams = workspaceParams.extend({ invitationId: z.string().min(1).max(200) });
 const previewQuery = z.object({ token: WorkspaceInvitationToken });
 
 const listWorkspaces = createRoute({
@@ -125,6 +129,84 @@ const inviteWorkspaceMember = createRoute({
       "The invitee is already a member or already has a pending invitation, or SMTP is not configured or its stored password is unreadable",
     ),
     502: problem("The SMTP server refused the message; the code says why"),
+  },
+});
+
+const listWorkspaceInvitations = createRoute({
+  method: "get",
+  path: "/api/workspaces/{workspaceId}/invitations",
+  summary: "List a shared workspace's invitations",
+  description:
+    "Owners only. Every invitation for this workspace, newest first, with recipient, inviter, target, offered grants, lifecycle timestamps, and email delivery as a separate fact. A pending invitation whose seven days have passed is reported and stored as expired. The token never appears.",
+  request: { params: workspaceParams },
+  responses: {
+    200: {
+      description: "The workspace's invitations",
+      content: { "application/json": { schema: InvitationSummaries } },
+    },
+    400: problem("The workspace id is invalid"),
+    401: problem("Not signed in"),
+    403: problem("Not an owner of this workspace"),
+    404: problem("No accessible shared workspace"),
+  },
+});
+
+const resendWorkspaceInvitation = createRoute({
+  method: "post",
+  path: "/api/workspaces/{workspaceId}/invitations/{invitationId}/resend",
+  summary: "Resend a workspace invitation",
+  description:
+    "Owners only. Rotates the link: the pending invitation becomes revoked (or expired, when its deadline already passed), and a new pending invitation from the current owner starts a fresh seven-day deadline. The previous link stops working. A delivery failure is recorded on the new invitation and answered as a delivery Problem; the invitation's lifecycle stays pending.",
+  request: { params: invitationParams },
+  responses: {
+    200: {
+      description: "The new pending invitation, with its delivery recorded",
+      content: { "application/json": { schema: InvitationSummary } },
+    },
+    400: problem("The workspace or invitation id is invalid"),
+    401: problem("Not signed in"),
+    403: problem("Not an owner of this workspace"),
+    404: problem("No accessible shared workspace or invitation"),
+    409: problem("The invitation is accepted, declined, revoked, or another is pending"),
+    502: problem("The SMTP server refused the message; the code says why"),
+  },
+});
+
+const revokeWorkspaceInvitation = createRoute({
+  method: "post",
+  path: "/api/workspaces/{workspaceId}/invitations/{invitationId}/revoke",
+  summary: "Revoke a workspace invitation",
+  description:
+    "Owners only. Only a pending, unexpired invitation is revoked; the link stops working and the row keeps its history and revocation timestamp.",
+  request: { params: invitationParams },
+  responses: {
+    200: {
+      description: "The revoked invitation",
+      content: { "application/json": { schema: InvitationSummary } },
+    },
+    400: problem("The workspace or invitation id is invalid"),
+    401: problem("Not signed in"),
+    403: problem("Not an owner of this workspace"),
+    404: problem("No accessible shared workspace or invitation"),
+    409: problem("The invitation is no longer pending and unexpired"),
+  },
+});
+
+const declineWorkspaceInvitation = createRoute({
+  method: "post",
+  path: "/api/workspace-invitations/decline",
+  summary: "Decline a workspace invitation",
+  description:
+    "The recipient declines from the emailed link. Holding the token is the capability; only a pending, unexpired invitation changes, and its link then stops working.",
+  request: {
+    body: {
+      required: true,
+      content: { "application/json": { schema: DeclineWorkspaceInvitationRequest } },
+    },
+  },
+  responses: {
+    204: { description: "The invitation was declined" },
+    400: problem("The token is invalid, expired, or already used"),
   },
 });
 
@@ -244,6 +326,10 @@ export const routes = [
   listWorkspaceMembers,
   createWorkspace,
   inviteWorkspaceMember,
+  listWorkspaceInvitations,
+  resendWorkspaceInvitation,
+  revokeWorkspaceInvitation,
+  declineWorkspaceInvitation,
   previewWorkspaceInvitation,
   acceptWorkspaceInvitation,
   registerThroughWorkspaceInvitation,
@@ -262,6 +348,8 @@ const statusFor = {
   invitation_recipient_mismatch: 403,
   email_unverified: 403,
   invitation_pending: 409,
+  invitation_not_found: 404,
+  invitation_not_pending: 409,
   already_member: 409,
   account_exists: 409,
   member_not_found: 404,
@@ -291,6 +379,27 @@ const inviteKinds = [
   "already_member",
   "invitation_pending",
 ] as const;
+const listInvitationKinds = [
+  "not_signed_in",
+  "workspace_not_found",
+  "not_workspace_owner",
+] as const;
+const resendKinds = [
+  "not_signed_in",
+  "workspace_not_found",
+  "not_workspace_owner",
+  "invitation_not_found",
+  "invitation_not_pending",
+  "invitation_pending",
+] as const;
+const revokeKinds = [
+  "not_signed_in",
+  "workspace_not_found",
+  "not_workspace_owner",
+  "invitation_not_found",
+  "invitation_not_pending",
+] as const;
+const declineKinds = ["invitation_invalid"] as const;
 const previewKinds = ["invitation_invalid"] as const;
 const acceptKinds = [
   "not_signed_in",
@@ -331,8 +440,12 @@ function failure<K extends readonly WorkspacesErrorKind[]>(c: Context, error: un
 
 // The invitation send also answers every delivery failure with settings' own code and
 // status, so a client can tell the reasons apart wherever the send happened.
-function sendFailure(c: Context, error: unknown) {
-  if (error instanceof WorkspacesError && isKind(error, inviteKinds)) {
+function sendFailure<K extends readonly WorkspacesErrorKind[]>(
+  c: Context,
+  error: unknown,
+  kinds: K,
+) {
+  if (error instanceof WorkspacesError && isKind(error, kinds)) {
     return problemResponse(c, {
       status: statusFor[error.kind],
       code: error.kind,
@@ -390,7 +503,51 @@ export function createWorkspacesRest(service: WorkspacesService, sessionReader: 
         201,
       );
     } catch (error) {
-      return sendFailure(c, error);
+      return sendFailure(c, error, inviteKinds);
+    }
+  });
+
+  app.openapi(listWorkspaceInvitations, async (c) => {
+    try {
+      return c.json(
+        await service.invitations(await sessionReader(c), c.req.valid("param").workspaceId),
+        200,
+      );
+    } catch (error) {
+      return failure(c, error, listInvitationKinds);
+    }
+  });
+
+  app.openapi(resendWorkspaceInvitation, async (c) => {
+    try {
+      const { workspaceId, invitationId } = c.req.valid("param");
+      return c.json(
+        await service.resendInvitation(await sessionReader(c), workspaceId, invitationId),
+        200,
+      );
+    } catch (error) {
+      return sendFailure(c, error, resendKinds);
+    }
+  });
+
+  app.openapi(revokeWorkspaceInvitation, async (c) => {
+    try {
+      const { workspaceId, invitationId } = c.req.valid("param");
+      return c.json(
+        await service.revokeInvitation(await sessionReader(c), workspaceId, invitationId),
+        200,
+      );
+    } catch (error) {
+      return failure(c, error, revokeKinds);
+    }
+  });
+
+  app.openapi(declineWorkspaceInvitation, async (c) => {
+    try {
+      await service.declineInvitation(c.req.valid("json"));
+      return c.body(null, 204);
+    } catch (error) {
+      return failure(c, error, declineKinds);
     }
   });
 

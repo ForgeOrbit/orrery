@@ -64,6 +64,20 @@
       "when": 1795076247318,
       "tag": "0008_workspace_ownership_write_order",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1795081199447,
+      "tag": "0009_glamorous_nekra",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1795082096309,
+      "tag": "0010_backfill_expired_invitation_timestamps",
+      "breakpoints": true
     }
   ]
 }

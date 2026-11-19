@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { InvitationDelivery, InvitationStatus } from "@orrery/contract";
-import type { InstallationInvitation } from "@orrery/contract";
-import { and, eq, gt, gte, isNull, lt, lte, or, sql } from "drizzle-orm";
+import type { InstallationInvitation, InvitationSummary } from "@orrery/contract";
+import { and, desc, eq, gt, gte, isNull, lt, lte, or, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
 import { errorNameAndCode, uniqueConstraintName } from "../../platform/errors.ts";
@@ -9,7 +9,7 @@ import type { Logger } from "../../platform/log.ts";
 import { tokenHash } from "../../platform/tokens.ts";
 import type { SessionAccount } from "../accounts/index.ts";
 import type { OutgoingMail } from "../settings/index.ts";
-import { invitations } from "../../db/schema.ts";
+import { invitations, humans } from "../../db/schema.ts";
 
 // The service is the only file in a feature that decides anything. rest.ts calls it.
 
@@ -29,16 +29,23 @@ export type InvitationsErrorKind =
   | "not_admin"
   | "account_exists"
   | "invitation_pending"
-  | "invitation_invalid";
+  | "invitation_invalid"
+  | "invitation_not_found"
+  | "invitation_not_pending"
+  | "inviter_not_authorized";
 
 // Each kind is the REST error's stable code and its message the Problem's title
 // (ADR-0003), so clients branch on the code and people read the title.
 const messages = {
   not_signed_in: "Not signed in.",
-  not_admin: "Only a system administrator can send installation invitations.",
+  not_admin: "Only a system administrator can manage installation invitations.",
   account_exists: "This email already has an account.",
   invitation_pending: "An invitation for this email is already pending.",
   invitation_invalid: "This invitation is invalid, expired, or already used.",
+  invitation_not_found: "This invitation does not exist.",
+  invitation_not_pending: "Only a pending or expired invitation can be changed.",
+  inviter_not_authorized:
+    "The person who sent this invitation is no longer a system administrator.",
 } as const satisfies Record<InvitationsErrorKind, string>;
 
 export class InvitationsError extends Error {
@@ -89,8 +96,116 @@ function requireAdministrator(account: SessionAccount | null): SessionAccount {
 async function recordDelivery(db: PostgresJsDatabase, id: string, delivery: InvitationDelivery) {
   await db
     .update(invitations)
-    .set({ deliveryStatus: delivery, deliveryAttemptedAt: sql`now()` })
+    .set({ deliveryStatus: delivery, deliveryAttemptedAt: sql`statement_timestamp()` })
     .where(eq(invitations.id, id));
+}
+
+// The deadline is a fact, not a decision. Whenever an inviter looks at invitations or
+// changes one, due rows become expired once, at the deadline they already passed. The
+// partial index on pending rows is then free for a resend or a fresh invitation.
+async function expireDueInstallationInvitations(db: PostgresJsDatabase) {
+  await db
+    .update(invitations)
+    .set({ status: InvitationStatus.enum.expired, expiredAt: invitations.expiresAt })
+    .where(
+      and(
+        eq(invitations.status, InvitationStatus.enum.pending),
+        lte(invitations.expiresAt, sql`statement_timestamp()`),
+      ),
+    );
+}
+
+// The projection every management response shares: recipient, inviter, target, offered
+// grants, lifecycle timestamps, and delivery as a separate fact. The token never leaves
+// the email.
+const summarySelection = {
+  id: invitations.id,
+  email: invitations.email,
+  status: invitations.status,
+  invitedByHumanId: invitations.invitedByHumanId,
+  invitedByEmail: humans.email,
+  createdAt: invitations.createdAt,
+  expiresAt: invitations.expiresAt,
+  acceptedAt: invitations.acceptedAt,
+  declinedAt: invitations.declinedAt,
+  expiredAt: invitations.expiredAt,
+  revokedAt: invitations.revokedAt,
+  deliveryStatus: invitations.deliveryStatus,
+  deliveryAttemptedAt: invitations.deliveryAttemptedAt,
+} as const;
+
+interface InstallationSummaryRow {
+  id: string;
+  email: string;
+  status: InvitationStatus;
+  invitedByHumanId: string;
+  invitedByEmail: string;
+  createdAt: Date;
+  expiresAt: Date;
+  acceptedAt: Date | null;
+  declinedAt: Date | null;
+  expiredAt: Date | null;
+  revokedAt: Date | null;
+  deliveryStatus: InvitationDelivery | null;
+  deliveryAttemptedAt: Date | null;
+}
+
+function toInstallationSummary(row: InstallationSummaryRow): InvitationSummary {
+  return {
+    id: row.id,
+    email: row.email,
+    status: row.status,
+    target: { kind: "installation" },
+    grants: [{ kind: "installation_account" }],
+    invitedBy: { humanId: row.invitedByHumanId, email: row.invitedByEmail },
+    delivery: {
+      status: row.deliveryStatus,
+      attemptedAt: row.deliveryAttemptedAt?.toISOString() ?? null,
+    },
+    createdAt: row.createdAt.toISOString(),
+    expiresAt: row.expiresAt.toISOString(),
+    acceptedAt: row.acceptedAt?.toISOString() ?? null,
+    declinedAt: row.declinedAt?.toISOString() ?? null,
+    expiredAt: row.expiredAt?.toISOString() ?? null,
+    revokedAt: row.revokedAt?.toISOString() ?? null,
+  };
+}
+
+async function readInstallationSummary(
+  db: PostgresJsDatabase,
+  id: string,
+): Promise<InvitationSummary> {
+  const [row] = await db
+    .select(summarySelection)
+    .from(invitations)
+    .innerJoin(humans, eq(humans.id, invitations.invitedByHumanId))
+    .where(eq(invitations.id, id))
+    .limit(1);
+  if (row === undefined) throw new InvitationsError("invitation_not_found");
+  return toInstallationSummary(row);
+}
+
+// Sends one installation invitation email and records the attempt separately from the
+// lifecycle. A known failure never redeems and answers with settings' own Problem; an
+// unknown result is recorded after the send, so the link still redeems if holding it
+// proves the email arrived.
+async function sendInstallationInvitation(
+  db: PostgresJsDatabase,
+  deliver: (mail: OutgoingMail) => Promise<void>,
+  log: Logger | undefined,
+  input: { id: string; email: string; token: string; publicUrl: string },
+) {
+  try {
+    await deliver(invitationMail(input.email, input.token, input.publicUrl));
+  } catch (error) {
+    try {
+      await recordDelivery(db, input.id, InvitationDelivery.enum.failed);
+    } catch (recordingError) {
+      log?.warn("failed-delivery recording failed", errorNameAndCode(recordingError));
+    }
+    throw error;
+  }
+  await recordDelivery(db, input.id, InvitationDelivery.enum.sent);
 }
 
 export interface InvitationsServiceDeps {
@@ -116,6 +231,16 @@ export interface InvitationsService {
     account: SessionAccount | null,
     input: { email: string },
   ): Promise<InstallationInvitation>;
+  listInstallation(account: SessionAccount | null): Promise<InvitationSummary[]>;
+  resendInstallation(
+    account: SessionAccount | null,
+    invitationId: string,
+  ): Promise<InvitationSummary>;
+  revokeInstallation(
+    account: SessionAccount | null,
+    invitationId: string,
+  ): Promise<InvitationSummary>;
+  declineInstallation(input: { token: string }): Promise<void>;
   registerInstallation(input: {
     token: string;
     password: string;
@@ -179,7 +304,10 @@ export function createInvitationsService({
           // rule holds for the new link and the old token dies with its row.
           await tx
             .update(invitations)
-            .set({ status: InvitationStatus.enum.expired })
+            .set({
+              status: InvitationStatus.enum.expired,
+              expiredAt: invitations.expiresAt,
+            })
             .where(
               and(
                 eq(invitations.email, input.email),
@@ -217,27 +345,150 @@ export function createInvitationsService({
 
       // The delivery attempt, recorded separately from the lifecycle: pending never
       // implies delivered (#20).
+      await sendInstallationInvitation(db, deliver, log, {
+        id,
+        email: input.email,
+        token,
+        publicUrl,
+      });
+      return { email: input.email, status: InvitationStatus.enum.pending };
+    },
+
+    // Every installation invitation, newest first, with its lifecycle and its delivery
+    // as separate facts. Administrators are the only inviters for an installation.
+    async listInstallation(account) {
+      requireAdministrator(account);
+      await expireDueInstallationInvitations(db);
+      const rows = await db
+        .select(summarySelection)
+        .from(invitations)
+        .innerJoin(humans, eq(humans.id, invitations.invitedByHumanId))
+        .orderBy(desc(invitations.createdAt), desc(invitations.id));
+      return rows.map(toInstallationSummary);
+    },
+
+    // Resend rotates the link: the old row keeps its history (revoked if still live,
+    // otherwise expired), and a new pending row starts a fresh seven-day deadline.
+    async resendInstallation(account, invitationId) {
+      const admin = requireAdministrator(account);
+      const token = randomBytes(32).toString("base64url");
+      const id = randomUUID();
+      let email: string;
       try {
-        await deliver(invitationMail(input.email, token, publicUrl));
+        email = await db.transaction(async (tx) => {
+          const [row] = await tx
+            .select({
+              id: invitations.id,
+              email: invitations.email,
+              status: invitations.status,
+              live: sql<boolean>`${invitations.expiresAt} > statement_timestamp()`,
+            })
+            .from(invitations)
+            .where(eq(invitations.id, invitationId))
+            .for("update");
+          if (row === undefined) throw new InvitationsError("invitation_not_found");
+
+          if (row.status === InvitationStatus.enum.pending) {
+            await tx
+              .update(invitations)
+              .set(
+                row.live
+                  ? {
+                      status: InvitationStatus.enum.revoked,
+                      revokedAt: sql`statement_timestamp()`,
+                    }
+                  : {
+                      status: InvitationStatus.enum.expired,
+                      expiredAt: invitations.expiresAt,
+                    },
+              )
+              .where(eq(invitations.id, invitationId));
+          } else if (row.status !== InvitationStatus.enum.expired) {
+            throw new InvitationsError("invitation_not_pending");
+          }
+
+          await tx.insert(invitations).values({
+            id,
+            email: row.email,
+            status: InvitationStatus.enum.pending,
+            tokenHash: tokenHash(token),
+            invitedByHumanId: admin.humanId,
+            createdAt: sql`statement_timestamp()`,
+            expiresAt: sql`statement_timestamp() + make_interval(secs => ${INVITATION_TTL_SECONDS})`,
+          });
+          return row.email;
+        });
       } catch (error) {
-        // The email never left. The invitation stays, with its delivery failure
-        // recorded: it can never redeem, and it will not block a fresh invitation.
-        // The delivery Problem (settings' code, already logged there) still goes out;
-        // if even the recording fails, the log keeps its name and code only, never its
-        // message.
-        try {
-          await recordDelivery(db, id, InvitationDelivery.enum.failed);
-        } catch (recordingError) {
-          log?.warn("failed-delivery recording failed", errorNameAndCode(recordingError));
+        // A concurrent fresh invitation owns the one pending slot; the resend answers
+        // the same as any other pending invitation.
+        if (uniqueConstraintName(error) === "one_pending_invitation_per_email") {
+          throw new InvitationsError("invitation_pending");
         }
         throw error;
       }
-      // A delivery that left but could not be recorded answers as an error on purpose:
-      // the invitation's delivery stays unknown, so the administrator learns the request
-      // failed. The link still redeems, because holding the token proves the email
-      // arrived; past the grace window a fresh invitation supersedes the row.
-      await recordDelivery(db, id, InvitationDelivery.enum.sent);
-      return { email: input.email, status: InvitationStatus.enum.pending };
+
+      await sendInstallationInvitation(db, deliver, log, {
+        id,
+        email,
+        token,
+        publicUrl,
+      });
+      return readInstallationSummary(db, id);
+    },
+
+    // Revoke is the inviter's answer to an offer that should no longer be live. Only a
+    // pending, unexpired row changes: the row keeps who revoked it and when.
+    async revokeInstallation(account, invitationId) {
+      requireAdministrator(account);
+      await expireDueInstallationInvitations(db);
+      await db.transaction(async (tx) => {
+        const [row] = await tx
+          .select({ id: invitations.id, status: invitations.status })
+          .from(invitations)
+          .where(eq(invitations.id, invitationId))
+          .for("update");
+        if (row === undefined) throw new InvitationsError("invitation_not_found");
+        if (row.status !== InvitationStatus.enum.pending) {
+          throw new InvitationsError("invitation_not_pending");
+        }
+        const revoked = await tx
+          .update(invitations)
+          .set({
+            status: InvitationStatus.enum.revoked,
+            revokedAt: sql`statement_timestamp()`,
+          })
+          .where(
+            and(
+              eq(invitations.id, invitationId),
+              eq(invitations.status, InvitationStatus.enum.pending),
+              gt(invitations.expiresAt, sql`statement_timestamp()`),
+            ),
+          )
+          .returning({ id: invitations.id });
+        if (revoked.length === 0) throw new InvitationsError("invitation_not_pending");
+      });
+      return readInstallationSummary(db, invitationId);
+    },
+
+    // The recipient declines from the emailed link. Holding the token is the
+    // capability; only a pending, unexpired invitation changes, so a forwarded copy
+    // cannot disturb an accepted or revoked one.
+    async declineInstallation(input) {
+      const declined = await db
+        .update(invitations)
+        .set({
+          status: InvitationStatus.enum.declined,
+          declinedAt: sql`statement_timestamp()`,
+        })
+        .where(
+          and(
+            eq(invitations.tokenHash, tokenHash(input.token)),
+            eq(invitations.status, InvitationStatus.enum.pending),
+            gt(invitations.expiresAt, sql`statement_timestamp()`),
+          ),
+        )
+        .returning({ id: invitations.id });
+      if (declined.length === 0) throw new InvitationsError("invitation_invalid");
     },
 
     // One conditional update, evaluated in database time: the invitation must be
@@ -261,9 +512,21 @@ export function createInvitationsService({
               sql`${invitations.deliveryStatus} is distinct from ${InvitationDelivery.enum.failed}`,
             ),
           )
-          .returning({ email: invitations.email });
+          .returning({ email: invitations.email, invitedByHumanId: invitations.invitedByHumanId });
         const [row] = rows;
         if (row === undefined) throw new InvitationsError("invitation_invalid");
+
+        // The offer is still authorized only if its inviter remains a system
+        // administrator; the check runs in this transaction, and a failure rolls the
+        // token back to pending rather than burning it.
+        const [inviter] = await tx
+          .select({ isSystemAdministrator: humans.isSystemAdministrator })
+          .from(humans)
+          .where(eq(humans.id, row.invitedByHumanId))
+          .limit(1);
+        if (inviter?.isSystemAdministrator !== true) {
+          throw new InvitationsError("inviter_not_authorized");
+        }
 
         try {
           const { humanId } = await createInvitedHuman(

@@ -323,6 +323,191 @@ test("registration completes even when the follow-up sign-in fails", async ({ pa
   }
 });
 
+test("tracks installation invitations: resend rotates the link, revoke and decline resolve offers, delivery stays separate", async () => {
+  // Resend: the old link stops working, the history keeps both rows, and the new one
+  // registers the recipient.
+  const resendEmail = "installation.resend@orrery.test";
+  const resendPassword = "installation-resend-password";
+  await recordSecret(resendPassword);
+  const invited = await api.post("/api/invitations/installation", { data: { email: resendEmail } });
+  expect(invited.status()).toBe(201);
+  await expect
+    .poll(async () => (await caughtInvitationTokens(api, resendEmail)).length, { timeout: 15_000 })
+    .toBeGreaterThan(0);
+  const oldToken = (await caughtInvitationTokens(api, resendEmail))[0];
+  if (oldToken === undefined) throw new Error("the catcher never received the invitation");
+  await recordSecret(oldToken);
+  const id = await installationInvitationId(api, resendEmail, "pending");
+
+  const resent = await api.post(`/api/invitations/installation/${id}/resend`);
+  expect(resent.status()).toBe(200);
+  const fresh: unknown = await resent.json();
+  if (typeof fresh !== "object" || fresh === null) throw new Error("the resend returned no body");
+  expect(fresh).toMatchObject({
+    email: resendEmail,
+    status: "pending",
+    target: { kind: "installation" },
+    grants: [{ kind: "installation_account" }],
+    delivery: { status: "sent" },
+  });
+  const freshId: unknown = Reflect.get(fresh, "id");
+  if (typeof freshId !== "string") throw new Error("the new invitation has no id");
+  await expect
+    .poll(async () => (await caughtInvitationTokens(api, resendEmail)).length, { timeout: 15_000 })
+    .toBeGreaterThan(1);
+  const newToken = (await caughtInvitationTokens(api, resendEmail)).find(
+    (token) => token !== oldToken,
+  );
+  if (newToken === undefined) throw new Error("the catcher never received the resent invitation");
+  await recordSecret(newToken);
+
+  const oldAttempt = await api.post("/api/invitations/installation/registration", {
+    data: { token: oldToken, password: resendPassword },
+  });
+  expect(oldAttempt.status()).toBe(400);
+  expect(await oldAttempt.json()).toMatchObject({ code: "invitation_invalid" });
+  const historyRes = await api.get("/api/invitations/installation");
+  const history: unknown = await historyRes.json();
+  if (!Array.isArray(history)) throw new Error("the invitation history is not a list");
+  expect(history).toContainEqual(expect.objectContaining({ id, status: "revoked" }));
+  expect(history).toContainEqual(expect.objectContaining({ id: freshId, status: "pending" }));
+  const registered = await api.post("/api/invitations/installation/registration", {
+    data: { token: newToken, password: resendPassword },
+  });
+  expect(registered.status()).toBe(200);
+
+  // Revoke: the offer resolves and its link never registers.
+  const revokeEmail = "installation.revoke@orrery.test";
+  const revokePassword = "installation-revoke-password";
+  await recordSecret(revokePassword);
+  const revokeInvite = await api.post("/api/invitations/installation", {
+    data: { email: revokeEmail },
+  });
+  expect(revokeInvite.status()).toBe(201);
+  await expect
+    .poll(async () => caughtInvitationToken(api, revokeEmail), { timeout: 15_000 })
+    .toBeTruthy();
+  const revokeToken = await caughtInvitationToken(api, revokeEmail);
+  if (revokeToken === undefined) throw new Error("the catcher never received the invitation");
+  await recordSecret(revokeToken);
+  const revokeId = await installationInvitationId(api, revokeEmail, "pending");
+  const revoked = await api.post(`/api/invitations/installation/${revokeId}/revoke`);
+  expect(revoked.status()).toBe(200);
+  expect(await revoked.json()).toMatchObject({ id: revokeId, status: "revoked" });
+  const revokedAttempt = await api.post("/api/invitations/installation/registration", {
+    data: { token: revokeToken, password: revokePassword },
+  });
+  expect(revokedAttempt.status()).toBe(400);
+
+  // Decline: the recipient resolves the offer from the link, without a session.
+  const declineEmail = "installation.decline@orrery.test";
+  const declineInvite = await api.post("/api/invitations/installation", {
+    data: { email: declineEmail },
+  });
+  expect(declineInvite.status()).toBe(201);
+  await expect
+    .poll(async () => caughtInvitationToken(api, declineEmail), { timeout: 15_000 })
+    .toBeTruthy();
+  const declineToken = await caughtInvitationToken(api, declineEmail);
+  if (declineToken === undefined) throw new Error("the catcher never received the invitation");
+  await recordSecret(declineToken);
+  const declined = await api.post("/api/invitations/installation/decline", {
+    data: { token: declineToken },
+  });
+  expect(declined.status()).toBe(204);
+  const declinedAgain = await api.post("/api/invitations/installation/decline", {
+    data: { token: declineToken },
+  });
+  expect(declinedAgain.status()).toBe(400);
+  expect(await declinedAgain.json()).toMatchObject({ code: "invitation_invalid" });
+  const declinedHistory = await api.get("/api/invitations/installation");
+  const declinedRows: unknown = await declinedHistory.json();
+  if (!Array.isArray(declinedRows)) throw new Error("the invitation history is not a list");
+  expect(declinedRows).toContainEqual(
+    expect.objectContaining({ email: declineEmail, status: "declined" }),
+  );
+
+  // Delivery failure is independent of the lifecycle: the row stays pending, and the
+  // list reports the failed email separately. Repairing SMTP and resending recovers it.
+  const failedEmail = "installation.delivery@orrery.test";
+  await api.put("/api/settings/smtp", {
+    data: { ...SETTINGS, host: "127.0.0.1", port: 1 },
+  });
+  try {
+    const failed = await api.post("/api/invitations/installation", {
+      data: { email: failedEmail },
+    });
+    expect(failed.status()).toBe(502);
+    expect(await failed.json()).toMatchObject({ status: 502, code: "smtp_unreachable" });
+  } finally {
+    const repaired = await api.put("/api/settings/smtp", { data: SETTINGS });
+    expect(repaired.status()).toBe(200);
+  }
+  const failedId = await installationInvitationId(api, failedEmail, "pending");
+  const failedHistory = await api.get("/api/invitations/installation");
+  const failedRows: unknown = await failedHistory.json();
+  if (!Array.isArray(failedRows)) throw new Error("the invitation history is not a list");
+  expect(failedRows).toContainEqual(
+    expect.objectContaining({
+      id: failedId,
+      status: "pending",
+      delivery: expect.objectContaining({ status: "failed" }),
+    }),
+  );
+  const retried = await api.post(`/api/invitations/installation/${failedId}/resend`);
+  expect(retried.status()).toBe(200);
+  expect(await retried.json()).toMatchObject({
+    email: failedEmail,
+    status: "pending",
+    delivery: { status: "sent" },
+  });
+  await expect
+    .poll(async () => caughtInvitationToken(api, failedEmail), { timeout: 15_000 })
+    .toBeTruthy();
+  for (const token of await caughtInvitationTokens(api, failedEmail)) await recordSecret(token);
+});
+
+test("administrator sees installation invitation history and resends from the page", async ({
+  page,
+}) => {
+  const uiEmail = "installation.ui@orrery.test";
+  const invited = await api.post("/api/invitations/installation", { data: { email: uiEmail } });
+  expect(invited.status()).toBe(201);
+  await expect
+    .poll(async () => caughtInvitationToken(api, uiEmail), { timeout: 15_000 })
+    .toBeTruthy();
+  for (const token of await caughtInvitationTokens(api, uiEmail)) await recordSecret(token);
+  const before = await caughtInvitationTokens(api, uiEmail);
+
+  await page.goto("/signin");
+  await page.getByLabel("Email").fill(ADMIN_EMAIL);
+  await page.getByLabel("Password").fill(ADMIN_PASSWORD);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByText(`Signed in as ${ADMIN_EMAIL}.`)).toBeVisible();
+
+  const row = page.locator("li[data-invitation-id]").filter({ hasText: uiEmail });
+  await expect(row).toContainText("Pending");
+  await expect(row).toContainText("Email sent");
+  await expect(row).toContainText(`Invited by ${ADMIN_EMAIL}`);
+  await expect(row).toContainText("This installation");
+  await expect(row).toContainText("Installation account");
+
+  await row.getByRole("button", { name: "Resend" }).click();
+  await expect
+    .poll(async () => (await caughtInvitationTokens(api, uiEmail)).length, { timeout: 15_000 })
+    .toBeGreaterThan(before.length);
+  for (const token of await caughtInvitationTokens(api, uiEmail)) await recordSecret(token);
+  await expect(page.locator(`li[data-invitation-id]`).filter({ hasText: uiEmail })).toHaveCount(2);
+  await expect(
+    page.locator('li[data-invitation-status="revoked"]').filter({ hasText: uiEmail }),
+  ).toHaveCount(1);
+  await expect(
+    page.locator('li[data-invitation-status="pending"]').filter({ hasText: uiEmail }),
+  ).toHaveCount(1);
+
+  for (const cookie of await page.context().cookies()) await recordSecret(cookie.value);
+});
+
 // One person's workspace listing, already validated against the response shape.
 async function workspacesOf(context: APIRequestContext) {
   const res = await context.get("/api/workspaces");
@@ -344,11 +529,19 @@ async function caughtInvitationToken(
   client: APIRequestContext,
   to: string,
 ): Promise<string | undefined> {
+  const tokens = await caughtInvitationTokens(client, to);
+  return tokens[0];
+}
+
+// Every matching installation token, for a resend where the old and new emails share a
+// recipient and subject. Order is the catcher's, so callers compare sets.
+async function caughtInvitationTokens(client: APIRequestContext, to: string): Promise<string[]> {
   const list = await client.get(`${mailpit}/api/v1/messages`);
   const body: unknown = await list.json();
-  if (typeof body !== "object" || body === null) return undefined;
+  if (typeof body !== "object" || body === null) return [];
   const messages: unknown = Reflect.get(body, "messages");
-  if (!Array.isArray(messages)) return undefined;
+  if (!Array.isArray(messages)) return [];
+  const tokens: string[] = [];
   for (const message of messages) {
     if (typeof message !== "object" || message === null) continue;
     if (Reflect.get(message, "Subject") !== SUBJECT) continue;
@@ -360,9 +553,31 @@ async function caughtInvitationToken(
     const text: unknown = Reflect.get(caught, "Text");
     if (typeof text !== "string") continue;
     if (!caughtRecipients(caught).includes(to)) continue;
-    return text.match(/\/register\?token=([A-Za-z0-9_-]+)/)?.[1];
+    const token = text.match(/\/register\?token=([A-Za-z0-9_-]+)/)?.[1];
+    if (token !== undefined && !tokens.includes(token)) tokens.push(token);
   }
-  return undefined;
+  return tokens;
+}
+
+// One installation invitation's id from the administrator's history, optionally
+// narrowed by lifecycle state.
+async function installationInvitationId(
+  client: APIRequestContext,
+  email: string,
+  status?: string,
+): Promise<string> {
+  const res = await client.get("/api/invitations/installation");
+  expect(res.status()).toBe(200);
+  const body: unknown = await res.json();
+  if (!Array.isArray(body)) throw new Error("the installation invitation history is not a list");
+  for (const entry of body) {
+    if (typeof entry !== "object" || entry === null) continue;
+    if (Reflect.get(entry, "email") !== email) continue;
+    if (status !== undefined && Reflect.get(entry, "status") !== status) continue;
+    const id: unknown = Reflect.get(entry, "id");
+    if (typeof id === "string") return id;
+  }
+  throw new Error(`no ${status ?? "matching"} installation invitation for ${email}`);
 }
 
 // The recipient addresses of one caught message.

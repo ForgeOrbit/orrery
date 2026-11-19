@@ -1,11 +1,12 @@
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { WorkspaceInvitationToken } from "@orrery/contract";
+import { WorkspaceInvitationToken, type WorkspaceInvitationPreview } from "@orrery/contract";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { sessionQuery, signIn, type Session } from "../features/accounts/index.ts";
 import {
   acceptWorkspaceInvitation,
+  declineWorkspaceInvitation,
   registerThroughWorkspaceInvitation,
   workspaceInvitationPreviewQuery,
   workspaceQuery,
@@ -85,9 +86,10 @@ function Invitation({ token }: { token: string }) {
     return (
       <main>
         <h1>Join {preview.workspaceName}</h1>
+        <InvitationScope preview={preview} />
         <p>
-          This invitation was sent to {preview.email}. Sign in with that account to join the
-          workspace.
+          Sign in with {preview.email} to join the workspace, or choose a password below if you are
+          new.
         </p>
         <p>
           <Link to="/signin" search={{ next: `/workspace-invitation?token=${token}` }}>
@@ -95,6 +97,7 @@ function Invitation({ token }: { token: string }) {
           </Link>
         </p>
         <NewAccountForm token={token} />
+        <DeclineInvitation token={token} />
       </main>
     );
   }
@@ -103,6 +106,7 @@ function Invitation({ token }: { token: string }) {
     return (
       <main>
         <h1>Join {preview.workspaceName}</h1>
+        <InvitationScope preview={preview} />
         <p role="alert">
           This invitation was sent to {preview.email}, but you are signed in as {session.email}.
           Sign in with the invited account to accept it.
@@ -117,12 +121,71 @@ function Invitation({ token }: { token: string }) {
   return <AcceptInvitation token={token} preview={preview} />;
 }
 
+// The offer, before anything is accepted: the workspace, who invited the person, the
+// access it grants, and when it expires. The server rechecks all of it at acceptance.
+function InvitationScope({ preview }: { preview: WorkspaceInvitationPreview }) {
+  const offered = preview.grants
+    .map((grant) =>
+      grant.kind === "installation_account" ? "Installation account" : "Workspace member",
+    )
+    .join(", ");
+  return (
+    <section>
+      <p>
+        {preview.invitedByEmail} invited {preview.email} to <strong>{preview.workspaceName}</strong>
+        .
+      </p>
+      <p>Offered access: {offered}. Workspace membership alone does not grant project access.</p>
+      <p>This invitation expires {new Date(preview.expiresAt).toLocaleString()}.</p>
+    </section>
+  );
+}
+
+// Holding the emailed link is the capability to decline. Once declined, the same link
+// stops working; a reload shows the ordinary invalid-link answer.
+function DeclineInvitation({ token }: { token: string }) {
+  const [declined, setDeclined] = useState(false);
+  const [error, setError] = useState<string>();
+  const [submitting, setSubmitting] = useState(false);
+
+  async function onDecline() {
+    setSubmitting(true);
+    setError(undefined);
+    try {
+      await declineWorkspaceInvitation({ token });
+      setDeclined(true);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not decline the invitation.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (declined) {
+    return (
+      <p role="status">
+        You declined this invitation. The link no longer works.{" "}
+        <Link to="/">Go to your workspaces</Link>
+      </p>
+    );
+  }
+
+  return (
+    <p>
+      <button type="button" onClick={() => void onDecline()} disabled={submitting}>
+        Decline invitation
+      </button>
+      {error !== undefined && <span role="alert"> {error}</span>}
+    </p>
+  );
+}
+
 function AcceptInvitation({
   token,
   preview,
 }: {
   token: string;
-  preview: { workspaceId: string; workspaceName: string; email: string };
+  preview: WorkspaceInvitationPreview;
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -150,12 +213,14 @@ function AcceptInvitation({
   return (
     <main>
       <h1>Join {preview.workspaceName}</h1>
+      <InvitationScope preview={preview} />
       <p>You are signed in as {preview.email}.</p>
       <p>Accepting adds this shared workspace to your own workspace list.</p>
       {error !== undefined && <p role="alert">{error}</p>}
       <button type="button" onClick={() => void onAccept()} disabled={submitting}>
         Accept invitation
       </button>
+      <DeclineInvitation token={token} />
     </main>
   );
 }

@@ -3,7 +3,10 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { sessionQuery, signIn, type Session } from "../features/accounts/index.ts";
-import { registerThroughInvitation } from "../features/invitations/index.ts";
+import {
+  declineInstallationInvitation,
+  registerThroughInvitation,
+} from "../features/invitations/index.ts";
 
 // The page the invitation email links to (issue #23). Opening it changes nothing: the
 // token is redeemed only by the POST the password form sends, and choosing a password
@@ -24,7 +27,22 @@ function RegisterPage() {
   // Set when registration succeeded but the follow-up sign-in failed: the account
   // exists, so the form is gone and the person is sent to sign in.
   const [createdEmail, setCreatedEmail] = useState<string>();
+  const [declined, setDeclined] = useState(false);
+  const [declining, setDeclining] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+
+  async function onDecline() {
+    setDeclining(true);
+    setError(undefined);
+    try {
+      await declineInstallationInvitation({ token });
+      setDeclined(true);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not decline the invitation.");
+    } finally {
+      setDeclining(false);
+    }
+  }
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -65,6 +83,18 @@ function RegisterPage() {
     );
   }
 
+  if (declined) {
+    return (
+      <main>
+        <h1>Accept your invitation</h1>
+        <p role="status">You declined this invitation. The link no longer works.</p>
+        <p>
+          <Link to="/">Go to Orrery</Link>
+        </p>
+      </main>
+    );
+  }
+
   if (token === "") {
     return (
       <main>
@@ -92,10 +122,15 @@ function RegisterPage() {
           autoComplete="new-password"
         />
         {error !== undefined && <p role="alert">{error}</p>}
-        <button type="submit" disabled={submitting}>
+        <button type="submit" disabled={submitting || declining}>
           Register
         </button>
       </form>
+      <p>
+        <button type="button" onClick={() => void onDecline()} disabled={submitting || declining}>
+          Decline invitation
+        </button>
+      </p>
     </main>
   );
 }

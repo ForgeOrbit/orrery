@@ -2,6 +2,8 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import {
   InstallationInvitation,
+  InvitationSummaries,
+  InvitationSummary,
   Problem,
   SessionResponse,
   type SmtpSettings,
@@ -67,6 +69,9 @@ const putJson = (app: Hono, path: string, body: unknown, cookie?: string) =>
     headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}) },
     body: JSON.stringify(body),
   });
+
+const getJson = (app: Hono, path: string, cookie?: string) =>
+  app.request(path, cookie ? { headers: { cookie } } : undefined);
 
 const problemBody = async (res: Response) => Problem.parse(await res.json());
 
@@ -795,11 +800,12 @@ describe("invitations", () => {
     it("changes nothing on a mere link visit: GET never consumes the token", async () => {
       const { app, token } = await invitedApp();
 
-      // The browser link, the API path, and the registration path: no GET route exists.
+      // The browser link, the API path, and the registration path: no GET route exists
+      // for registration, and the management listing is a read that does not consume it.
       const page = await app.request(`/register?token=${token}`);
       expect(page.status).toBe(404); // no static app is mounted in this suite
       const apiList = await app.request("/api/invitations/installation");
-      expect(apiList.status).toBe(404);
+      expect(apiList.status).toBe(401); // no session in this request
       const apiGet = await app.request("/api/invitations/installation/registration");
       expect(apiGet.status).toBe(404);
 
@@ -1003,6 +1009,433 @@ describe("invitations", () => {
       });
       expect(res.status).toBe(200);
       expect(await database.db.select().from(humans)).toHaveLength(before.length + 1);
+    });
+  });
+
+  describe("managing installation invitations", () => {
+    it("lists every lifecycle state with recipient, inviter, target, grants, timestamps, and separate delivery", async () => {
+      const { app, cookie } = await armedApp();
+      const [admin] = await database.db.select().from(humans).where(eq(humans.email, EMAIL));
+      if (admin === undefined) throw new Error("the administrator was not found");
+
+      await database.db.insert(invitations).values([
+        {
+          id: randomUUID(),
+          email: "pending@example.com",
+          status: "pending",
+          tokenHash: tokenHash("list-pending"),
+          invitedByHumanId: admin.id,
+          createdAt: sql`now() - interval '1 hour'`,
+          expiresAt: sql`now() + interval '1 day'`,
+          deliveryStatus: "sent",
+          deliveryAttemptedAt: sql`now() - interval '1 minute'`,
+        },
+        {
+          id: randomUUID(),
+          email: "accepted@example.com",
+          status: "accepted",
+          tokenHash: tokenHash("list-accepted"),
+          invitedByHumanId: admin.id,
+          expiresAt: sql`now() + interval '1 day'`,
+          acceptedAt: sql`now() - interval '1 minute'`,
+          deliveryStatus: "sent",
+        },
+        {
+          id: randomUUID(),
+          email: "declined@example.com",
+          status: "declined",
+          tokenHash: tokenHash("list-declined"),
+          invitedByHumanId: admin.id,
+          expiresAt: sql`now() + interval '1 day'`,
+          declinedAt: sql`now() - interval '1 minute'`,
+          deliveryStatus: "sent",
+        },
+        {
+          id: randomUUID(),
+          email: "expired@example.com",
+          status: "expired",
+          tokenHash: tokenHash("list-expired"),
+          invitedByHumanId: admin.id,
+          expiresAt: sql`now() - interval '1 day'`,
+          expiredAt: sql`now() - interval '1 day'`,
+          deliveryStatus: "sent",
+        },
+        {
+          id: randomUUID(),
+          email: "revoked@example.com",
+          status: "revoked",
+          tokenHash: tokenHash("list-revoked"),
+          invitedByHumanId: admin.id,
+          expiresAt: sql`now() + interval '1 day'`,
+          revokedAt: sql`now() - interval '1 minute'`,
+          deliveryStatus: "failed",
+          deliveryAttemptedAt: sql`now() - interval '2 minutes'`,
+        },
+      ]);
+
+      const res = await getJson(app, "/api/invitations/installation", cookie);
+      expect(res.status).toBe(200);
+      const listed = InvitationSummaries.parse(await res.json());
+      expect(listed).toHaveLength(5);
+      const byEmail = new Map(listed.map((invitation) => [invitation.email, invitation]));
+      expect(byEmail.get("pending@example.com")).toMatchObject({
+        status: "pending",
+        target: { kind: "installation" },
+        grants: [{ kind: "installation_account" }],
+        invitedBy: { humanId: admin.id, email: EMAIL },
+        delivery: { status: "sent", attemptedAt: expect.any(String) },
+        acceptedAt: null,
+        declinedAt: null,
+        expiredAt: null,
+        revokedAt: null,
+      });
+      expect(byEmail.get("accepted@example.com")).toMatchObject({
+        status: "accepted",
+        acceptedAt: expect.any(String),
+      });
+      expect(byEmail.get("declined@example.com")).toMatchObject({
+        status: "declined",
+        declinedAt: expect.any(String),
+      });
+      expect(byEmail.get("expired@example.com")).toMatchObject({
+        status: "expired",
+        expiredAt: expect.any(String),
+      });
+      expect(byEmail.get("revoked@example.com")).toMatchObject({
+        status: "revoked",
+        revokedAt: expect.any(String),
+        delivery: { status: "failed", attemptedAt: expect.any(String) },
+      });
+    });
+
+    it("reports a due pending invitation as expired, at its deadline, without consuming it", async () => {
+      const { app, cookie } = await armedApp();
+      const [admin] = await database.db.select().from(humans).where(eq(humans.email, EMAIL));
+      if (admin === undefined) throw new Error("the administrator was not found");
+      const id = randomUUID();
+      const deadline = new Date(Date.now() - 1_000);
+      await database.db.insert(invitations).values({
+        id,
+        email: INVITEE,
+        status: "pending",
+        tokenHash: tokenHash("due-pending"),
+        invitedByHumanId: admin.id,
+        expiresAt: deadline,
+        deliveryStatus: "sent",
+      });
+
+      const res = await getJson(app, "/api/invitations/installation", cookie);
+      const [listed] = InvitationSummaries.parse(await res.json());
+      expect(listed).toMatchObject({
+        id,
+        status: "expired",
+        expiredAt: deadline.toISOString(),
+      });
+      const [row] = await database.db.select().from(invitations).where(eq(invitations.id, id));
+      expect(row).toMatchObject({ status: "expired", expiredAt: deadline });
+      expect(row?.acceptedAt).toBeNull();
+    });
+
+    it("refuses management without a system administrator session", async () => {
+      const { app, cookie, fake } = await invitedApp();
+      const list = await getJson(app, "/api/invitations/installation", cookie);
+      const [invitation] = InvitationSummaries.parse(await list.json());
+      if (invitation === undefined) throw new Error("the invitation was not listed");
+
+      const ordinary = await ordinaryCookie();
+      const attempts = [
+        await getJson(app, "/api/invitations/installation", ordinary),
+        await postJson(app, `/api/invitations/installation/${invitation.id}/resend`, {}, ordinary),
+        await postJson(app, `/api/invitations/installation/${invitation.id}/revoke`, {}, ordinary),
+      ];
+      for (const res of attempts) {
+        expect(res.status).toBe(403);
+        expect(await problemBody(res)).toMatchObject({ code: "not_admin" });
+      }
+      const anonymous = await getJson(app, "/api/invitations/installation");
+      expect(anonymous.status).toBe(401);
+      // Nothing was changed or sent.
+      const [row] = await database.db.select().from(invitations);
+      expect(row?.status).toBe("pending");
+      expect(fake.sent).toHaveLength(1);
+    });
+
+    it("revokes a pending invitation, and the old link never registers", async () => {
+      const { app, cookie, fake } = await invitedApp();
+      const token = tokenFrom(fake.sent[0]?.text ?? "");
+      expect(token).not.toBe("");
+      const list = await getJson(app, "/api/invitations/installation", cookie);
+      const [invitation] = InvitationSummaries.parse(await list.json());
+      if (invitation === undefined) throw new Error("the invitation was not listed");
+
+      const revoked = await postJson(
+        app,
+        `/api/invitations/installation/${invitation.id}/revoke`,
+        {},
+        cookie,
+      );
+      expect(revoked.status).toBe(200);
+      expect(InvitationSummary.parse(await revoked.json())).toMatchObject({
+        id: invitation.id,
+        status: "revoked",
+        revokedAt: expect.any(String),
+      });
+
+      const registration = await postJson(app, "/api/invitations/installation/registration", {
+        token,
+        password: INVITEE_PASSWORD,
+      });
+      expect(registration.status).toBe(400);
+      expect(await problemBody(registration)).toMatchObject({ code: "invitation_invalid" });
+      expect(await database.db.select().from(humans)).toHaveLength(1); // the administrator only
+
+      // Repeating the revoke is a conflict, not a second transition.
+      const again = await postJson(
+        app,
+        `/api/invitations/installation/${invitation.id}/revoke`,
+        {},
+        cookie,
+      );
+      expect(again.status).toBe(409);
+      expect(await problemBody(again)).toMatchObject({ code: "invitation_not_pending" });
+    });
+
+    it("lets the recipient decline, and the link then never registers", async () => {
+      const { app, cookie, fake } = await invitedApp();
+      const token = tokenFrom(fake.sent[0]?.text ?? "");
+      expect(token).not.toBe("");
+      const list = await getJson(app, "/api/invitations/installation", cookie);
+      const [invitation] = InvitationSummaries.parse(await list.json());
+      if (invitation === undefined) throw new Error("the invitation was not listed");
+
+      const declined = await postJson(app, "/api/invitations/installation/decline", { token });
+      expect(declined.status).toBe(204);
+      const [row] = await database.db.select().from(invitations);
+      expect(row).toMatchObject({ status: "declined" });
+      expect(row?.declinedAt).not.toBeNull();
+
+      const again = await postJson(app, "/api/invitations/installation/decline", { token });
+      expect(again.status).toBe(400);
+      expect(await problemBody(again)).toMatchObject({ code: "invitation_invalid" });
+      const registration = await postJson(app, "/api/invitations/installation/registration", {
+        token,
+        password: INVITEE_PASSWORD,
+      });
+      expect(registration.status).toBe(400);
+      expect(await database.db.select().from(humans)).toHaveLength(1);
+
+      const after = await getJson(app, "/api/invitations/installation", cookie);
+      const [declinedRow] = InvitationSummaries.parse(await after.json());
+      expect(declinedRow).toMatchObject({
+        id: invitation.id,
+        status: "declined",
+        declinedAt: expect.any(String),
+      });
+    });
+
+    it("resends a live invitation: the old link dies, history stays, and the deadline is seven fresh days", async () => {
+      const { app, cookie, fake } = await invitedApp();
+      const oldToken = tokenFrom(fake.sent[0]?.text ?? "");
+      expect(oldToken).not.toBe("");
+      const list = await getJson(app, "/api/invitations/installation", cookie);
+      const [oldInvitation] = InvitationSummaries.parse(await list.json());
+      if (oldInvitation === undefined) throw new Error("the invitation was not listed");
+
+      const resend = await postJson(
+        app,
+        `/api/invitations/installation/${oldInvitation.id}/resend`,
+        {},
+        cookie,
+      );
+      expect(resend.status).toBe(200);
+      const fresh = InvitationSummary.parse(await resend.json());
+      expect(fresh).toMatchObject({
+        email: INVITEE,
+        status: "pending",
+        target: { kind: "installation" },
+        delivery: { status: "sent", attemptedAt: expect.any(String) },
+        acceptedAt: null,
+        declinedAt: null,
+        expiredAt: null,
+        revokedAt: null,
+      });
+      expect(fresh.id).not.toBe(oldInvitation.id);
+      const [oldRow] = await database.db
+        .select()
+        .from(invitations)
+        .where(eq(invitations.id, oldInvitation.id));
+      expect(oldRow).toMatchObject({ status: "revoked" });
+      expect(oldRow?.revokedAt).not.toBeNull();
+      const [freshRow] = await database.db
+        .select()
+        .from(invitations)
+        .where(eq(invitations.id, fresh.id));
+      expect(freshRow?.expiresAt.getTime() ?? 0).toBe(
+        (freshRow?.createdAt.getTime() ?? 0) + INVITATION_TTL_MS,
+      );
+      expect(fake.sent).toHaveLength(2);
+      const newToken = tokenFrom(fake.sent[1]?.text ?? "");
+      expect(newToken).not.toBe(oldToken);
+
+      const oldAttempt = await postJson(app, "/api/invitations/installation/registration", {
+        token: oldToken,
+        password: INVITEE_PASSWORD,
+      });
+      expect(oldAttempt.status).toBe(400);
+      const newAttempt = await postJson(app, "/api/invitations/installation/registration", {
+        token: newToken,
+        password: INVITEE_PASSWORD,
+      });
+      expect(newAttempt.status).toBe(200);
+
+      const after = await getJson(app, "/api/invitations/installation", cookie);
+      const history = InvitationSummaries.parse(await after.json());
+      expect(history).toHaveLength(2);
+      expect(history.find((candidate) => candidate.id === oldInvitation.id)).toMatchObject({
+        status: "revoked",
+      });
+      expect(history.find((candidate) => candidate.id === fresh.id)).toMatchObject({
+        status: "accepted",
+      });
+    });
+
+    it("resends on both sides of the expiry boundary with a fresh seven-day deadline", async () => {
+      const { app, cookie, fake } = await armedApp();
+      for (const email of ["just-before@example.com", "just-after@example.com"]) {
+        const sent = await postJson(app, "/api/invitations/installation", { email }, cookie);
+        expect(sent.status).toBe(201);
+      }
+      const list = await getJson(app, "/api/invitations/installation", cookie);
+      const listed = InvitationSummaries.parse(await list.json());
+      const before = listed.find((candidate) => candidate.email === "just-before@example.com");
+      const after = listed.find((candidate) => candidate.email === "just-after@example.com");
+      if (before === undefined || after === undefined) throw new Error("invitations missing");
+
+      await database.db
+        .update(invitations)
+        .set({ expiresAt: sql`now() + interval '1 second'` })
+        .where(eq(invitations.id, before.id));
+      await database.db
+        .update(invitations)
+        .set({ expiresAt: sql`now() - interval '1 second'` })
+        .where(eq(invitations.id, after.id));
+
+      const resendBefore = await postJson(
+        app,
+        `/api/invitations/installation/${before.id}/resend`,
+        {},
+        cookie,
+      );
+      expect(resendBefore.status).toBe(200);
+      const freshBefore = InvitationSummary.parse(await resendBefore.json());
+      const resendAfter = await postJson(
+        app,
+        `/api/invitations/installation/${after.id}/resend`,
+        {},
+        cookie,
+      );
+      expect(resendAfter.status).toBe(200);
+      const freshAfter = InvitationSummary.parse(await resendAfter.json());
+
+      const rows = await database.db.select().from(invitations);
+      const oldBefore = rows.find((row) => row.id === before.id);
+      const oldAfter = rows.find((row) => row.id === after.id);
+      expect(oldBefore).toMatchObject({ status: "revoked" });
+      expect(oldBefore?.revokedAt).not.toBeNull();
+      expect(oldAfter).toMatchObject({ status: "expired" });
+      expect(oldAfter?.expiredAt?.getTime()).toBe(oldAfter?.expiresAt.getTime());
+      for (const fresh of [freshBefore, freshAfter]) {
+        const row = rows.find((candidate) => candidate.id === fresh.id);
+        expect(row?.expiresAt.getTime() ?? 0).toBe(
+          (row?.createdAt.getTime() ?? 0) + INVITATION_TTL_MS,
+        );
+        expect(fresh).toMatchObject({ status: "pending" });
+      }
+      // Both old links stop working.
+      for (const token of fake.sent.slice(0, 2).map((mail) => tokenFrom(mail.text) ?? "")) {
+        const oldAttempt = await postJson(app, "/api/invitations/installation/registration", {
+          token,
+          password: INVITEE_PASSWORD,
+        });
+        expect(oldAttempt.status).toBe(400);
+      }
+    });
+
+    it("keeps a failed resend delivery separate from the pending lifecycle", async () => {
+      const { app, cookie, fake } = await invitedApp();
+      const list = await getJson(app, "/api/invitations/installation", cookie);
+      const [invitation] = InvitationSummaries.parse(await list.json());
+      if (invitation === undefined) throw new Error("the invitation was not listed");
+
+      fake.failWith(() => codedError("ECONNREFUSED", "connect ECONNREFUSED 127.0.0.1:25"));
+      const failed = await postJson(
+        app,
+        `/api/invitations/installation/${invitation.id}/resend`,
+        {},
+        cookie,
+      );
+      expect(failed.status).toBe(502);
+      expect(await problemBody(failed)).toMatchObject({ code: "smtp_unreachable" });
+
+      const after = await getJson(app, "/api/invitations/installation", cookie);
+      const history = InvitationSummaries.parse(await after.json());
+      expect(history).toHaveLength(2);
+      const failedRow = history.find((candidate) => candidate.status === "pending");
+      expect(failedRow).toMatchObject({
+        status: "pending",
+        delivery: { status: "failed", attemptedAt: expect.any(String) },
+      });
+
+      // The failed lifecycle is still resolvable: repair the relay and resend the new row.
+      fake.repair();
+      if (failedRow === undefined) throw new Error("the replacement invitation is missing");
+      const retried = await postJson(
+        app,
+        `/api/invitations/installation/${failedRow.id}/resend`,
+        {},
+        cookie,
+      );
+      expect(retried.status).toBe(200);
+      expect(InvitationSummary.parse(await retried.json())).toMatchObject({
+        status: "pending",
+        delivery: { status: "sent" },
+      });
+    });
+
+    it("refuses to resend or revoke an invitation that is no longer pending or expired", async () => {
+      const { app, cookie, fake } = await invitedApp();
+      const token = tokenFrom(fake.sent[0]?.text ?? "");
+      expect(token).not.toBe("");
+      expect(
+        (
+          await postJson(app, "/api/invitations/installation/registration", {
+            token,
+            password: INVITEE_PASSWORD,
+          })
+        ).status,
+      ).toBe(200);
+      const list = await getJson(app, "/api/invitations/installation", cookie);
+      const [invitation] = InvitationSummaries.parse(await list.json());
+      if (invitation === undefined) throw new Error("the invitation was not listed");
+
+      for (const action of ["resend", "revoke"]) {
+        const res = await postJson(
+          app,
+          `/api/invitations/installation/${invitation.id}/${action}`,
+          {},
+          cookie,
+        );
+        expect(res.status).toBe(409);
+        expect(await problemBody(res)).toMatchObject({ code: "invitation_not_pending" });
+      }
+      const missing = await postJson(
+        app,
+        `/api/invitations/installation/${randomUUID()}/revoke`,
+        {},
+        cookie,
+      );
+      expect(missing.status).toBe(404);
+      expect(await problemBody(missing)).toMatchObject({ code: "invitation_not_found" });
     });
   });
 });

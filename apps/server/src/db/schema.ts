@@ -138,6 +138,9 @@ export const workspaceInvitations = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    declinedAt: timestamp("declined_at", { withTimezone: true }),
+    expiredAt: timestamp("expired_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
     deliveryStatus: text("delivery_status").$type<InvitationDelivery>(),
     deliveryAttemptedAt: timestamp("delivery_attempted_at", { withTimezone: true }),
   },
@@ -293,6 +296,9 @@ export const invitations = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    declinedAt: timestamp("declined_at", { withTimezone: true }),
+    expiredAt: timestamp("expired_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
     // Delivery, tracked separately from the lifecycle: pending never implies delivered
     // (#20). Null means no attempt has been recorded; only 'failed' never redeems, and
     // an old null row is superseded once its send could no longer be in flight.
