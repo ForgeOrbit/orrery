@@ -618,6 +618,10 @@ async function revokeMemberProjectAccessInTransaction(
   }
 }
 
+async function lockWorkspaceOwnershipWrites(tx: DbTransaction) {
+  await tx.execute(sql`select lock_workspace_ownership_writes()`);
+}
+
 async function lockProjectForMutation(tx: DbTransaction, projectId: string) {
   await tx
     .select({ id: projects.id })
@@ -797,6 +801,9 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
       const actor = requireAccount(account);
       const id = randomUUID();
       return db.transaction(async (tx) => {
+        // Serialize with workspace membership/capability mutations so a removed member
+        // or revoked capability cannot commit a project with an orphaned Manage grant.
+        await lockWorkspaceOwnershipWrites(tx);
         const workspace = await readWorkspaceFacts(tx, workspaceId, actor.humanId);
         if (!workspace.canCreateProjects) {
           throw new ProjectsError("project_creation_not_allowed");
@@ -933,8 +940,9 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
     async setProjectAccess(account, projectId, input) {
       const actor = requireAccount(account);
       return db.transaction(async (tx) => {
-        // The project row is the serialization point for grant changes, so the level
-        // check and the write see one ordered history.
+        // Lock workspace membership writes before the project row so granting access
+        // cannot race with removeMember() (orphaning a grant) or appointOwner().
+        await lockWorkspaceOwnershipWrites(tx);
         await lockProjectForMutation(tx, projectId);
         const project = await requireProject(
           tx,
@@ -1025,6 +1033,9 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
     async removeProjectAccess(account, projectId, humanId) {
       const actor = requireAccount(account);
       await db.transaction(async (tx) => {
+        // Lock workspace membership writes before the project row so revoking access
+        // cannot race with removeMember() and emit duplicate revocation events.
+        await lockWorkspaceOwnershipWrites(tx);
         await lockProjectForMutation(tx, projectId);
         const project = await requireProject(
           tx,
