@@ -1,6 +1,8 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import {
+  InvitationSummaries,
+  InvitationSummary,
   Problem,
   Workspace,
   WorkspaceInvitation,
@@ -8,6 +10,7 @@ import {
   WorkspaceMember,
   WorkspaceMembersResponse,
   WorkspacesResponse,
+  type ProjectAccessLevel,
   type SmtpSettings,
 } from "@orrery/contract";
 import type { Hono } from "hono";
@@ -15,11 +18,16 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createAccountsFeature } from "../accounts/index.ts";
 import { createInvitationsFeature } from "../invitations/index.ts";
+import { createProjectsFeature } from "../projects/index.ts";
 import { createSettingsFeature } from "../settings/index.ts";
 import {
   browserSessions,
   humans,
+  projectAccessGrants,
+  projects,
   workspaceEvents,
+  invitations,
+  workspaceInvitationGrants,
   workspaceInvitations,
   workspaceMemberships,
   workspaces,
@@ -70,6 +78,9 @@ const putJson = (app: Hono, path: string, body: unknown, cookie?: string) =>
 
 const deleteRequest = (app: Hono, path: string, cookie?: string) =>
   app.request(path, { method: "DELETE", ...(cookie ? { headers: { cookie } } : {}) });
+
+const postEmpty = (app: Hono, path: string, cookie?: string) =>
+  app.request(path, { method: "POST", ...(cookie ? { headers: { cookie } } : {}) });
 
 const getJson = (app: Hono, path: string, cookie?: string) =>
   app.request(path, cookie ? { headers: { cookie } } : undefined);
@@ -220,10 +231,38 @@ async function createWorkspace(app: Hono, cookie: string, name = "Rocket Team") 
   return Workspace.parse(await res.json());
 }
 
-async function invite(app: Hono, cookie: string, workspaceId: string, email: string) {
-  const res = await postJson(app, `/api/workspaces/${workspaceId}/invitations`, { email }, cookie);
+async function invite(
+  app: Hono,
+  cookie: string,
+  workspaceId: string,
+  email: string,
+  projectGrants: { projectId: string; level: ProjectAccessLevel }[] = [],
+) {
+  const res = await postJson(
+    app,
+    `/api/workspaces/${workspaceId}/invitations`,
+    { email, projectGrants },
+    cookie,
+  );
   expect(res.status).toBe(201);
   return WorkspaceInvitation.parse(await res.json());
+}
+
+async function createProjectDirect(workspaceId: string, humanId: string, name = "Rocket Project") {
+  const id = randomUUID();
+  await currentDatabase().db.insert(projects).values({
+    id,
+    workspaceId,
+    name,
+    createdByHumanId: humanId,
+  });
+  return id;
+}
+
+async function invitationList(app: Hono, cookie: string, workspaceId: string) {
+  const res = await getJson(app, `/api/workspaces/${workspaceId}/invitations`, cookie);
+  expect(res.status).toBe(200);
+  return InvitationSummaries.parse(await res.json());
 }
 
 async function listing(app: Hono, cookie: string) {
@@ -251,8 +290,16 @@ describe("workspaces", () => {
 
   afterEach(async () => {
     await database.db.transaction(async (tx) => {
+      await tx.execute(sql`delete from project_access_events`);
+      await tx.execute(sql`delete from project_access_grants`);
+      await tx.execute(sql`delete from project_activity`);
+      await tx.execute(sql`delete from knowledge_entries`);
+      await tx.execute(sql`delete from issue_comments`);
+      await tx.execute(sql`delete from issues`);
       await tx.execute(sql`delete from workspace_events`);
+      await tx.execute(sql`delete from workspace_invitation_grants`);
       await tx.execute(sql`delete from workspace_invitations`);
+      await tx.execute(sql`delete from projects`);
       await tx.execute(sql`delete from workspace_memberships`);
       await tx.execute(sql`delete from workspaces`);
       await tx.execute(sql`delete from invitations`);
@@ -296,6 +343,10 @@ describe("workspaces", () => {
       deliver: settings.deliver,
       log: silentLogger,
     });
+    const projectsFeature = createProjectsFeature({
+      db: database.db,
+      sessionReader: accounts.sessionReader,
+    });
     const workspacesFeature = createWorkspacesFeature({
       db: database.db,
       publicUrl: PUBLIC_URL,
@@ -306,10 +357,12 @@ describe("workspaces", () => {
       // This suite does not create projects; the projects feature's cleanup is covered
       // end-to-end in projects/access.test.ts.
       revokeMemberProjectAccess: async () => {},
+      applyInvitationGrants: (tx, workspaceId, humanId, grantedByHumanId, offered) =>
+        projectsFeature.applyInvitationGrants(tx, workspaceId, humanId, grantedByHumanId, offered),
       log: silentLogger,
     });
     const app = createApp({
-      features: [accounts, settings, invitationsFeature, workspacesFeature],
+      features: [accounts, settings, invitationsFeature, projectsFeature, workspacesFeature],
       publicUrl: PUBLIC_URL,
       log: silentLogger,
     });
@@ -491,6 +544,15 @@ describe("workspaces", () => {
       workspaceId: workspace.id,
       workspaceName: "Rocket Team",
       email: "member@example.com",
+      invitedByEmail: EMAIL,
+      grants: [
+        {
+          kind: "workspace_membership",
+          workspaceId: workspace.id,
+          role: "member",
+        },
+      ],
+      expiresAt: expect.any(String),
     });
     const forwarded = await postJson(
       app,
@@ -590,6 +652,15 @@ describe("workspaces", () => {
       workspaceId: workspace.id,
       workspaceName: "Rocket Team",
       email: "new.member@example.com",
+      invitedByEmail: EMAIL,
+      grants: [
+        {
+          kind: "workspace_membership",
+          workspaceId: workspace.id,
+          role: "member",
+        },
+      ],
+      expiresAt: expect.any(String),
     });
     // No account and no membership exist before the POST.
     expect(await database.db.select().from(humans)).toHaveLength(1);
@@ -960,6 +1031,12 @@ describe("workspaces", () => {
     expect(preview.status).toBe(400);
     expect(await problemBody(preview)).toMatchObject({ code: "invitation_invalid" });
 
+    const decline = await postJson(app, "/api/workspace-invitations/decline", { token });
+    expect(decline.status).toBe(400);
+    expect(await problemBody(decline)).toMatchObject({ code: "invitation_invalid" });
+    const [stillPending] = await database.db.select().from(workspaceInvitations);
+    expect(stillPending).toMatchObject({ status: "pending", declinedAt: null });
+
     // Once SMTP recovers, re-inviting immediately supersedes the failed row in place
     // rather than blocking for seven days.
     made.repairDelivery();
@@ -967,8 +1044,787 @@ describe("workspaces", () => {
     expect(replacement.status).toBe("pending");
     const rows = await database.db.select().from(workspaceInvitations);
     expect(rows).toHaveLength(2);
-    expect(rows.filter((candidate) => candidate.status === "expired")).toHaveLength(1);
+    const revoked = rows.find((candidate) => candidate.status === "revoked");
+    expect(revoked).toMatchObject({ id: row?.id, expiredAt: null, deliveryStatus: "failed" });
+    if (revoked?.revokedAt == null) throw new Error("replacement did not record revocation");
+    expect(revoked.revokedAt.getTime()).toBeLessThan(revoked.expiresAt.getTime());
     expect(rows.filter((candidate) => candidate.status === "pending")).toHaveLength(1);
+  });
+
+  it("lists every workspace invitation for an owner, with scope and delivery separate", async () => {
+    const { app, admin, adminCookie } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const other = randomUUID();
+    await database.db.insert(workspaceInvitations).values([
+      {
+        id: randomUUID(),
+        workspaceId: workspace.id,
+        email: "pending@example.com",
+        status: "pending",
+        tokenHash: tokenHash("workspace-list-pending"),
+        invitedByHumanId: admin.id,
+        createdAt: sql`now() - interval '1 hour'`,
+        expiresAt: sql`now() + interval '1 day'`,
+        deliveryStatus: "sent",
+        deliveryAttemptedAt: sql`now() - interval '1 minute'`,
+      },
+      {
+        id: randomUUID(),
+        workspaceId: workspace.id,
+        email: "accepted@example.com",
+        status: "accepted",
+        tokenHash: tokenHash("workspace-list-accepted"),
+        invitedByHumanId: admin.id,
+        expiresAt: sql`now() + interval '1 day'`,
+        acceptedAt: sql`now() - interval '1 minute'`,
+        deliveryStatus: "sent",
+      },
+      {
+        id: randomUUID(),
+        workspaceId: workspace.id,
+        email: "declined@example.com",
+        status: "declined",
+        tokenHash: tokenHash("workspace-list-declined"),
+        invitedByHumanId: admin.id,
+        expiresAt: sql`now() + interval '1 day'`,
+        declinedAt: sql`now() - interval '1 minute'`,
+        deliveryStatus: "sent",
+      },
+      {
+        id: randomUUID(),
+        workspaceId: workspace.id,
+        email: "expired@example.com",
+        status: "expired",
+        tokenHash: tokenHash("workspace-list-expired"),
+        invitedByHumanId: admin.id,
+        expiresAt: sql`now() - interval '1 day'`,
+        expiredAt: sql`now() - interval '1 day'`,
+        deliveryStatus: "sent",
+      },
+      {
+        id: randomUUID(),
+        workspaceId: workspace.id,
+        email: "revoked@example.com",
+        status: "revoked",
+        tokenHash: tokenHash("workspace-list-revoked"),
+        invitedByHumanId: admin.id,
+        expiresAt: sql`now() + interval '1 day'`,
+        revokedAt: sql`now() - interval '1 minute'`,
+        deliveryStatus: "failed",
+        deliveryAttemptedAt: sql`now() - interval '2 minutes'`,
+      },
+    ]);
+
+    const listed = await invitationList(app, adminCookie, workspace.id);
+    expect(listed).toHaveLength(5);
+    const byEmail = new Map(listed.map((invitation) => [invitation.email, invitation]));
+    for (const invitation of listed) {
+      expect(invitation).toMatchObject({
+        target: { kind: "workspace", id: workspace.id, name: "Rocket Team" },
+        grants: [
+          {
+            kind: "workspace_membership",
+            workspaceId: workspace.id,
+            role: "member",
+          },
+        ],
+        invitedBy: { humanId: admin.id, email: EMAIL },
+      });
+    }
+    expect(byEmail.get("pending@example.com")).toMatchObject({
+      status: "pending",
+      delivery: { status: "sent", attemptedAt: expect.any(String) },
+      acceptedAt: null,
+      declinedAt: null,
+      expiredAt: null,
+      revokedAt: null,
+    });
+    expect(byEmail.get("accepted@example.com")).toMatchObject({
+      status: "accepted",
+      acceptedAt: expect.any(String),
+    });
+    expect(byEmail.get("declined@example.com")).toMatchObject({
+      status: "declined",
+      declinedAt: expect.any(String),
+    });
+    expect(byEmail.get("expired@example.com")).toMatchObject({
+      status: "expired",
+      expiredAt: expect.any(String),
+    });
+    expect(byEmail.get("revoked@example.com")).toMatchObject({
+      status: "revoked",
+      revokedAt: expect.any(String),
+      delivery: { status: "failed", attemptedAt: expect.any(String) },
+    });
+
+    // A member who does not own the workspace cannot read or manage its invitations.
+    const { human: member, cookie: memberCookie } = await verifiedCookie(app, INVITEE);
+    await database.db.insert(workspaceMemberships).values({
+      id: randomUUID(),
+      workspaceId: workspace.id,
+      humanId: member.id,
+      isOwner: false,
+    });
+    const forbidden = [
+      await getJson(app, `/api/workspaces/${workspace.id}/invitations`, memberCookie),
+      await postEmpty(
+        app,
+        `/api/workspaces/${workspace.id}/invitations/${other}/resend`,
+        memberCookie,
+      ),
+      await postEmpty(
+        app,
+        `/api/workspaces/${workspace.id}/invitations/${other}/revoke`,
+        memberCookie,
+      ),
+    ];
+    for (const res of forbidden) {
+      expect(res.status).toBe(403);
+      expect(await problemBody(res)).toMatchObject({ code: "not_workspace_owner" });
+    }
+    const anonymous = await getJson(app, `/api/workspaces/${workspace.id}/invitations`);
+    expect(anonymous.status).toBe(401);
+  });
+
+  it("lets the inviter revoke and the recipient decline, and both links stop working", async () => {
+    const { app, sent, adminCookie } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const { human: member, cookie: memberCookie } = await verifiedCookie(app, INVITEE);
+    await invite(app, adminCookie, workspace.id, INVITEE);
+    const token = await workspaceInviteToken(sent, INVITEE, "Rocket Team");
+    const [pending] = await invitationList(app, adminCookie, workspace.id);
+    if (pending === undefined) throw new Error("the invitation was not listed");
+
+    const revoked = await postEmpty(
+      app,
+      `/api/workspaces/${workspace.id}/invitations/${pending.id}/revoke`,
+      adminCookie,
+    );
+    expect(revoked.status).toBe(200);
+    expect(InvitationSummary.parse(await revoked.json())).toMatchObject({
+      id: pending.id,
+      status: "revoked",
+      revokedAt: expect.any(String),
+    });
+    expect((await getJson(app, `/api/workspace-invitations/preview?token=${token}`)).status).toBe(
+      400,
+    );
+    const refused = await postJson(
+      app,
+      "/api/workspace-invitations/acceptance",
+      { token },
+      memberCookie,
+    );
+    expect(refused.status).toBe(400);
+    expect(await problemBody(refused)).toMatchObject({ code: "invitation_invalid" });
+    expect(
+      await database.db
+        .select()
+        .from(workspaceMemberships)
+        .where(eq(workspaceMemberships.humanId, member.id)),
+    ).toHaveLength(0);
+
+    // The recipient declines a second offer from the emailed link; holding the token is
+    // the capability, so no session is needed.
+    const declineEmail = "decline@example.com";
+    await invite(app, adminCookie, workspace.id, declineEmail);
+    const declineToken = await workspaceInviteToken(sent, declineEmail, "Rocket Team");
+    const declined = await postJson(app, "/api/workspace-invitations/decline", {
+      token: declineToken,
+    });
+    expect(declined.status).toBe(204);
+    const again = await postJson(app, "/api/workspace-invitations/decline", {
+      token: declineToken,
+    });
+    expect(again.status).toBe(400);
+    expect(await problemBody(again)).toMatchObject({ code: "invitation_invalid" });
+    expect(
+      (await getJson(app, `/api/workspace-invitations/preview?token=${declineToken}`)).status,
+    ).toBe(400);
+
+    const history = await invitationList(app, adminCookie, workspace.id);
+    expect(history.find((candidate) => candidate.id === pending.id)).toMatchObject({
+      status: "revoked",
+    });
+    expect(history.find((candidate) => candidate.email === declineEmail)).toMatchObject({
+      status: "declined",
+      declinedAt: expect.any(String),
+    });
+  });
+
+  it("refuses to resend an installation invitation after the recipient registered in a workspace", async () => {
+    const { app, sent, adminCookie } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const initial = await postJson(
+      app,
+      "/api/invitations/installation",
+      { email: INVITEE },
+      adminCookie,
+    );
+    expect(initial.status).toBe(201);
+    const [old] = await database.db.select().from(invitations);
+    if (old === undefined) throw new Error("installation invitation missing");
+    await database.db
+      .update(invitations)
+      .set({ expiresAt: sql`now() - interval '1 second'` })
+      .where(eq(invitations.id, old.id));
+    await invite(app, adminCookie, workspace.id, INVITEE);
+    const token = await workspaceInviteToken(sent, INVITEE, "Rocket Team");
+    const registered = await postJson(app, "/api/workspace-invitations/registration", {
+      token,
+      password: "new-project-password",
+    });
+    expect(registered.status).toBe(200);
+    const resend = await postEmpty(
+      app,
+      `/api/invitations/installation/${old.id}/resend`,
+      adminCookie,
+    );
+    expect(resend.status).toBe(409);
+    expect(await problemBody(resend)).toMatchObject({ code: "account_exists" });
+    expect(await database.db.select().from(invitations)).toEqual([
+      expect.objectContaining({ id: old.id, revokedAt: null }),
+    ]);
+    expect(sent.filter((mail) => mail.to === INVITEE)).toHaveLength(2);
+  });
+
+  it("refuses to resend an older workspace invitation after the recipient joins", async () => {
+    const { app, sent, adminCookie } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    await invite(app, adminCookie, workspace.id, INVITEE);
+    const [old] = await invitationList(app, adminCookie, workspace.id);
+    if (old === undefined) throw new Error("workspace invitation missing");
+    await database.db
+      .update(workspaceInvitations)
+      .set({ expiresAt: sql`now() - interval '1 second'` })
+      .where(eq(workspaceInvitations.id, old.id));
+    await invite(app, adminCookie, workspace.id, INVITEE);
+    const token = tokenFrom(sent.at(-1)?.text ?? "");
+    const registered = await postJson(app, "/api/workspace-invitations/registration", {
+      token,
+      password: "new-project-password",
+    });
+    expect(registered.status).toBe(200);
+    const resend = await postEmpty(
+      app,
+      `/api/workspaces/${workspace.id}/invitations/${old.id}/resend`,
+      adminCookie,
+    );
+    expect(resend.status).toBe(409);
+    expect(await problemBody(resend)).toMatchObject({ code: "already_member" });
+    const history = await invitationList(app, adminCookie, workspace.id);
+    expect(history.map((row) => row.status)).toEqual(["accepted", "expired"]);
+    expect(sent.filter((mail) => mail.to === INVITEE)).toHaveLength(2);
+  });
+
+  it("persists workspace expiry when revocation is refused", async () => {
+    const { app, adminCookie } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    await invite(app, adminCookie, workspace.id, INVITEE);
+    const [old] = await invitationList(app, adminCookie, workspace.id);
+    if (old === undefined) throw new Error("workspace invitation missing");
+    const deadline = new Date(Date.now() - 1_000);
+    await database.db
+      .update(workspaceInvitations)
+      .set({ expiresAt: deadline })
+      .where(eq(workspaceInvitations.id, old.id));
+    const revoke = await postEmpty(
+      app,
+      `/api/workspaces/${workspace.id}/invitations/${old.id}/revoke`,
+      adminCookie,
+    );
+    expect(revoke.status).toBe(409);
+    expect(await problemBody(revoke)).toMatchObject({ code: "invitation_not_pending" });
+    const [row] = await database.db
+      .select()
+      .from(workspaceInvitations)
+      .where(eq(workspaceInvitations.id, old.id));
+    expect(row).toMatchObject({ status: "expired", expiredAt: deadline, revokedAt: null });
+  });
+
+  it("refuses a resend from an unverified owner and keeps the original invitation valid", async () => {
+    const { app, sent, adminCookie } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const [unverified] = await insertHuman({
+      email: "unverified.owner@example.com",
+      verified: false,
+    });
+    await database.db.insert(workspaceMemberships).values({
+      id: randomUUID(),
+      workspaceId: workspace.id,
+      humanId: unverified.id,
+      isOwner: true,
+    });
+    const unverifiedCookie = await sessionFor(app, unverified.id);
+    await invite(app, adminCookie, workspace.id, INVITEE);
+    const token = await workspaceInviteToken(sent, INVITEE, "Rocket Team");
+    const [pending] = await invitationList(app, adminCookie, workspace.id);
+    if (pending === undefined) throw new Error("the invitation was not listed");
+
+    const refused = await postEmpty(
+      app,
+      `/api/workspaces/${workspace.id}/invitations/${pending.id}/resend`,
+      unverifiedCookie,
+    );
+    expect(refused.status).toBe(403);
+    expect(refused.headers.get("content-type")).toBe("application/problem+json");
+    expect(await problemBody(refused)).toMatchObject({ code: "inviter_unverified" });
+
+    // The refusal ran before any rotation: one row, still pending, same deadline, and
+    // no replacement email left the relay.
+    const rows = await database.db.select().from(workspaceInvitations);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: pending.id,
+      status: "pending",
+      revokedAt: null,
+      expiredAt: null,
+    });
+    expect(rows[0]?.expiresAt.toISOString()).toBe(pending.expiresAt);
+    expect(sent).toHaveLength(1);
+    expect((await getJson(app, `/api/workspace-invitations/preview?token=${token}`)).status).toBe(
+      200,
+    );
+
+    // The original link still accepts for its real recipient.
+    const { cookie: memberCookie } = await verifiedCookie(app, INVITEE);
+    const accepted = await postJson(
+      app,
+      "/api/workspace-invitations/acceptance",
+      { token },
+      memberCookie,
+    );
+    expect(accepted.status).toBe(200);
+    const [acceptedRow] = await database.db.select().from(workspaceInvitations);
+    expect(acceptedRow).toMatchObject({ id: pending.id, status: "accepted" });
+    expect(acceptedRow?.acceptedAt).not.toBeNull();
+  });
+
+  it("resends a workspace invitation: the old link dies, history stays, and the deadline is seven fresh days", async () => {
+    const { app, sent, adminCookie } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const { cookie: memberCookie } = await verifiedCookie(app, INVITEE);
+    await invite(app, adminCookie, workspace.id, INVITEE);
+    const oldToken = await workspaceInviteToken(sent, INVITEE, "Rocket Team");
+    const [oldInvitation] = await invitationList(app, adminCookie, workspace.id);
+    if (oldInvitation === undefined) throw new Error("the invitation was not listed");
+
+    const resend = await postEmpty(
+      app,
+      `/api/workspaces/${workspace.id}/invitations/${oldInvitation.id}/resend`,
+      adminCookie,
+    );
+    expect(resend.status).toBe(200);
+    const fresh = InvitationSummary.parse(await resend.json());
+    expect(fresh).toMatchObject({
+      email: INVITEE,
+      status: "pending",
+      target: { kind: "workspace", id: workspace.id, name: "Rocket Team" },
+      delivery: { status: "sent", attemptedAt: expect.any(String) },
+      acceptedAt: null,
+      declinedAt: null,
+      expiredAt: null,
+      revokedAt: null,
+    });
+    expect(fresh.id).not.toBe(oldInvitation.id);
+    const [oldRow] = await database.db
+      .select()
+      .from(workspaceInvitations)
+      .where(eq(workspaceInvitations.id, oldInvitation.id));
+    expect(oldRow).toMatchObject({ status: "revoked" });
+    expect(oldRow?.revokedAt).not.toBeNull();
+    const [freshRow] = await database.db
+      .select()
+      .from(workspaceInvitations)
+      .where(eq(workspaceInvitations.id, fresh.id));
+    expect(freshRow?.expiresAt.getTime() ?? 0).toBe(
+      (freshRow?.createdAt.getTime() ?? 0) + 7 * 24 * 60 * 60 * 1000,
+    );
+    expect(sent).toHaveLength(2);
+    const newToken = tokenFrom(sent[1]?.text ?? "");
+    expect(newToken).not.toBe(oldToken);
+
+    expect(
+      (await getJson(app, `/api/workspace-invitations/preview?token=${oldToken}`)).status,
+    ).toBe(400);
+    const oldAttempt = await postJson(
+      app,
+      "/api/workspace-invitations/acceptance",
+      { token: oldToken },
+      memberCookie,
+    );
+    expect(oldAttempt.status).toBe(400);
+    expect(
+      (await getJson(app, `/api/workspace-invitations/preview?token=${newToken}`)).status,
+    ).toBe(200);
+    const accepted = await postJson(
+      app,
+      "/api/workspace-invitations/acceptance",
+      { token: newToken },
+      memberCookie,
+    );
+    expect(accepted.status).toBe(200);
+
+    const history = await invitationList(app, adminCookie, workspace.id);
+    expect(history.find((candidate) => candidate.id === oldInvitation.id)).toMatchObject({
+      status: "revoked",
+    });
+    expect(history.find((candidate) => candidate.id === fresh.id)).toMatchObject({
+      status: "accepted",
+    });
+  });
+
+  it("copies offered project grants to a resent invitation", async () => {
+    const { app, sent, admin, adminCookie } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const projectId = await createProjectDirect(workspace.id, admin.id, "Resent Project");
+    await invite(app, adminCookie, workspace.id, INVITEE, [{ projectId, level: "contribute" }]);
+    const [oldInvitation] = await invitationList(app, adminCookie, workspace.id);
+    if (oldInvitation === undefined) throw new Error("the invitation was not listed");
+    const oldToken = await workspaceInviteToken(sent, INVITEE, "Rocket Team");
+
+    const res = await postEmpty(
+      app,
+      `/api/workspaces/${workspace.id}/invitations/${oldInvitation.id}/resend`,
+      adminCookie,
+    );
+    expect(res.status).toBe(200);
+    const fresh = InvitationSummary.parse(await res.json());
+    expect(fresh.grants).toContainEqual({
+      kind: "project_access",
+      projectId,
+      projectName: "Resent Project",
+      level: "contribute",
+    });
+
+    // The old offer keeps its row; the replacement carries the same project and level.
+    expect(await database.db.select().from(workspaceInvitationGrants)).toHaveLength(2);
+    const newToken = tokenFrom(sent.at(-1)?.text ?? "");
+    expect(newToken).not.toBe(oldToken);
+    const preview = await getJson(app, `/api/workspace-invitations/preview?token=${newToken}`);
+    expect(WorkspaceInvitationPreview.parse(await preview.json()).grants).toContainEqual({
+      kind: "project_access",
+      projectId,
+      projectName: "Resent Project",
+      level: "contribute",
+    });
+  });
+
+  it("resends workspace invitations on both sides of the expiry boundary with a fresh seven-day deadline", async () => {
+    const { app, sent, adminCookie } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    for (const email of ["just-before@example.com", "just-after@example.com"]) {
+      await invite(app, adminCookie, workspace.id, email);
+    }
+    const listed = await invitationList(app, adminCookie, workspace.id);
+    const before = listed.find((candidate) => candidate.email === "just-before@example.com");
+    const after = listed.find((candidate) => candidate.email === "just-after@example.com");
+    if (before === undefined || after === undefined) throw new Error("invitations missing");
+    const beforeToken = await workspaceInviteToken(sent, "just-before@example.com", "Rocket Team");
+    const afterToken = await workspaceInviteToken(sent, "just-after@example.com", "Rocket Team");
+
+    await database.db
+      .update(workspaceInvitations)
+      .set({ expiresAt: sql`now() + interval '1 second'` })
+      .where(eq(workspaceInvitations.id, before.id));
+    await database.db
+      .update(workspaceInvitations)
+      .set({ expiresAt: sql`now() - interval '1 second'` })
+      .where(eq(workspaceInvitations.id, after.id));
+
+    const resendBefore = await postEmpty(
+      app,
+      `/api/workspaces/${workspace.id}/invitations/${before.id}/resend`,
+      adminCookie,
+    );
+    expect(resendBefore.status).toBe(200);
+    const freshBefore = InvitationSummary.parse(await resendBefore.json());
+    const resendAfter = await postEmpty(
+      app,
+      `/api/workspaces/${workspace.id}/invitations/${after.id}/resend`,
+      adminCookie,
+    );
+    expect(resendAfter.status).toBe(200);
+    const freshAfter = InvitationSummary.parse(await resendAfter.json());
+
+    const rows = await database.db.select().from(workspaceInvitations);
+    const oldBefore = rows.find((row) => row.id === before.id);
+    const oldAfter = rows.find((row) => row.id === after.id);
+    expect(oldBefore).toMatchObject({ status: "revoked" });
+    expect(oldBefore?.revokedAt).not.toBeNull();
+    expect(oldAfter).toMatchObject({ status: "expired" });
+    expect(oldAfter?.expiredAt?.getTime()).toBe(oldAfter?.expiresAt.getTime());
+    for (const fresh of [freshBefore, freshAfter]) {
+      const row = rows.find((candidate) => candidate.id === fresh.id);
+      expect(row?.expiresAt.getTime() ?? 0).toBe(
+        (row?.createdAt.getTime() ?? 0) + 7 * 24 * 60 * 60 * 1000,
+      );
+      expect(fresh).toMatchObject({ status: "pending" });
+    }
+    // Both previous links stop working.
+    for (const token of [beforeToken, afterToken]) {
+      expect((await getJson(app, `/api/workspace-invitations/preview?token=${token}`)).status).toBe(
+        400,
+      );
+    }
+  });
+
+  it("keeps a failed workspace resend delivery separate from the pending lifecycle", async () => {
+    const made = await readyApp();
+    const { app, sent, adminCookie } = made;
+    const workspace = await createWorkspace(app, adminCookie);
+    await invite(app, adminCookie, workspace.id, INVITEE);
+    const [invitation] = await invitationList(app, adminCookie, workspace.id);
+    if (invitation === undefined) throw new Error("the invitation was not listed");
+
+    made.failDelivery(() => codedError("ECONNREFUSED", "connect ECONNREFUSED 127.0.0.1:25"));
+    const failed = await postEmpty(
+      app,
+      `/api/workspaces/${workspace.id}/invitations/${invitation.id}/resend`,
+      adminCookie,
+    );
+    expect(failed.status).toBe(502);
+    expect(await problemBody(failed)).toMatchObject({ code: "smtp_unreachable" });
+
+    const after = await invitationList(app, adminCookie, workspace.id);
+    expect(after).toHaveLength(2);
+    const failedRow = after.find((candidate) => candidate.status === "pending");
+    expect(failedRow).toMatchObject({
+      status: "pending",
+      delivery: { status: "failed", attemptedAt: expect.any(String) },
+    });
+
+    // The failed lifecycle is still resolvable: repair the relay and resend the new row.
+    made.repairDelivery();
+    if (failedRow === undefined) throw new Error("the replacement invitation is missing");
+    const retried = await postEmpty(
+      app,
+      `/api/workspaces/${workspace.id}/invitations/${failedRow.id}/resend`,
+      adminCookie,
+    );
+    expect(retried.status).toBe(200);
+    expect(InvitationSummary.parse(await retried.json())).toMatchObject({
+      status: "pending",
+      delivery: { status: "sent" },
+    });
+    expect(sent).toHaveLength(3); // original, failed resend, successful retry
+  });
+
+  it("refuses to resend or revoke a workspace invitation that is no longer pending or expired", async () => {
+    const { app, sent, adminCookie } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const { cookie: memberCookie } = await verifiedCookie(app, INVITEE);
+    await invite(app, adminCookie, workspace.id, INVITEE);
+    const token = await workspaceInviteToken(sent, INVITEE, "Rocket Team");
+    expect(
+      (await postJson(app, "/api/workspace-invitations/acceptance", { token }, memberCookie))
+        .status,
+    ).toBe(200);
+    const [invitation] = await invitationList(app, adminCookie, workspace.id);
+    if (invitation === undefined) throw new Error("the invitation was not listed");
+
+    for (const action of ["resend", "revoke"]) {
+      const res = await postEmpty(
+        app,
+        `/api/workspaces/${workspace.id}/invitations/${invitation.id}/${action}`,
+        adminCookie,
+      );
+      expect(res.status).toBe(409);
+      expect(await problemBody(res)).toMatchObject({ code: "invitation_not_pending" });
+    }
+    const missing = await postEmpty(
+      app,
+      `/api/workspaces/${workspace.id}/invitations/${randomUUID()}/revoke`,
+      adminCookie,
+    );
+    expect(missing.status).toBe(404);
+    expect(await problemBody(missing)).toMatchObject({ code: "invitation_not_found" });
+  });
+
+  it("rejects duplicate project offers as request validation errors", async () => {
+    const { app, sent, admin, adminCookie } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const projectId = await createProjectDirect(workspace.id, admin.id, "Offered Project");
+    const response = await postJson(
+      app,
+      `/api/workspaces/${workspace.id}/invitations`,
+      {
+        email: INVITEE,
+        projectGrants: [
+          { projectId, level: "read" },
+          { projectId, level: "manage" },
+        ],
+      },
+      adminCookie,
+    );
+    expect(response.status).toBe(400);
+    expect(await problemBody(response)).toMatchObject({ code: "validation_failed" });
+    expect(await invitationList(app, adminCookie, workspace.id)).toEqual([]);
+    expect(sent).toHaveLength(0);
+  });
+
+  it("shows offered project access and applies it on both acceptance paths", async () => {
+    const { app, sent, admin, adminCookie } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const projectId = await createProjectDirect(workspace.id, admin.id, "Offered Project");
+
+    // An existing account sees the exact project and level before accepting, and the
+    // same transaction writes the membership and grant.
+    const { human: existing, cookie: existingCookie } = await verifiedCookie(app, INVITEE);
+    await invite(app, adminCookie, workspace.id, INVITEE, [{ projectId, level: "contribute" }]);
+    const existingToken = await workspaceInviteToken(sent, INVITEE, "Rocket Team");
+    const preview = await getJson(app, `/api/workspace-invitations/preview?token=${existingToken}`);
+    expect(preview.status).toBe(200);
+    expect(WorkspaceInvitationPreview.parse(await preview.json()).grants).toContainEqual({
+      kind: "project_access",
+      projectId,
+      projectName: "Offered Project",
+      level: "contribute",
+    });
+    expect(
+      (
+        await postJson(
+          app,
+          "/api/workspace-invitations/acceptance",
+          { token: existingToken },
+          existingCookie,
+        )
+      ).status,
+    ).toBe(200);
+    const [existingGrant] = await database.db
+      .select()
+      .from(projectAccessGrants)
+      .where(
+        and(
+          eq(projectAccessGrants.projectId, projectId),
+          eq(projectAccessGrants.humanId, existing.id),
+        ),
+      );
+    expect(existingGrant).toMatchObject({
+      level: "contribute",
+      grantedByHumanId: admin.id,
+    });
+
+    // Registration creates the account, membership, and offered grant together.
+    await invite(app, adminCookie, workspace.id, "new.project@example.com", [
+      { projectId, level: "manage" },
+    ]);
+    const registrationToken = await workspaceInviteToken(
+      sent,
+      "new.project@example.com",
+      "Rocket Team",
+    );
+    expect(
+      (
+        await postJson(app, "/api/workspace-invitations/registration", {
+          token: registrationToken,
+          password: "new-project-password",
+        })
+      ).status,
+    ).toBe(200);
+    const [registered] = await database.db
+      .select()
+      .from(humans)
+      .where(eq(humans.email, "new.project@example.com"));
+    if (registered === undefined) throw new Error("the registered account was not created");
+    const [registeredGrant] = await database.db
+      .select()
+      .from(projectAccessGrants)
+      .where(
+        and(
+          eq(projectAccessGrants.projectId, projectId),
+          eq(projectAccessGrants.humanId, registered.id),
+        ),
+      );
+    expect(registeredGrant).toMatchObject({
+      level: "manage",
+      grantedByHumanId: admin.id,
+    });
+  });
+
+  it("rejects a project that left the workspace on both acceptance paths, leaving the offers pending", async () => {
+    const { app, sent, admin, adminCookie } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const otherWorkspaceId = await directSharedWorkspace([admin.id], "Other Team");
+    const projectId = await createProjectDirect(workspace.id, admin.id, "Moved Project");
+    const { cookie: existingCookie } = await verifiedCookie(app, INVITEE);
+    const newEmail = "moved.project@example.com";
+
+    await invite(app, adminCookie, workspace.id, INVITEE, [{ projectId, level: "read" }]);
+    await invite(app, adminCookie, workspace.id, newEmail, [{ projectId, level: "contribute" }]);
+    const existingToken = await workspaceInviteToken(sent, INVITEE, "Rocket Team");
+    const registrationToken = await workspaceInviteToken(sent, newEmail, "Rocket Team");
+
+    // Project transfer (#46) is out of scope, so simulate the lease changing behind an
+    // existing offer the way a future transfer would: the invitation still names it,
+    // but the project now belongs to another workspace.
+    await database.db
+      .update(projects)
+      .set({ workspaceId: otherWorkspaceId })
+      .where(eq(projects.id, projectId));
+    expect(await database.db.select().from(workspaceInvitationGrants)).toHaveLength(2);
+
+    await database.db
+      .update(projects)
+      .set({ name: "Destination-only name" })
+      .where(eq(projects.id, projectId));
+    const history = await invitationList(app, adminCookie, workspace.id);
+    expect(history).toHaveLength(2);
+    for (const row of history) {
+      expect(row.grants).toContainEqual(
+        expect.objectContaining({
+          kind: "project_access",
+          projectId,
+          projectName: null,
+        }),
+      );
+      const resend = await postEmpty(
+        app,
+        `/api/workspaces/${workspace.id}/invitations/${row.id}/resend`,
+        adminCookie,
+      );
+      expect(resend.status).toBe(409);
+      expect(await problemBody(resend)).toMatchObject({ code: "invitation_scope_invalid" });
+    }
+    expect(sent).toHaveLength(2);
+    for (const token of [existingToken, registrationToken]) {
+      const preview = await getJson(app, `/api/workspace-invitations/preview?token=${token}`);
+      expect(preview.status).toBe(409);
+      expect(await problemBody(preview)).toMatchObject({ code: "invitation_scope_invalid" });
+    }
+
+    const existing = await postJson(
+      app,
+      "/api/workspace-invitations/acceptance",
+      { token: existingToken },
+      existingCookie,
+    );
+    expect(existing.status).toBe(409);
+    expect(await problemBody(existing)).toMatchObject({ code: "invitation_scope_invalid" });
+
+    const registration = await postJson(app, "/api/workspace-invitations/registration", {
+      token: registrationToken,
+      password: "moved-project-password",
+    });
+    expect(registration.status).toBe(409);
+    expect(await problemBody(registration)).toMatchObject({
+      code: "invitation_scope_invalid",
+    });
+
+    // Both tokens remain pending: the rejection rolled back the membership, account,
+    // token, and grants together.
+    const pendingOffers = await database.db.select().from(workspaceInvitations);
+    expect(pendingOffers.map((invitation) => invitation.status)).toEqual(["pending", "pending"]);
+    expect(
+      await database.db
+        .select()
+        .from(workspaceMemberships)
+        .where(eq(workspaceMemberships.workspaceId, workspace.id)),
+    ).toHaveLength(1);
+    expect(await database.db.select().from(projectAccessGrants)).toHaveLength(0);
+    expect(await database.db.select().from(humans).where(eq(humans.email, newEmail))).toHaveLength(
+      0,
+    );
   });
 
   it("enforces valid and invalid ownership states at the database, including moves", async () => {

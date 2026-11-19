@@ -618,6 +618,88 @@ async function revokeMemberProjectAccessInTransaction(
   }
 }
 
+// Apply the project grants offered by a workspace invitation. The invitation feature
+// has already consumed the token in this transaction; this method first proves every
+// offered project still belongs to the invited workspace, then writes the grants and
+// their access events. A missing/moved project returns its id without writing anything,
+// so the caller can reject the whole redemption and leave the token pending.
+async function applyInvitationGrantsInTransaction(
+  tx: DbTransaction,
+  workspaceId: string,
+  humanId: string,
+  grantedByHumanId: string,
+  offered: readonly { projectId: string; level: ProjectAccessLevel }[],
+): Promise<string[]> {
+  if (offered.length === 0) return [];
+
+  await lockWorkspaceOwnershipWrites(tx);
+  const projectIds = [...new Set(offered.map((grant) => grant.projectId))];
+  const currentProjects = await tx
+    .select({ id: projects.id, workspaceId: projects.workspaceId })
+    .from(projects)
+    .where(inArray(projects.id, projectIds));
+  const currentWorkspaceByProject = new Map(
+    currentProjects.map((project) => [project.id, project.workspaceId]),
+  );
+  const invalid = projectIds.filter(
+    (projectId) => currentWorkspaceByProject.get(projectId) !== workspaceId,
+  );
+  if (invalid.length > 0) return invalid;
+
+  for (const offer of offered) {
+    const [current] = await tx
+      .select({ level: projectAccessGrants.level })
+      .from(projectAccessGrants)
+      .where(
+        and(
+          eq(projectAccessGrants.projectId, offer.projectId),
+          eq(projectAccessGrants.humanId, humanId),
+        ),
+      )
+      .limit(1);
+    const currentLevel = current === undefined ? null : ProjectAccessLevel.parse(current.level);
+    // A previous higher grant is not silently lowered by an invitation; otherwise the
+    // offered level is the deliberate scope. Repeating the same offer is a no-op.
+    const nextLevel =
+      currentLevel === null || ACCESS_RANK[offer.level] > ACCESS_RANK[currentLevel]
+        ? offer.level
+        : currentLevel;
+    if (nextLevel === currentLevel) continue;
+
+    await tx
+      .insert(projectAccessGrants)
+      .values({
+        id: randomUUID(),
+        projectId: offer.projectId,
+        humanId,
+        level: nextLevel,
+        grantedByHumanId,
+        createdAt: sql`statement_timestamp()`,
+        updatedAt: sql`statement_timestamp()`,
+      })
+      .onConflictDoUpdate({
+        target: [projectAccessGrants.projectId, projectAccessGrants.humanId],
+        set: {
+          level: nextLevel,
+          grantedByHumanId,
+          updatedAt: sql`statement_timestamp()`,
+        },
+      });
+    await recordAccessEvent(tx, {
+      projectId: offer.projectId,
+      actorHumanId: grantedByHumanId,
+      subjectHumanId: humanId,
+      type:
+        currentLevel === null
+          ? ProjectAccessEventType.enum.project_access_granted
+          : ProjectAccessEventType.enum.project_access_level_changed,
+      level: nextLevel,
+      previousLevel: currentLevel,
+    });
+  }
+  return [];
+}
+
 async function lockWorkspaceOwnershipWrites(tx: DbTransaction) {
   await tx.execute(sql`select lock_workspace_ownership_writes()`);
 }
@@ -691,6 +773,15 @@ export interface ProjectsService {
     humanId: string,
     actorHumanId: string,
   ): Promise<void>;
+  // The workspace invitation redemption calls this inside its transaction. It returns
+  // the ids of offered projects that no longer belong to the workspace.
+  applyInvitationGrants(
+    tx: DbTransaction,
+    workspaceId: string,
+    humanId: string,
+    grantedByHumanId: string,
+    offered: readonly { projectId: string; level: ProjectAccessLevel }[],
+  ): Promise<string[]>;
   listIssues(account: SessionAccount | null, projectId: string): Promise<Issue[]>;
   getIssue(account: SessionAccount | null, issueId: string): Promise<Issue>;
   createIssue(
@@ -1094,6 +1185,16 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
 
     revokeMemberProjectAccess(tx, workspaceId, humanId, actorHumanId) {
       return revokeMemberProjectAccessInTransaction(tx, workspaceId, humanId, actorHumanId);
+    },
+
+    applyInvitationGrants(tx, workspaceId, humanId, grantedByHumanId, offered) {
+      return applyInvitationGrantsInTransaction(
+        tx,
+        workspaceId,
+        humanId,
+        grantedByHumanId,
+        offered,
+      );
     },
 
     async listIssues(account, projectId) {

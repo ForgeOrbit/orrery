@@ -51,6 +51,24 @@ export function postJson<T>(path: string, body: unknown, parse: (value: unknown)
   return sendJson("POST", path, body, parse);
 }
 
+// A POST whose success is a resource, with no request body (for actions whose target is
+// entirely in the path).
+export async function post<T>(path: string, parse: (value: unknown) => T): Promise<T> {
+  const res = await fetch(path, { method: "POST" });
+  if (!res.ok) return failure(res);
+  return parse(await res.json());
+}
+
+// A POST that answers 204, such as a recipient declining an invitation.
+export async function postNoContent(path: string, body: unknown): Promise<void> {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) return failure(res);
+}
+
 export function patchJson<T>(
   path: string,
   body: unknown,

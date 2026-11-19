@@ -143,6 +143,9 @@ export const workspaceInvitations = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    declinedAt: timestamp("declined_at", { withTimezone: true }),
+    expiredAt: timestamp("expired_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
     deliveryStatus: text("delivery_status").$type<InvitationDelivery>(),
     deliveryAttemptedAt: timestamp("delivery_attempted_at", { withTimezone: true }),
   },
@@ -301,6 +304,9 @@ export const invitations = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    declinedAt: timestamp("declined_at", { withTimezone: true }),
+    expiredAt: timestamp("expired_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
     // Delivery, tracked separately from the lifecycle: pending never implies delivered
     // (#20). Null means no attempt has been recorded; only 'failed' never redeems, and
     // an old null row is superseded once its send could no longer be in flight.
@@ -381,6 +387,32 @@ export const projectAccessGrants = pgTable(
       sql`${t.level} in (${sql.raw(sqlLiteralList(ProjectAccessLevel))})`,
     ),
     index("project_access_grants_human_id").on(t.humanId),
+  ],
+);
+
+// The projects an invitation offers (#25). The invitation belongs to one workspace, so
+// every offered project must still belong to that same workspace when the offer is
+// accepted. The level is the project access granted on acceptance; membership itself
+// still grants no project access. Resending copies these rows to the replacement
+// invitation, which keeps the offer and its history intact.
+export const workspaceInvitationGrants = pgTable(
+  "workspace_invitation_grants",
+  {
+    id: text("id").primaryKey(),
+    invitationId: text("invitation_id")
+      .notNull()
+      .references(() => workspaceInvitations.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    level: text("level").$type<ProjectAccessLevel>().notNull(),
+  },
+  (t) => [
+    uniqueIndex("one_invitation_grant_per_project").on(t.invitationId, t.projectId),
+    check(
+      "workspace_invitation_grants_level",
+      sql`${t.level} in (${sql.raw(sqlLiteralList(ProjectAccessLevel))})`,
+    ),
   ],
 );
 

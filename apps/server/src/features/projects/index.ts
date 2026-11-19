@@ -1,4 +1,5 @@
 // Public interface of the projects feature. Other code imports only this file.
+import type { ProjectAccessLevel } from "@orrery/contract";
 import type { Feature } from "../../platform/feature.ts";
 import type { DbTransaction } from "../../platform/db.ts";
 import type { SessionReader } from "../accounts/index.ts";
@@ -20,6 +21,13 @@ export interface ProjectsFeature extends Feature {
     humanId: string,
     actorHumanId: string,
   ): Promise<void>;
+  applyInvitationGrants(
+    tx: DbTransaction,
+    workspaceId: string,
+    humanId: string,
+    grantedByHumanId: string,
+    offered: readonly { projectId: string; level: ProjectAccessLevel }[],
+  ): Promise<string[]>;
 }
 
 export function createProjectsFeature(deps: ProjectsDepsWithAccounts): ProjectsFeature {
@@ -29,5 +37,7 @@ export function createProjectsFeature(deps: ProjectsDepsWithAccounts): ProjectsF
     rest: createProjectsRest(service, deps.sessionReader),
     revokeMemberProjectAccess: (tx, workspaceId, humanId, actorHumanId) =>
       service.revokeMemberProjectAccess(tx, workspaceId, humanId, actorHumanId),
+    applyInvitationGrants: (tx, workspaceId, humanId, grantedByHumanId, offered) =>
+      service.applyInvitationGrants(tx, workspaceId, humanId, grantedByHumanId, offered),
   };
 }

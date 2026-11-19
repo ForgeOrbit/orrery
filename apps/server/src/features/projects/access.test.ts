@@ -283,6 +283,8 @@ describe("shared project access", () => {
       log: silentLogger,
       revokeMemberProjectAccess: (tx, targetWorkspaceId, humanId, actorHumanId) =>
         projects.revokeMemberProjectAccess(tx, targetWorkspaceId, humanId, actorHumanId),
+      applyInvitationGrants: (tx, workspaceId, humanId, grantedByHumanId, offered) =>
+        projects.applyInvitationGrants(tx, workspaceId, humanId, grantedByHumanId, offered),
     });
     return createApp({
       features: [accounts, workspacesFeature, projects],

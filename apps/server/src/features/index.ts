@@ -60,6 +60,8 @@ export function createFeatures(database: Database, config: Config, log: Logger):
       deliver: settings.deliver,
       revokeMemberProjectAccess: (tx, workspaceId, humanId, actorHumanId) =>
         projects.revokeMemberProjectAccess(tx, workspaceId, humanId, actorHumanId),
+      applyInvitationGrants: (tx, workspaceId, humanId, grantedByHumanId, offered) =>
+        projects.applyInvitationGrants(tx, workspaceId, humanId, grantedByHumanId, offered),
       log,
     }),
     projects,

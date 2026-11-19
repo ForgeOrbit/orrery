@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { Email, NewPassword, WorkspaceKind } from "./common.ts";
-import { InvitationStatus } from "./invitations.ts";
+import { InvitationGrant, InvitationStatus, WorkspaceInvitationProjectGrant } from "./invitations.ts";
 
 // Workspaces and their members (issue #24). A human's personal workspace is private;
 // shared workspaces are joined by invitation and have one or more owners. The listing is
@@ -62,11 +62,16 @@ export const WorkspaceMembersResponse = z
 export type WorkspaceMembersResponse = z.infer<typeof WorkspaceMembersResponse>;
 
 // An owner invites one email into the workspace. An existing account accepts the
-// membership; a new email registers through the same link. The offered access is
-// membership (owners appoint ownership separately).
+// membership; a new email registers through the same link. The offered access includes
+// workspace membership and any project grants the owner selects; owners appoint
+// ownership separately.
 export const InviteWorkspaceMemberRequest = z
   .object({
     email: Email,
+    projectGrants: z.array(WorkspaceInvitationProjectGrant).max(100).refine(
+      (grants) => new Set(grants.map((grant) => grant.projectId)).size === grants.length,
+      "Offer each project at most once.",
+    ).default([]),
   })
   .meta({ id: "InviteWorkspaceMemberRequest" });
 export type InviteWorkspaceMemberRequest = z.infer<typeof InviteWorkspaceMemberRequest>;
@@ -82,14 +87,18 @@ export const WorkspaceInvitation = z
   .meta({ id: "WorkspaceInvitation" });
 export type WorkspaceInvitation = z.infer<typeof WorkspaceInvitation>;
 
-// What the invitation link shows before anything is accepted: the workspace and the
-// address it was sent to. A GET never consumes the token, and it works before sign-in
-// because holding the link is how the recipient arrives.
+// What the invitation link shows before anything is accepted: the workspace, the
+// address it was sent to, who sent it, the access it offers, and its deadline. A GET
+// never consumes the token, and it works before sign-in because holding the link is how
+// the recipient arrives.
 export const WorkspaceInvitationPreview = z
   .object({
     workspaceId: z.string(),
     workspaceName: z.string(),
     email: Email,
+    invitedByEmail: Email,
+    grants: z.array(InvitationGrant),
+    expiresAt: z.iso.datetime(),
   })
   .meta({ id: "WorkspaceInvitationPreview" });
 export type WorkspaceInvitationPreview = z.infer<typeof WorkspaceInvitationPreview>;
@@ -112,6 +121,17 @@ export const AcceptWorkspaceInvitationRequest = z
   })
   .meta({ id: "AcceptWorkspaceInvitationRequest" });
 export type AcceptWorkspaceInvitationRequest = z.infer<typeof AcceptWorkspaceInvitationRequest>;
+
+// The recipient declines the offer from the emailed link. Holding the token is the
+// capability; the POST changes the lifecycle and makes the link unusable.
+export const DeclineWorkspaceInvitationRequest = z
+  .object({
+    token: WorkspaceInvitationToken,
+  })
+  .meta({ id: "DeclineWorkspaceInvitationRequest" });
+export type DeclineWorkspaceInvitationRequest = z.infer<
+  typeof DeclineWorkspaceInvitationRequest
+>;
 
 // Redeems the same link for an address that has no account yet, choosing a password.
 // The account, its personal workspace, and this membership are created in one flow.

@@ -4,6 +4,9 @@ import {
   AcceptWorkspaceInvitationRequest,
   AppointWorkspaceOwnerRequest,
   CreateWorkspaceRequest,
+  DeclineWorkspaceInvitationRequest,
+  InvitationSummaries,
+  InvitationSummary,
   InviteWorkspaceMemberRequest,
   RegisterThroughWorkspaceInvitationRequest,
   SessionResponse,
@@ -27,6 +30,7 @@ import { WorkspacesError, type WorkspacesErrorKind, type WorkspacesService } fro
 
 const workspaceParams = z.object({ workspaceId: z.string().min(1).max(200) });
 const memberParams = workspaceParams.extend({ humanId: z.string().min(1).max(200) });
+const invitationParams = workspaceParams.extend({ invitationId: z.string().min(1).max(200) });
 const previewQuery = z.object({ token: WorkspaceInvitationToken });
 
 const listWorkspaces = createRoute({
@@ -105,7 +109,7 @@ const inviteWorkspaceMember = createRoute({
   path: "/api/workspaces/{workspaceId}/invitations",
   summary: "Invite an email into a shared workspace",
   description:
-    "Owners only, and the inviter's email must be verified. A single-use link valid for seven days goes to the invited address. An existing account accepts it after signing in; a new address registers through it. Following the link (GET) changes nothing.",
+    "Owners only, and the inviter's email must be verified. A single-use link valid for seven days goes to the invited address, offering workspace membership and any selected project grants. Every offered project must currently belong to the workspace. An existing account accepts it after signing in; a new address registers through it. Following the link (GET) changes nothing.",
   request: {
     params: workspaceParams,
     body: {
@@ -123,9 +127,89 @@ const inviteWorkspaceMember = createRoute({
     403: problem("Not an owner, or the inviter's email is unverified"),
     404: problem("No shared workspace with this id is accessible to the caller"),
     409: problem(
-      "The invitee is already a member or already has a pending invitation, or SMTP is not configured or its stored password is unreadable",
+      "The invitee is already a member or already has a pending invitation, an offered project no longer belongs to the workspace, or SMTP is not configured or its stored password is unreadable",
     ),
     502: problem("The SMTP server refused the message; the code says why"),
+  },
+});
+
+const listWorkspaceInvitations = createRoute({
+  method: "get",
+  path: "/api/workspaces/{workspaceId}/invitations",
+  summary: "List a shared workspace's invitations",
+  description:
+    "Owners only. Every invitation for this workspace, newest first, with recipient, inviter, target, offered grants, lifecycle timestamps, and email delivery as a separate fact. A pending invitation whose seven days have passed is reported and stored as expired. The token never appears.",
+  request: { params: workspaceParams },
+  responses: {
+    200: {
+      description: "The workspace's invitations",
+      content: { "application/json": { schema: InvitationSummaries } },
+    },
+    400: problem("The workspace id is invalid"),
+    401: problem("Not signed in"),
+    403: problem("Not an owner of this workspace"),
+    404: problem("No accessible shared workspace"),
+  },
+});
+
+const resendWorkspaceInvitation = createRoute({
+  method: "post",
+  path: "/api/workspaces/{workspaceId}/invitations/{invitationId}/resend",
+  summary: "Resend a workspace invitation",
+  description:
+    "Owners only, and the resending owner's email must be verified, exactly as for an initial invitation. Rotates the link: a still-live pending invitation becomes revoked at replacement time, one past its deadline becomes expired at the deadline it passed, and a new pending invitation from the current owner starts a fresh seven-day deadline. The previous link stops working. A delivery failure is recorded on the new invitation and answered as a delivery Problem; the invitation's lifecycle stays pending. Answers 409 invitation_not_pending when the invitation is accepted, declined, or revoked; invitation_scope_invalid when an offered project left the workspace; invitation_pending when a concurrent invitation already owns the address; smtp_unconfigured when SMTP is missing; and smtp_password_unreadable when the stored password cannot be read. Answers 502 smtp_unreachable, smtp_auth_failed, smtp_tls_failed, or smtp_send_failed when the relay refuses the message.",
+  request: { params: invitationParams },
+  responses: {
+    200: {
+      description: "The new pending invitation, with its delivery recorded",
+      content: { "application/json": { schema: InvitationSummary } },
+    },
+    400: problem("The workspace or invitation id is invalid"),
+    401: problem("Not signed in"),
+    403: problem("Not an owner of this workspace, or the owner's email is unverified"),
+    404: problem("No accessible shared workspace or invitation"),
+    409: problem(
+      "The invitation is accepted, declined, or revoked; an offered project left the workspace; the recipient is already a member; another invitation is pending; or SMTP is not configured or its stored password is unreadable",
+    ),
+    502: problem("The SMTP server refused the message; the code says why"),
+  },
+});
+
+const revokeWorkspaceInvitation = createRoute({
+  method: "post",
+  path: "/api/workspaces/{workspaceId}/invitations/{invitationId}/revoke",
+  summary: "Revoke a workspace invitation",
+  description:
+    "Owners only. Only a pending, unexpired invitation is revoked; the link stops working and the row keeps its history and revocation timestamp.",
+  request: { params: invitationParams },
+  responses: {
+    200: {
+      description: "The revoked invitation",
+      content: { "application/json": { schema: InvitationSummary } },
+    },
+    400: problem("The workspace or invitation id is invalid"),
+    401: problem("Not signed in"),
+    403: problem("Not an owner of this workspace"),
+    404: problem("No accessible shared workspace or invitation"),
+    409: problem("The invitation is no longer pending and unexpired"),
+  },
+});
+
+const declineWorkspaceInvitation = createRoute({
+  method: "post",
+  path: "/api/workspace-invitations/decline",
+  summary: "Decline a workspace invitation",
+  description:
+    "The recipient declines from the emailed link. Holding the token is the capability; only a pending, unexpired invitation without failed delivery changes, and its link then stops working.",
+  request: {
+    body: {
+      required: true,
+      content: { "application/json": { schema: DeclineWorkspaceInvitationRequest } },
+    },
+  },
+  responses: {
+    204: { description: "The invitation was declined" },
+    400: problem("The token is invalid, expired, or already used"),
   },
 });
 
@@ -134,7 +218,7 @@ const previewWorkspaceInvitation = createRoute({
   path: "/api/workspace-invitations/preview",
   summary: "The workspace and address a workspace invitation link offers",
   description:
-    "A read-only preview of a single-use invitation token. It never consumes the token and changes nothing. Invalid, expired, used, or failed-delivery links answer the same Problem.",
+    "A read-only preview of a single-use invitation token. It never consumes the token and changes nothing. It returns the workspace, invited address, inviter, deadline, and the actual offered grants, including every project and level. Invalid, expired, used, or failed-delivery links answer the same Problem. An offer whose project left the workspace answers 409 invitation_scope_invalid without returning project metadata.",
   request: { query: previewQuery },
   responses: {
     200: {
@@ -142,6 +226,7 @@ const previewWorkspaceInvitation = createRoute({
       content: { "application/json": { schema: WorkspaceInvitationPreview } },
     },
     400: problem("The token is invalid, expired, or already used"),
+    409: problem("An offered project no longer belongs to the workspace"),
   },
 });
 
@@ -150,7 +235,7 @@ const acceptWorkspaceInvitation = createRoute({
   path: "/api/workspace-invitations/acceptance",
   summary: "Accept a workspace invitation as an existing account",
   description:
-    "Redeems the emailed token for the signed-in account. The account's verified email must equal the invited address; a forwarded link cannot attach the membership to another account. The token is consumed only by this POST.",
+    "Redeems the emailed token for the signed-in account. The account's verified email must equal the invited address; a forwarded link cannot attach the membership to another account. Every offered project is rechecked against the workspace and the project grants are applied in the same transaction. The token is consumed only by this POST.",
   request: {
     body: {
       required: true,
@@ -167,7 +252,9 @@ const acceptWorkspaceInvitation = createRoute({
     403: problem(
       "The signed-in account has a different or unverified email, or the inviter no longer has authority",
     ),
-    409: problem("The account is already a member of the workspace"),
+    409: problem(
+      "The account is already a member of the workspace, or an offered project no longer belongs to it",
+    ),
   },
 });
 
@@ -176,7 +263,7 @@ const registerThroughWorkspaceInvitation = createRoute({
   path: "/api/workspace-invitations/registration",
   summary: "Register a new account through a workspace invitation",
   description:
-    "Redeems the token for an address with no account, creating the account, its personal workspace, the verified-email mark, and the workspace membership in one transaction. An existing account answers account_exists and signs in to accept instead.",
+    "Redeems the token for an address with no account, creating the account, its personal workspace, the verified-email mark, the workspace membership, and the offered project grants in one transaction. Every offered project must still belong to the workspace. An existing account answers account_exists and signs in to accept instead.",
   request: {
     body: {
       required: true,
@@ -192,7 +279,9 @@ const registerThroughWorkspaceInvitation = createRoute({
     },
     400: problem("The token is invalid, expired, or already used"),
     403: problem("The inviter no longer has authority to invite to this workspace"),
-    409: problem("The invited email already has an account"),
+    409: problem(
+      "The invited email already has an account, or an offered project no longer belongs to the workspace",
+    ),
   },
 });
 
@@ -271,6 +360,10 @@ export const routes = [
   listWorkspaceMembers,
   createWorkspace,
   inviteWorkspaceMember,
+  listWorkspaceInvitations,
+  resendWorkspaceInvitation,
+  revokeWorkspaceInvitation,
+  declineWorkspaceInvitation,
   previewWorkspaceInvitation,
   acceptWorkspaceInvitation,
   registerThroughWorkspaceInvitation,
@@ -290,6 +383,9 @@ const statusFor = {
   invitation_recipient_mismatch: 403,
   email_unverified: 403,
   invitation_pending: 409,
+  invitation_not_found: 404,
+  invitation_not_pending: 409,
+  invitation_scope_invalid: 409,
   already_member: 409,
   account_exists: 409,
   member_not_found: 404,
@@ -319,8 +415,33 @@ const inviteKinds = [
   "inviter_unverified",
   "already_member",
   "invitation_pending",
+  "invitation_scope_invalid",
 ] as const;
-const previewKinds = ["invitation_invalid"] as const;
+const listInvitationKinds = [
+  "not_signed_in",
+  "workspace_not_found",
+  "not_workspace_owner",
+] as const;
+const resendKinds = [
+  "not_signed_in",
+  "workspace_not_found",
+  "not_workspace_owner",
+  "inviter_unverified",
+  "invitation_not_found",
+  "invitation_not_pending",
+  "invitation_pending",
+  "invitation_scope_invalid",
+  "already_member",
+] as const;
+const revokeKinds = [
+  "not_signed_in",
+  "workspace_not_found",
+  "not_workspace_owner",
+  "invitation_not_found",
+  "invitation_not_pending",
+] as const;
+const declineKinds = ["invitation_invalid"] as const;
+const previewKinds = ["invitation_invalid", "invitation_scope_invalid"] as const;
 const acceptKinds = [
   "not_signed_in",
   "invitation_invalid",
@@ -328,8 +449,14 @@ const acceptKinds = [
   "invitation_recipient_mismatch",
   "email_unverified",
   "already_member",
+  "invitation_scope_invalid",
 ] as const;
-const registerKinds = ["invitation_invalid", "inviter_not_authorized", "account_exists"] as const;
+const registerKinds = [
+  "invitation_invalid",
+  "inviter_not_authorized",
+  "account_exists",
+  "invitation_scope_invalid",
+] as const;
 const appointKinds = [
   "not_signed_in",
   "workspace_not_found",
@@ -367,8 +494,12 @@ function failure<K extends readonly WorkspacesErrorKind[]>(c: Context, error: un
 
 // The invitation send also answers every delivery failure with settings' own code and
 // status, so a client can tell the reasons apart wherever the send happened.
-function sendFailure(c: Context, error: unknown) {
-  if (error instanceof WorkspacesError && isKind(error, inviteKinds)) {
+function sendFailure<K extends readonly WorkspacesErrorKind[]>(
+  c: Context,
+  error: unknown,
+  kinds: K,
+) {
+  if (error instanceof WorkspacesError && isKind(error, kinds)) {
     return problemResponse(c, {
       status: statusFor[error.kind],
       code: error.kind,
@@ -426,7 +557,51 @@ export function createWorkspacesRest(service: WorkspacesService, sessionReader: 
         201,
       );
     } catch (error) {
-      return sendFailure(c, error);
+      return sendFailure(c, error, inviteKinds);
+    }
+  });
+
+  app.openapi(listWorkspaceInvitations, async (c) => {
+    try {
+      return c.json(
+        await service.invitations(await sessionReader(c), c.req.valid("param").workspaceId),
+        200,
+      );
+    } catch (error) {
+      return failure(c, error, listInvitationKinds);
+    }
+  });
+
+  app.openapi(resendWorkspaceInvitation, async (c) => {
+    try {
+      const { workspaceId, invitationId } = c.req.valid("param");
+      return c.json(
+        await service.resendInvitation(await sessionReader(c), workspaceId, invitationId),
+        200,
+      );
+    } catch (error) {
+      return sendFailure(c, error, resendKinds);
+    }
+  });
+
+  app.openapi(revokeWorkspaceInvitation, async (c) => {
+    try {
+      const { workspaceId, invitationId } = c.req.valid("param");
+      return c.json(
+        await service.revokeInvitation(await sessionReader(c), workspaceId, invitationId),
+        200,
+      );
+    } catch (error) {
+      return failure(c, error, revokeKinds);
+    }
+  });
+
+  app.openapi(declineWorkspaceInvitation, async (c) => {
+    try {
+      await service.declineInvitation(c.req.valid("json"));
+      return c.body(null, 204);
+    } catch (error) {
+      return failure(c, error, declineKinds);
     }
   });
 

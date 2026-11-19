@@ -1,15 +1,17 @@
 import {
+  InvitationSummary,
   SessionResponse,
   Workspace,
   WorkspaceInvitation,
   WorkspaceMember,
   type AcceptWorkspaceInvitationRequest,
   type CreateWorkspaceRequest,
+  type DeclineWorkspaceInvitationRequest,
   type InviteWorkspaceMemberRequest,
   type RegisterThroughWorkspaceInvitationRequest,
   type UpdateWorkspaceMemberRequest,
 } from "@orrery/contract";
-import { patchJson, postJson } from "../../lib/api.ts";
+import { patchJson, post, postJson, postNoContent } from "../../lib/api.ts";
 
 // Mutations for this feature. Each posts JSON through the app's one request helper,
 // which parses the response with the contract's schemas and turns a Problem (RFC 9457)
@@ -66,6 +68,40 @@ export function updateWorkspaceMember(
     input,
     (value) => WorkspaceMember.parse(value),
   );
+}
+
+// Resend rotates the link for a current owner; the previous link stops working and the
+// offered project grants are copied to the replacement invitation.
+export function resendWorkspaceInvitation(
+  workspaceId: string,
+  invitationId: string,
+): Promise<InvitationSummary> {
+  return post(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/invitations/${encodeURIComponent(
+      invitationId,
+    )}/resend`,
+    (value) => InvitationSummary.parse(value),
+  );
+}
+
+// Revoke ends a pending, unexpired offer. The history row stays.
+export function revokeWorkspaceInvitation(
+  workspaceId: string,
+  invitationId: string,
+): Promise<InvitationSummary> {
+  return post(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/invitations/${encodeURIComponent(
+      invitationId,
+    )}/revoke`,
+    (value) => InvitationSummary.parse(value),
+  );
+}
+
+// The recipient declines from the emailed link; holding the token is the capability.
+export function declineWorkspaceInvitation(
+  input: DeclineWorkspaceInvitationRequest,
+): Promise<void> {
+  return postNoContent("/api/workspace-invitations/decline", input);
 }
 
 // Registers a new account through the same link, creating its personal workspace and

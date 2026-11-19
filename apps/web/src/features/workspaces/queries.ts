@@ -1,9 +1,11 @@
 import {
+  InvitationSummaries,
   Workspace,
   WorkspaceInvitationPreview,
   WorkspaceMembersResponse,
   WorkspacesResponse,
 } from "@orrery/contract";
+import type { InvitationSummary } from "@orrery/contract";
 import type { Workspace as WorkspaceResource } from "@orrery/contract";
 import { queryOptions } from "@tanstack/react-query";
 import { getJson } from "../../lib/api.ts";
@@ -38,6 +40,15 @@ export const workspaceMembersQuery = (workspaceId: string) =>
     queryFn: () =>
       getJson(`/api/workspaces/${encodeURIComponent(workspaceId)}/members`, (value) =>
         WorkspaceMembersResponse.parse(value),
+      ),
+  });
+
+export const workspaceInvitationsQuery = (workspaceId: string) =>
+  queryOptions({
+    queryKey: ["workspaces", workspaceId, "invitations"],
+    queryFn: async (): Promise<InvitationSummary[]> =>
+      getJson(`/api/workspaces/${encodeURIComponent(workspaceId)}/invitations`, (value) =>
+        InvitationSummaries.parse(value),
       ),
   });
 

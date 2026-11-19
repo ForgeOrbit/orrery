@@ -7,7 +7,7 @@ Project-local skills live in `.agents/skills/` and are committed to this reposit
 | Skill | Purpose | When to run |
 | --- | --- | --- |
 | `verify-orrery` | Boots an isolated Orrery (Hono + React + Postgres + Mailpit) and proves user flows end-to-end. | Before merging user-facing API, web, MCP, or mail changes. |
-| `formal-verify-orrery` | Exhaustively model-checks server concurrency, lifecycle, and access-boundary invariants (`M1`–`M7`). | Before merging changes to `apps/server/src/features/*/service.ts` or ownership migrations (`0007`–`0008`). |
+| `formal-verify-orrery` | Exhaustively model-checks server concurrency, lifecycle, and access-boundary invariants (`M1`–`M9`). | Before merging changes to `apps/server/src/features/*/service.ts` or ownership migrations (`0007`–`0008`, `0012`). |
 
 ## Recommended global skill packs
 

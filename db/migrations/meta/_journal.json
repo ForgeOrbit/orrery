@@ -92,6 +92,20 @@
       "when": 1795099539087,
       "tag": "0012_project_access_scope",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1795105801138,
+      "tag": "0013_numerous_doorman",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1795106036175,
+      "tag": "0014_backfill_expired_invitation_timestamps",
+      "breakpoints": true
     }
   ]
 }

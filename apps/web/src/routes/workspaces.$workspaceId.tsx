@@ -1,12 +1,17 @@
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { ProjectAccessLevel, type InvitationSummary } from "@orrery/contract";
 import type { FormEvent } from "react";
 import { useState } from "react";
+import { InvitationList } from "../features/invitations/index.ts";
 import { createProject, projectQuery, projectsQuery } from "../features/projects/index.ts";
 import {
   appointWorkspaceOwner,
   inviteWorkspaceMember,
+  resendWorkspaceInvitation,
+  revokeWorkspaceInvitation,
   updateWorkspaceMember,
+  workspaceInvitationsQuery,
   workspaceMembersQuery,
   workspaceQuery,
   workspacesQuery,
@@ -22,7 +27,10 @@ export const Route = createFileRoute("/workspaces/$workspaceId")({
     const loads = [
       context.queryClient.ensureQueryData(projectsQuery(params.workspaceId)),
       ...(workspace.kind === "shared" && workspace.isOwner
-        ? [context.queryClient.ensureQueryData(workspaceMembersQuery(params.workspaceId))]
+        ? [
+            context.queryClient.ensureQueryData(workspaceMembersQuery(params.workspaceId)),
+            context.queryClient.ensureQueryData(workspaceInvitationsQuery(params.workspaceId)),
+          ]
         : []),
     ];
     await Promise.all(loads);
@@ -53,6 +61,7 @@ function WorkspacePage() {
         <>
           <OwnerMembers workspaceId={workspace.id} />
           <InviteMemberForm workspaceId={workspace.id} workspaceName={workspace.name} />
+          <OwnerInvitations workspaceId={workspace.id} />
         </>
       )}
     </main>
@@ -209,6 +218,48 @@ function OwnerMembers({ workspaceId }: { workspaceId: string }) {
   );
 }
 
+// Owner-only history. Delivery is shown as its own fact, so a failed email never reads
+// as a failed invitation; resend and revoke are the lifecycle actions, and each keeps
+// the previous row visible.
+function OwnerInvitations({ workspaceId }: { workspaceId: string }) {
+  const { data: invitations } = useSuspenseQuery(workspaceInvitationsQuery(workspaceId));
+  const queryClient = useQueryClient();
+  const [busyId, setBusyId] = useState<string>();
+  const [error, setError] = useState<string>();
+
+  async function run(invitation: InvitationSummary, action: () => Promise<unknown>) {
+    setBusyId(invitation.id);
+    setError(undefined);
+    try {
+      await action();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not change the invitation.");
+    } finally {
+      setBusyId(undefined);
+      // A failed delivery still created the new pending row; reload so it is visible
+      // beside its lifecycle status.
+      await queryClient.invalidateQueries({
+        queryKey: workspaceInvitationsQuery(workspaceId).queryKey,
+      });
+    }
+  }
+
+  return (
+    <InvitationList
+      invitations={invitations}
+      emptyMessage="No invitations yet."
+      {...(busyId === undefined ? {} : { busyId })}
+      {...(error === undefined ? {} : { error })}
+      onResend={(invitation) =>
+        run(invitation, () => resendWorkspaceInvitation(workspaceId, invitation.id))
+      }
+      onRevoke={(invitation) =>
+        run(invitation, () => revokeWorkspaceInvitation(workspaceId, invitation.id))
+      }
+    />
+  );
+}
+
 function InviteMemberForm({
   workspaceId,
   workspaceName,
@@ -217,10 +268,25 @@ function InviteMemberForm({
   workspaceName: string;
 }) {
   const queryClient = useQueryClient();
+  const { data: projects } = useSuspenseQuery(projectsQuery(workspaceId));
   const [email, setEmail] = useState("");
+  const [offered, setOffered] = useState<Record<string, ProjectAccessLevel>>({});
   const [error, setError] = useState<string>();
   const [invited, setInvited] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
+
+  function toggleProject(projectId: string, checked: boolean) {
+    setOffered((current) => {
+      const next = { ...current };
+      if (checked) next[projectId] = next[projectId] ?? "read";
+      else delete next[projectId];
+      return next;
+    });
+  }
+
+  function setLevel(projectId: string, level: ProjectAccessLevel) {
+    setOffered((current) => ({ ...current, [projectId]: level }));
+  }
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -228,14 +294,28 @@ function InviteMemberForm({
     setError(undefined);
     setInvited(undefined);
     try {
-      const invitation = await inviteWorkspaceMember(workspaceId, { email });
+      const invitation = await inviteWorkspaceMember(workspaceId, {
+        email,
+        projectGrants: Object.entries(offered).map(([projectId, level]) => ({
+          projectId,
+          level,
+        })),
+      });
       setInvited(invitation.email);
       setEmail("");
-      await queryClient.invalidateQueries({ queryKey: workspacesQuery.queryKey });
+      setOffered({});
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not send the invitation.");
     } finally {
       setSubmitting(false);
+      // A failed delivery still created the pending row with a failed delivery; refresh
+      // so the history shows it beside the original error without a manual reload.
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: workspacesQuery.queryKey }),
+        queryClient.invalidateQueries({
+          queryKey: workspaceInvitationsQuery(workspaceId).queryKey,
+        }),
+      ]);
     }
   }
 
@@ -253,6 +333,36 @@ function InviteMemberForm({
           required
           autoComplete="off"
         />
+        {projects.length > 0 && (
+          <fieldset>
+            <legend>Project access (optional)</legend>
+            {projects.map((project) => (
+              <div key={project.id}>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={project.id in offered}
+                    onChange={(event) => toggleProject(project.id, event.target.checked)}
+                  />{" "}
+                  {project.name}
+                </label>{" "}
+                <label htmlFor={`invite-level-${project.id}`}>Level</label>
+                <select
+                  id={`invite-level-${project.id}`}
+                  value={offered[project.id] ?? "read"}
+                  onChange={(event) =>
+                    setLevel(project.id, ProjectAccessLevel.parse(event.target.value))
+                  }
+                  disabled={!(project.id in offered)}
+                >
+                  <option value="read">Read</option>
+                  <option value="contribute">Contribute</option>
+                  <option value="manage">Manage</option>
+                </select>
+              </div>
+            ))}
+          </fieldset>
+        )}
         {error !== undefined && <p role="alert">{error}</p>}
         {invited !== undefined && <p role="status">Invitation sent to {invited}.</p>}
         <button type="submit" disabled={submitting}>
