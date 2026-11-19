@@ -11,7 +11,7 @@ import {
   type WorkspaceInvitationPreview,
   type WorkspaceMember,
 } from "@orrery/contract";
-import { and, eq, gt, lte, or, sql } from "drizzle-orm";
+import { and, eq, gt, gte, isNull, lt, lte, or, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
 import { errorNameAndCode, uniqueConstraintName } from "../../platform/errors.ts";
@@ -33,6 +33,10 @@ import {
 
 // Seven days, evaluated in database time at redemption, never by a deployed clock (#20).
 const INVITATION_TTL_SECONDS = 7 * 24 * 60 * 60;
+
+// How long an unknown delivery keeps blocking a fresh invitation. Matches invitations'
+// grace window so a crashed or failed send never locks an email out for seven days.
+export const UNKNOWN_DELIVERY_GRACE_SECONDS = 10 * 60;
 
 export type WorkspacesErrorKind =
   | "not_signed_in"
@@ -174,6 +178,8 @@ async function lockWorkspaceForMutation(
 
 // The caller's authority is read after the workspace lock, never from a stale snapshot:
 // an owner removed by the transaction ahead of this one is no longer an owner here.
+// A caller who is not a member at all answers workspace_not_found (404), matching GET,
+// so owner endpoints cannot be used to enumerate shared workspace ids.
 async function requireOwner(tx: DbTransaction, workspaceId: string, humanId: string) {
   const [membership] = await tx
     .select({ isOwner: workspaceMemberships.isOwner })
@@ -185,7 +191,8 @@ async function requireOwner(tx: DbTransaction, workspaceId: string, humanId: str
       ),
     )
     .limit(1);
-  if (membership?.isOwner !== true) throw new WorkspacesError("not_workspace_owner");
+  if (membership === undefined) throw new WorkspacesError("workspace_not_found");
+  if (!membership.isOwner) throw new WorkspacesError("not_workspace_owner");
 }
 
 // #20's acceptance rule: the inviter's authority is rechecked when the offer is taken
@@ -306,12 +313,18 @@ export interface WorkspacesService {
 }
 
 // The delivery attempt, recorded separately from the lifecycle: pending never implies
-// delivered (#20). Only a recorded failure never redeems.
+// delivered (#20). Only a recorded failure never redeems, and only a still-pending row
+// is updated so a late socket error never stamps 'failed' onto an already-accepted row.
 async function recordDelivery(db: PostgresJsDatabase, id: string, delivery: InvitationDelivery) {
   await db
     .update(workspaceInvitations)
     .set({ deliveryStatus: delivery, deliveryAttemptedAt: sql`statement_timestamp()` })
-    .where(eq(workspaceInvitations.id, id));
+    .where(
+      and(
+        eq(workspaceInvitations.id, id),
+        eq(workspaceInvitations.status, InvitationStatus.enum.pending),
+      ),
+    );
 }
 
 // One token transition for both redemption paths. The workspace is located from the
@@ -551,11 +564,10 @@ export function createWorkspacesService({
             .limit(1);
           if (member !== undefined) throw new WorkspacesError("already_member");
 
-          // A pending invitation blocks a new one for its full seven days, whatever the
-          // email delivery recorded. Delivery is a separate fact (#20): a failed or
-          // unconfirmed send does not shorten the invitation's life. Replacement here is
-          // only the in-place expiry of a row whose deadline has actually passed; full
-          // resend/revoke management remains #25.
+          // A pending invitation blocks a new one while it is unexpired and either sent or
+          // still within the in-flight delivery grace window. Expired rows, known-failed
+          // deliveries, and stale unknown deliveries past the grace window are superseded
+          // in place so a failed SMTP attempt never locks an address out for seven days.
           const [blocking] = await tx
             .select({ id: workspaceInvitations.id })
             .from(workspaceInvitations)
@@ -565,6 +577,16 @@ export function createWorkspacesService({
                 eq(workspaceInvitations.email, input.email),
                 eq(workspaceInvitations.status, InvitationStatus.enum.pending),
                 gt(workspaceInvitations.expiresAt, sql`statement_timestamp()`),
+                or(
+                  eq(workspaceInvitations.deliveryStatus, InvitationDelivery.enum.sent),
+                  and(
+                    isNull(workspaceInvitations.deliveryStatus),
+                    gte(
+                      workspaceInvitations.createdAt,
+                      sql`statement_timestamp() - make_interval(secs => ${UNKNOWN_DELIVERY_GRACE_SECONDS})`,
+                    ),
+                  ),
+                ),
               ),
             )
             .limit(1);
@@ -578,7 +600,17 @@ export function createWorkspacesService({
                 eq(workspaceInvitations.workspaceId, workspaceId),
                 eq(workspaceInvitations.email, input.email),
                 eq(workspaceInvitations.status, InvitationStatus.enum.pending),
-                lte(workspaceInvitations.expiresAt, sql`statement_timestamp()`),
+                or(
+                  lte(workspaceInvitations.expiresAt, sql`statement_timestamp()`),
+                  eq(workspaceInvitations.deliveryStatus, InvitationDelivery.enum.failed),
+                  and(
+                    isNull(workspaceInvitations.deliveryStatus),
+                    lt(
+                      workspaceInvitations.createdAt,
+                      sql`statement_timestamp() - make_interval(secs => ${UNKNOWN_DELIVERY_GRACE_SECONDS})`,
+                    ),
+                  ),
+                ),
               ),
             );
 

@@ -86,11 +86,12 @@ function requireAdministrator(account: SessionAccount | null): SessionAccount {
 
 // Records one delivery attempt's outcome, separately from the lifecycle (#20): the
 // status says whether the email left, the timestamp says when mail was last tried.
+// Guarded by status = 'pending' so a late socket error never marks an accepted row failed.
 async function recordDelivery(db: PostgresJsDatabase, id: string, delivery: InvitationDelivery) {
   await db
     .update(invitations)
     .set({ deliveryStatus: delivery, deliveryAttemptedAt: sql`now()` })
-    .where(eq(invitations.id, id));
+    .where(and(eq(invitations.id, id), eq(invitations.status, InvitationStatus.enum.pending)));
 }
 
 export interface InvitationsServiceDeps {
@@ -100,7 +101,7 @@ export interface InvitationsServiceDeps {
   // Accounts owns humans: the registered-email guard, the account-creation seam, and
   // the verified mark all live there, and invitations asks instead of querying humans
   // itself.
-  emailRegistered: (email: string) => Promise<boolean>;
+  emailRegistered: (email: string, tx?: DbTransaction) => Promise<boolean>;
   createInvitedHuman: (
     input: { email: string; password: string },
     tx: DbTransaction,
@@ -137,42 +138,46 @@ export function createInvitationsService({
     // workspace invitations.
     async inviteInstallation(account, input) {
       const admin = requireAdministrator(account);
-      // A registered address has nothing to be invited to.
-      if (await emailRegistered(input.email)) throw new InvitationsError("account_exists");
-
-      // A pending invitation blocks a new one while it is valid and not known-failed;
-      // an expired one, one whose email never left, or one whose delivery stayed unknown
-      // past the grace window is superseded in place below. Unknown delivery inside the
-      // window blocks too: a send may still be in flight, and silently invalidating a
-      // possibly-delivered link is the worse failure. Holding the token redeems either
-      // way; only a known failure refuses.
-      const blocking = await db
-        .select({ id: invitations.id })
-        .from(invitations)
-        .where(
-          and(
-            eq(invitations.email, input.email),
-            eq(invitations.status, InvitationStatus.enum.pending),
-            gt(invitations.expiresAt, sql`now()`),
-            or(
-              eq(invitations.deliveryStatus, InvitationDelivery.enum.sent),
-              and(
-                isNull(invitations.deliveryStatus),
-                gte(
-                  invitations.createdAt,
-                  sql`now() - make_interval(secs => ${UNKNOWN_DELIVERY_GRACE_SECONDS})`,
-                ),
-              ),
-            ),
-          ),
-        )
-        .limit(1);
-      if (blocking.length > 0) throw new InvitationsError("invitation_pending");
-
       const token = randomBytes(32).toString("base64url");
       const id = randomUUID();
       try {
         await db.transaction(async (tx) => {
+          // Serialize per email with createInvitedHuman() so a concurrent registration
+          // cannot commit between emailRegistered() and the invitation insert.
+          await tx.execute(sql`select pg_advisory_xact_lock(61683815, hashtext(${input.email}))`);
+
+          // A registered address has nothing to be invited to.
+          if (await emailRegistered(input.email, tx)) throw new InvitationsError("account_exists");
+
+          // A pending invitation blocks a new one while it is valid and not known-failed;
+          // an expired one, one whose email never left, or one whose delivery stayed unknown
+          // past the grace window is superseded in place below. Unknown delivery inside the
+          // window blocks too: a send may still be in flight, and silently invalidating a
+          // possibly-delivered link is the worse failure. Holding the token redeems either
+          // way; only a known failure refuses.
+          const blocking = await tx
+            .select({ id: invitations.id })
+            .from(invitations)
+            .where(
+              and(
+                eq(invitations.email, input.email),
+                eq(invitations.status, InvitationStatus.enum.pending),
+                gt(invitations.expiresAt, sql`now()`),
+                or(
+                  eq(invitations.deliveryStatus, InvitationDelivery.enum.sent),
+                  and(
+                    isNull(invitations.deliveryStatus),
+                    gte(
+                      invitations.createdAt,
+                      sql`now() - make_interval(secs => ${UNKNOWN_DELIVERY_GRACE_SECONDS})`,
+                    ),
+                  ),
+                ),
+              ),
+            )
+            .limit(1);
+          if (blocking.length > 0) throw new InvitationsError("invitation_pending");
+
           // Supersede in place: any pending row for this email that is expired,
           // delivery-failed, or left with an unknown delivery past the grace window
           // becomes expired, in the new invitation's own transaction, so the one-pending

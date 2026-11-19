@@ -697,4 +697,34 @@ describe("projects", () => {
     expect(listed.status).toBe(200);
     expect(ProjectsResponse.parse(await listed.json())).toHaveLength(1);
   });
+
+  it("serializes concurrent issue updates so edits and closes never lose updates or duplicate events", async () => {
+    const { app, adminCookie, workspaceId } = await readyApp();
+    const project = await createProject(app, adminCookie, workspaceId, "Concurrency");
+    const issue = await createIssue(app, adminCookie, project.id, {
+      title: "Original title",
+      body: "Original body",
+    });
+
+    // Race a close with a title edit and a second close on the same issue.
+    const [close1, editTitle, close2] = await Promise.all([
+      patchJson(app, `/api/issues/${issue.id}`, { status: "closed" }, adminCookie),
+      patchJson(app, `/api/issues/${issue.id}`, { title: "Updated title" }, adminCookie),
+      patchJson(app, `/api/issues/${issue.id}`, { status: "closed" }, adminCookie),
+    ]);
+    expect(close1.status).toBe(200);
+    expect(editTitle.status).toBe(200);
+    expect(close2.status).toBe(200);
+
+    const finalRes = await getJson(app, `/api/issues/${issue.id}`, adminCookie);
+    expect(finalRes.status).toBe(200);
+    expect(await finalRes.json()).toMatchObject({
+      title: "Updated title",
+      status: "closed",
+    });
+
+    const activity = await activityFor(app, adminCookie, project.id);
+    expect(activity.filter((entry) => entry.type === "issue_closed")).toHaveLength(1);
+    expect(activity.filter((entry) => entry.type === "issue_edited")).toHaveLength(1);
+  });
 });

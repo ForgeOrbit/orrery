@@ -29,6 +29,6 @@ export function createAccountsFeature(deps: AccountsDeps): AccountsFeature {
     sessionReader: createSessionReader(service),
     markEmailVerified: (humanId, tx) => service.markEmailVerified(humanId, tx),
     createInvitedHuman: (input, tx) => service.createInvitedHuman(input, tx),
-    emailRegistered: (email) => service.emailRegistered(email),
+    emailRegistered: (email, tx) => service.emailRegistered(email, tx),
   };
 }

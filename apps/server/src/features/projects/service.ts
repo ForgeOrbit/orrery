@@ -1182,6 +1182,9 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
     async updateIssue(account, issueId, input) {
       const actor = requireAccount(account);
       return db.transaction(async (tx) => {
+        // Serialize concurrent updates to the same issue so two PATCHes cannot lose
+        // each other's changes or diverge the activity feed from the issue's status.
+        await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issueId)).for("update");
         const current = await requireIssue(
           tx,
           issueId,
@@ -1411,6 +1414,13 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
     async updateKnowledge(account, entryId, input) {
       const actor = requireAccount(account);
       return db.transaction(async (tx) => {
+        // Serialize concurrent edits to the same knowledge entry so partial PATCHes
+        // never overwrite each other's changes.
+        await tx
+          .select({ id: knowledgeEntries.id })
+          .from(knowledgeEntries)
+          .where(eq(knowledgeEntries.id, entryId))
+          .for("update");
         const current = await requireKnowledge(
           tx,
           entryId,
