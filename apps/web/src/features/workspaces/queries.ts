@@ -1,4 +1,9 @@
-import { Workspace, WorkspaceInvitationPreview, WorkspacesResponse } from "@orrery/contract";
+import {
+  Workspace,
+  WorkspaceInvitationPreview,
+  WorkspaceMembersResponse,
+  WorkspacesResponse,
+} from "@orrery/contract";
 import type { Workspace as WorkspaceResource } from "@orrery/contract";
 import { queryOptions } from "@tanstack/react-query";
 import { getJson } from "../../lib/api.ts";
@@ -24,6 +29,15 @@ export const workspaceQuery = (workspaceId: string) =>
     queryFn: () =>
       getJson(`/api/workspaces/${encodeURIComponent(workspaceId)}`, (value) =>
         Workspace.parse(value),
+      ),
+  });
+
+export const workspaceMembersQuery = (workspaceId: string) =>
+  queryOptions({
+    queryKey: ["workspaces", workspaceId, "members"],
+    queryFn: () =>
+      getJson(`/api/workspaces/${encodeURIComponent(workspaceId)}/members`, (value) =>
+        WorkspaceMembersResponse.parse(value),
       ),
   });
 

@@ -36,6 +36,13 @@
       "when": 1795070209254,
       "tag": "0004_workspace_owner_invariant",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1795071785166,
+      "tag": "0005_workspace_owner_invariant_serialized",
+      "breakpoints": true
     }
   ]
 }

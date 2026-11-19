@@ -2,6 +2,7 @@ import {
   SessionResponse,
   Workspace,
   WorkspaceInvitation,
+  WorkspaceMember,
   type AcceptWorkspaceInvitationRequest,
   type CreateWorkspaceRequest,
   type InviteWorkspaceMemberRequest,
@@ -37,6 +38,18 @@ export function acceptWorkspaceInvitation(
 ): Promise<Workspace> {
   return postJson("/api/workspace-invitations/acceptance", input, (value) =>
     Workspace.parse(value),
+  );
+}
+
+// Appoints an existing member as another owner. Owners only; the server decides.
+export function appointWorkspaceOwner(
+  workspaceId: string,
+  humanId: string,
+): Promise<WorkspaceMember> {
+  return postJson(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/owners`,
+    { humanId },
+    (value) => WorkspaceMember.parse(value),
   );
 }
 

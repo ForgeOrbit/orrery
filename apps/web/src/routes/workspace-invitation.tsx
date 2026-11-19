@@ -10,6 +10,7 @@ import {
   workspaceQuery,
   workspacesQuery,
 } from "../features/workspaces/index.ts";
+import { ApiProblemError } from "../lib/api.ts";
 
 // The page a workspace invitation email links to. Opening it (GET) changes nothing: the
 // token is consumed only by the accept POST (existing account) or the registration POST
@@ -27,16 +28,27 @@ export const Route = createFileRoute("/workspace-invitation")({
     }
   },
   component: WorkspaceInvitationPage,
-  errorComponent: () => (
+  errorComponent: ({ error }) => <InvitationLoadError error={error} />,
+});
+
+// The loader sends the failure it actually saw. Only an invitation Problem gets the
+// invalid-link copy; a network failure or an installation error gets a different message.
+function InvitationLoadError({ error }: { error: unknown }) {
+  const invalid = error instanceof ApiProblemError && error.code === "invitation_invalid";
+  return (
     <main>
       <h1>Workspace invitation</h1>
-      <p role="alert">This invitation is invalid, expired, or already used.</p>
+      {invalid ? (
+        <p role="alert">This invitation is invalid, expired, or already used.</p>
+      ) : (
+        <p role="alert">Could not load this invitation. Check your connection and try again.</p>
+      )}
       <p>
         <Link to="/">Go to your workspaces</Link>
       </p>
     </main>
-  ),
-});
+  );
+}
 
 function WorkspaceInvitationPage() {
   const { token } = Route.useSearch();
@@ -64,7 +76,9 @@ function Invitation({ token }: { token: string }) {
           workspace.
         </p>
         <p>
-          <Link to="/signin">Sign in</Link>
+          <Link to="/signin" search={{ next: `/workspace-invitation?token=${token}` }}>
+            Sign in
+          </Link>
         </p>
         <NewAccountForm token={token} />
       </main>

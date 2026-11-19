@@ -10,7 +10,7 @@ import {
   type WorkspaceInvitationPreview,
   type WorkspaceMember,
 } from "@orrery/contract";
-import { and, eq, gt, gte, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, eq, gt, lte, or, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
 import { errorNameAndCode, uniqueConstraintName } from "../../platform/errors.ts";
@@ -32,16 +32,12 @@ import {
 // Seven days, evaluated in database time at redemption, never by a deployed clock (#20).
 const INVITATION_TTL_SECONDS = 7 * 24 * 60 * 60;
 
-// How long an invitation with an unrecorded delivery keeps blocking a fresh one. The
-// mail transport caps a send well below this, so past it the row is stale rather than in
-// flight. Database time only, like every deadline here.
-const UNKNOWN_DELIVERY_GRACE_SECONDS = 10 * 60;
-
 export type WorkspacesErrorKind =
   | "not_signed_in"
   | "workspace_not_found"
   | "not_workspace_owner"
   | "inviter_unverified"
+  | "inviter_not_authorized"
   | "invitation_invalid"
   | "invitation_recipient_mismatch"
   | "email_unverified"
@@ -58,6 +54,8 @@ const messages = {
   workspace_not_found: "This workspace does not exist.",
   not_workspace_owner: "Only a workspace owner can do that.",
   inviter_unverified: "Verify your own email before inviting someone to a workspace.",
+  inviter_not_authorized:
+    "The person who sent this invitation can no longer invite to this workspace.",
   invitation_invalid: "This workspace invitation is invalid, expired, or already used.",
   invitation_recipient_mismatch: "This invitation was sent to a different email address.",
   email_unverified: "Verify this account's email before accepting the invitation.",
@@ -129,10 +127,14 @@ async function recordEvent(
   });
 }
 
-// Locks the workspace row for the rest of the transaction. Every ownership change takes
-// this lock first, so two owners removing each other cannot both see the other and leave
-// the workspace with none.
-async function lockSharedWorkspace(tx: DbTransaction, workspaceId: string) {
+// Locks the workspace row for the rest of the transaction. Every ownership or invitation
+// change takes this lock before touching invitations or memberships, so competing
+// writers serialize per workspace and see each other's committed result.
+async function lockSharedWorkspace(
+  tx: DbTransaction,
+  workspaceId: string,
+  missingKind: "workspace_not_found" | "invitation_invalid" = "workspace_not_found",
+) {
   const [workspace] = await tx
     .select({ id: workspaces.id, kind: workspaces.kind, name: workspaces.name })
     .from(workspaces)
@@ -140,7 +142,7 @@ async function lockSharedWorkspace(tx: DbTransaction, workspaceId: string) {
     .for("update")
     .limit(1);
   if (workspace === undefined || workspace.kind !== WorkspaceKind.enum.shared) {
-    throw new WorkspacesError("workspace_not_found");
+    throw new WorkspacesError(missingKind);
   }
   return workspace;
 }
@@ -184,7 +186,7 @@ async function requireInviterStillAuthorized(
     )
     .limit(1);
   if (inviter?.isOwner !== true || inviter.emailVerifiedAt === null) {
-    throw new WorkspacesError("invitation_invalid");
+    throw new WorkspacesError("inviter_not_authorized");
   }
 }
 
@@ -251,6 +253,45 @@ async function recordDelivery(db: PostgresJsDatabase, id: string, delivery: Invi
     .update(workspaceInvitations)
     .set({ deliveryStatus: delivery, deliveryAttemptedAt: sql`now()` })
     .where(eq(workspaceInvitations.id, id));
+}
+
+// One token transition for both redemption paths. The workspace is located from the
+// token, locked first, and only then is the invitation conditionally consumed; invite
+// replacement takes the same workspace lock, so the two paths cannot interleave their
+// invitation reads and writes. The inviter's authority is rechecked in this transaction
+// after the transition; if it fails, the whole transaction rolls the token back to
+// pending rather than burning it.
+async function redeemWorkspaceInvitation(tx: DbTransaction, token: string) {
+  const [located] = await tx
+    .select({ workspaceId: workspaceInvitations.workspaceId })
+    .from(workspaceInvitations)
+    .where(eq(workspaceInvitations.tokenHash, tokenHash(token)))
+    .limit(1);
+  if (located === undefined) throw new WorkspacesError("invitation_invalid");
+
+  const workspace = await lockSharedWorkspace(tx, located.workspaceId, "invitation_invalid");
+
+  const [invitation] = await tx
+    .update(workspaceInvitations)
+    .set({ status: InvitationStatus.enum.accepted, acceptedAt: sql`now()` })
+    .where(
+      and(
+        eq(workspaceInvitations.tokenHash, tokenHash(token)),
+        eq(workspaceInvitations.workspaceId, located.workspaceId),
+        eq(workspaceInvitations.status, InvitationStatus.enum.pending),
+        gt(workspaceInvitations.expiresAt, sql`now()`),
+        sql`${workspaceInvitations.deliveryStatus} is distinct from ${InvitationDelivery.enum.failed}`,
+      ),
+    )
+    .returning({
+      workspaceId: workspaceInvitations.workspaceId,
+      email: workspaceInvitations.email,
+      invitedByHumanId: workspaceInvitations.invitedByHumanId,
+    });
+  if (invitation === undefined) throw new WorkspacesError("invitation_invalid");
+
+  await requireInviterStillAuthorized(tx, invitation.workspaceId, invitation.invitedByHumanId);
+  return { ...invitation, workspace };
 }
 
 export function createWorkspacesService({
@@ -401,10 +442,11 @@ export function createWorkspacesService({
             .limit(1);
           if (member !== undefined) throw new WorkspacesError("already_member");
 
-          // A pending invitation blocks a new one while it is valid and not known-failed;
-          // an expired one, a failed one, or one whose delivery stayed unknown past the
-          // grace window is superseded in place below. Unknown delivery inside the window
-          // blocks too: a send may still be in flight.
+          // A pending invitation blocks a new one for its full seven days, whatever the
+          // email delivery recorded. Delivery is a separate fact (#20): a failed or
+          // unconfirmed send does not shorten the invitation's life. Replacement here is
+          // only the in-place expiry of a row whose deadline has actually passed; full
+          // resend/revoke management remains #25.
           const [blocking] = await tx
             .select({ id: workspaceInvitations.id })
             .from(workspaceInvitations)
@@ -414,16 +456,6 @@ export function createWorkspacesService({
                 eq(workspaceInvitations.email, input.email),
                 eq(workspaceInvitations.status, InvitationStatus.enum.pending),
                 gt(workspaceInvitations.expiresAt, sql`now()`),
-                or(
-                  eq(workspaceInvitations.deliveryStatus, InvitationDelivery.enum.sent),
-                  and(
-                    isNull(workspaceInvitations.deliveryStatus),
-                    gte(
-                      workspaceInvitations.createdAt,
-                      sql`now() - make_interval(secs => ${UNKNOWN_DELIVERY_GRACE_SECONDS})`,
-                    ),
-                  ),
-                ),
               ),
             )
             .limit(1);
@@ -437,17 +469,7 @@ export function createWorkspacesService({
                 eq(workspaceInvitations.workspaceId, workspaceId),
                 eq(workspaceInvitations.email, input.email),
                 eq(workspaceInvitations.status, InvitationStatus.enum.pending),
-                or(
-                  lte(workspaceInvitations.expiresAt, sql`now()`),
-                  eq(workspaceInvitations.deliveryStatus, InvitationDelivery.enum.failed),
-                  and(
-                    isNull(workspaceInvitations.deliveryStatus),
-                    lt(
-                      workspaceInvitations.createdAt,
-                      sql`now() - make_interval(secs => ${UNKNOWN_DELIVERY_GRACE_SECONDS})`,
-                    ),
-                  ),
-                ),
+                lte(workspaceInvitations.expiresAt, sql`now()`),
               ),
             );
 
@@ -512,36 +534,14 @@ export function createWorkspacesService({
       return row;
     },
 
-    // One conditional update, in database time, is what consumes the token. The account
-    // and the offered access are rechecked inside the same transaction; a mismatch or a
-    // lost inviter authority rolls the token back to pending rather than burning it.
+    // The workspace is locked, then the token is consumed by one shared transition
+    // helper. The account and the offered access are rechecked inside the same
+    // transaction; a mismatch or a lost inviter authority rolls the token back to
+    // pending rather than burning it.
     async acceptInvitation(account, token) {
       const actor = requireAccount(account);
       const workspace = await db.transaction(async (tx) => {
-        const [invitation] = await tx
-          .update(workspaceInvitations)
-          .set({ status: InvitationStatus.enum.accepted, acceptedAt: sql`now()` })
-          .where(
-            and(
-              eq(workspaceInvitations.tokenHash, tokenHash(token)),
-              eq(workspaceInvitations.status, InvitationStatus.enum.pending),
-              gt(workspaceInvitations.expiresAt, sql`now()`),
-              sql`${workspaceInvitations.deliveryStatus} is distinct from ${InvitationDelivery.enum.failed}`,
-            ),
-          )
-          .returning({
-            workspaceId: workspaceInvitations.workspaceId,
-            email: workspaceInvitations.email,
-            invitedByHumanId: workspaceInvitations.invitedByHumanId,
-          });
-        if (invitation === undefined) throw new WorkspacesError("invitation_invalid");
-
-        const locked = await lockSharedWorkspace(tx, invitation.workspaceId);
-        await requireInviterStillAuthorized(
-          tx,
-          invitation.workspaceId,
-          invitation.invitedByHumanId,
-        );
+        const invitation = await redeemWorkspaceInvitation(tx, token);
 
         // The account's current email and verification state, read in this transaction:
         // a forwarded link cannot attach to another address, and an unverified account
@@ -576,41 +576,18 @@ export function createWorkspacesService({
           actor.humanId,
           actor.humanId,
         );
-        return locked;
+        return invitation.workspace;
       });
       return { ...workspace, isOwner: false };
     },
 
     // A new address: the invitation creates the installation account, its personal
-    // workspace, the verified mark, and the membership in one transaction. The inviter's
-    // ownership and verification are rechecked after the workspace lock, and any failure
-    // leaves the token pending and no partial account behind.
+    // workspace, the verified mark, and the membership in one transaction. The shared
+    // redemption helper locks the workspace first and rechecks inviter authority; any
+    // failure leaves the token pending and no partial account behind.
     async registerThroughInvitation(input) {
       const email = await db.transaction(async (tx) => {
-        const [invitation] = await tx
-          .update(workspaceInvitations)
-          .set({ status: InvitationStatus.enum.accepted, acceptedAt: sql`now()` })
-          .where(
-            and(
-              eq(workspaceInvitations.tokenHash, tokenHash(input.token)),
-              eq(workspaceInvitations.status, InvitationStatus.enum.pending),
-              gt(workspaceInvitations.expiresAt, sql`now()`),
-              sql`${workspaceInvitations.deliveryStatus} is distinct from ${InvitationDelivery.enum.failed}`,
-            ),
-          )
-          .returning({
-            workspaceId: workspaceInvitations.workspaceId,
-            email: workspaceInvitations.email,
-            invitedByHumanId: workspaceInvitations.invitedByHumanId,
-          });
-        if (invitation === undefined) throw new WorkspacesError("invitation_invalid");
-
-        await lockSharedWorkspace(tx, invitation.workspaceId);
-        await requireInviterStillAuthorized(
-          tx,
-          invitation.workspaceId,
-          invitation.invitedByHumanId,
-        );
+        const invitation = await redeemWorkspaceInvitation(tx, input.token);
 
         const [existing] = await tx
           .select({ id: humans.id })

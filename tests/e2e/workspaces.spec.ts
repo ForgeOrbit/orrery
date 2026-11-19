@@ -198,17 +198,25 @@ test("registers a new email into a workspace without a duplicate account", async
   }
 });
 
-test("accepts a workspace invitation in the browser as the existing account", async ({ page }) => {
+test("accepts a workspace invitation through sign-in, then an owner appoints", async ({
+  page,
+  browser,
+}) => {
   expect(invitationToken).not.toBe("");
   expect(invitationWorkspaceId).not.toBe("");
 
-  await page.goto("/signin");
+  // Start signed out at the emailed link, exactly as a recipient would.
+  await page.goto(`/workspace-invitation?token=${invitationToken}`);
+  await expect(page.getByRole("heading", { name: "Join Rocket Team" })).toBeVisible();
+  await expect(page.getByText(`This invitation was sent to ${EXISTING_EMAIL}.`)).toBeVisible();
+  await page.getByRole("link", { name: "Sign in" }).click();
+  await expect(page).toHaveURL(/\/signin\?next=/);
   await page.getByLabel("Email").fill(EXISTING_EMAIL);
   await page.getByLabel("Password").fill(EXISTING_PASSWORD);
   await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page.getByText(`Signed in as ${EXISTING_EMAIL}.`)).toBeVisible();
 
-  await page.goto(`/workspace-invitation?token=${invitationToken}`);
+  // Sign-in resumes the same invitation rather than dropping the token.
+  await expect(page).toHaveURL(new RegExp(`/workspace-invitation\\?token=${invitationToken}`));
   await expect(page.getByRole("heading", { name: "Join Rocket Team" })).toBeVisible();
   await expect(page.getByText(`You are signed in as ${EXISTING_EMAIL}.`)).toBeVisible();
   await page.getByRole("button", { name: "Accept invitation" }).click();
@@ -216,16 +224,75 @@ test("accepts a workspace invitation in the browser as the existing account", as
   // Acceptance leads into the workspace's own view, distinct from the personal one.
   await expect(page.getByRole("heading", { name: "Rocket Team" })).toBeVisible();
   await expect(page.getByText("Shared workspace · Member")).toBeVisible();
+  // A member gets no owner controls: no directory and no appointment action.
+  await expect(page.getByRole("heading", { name: "Members" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Make owner" })).toHaveCount(0);
+
+  // The owner sees the directory and appoints the member. The role refreshes in place.
+  const adminContext = await browser.newContext();
+  const adminPage = await adminContext.newPage();
+  try {
+    await adminPage.goto("/signin");
+    await adminPage.getByLabel("Email").fill(ADMIN_EMAIL);
+    await adminPage.getByLabel("Password").fill(ADMIN_PASSWORD);
+    await adminPage.getByRole("button", { name: "Sign in" }).click();
+    await expect(adminPage.getByText(`Signed in as ${ADMIN_EMAIL}.`)).toBeVisible();
+
+    await adminPage.goto(`/workspaces/${invitationWorkspaceId}`);
+    await expect(adminPage.getByRole("heading", { name: "Members" })).toBeVisible();
+    const memberRow = adminPage.locator("li[data-member-id]").filter({ hasText: EXISTING_EMAIL });
+    await expect(memberRow).toContainText("Member");
+    await memberRow.getByRole("button", { name: "Make owner" }).click();
+    await expect(memberRow).toContainText("Owner");
+    await expect(memberRow.getByRole("button", { name: "Make owner" })).toHaveCount(0);
+
+    // The member's next load sees the new role and the owner-only controls.
+    await page.reload();
+    await expect(page.getByText("Shared workspace · Owner")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Members" })).toBeVisible();
+  } finally {
+    for (const cookie of await adminContext.cookies()) await recordSecret(cookie.value);
+    await adminContext.close();
+  }
 
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Your workspaces" })).toBeVisible();
   const joined = page.locator(`li[data-workspace-id="${invitationWorkspaceId}"]`);
   await expect(joined).toContainText("Rocket Team");
-  await expect(joined).toContainText("Member");
+  await expect(joined).toContainText("Owner");
   // The personal workspace remains its own separate view.
   await expect(page.getByRole("listitem")).toHaveCount(2);
 
   // The cookies the server just set are secrets the logs must never contain.
+  for (const cookie of await page.context().cookies()) await recordSecret(cookie.value);
+});
+
+test("distinguishes an invalid invitation link from a load failure", async ({ page }) => {
+  // A network failure is not an invalid link, and must not claim one.
+  await page.route("**/api/workspace-invitations/preview*", (route) => route.abort());
+  await page.goto("/workspace-invitation?token=network-failure");
+  await expect(page.getByRole("alert")).toHaveText(
+    "Could not load this invitation. Check your connection and try again.",
+  );
+  await page.unroute("**/api/workspace-invitations/preview*");
+
+  // A real invalid-token Problem keeps its stable code, so only this case says invalid.
+  await page.goto("/workspace-invitation?token=not-an-issued-token");
+  await expect(page.getByRole("alert")).toHaveText(
+    "This invitation is invalid, expired, or already used.",
+  );
+});
+
+test("ignores a sign-in redirect that is not the invitation page", async ({ page }) => {
+  await page.goto("/signin?next=https%3A%2F%2Fexample.com%2Fsteal");
+  await page.getByLabel("Email").fill(EXISTING_EMAIL);
+  await page.getByLabel("Password").fill(EXISTING_PASSWORD);
+  await page.getByRole("button", { name: "Sign in" }).click();
+
+  // The only accepted destination is the internal invitation path; everything else
+  // lands on the normal signed-in home.
+  await expect(page.getByText(`Signed in as ${EXISTING_EMAIL}.`)).toBeVisible();
+  expect(new URL(page.url()).origin).toBe(new URL(baseUrl).origin);
   for (const cookie of await page.context().cookies()) await recordSecret(cookie.value);
 });
 

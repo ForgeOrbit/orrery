@@ -11,7 +11,7 @@ import {
   type SmtpSettings,
 } from "@orrery/contract";
 import type { Hono } from "hono";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createAccountsFeature } from "../accounts/index.ts";
 import { createInvitationsFeature } from "../invitations/index.ts";
@@ -75,6 +75,21 @@ const getJson = (app: Hono, path: string, cookie?: string) =>
   app.request(path, cookie ? { headers: { cookie } } : undefined);
 
 const problemBody = async (res: Response) => Problem.parse(await res.json());
+
+const codedError = (code: string, message: string): Error =>
+  Object.assign(new Error(message), { code });
+
+// Drizzle wraps the driver's error; the root's message (the PostgresError's) carries the
+// trigger's message. Resolves with that, or the stringified error.
+async function rejection(promise: Promise<unknown>): Promise<string> {
+  const error = await promise.then(
+    () => {
+      throw new Error("expected the write to be rejected");
+    },
+    (cause: unknown) => cause,
+  );
+  return rootCause(error)?.message ?? String(error);
+}
 
 const tokenFrom = (text: string, path = "workspace-invitation") =>
   text.match(new RegExp(`/${path}\\?token=([A-Za-z0-9_-]+)`))?.[1];
@@ -211,6 +226,7 @@ describe("workspaces", () => {
   // invitation token can be read back the way a recipient would.
   function makeApp() {
     const sent: { to: string; subject: string; text: string }[] = [];
+    let deliveryFailure: (() => Error) | undefined;
     const accounts = createAccountsFeature({
       db: database.db,
       setupSecret: SECRET,
@@ -224,6 +240,7 @@ describe("workspaces", () => {
       markEmailVerified: accounts.markEmailVerified,
       sendMail: async (_settings, mail) => {
         sent.push({ to: mail.to, subject: mail.subject, text: mail.text });
+        if (deliveryFailure !== undefined) throw deliveryFailure();
       },
       log: silentLogger,
     });
@@ -251,7 +268,16 @@ describe("workspaces", () => {
       publicUrl: PUBLIC_URL,
       log: silentLogger,
     });
-    return { app, sent };
+    return {
+      app,
+      sent,
+      failDelivery(errorFactory: () => Error) {
+        deliveryFailure = errorFactory;
+      },
+      repairDelivery() {
+        deliveryFailure = undefined;
+      },
+    };
   }
 
   // The setup every workspace test starts from: the administrator is signed in, verified,
@@ -264,6 +290,24 @@ describe("workspaces", () => {
     if (admin === undefined) throw new Error("the administrator was not found");
     await verifyHuman(admin.id);
     return { ...made, admin, adminCookie: await cookieFor(made.app, EMAIL, PASSWORD) };
+  }
+
+  // A valid shared workspace written directly, for tests about the database invariant
+  // rather than the HTTP flow. The owner rows can be inserted in the same transaction.
+  async function directSharedWorkspace(ownerIds: readonly string[], name = "Direct Team") {
+    const workspaceId = randomUUID();
+    await database.db.transaction(async (tx) => {
+      await tx.insert(workspaces).values({ id: workspaceId, kind: "shared", name });
+      for (const humanId of ownerIds) {
+        await tx.insert(workspaceMemberships).values({
+          id: randomUUID(),
+          workspaceId,
+          humanId,
+          isOwner: true,
+        });
+      }
+    });
+    return workspaceId;
   }
 
   async function eventsFor(workspaceId: string) {
@@ -732,36 +776,314 @@ describe("workspaces", () => {
     ).toHaveLength(1);
   });
 
-  it("refuses a second pending invitation, but re-invites after the seven days expire", async () => {
+  it("answers invalid path ids with validation Problems", async () => {
+    const { app, adminCookie } = await readyApp();
+    const tooLong = "a".repeat(201);
+    const attempts = [
+      await getJson(app, `/api/workspaces/${tooLong}`, adminCookie),
+      await getJson(app, `/api/workspaces/${tooLong}/members`, adminCookie),
+      await deleteRequest(app, `/api/workspaces/${tooLong}/members/x`, adminCookie),
+    ];
+    for (const res of attempts) {
+      expect(res.status).toBe(400);
+      expect(res.headers.get("content-type")).toBe("application/problem+json");
+      expect(await problemBody(res)).toMatchObject({ code: "validation_failed" });
+    }
+  });
+
+  it("refuses acceptance after the inviter loses authority, and leaves the token pending", async () => {
+    const { app, sent, admin, adminCookie } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const { human: member, cookie: memberCookie } = await verifiedCookie(app, INVITEE);
+    await invite(app, adminCookie, workspace.id, INVITEE);
+    const token = await workspaceInviteToken(sent, INVITEE, "Rocket Team");
+
+    // A second owner makes it valid for the inviter to leave, after which the pending
+    // offer no longer has authorization behind it.
+    const [second] = await insertHuman({ email: "replacement.owner@example.com", verified: true });
+    await database.db.insert(workspaceMemberships).values({
+      id: randomUUID(),
+      workspaceId: workspace.id,
+      humanId: second.id,
+      isOwner: true,
+    });
+    expect(
+      (await deleteRequest(app, `/api/workspaces/${workspace.id}/members/${admin.id}`, adminCookie))
+        .status,
+    ).toBe(204);
+
+    const refused = await postJson(
+      app,
+      "/api/workspace-invitations/acceptance",
+      { token },
+      memberCookie,
+    );
+    expect(refused.status).toBe(403);
+    expect(await problemBody(refused)).toMatchObject({ code: "inviter_not_authorized" });
+    const [row] = await database.db.select().from(workspaceInvitations);
+    expect(row).toMatchObject({ status: "pending", acceptedAt: null });
+    expect(
+      await database.db
+        .select()
+        .from(workspaceMemberships)
+        .where(eq(workspaceMemberships.humanId, member.id)),
+    ).toHaveLength(0);
+  });
+
+  it("settles concurrent redemptions of one workspace token with one membership and one winner", async () => {
     const { app, sent, adminCookie } = await readyApp();
     const workspace = await createWorkspace(app, adminCookie);
+    const { human: member, cookie: memberCookie } = await verifiedCookie(app, INVITEE);
     await invite(app, adminCookie, workspace.id, INVITEE);
+    const token = await workspaceInviteToken(sent, INVITEE, "Rocket Team");
 
-    const duplicate = await postJson(
+    const results = await Promise.all([
+      postJson(app, "/api/workspace-invitations/acceptance", { token }, memberCookie),
+      postJson(app, "/api/workspace-invitations/acceptance", { token }, memberCookie),
+    ]);
+    expect(results.map((res) => res.status).toSorted((a, b) => a - b)).toEqual([200, 400]);
+    const memberships = await database.db
+      .select()
+      .from(workspaceMemberships)
+      .where(eq(workspaceMemberships.humanId, member.id));
+    expect(memberships).toHaveLength(1);
+    expect(
+      (await eventsFor(workspace.id)).filter((event) => event.type === "member_joined"),
+    ).toHaveLength(1);
+    const [row] = await database.db.select().from(workspaceInvitations);
+    expect(row).toMatchObject({ status: "accepted" });
+  });
+
+  it("serializes an expired-token acceptance against its replacement", async () => {
+    const { app, sent, adminCookie } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const { cookie: memberCookie } = await verifiedCookie(app, INVITEE);
+    await invite(app, adminCookie, workspace.id, INVITEE);
+    const staleToken = await workspaceInviteToken(sent, INVITEE, "Rocket Team");
+    await database.db
+      .update(workspaceInvitations)
+      .set({ expiresAt: sql`now() - interval '1 second'` })
+      .where(eq(workspaceInvitations.workspaceId, workspace.id));
+
+    const [accept, replacement] = await Promise.all([
+      postJson(app, "/api/workspace-invitations/acceptance", { token: staleToken }, memberCookie),
+      postJson(app, `/api/workspaces/${workspace.id}/invitations`, { email: INVITEE }, adminCookie),
+    ]);
+    expect(accept.status).toBe(400);
+    expect(await problemBody(accept)).toMatchObject({ code: "invitation_invalid" });
+    expect(replacement.status).toBe(201);
+
+    const rows = await database.db.select().from(workspaceInvitations);
+    expect(rows).toHaveLength(2);
+    expect(rows.filter((row) => row.status === "expired")).toHaveLength(1);
+    expect(rows.filter((row) => row.status === "pending")).toHaveLength(1);
+    expect(
+      await database.db
+        .select()
+        .from(workspaceMemberships)
+        .where(eq(workspaceMemberships.workspaceId, workspace.id)),
+    ).toHaveLength(1); // the creator only
+  });
+
+  it("keeps invitation expiry separate from a failed delivery", async () => {
+    const made = await readyApp();
+    const { app, sent, adminCookie } = made;
+    const workspace = await createWorkspace(app, adminCookie);
+    made.failDelivery(() => codedError("ECONNREFUSED", "connect ECONNREFUSED 127.0.0.1:25"));
+
+    const failed = await postJson(
       app,
       `/api/workspaces/${workspace.id}/invitations`,
       { email: INVITEE_INPUT },
       adminCookie,
     );
-    expect(duplicate.status).toBe(409);
-    expect(await problemBody(duplicate)).toMatchObject({ code: "invitation_pending" });
+    expect(failed.status).toBe(502);
+    expect(await problemBody(failed)).toMatchObject({ code: "smtp_unreachable" });
+    const [row] = await database.db.select().from(workspaceInvitations);
+    expect(row).toMatchObject({ status: "pending", deliveryStatus: "failed" });
+    expect(row?.acceptedAt).toBeNull();
+    expect((row?.expiresAt.getTime() ?? 0) - (row?.createdAt.getTime() ?? 0)).toBe(
+      7 * 24 * 60 * 60 * 1000,
+    );
 
-    // A row just past its deadline is superseded in place, and its old token is dead.
+    // Delivery failure is not expiry: the pending offer still blocks a replacement and
+    // the failed link never redeems.
+    const token = tokenFrom(sent[0]?.text ?? "") ?? "";
+    const blocking = await postJson(
+      app,
+      `/api/workspaces/${workspace.id}/invitations`,
+      { email: INVITEE_INPUT },
+      adminCookie,
+    );
+    expect(blocking.status).toBe(409);
+    expect(await problemBody(blocking)).toMatchObject({ code: "invitation_pending" });
+    const [stillPending] = await database.db.select().from(workspaceInvitations);
+    expect(stillPending).toMatchObject({ status: "pending", deliveryStatus: "failed" });
+    const preview = await getJson(app, `/api/workspace-invitations/preview?token=${token}`);
+    expect(preview.status).toBe(400);
+    expect(await problemBody(preview)).toMatchObject({ code: "invitation_invalid" });
+
+    // Once the seven-day deadline passes, the row is expired in place and a fresh
+    // invitation can be sent. Delivery status did not shorten or extend the deadline.
+    made.repairDelivery();
     await database.db
       .update(workspaceInvitations)
       .set({ expiresAt: sql`now() - interval '1 second'` })
       .where(eq(workspaceInvitations.workspaceId, workspace.id));
-    const reInvited = await invite(app, adminCookie, workspace.id, INVITEE);
-    expect(reInvited.status).toBe("pending");
+    const replacement = await invite(app, adminCookie, workspace.id, INVITEE);
+    expect(replacement.status).toBe("pending");
     const rows = await database.db.select().from(workspaceInvitations);
     expect(rows).toHaveLength(2);
-    expect(rows.filter((row) => row.status === "expired")).toHaveLength(1);
-    expect(rows.filter((row) => row.status === "pending")).toHaveLength(1);
+    expect(rows.filter((candidate) => candidate.status === "expired")).toHaveLength(1);
+    expect(rows.filter((candidate) => candidate.status === "pending")).toHaveLength(1);
+  });
 
-    // The expired token cannot preview or accept.
-    const expiredToken = tokenFrom(sent[0]?.text ?? "") ?? "";
-    const preview = await getJson(app, `/api/workspace-invitations/preview?token=${expiredToken}`);
-    expect(preview.status).toBe(400);
-    expect(await problemBody(preview)).toMatchObject({ code: "invitation_invalid" });
+  it("enforces valid and invalid ownership states at the database, including moves", async () => {
+    const { admin } = await readyApp();
+    const [second] = await insertHuman({ email: "second.owner@example.com", verified: true });
+    const [third] = await insertHuman({ email: "third.member@example.com", verified: true });
+
+    // A shared workspace created without an owner is invalid at commit.
+    const orphanId = randomUUID();
+    expect(
+      await rejection(
+        database.db.insert(workspaces).values({ id: orphanId, kind: "shared", name: "Orphan" }),
+      ),
+    ).toContain("must keep at least one owner");
+    expect(
+      await database.db.select().from(workspaces).where(eq(workspaces.id, orphanId)),
+    ).toHaveLength(0);
+
+    // Changing a personal workspace into a shared one without an owner is also refused.
+    const [personal] = await database.db
+      .select()
+      .from(workspaces)
+      .where(eq(workspaces.personalOwnerHumanId, admin.id));
+    expect(
+      await rejection(
+        database.db
+          .update(workspaces)
+          .set({ kind: "shared", personalOwnerHumanId: null })
+          .where(eq(workspaces.id, personal?.id ?? "")),
+      ),
+    ).toContain("must keep at least one owner");
+    const [stillPersonal] = await database.db
+      .select()
+      .from(workspaces)
+      .where(eq(workspaces.id, personal?.id ?? ""));
+    expect(stillPersonal?.kind).toBe("personal");
+
+    // A last owner cannot be demoted by a direct update.
+    const workspaceA = await directSharedWorkspace([admin.id], "Move A");
+    const [aOwner] = await database.db
+      .select()
+      .from(workspaceMemberships)
+      .where(eq(workspaceMemberships.workspaceId, workspaceA));
+    expect(
+      await rejection(
+        database.db
+          .update(workspaceMemberships)
+          .set({ isOwner: false })
+          .where(eq(workspaceMemberships.id, aOwner?.id ?? "")),
+      ),
+    ).toContain("must keep at least one owner");
+    const [stillOwner] = await database.db
+      .select()
+      .from(workspaceMemberships)
+      .where(eq(workspaceMemberships.id, aOwner?.id ?? ""));
+    expect(stillOwner?.isOwner).toBe(true);
+
+    // Moving the sole owner to another workspace would empty the old one, so the old id
+    // is checked as well as the new one.
+    const workspaceB = await directSharedWorkspace([second.id], "Move B");
+    expect(
+      await rejection(
+        database.db
+          .update(workspaceMemberships)
+          .set({ workspaceId: workspaceB })
+          .where(eq(workspaceMemberships.workspaceId, workspaceA)),
+      ),
+    ).toContain("must keep at least one owner");
+    expect(
+      await database.db
+        .select()
+        .from(workspaceMemberships)
+        .where(eq(workspaceMemberships.workspaceId, workspaceA)),
+    ).toHaveLength(1);
+
+    // A non-owner membership can move when both workspaces keep an owner.
+    const moving = randomUUID();
+    await database.db.insert(workspaceMemberships).values({
+      id: moving,
+      workspaceId: workspaceA,
+      humanId: third.id,
+      isOwner: false,
+    });
+    await database.db
+      .update(workspaceMemberships)
+      .set({ workspaceId: workspaceB })
+      .where(eq(workspaceMemberships.id, moving));
+    expect(
+      await database.db
+        .select()
+        .from(workspaceMemberships)
+        .where(eq(workspaceMemberships.id, moving)),
+    ).toMatchObject([{ workspaceId: workspaceB }]);
+
+    // Deleting the memberships before the workspace is a valid transactional deletion.
+    const removable = await directSharedWorkspace([admin.id], "Removable");
+    await database.db.transaction(async (tx) => {
+      await tx.delete(workspaceMemberships).where(eq(workspaceMemberships.workspaceId, removable));
+      await tx.delete(workspaces).where(eq(workspaces.id, removable));
+    });
+    expect(
+      await database.db.select().from(workspaces).where(eq(workspaces.id, removable)),
+    ).toHaveLength(0);
+  });
+
+  it("serializes concurrent owner removals from direct database writers", async () => {
+    const { admin } = await readyApp();
+    const [second] = await insertHuman({ email: "second.owner@example.com", verified: true });
+    const workspaceId = await directSharedWorkspace([admin.id, second.id], "Race Team");
+
+    const results = await Promise.allSettled([
+      database.db.transaction((tx) =>
+        tx
+          .delete(workspaceMemberships)
+          .where(
+            and(
+              eq(workspaceMemberships.workspaceId, workspaceId),
+              eq(workspaceMemberships.humanId, admin.id),
+            ),
+          ),
+      ),
+      database.db.transaction((tx) =>
+        tx
+          .delete(workspaceMemberships)
+          .where(
+            and(
+              eq(workspaceMemberships.workspaceId, workspaceId),
+              eq(workspaceMemberships.humanId, second.id),
+            ),
+          ),
+      ),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const loser = results.find((result) => result.status === "rejected");
+    if (loser?.status !== "rejected") throw new Error("expected one rejected removal");
+    expect(rootCause(loser.reason)?.message ?? String(loser.reason)).toContain(
+      "must keep at least one owner",
+    );
+    const owners = await database.db
+      .select()
+      .from(workspaceMemberships)
+      .where(
+        and(
+          eq(workspaceMemberships.workspaceId, workspaceId),
+          eq(workspaceMemberships.isOwner, true),
+        ),
+      );
+    expect(owners).toHaveLength(1);
   });
 });

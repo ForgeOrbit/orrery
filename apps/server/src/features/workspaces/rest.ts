@@ -54,6 +54,7 @@ const getWorkspace = createRoute({
       description: "The workspace",
       content: { "application/json": { schema: Workspace } },
     },
+    400: problem("The workspace id is invalid"),
     401: problem("Not signed in"),
     404: problem("No workspace with this id is accessible to the caller"),
   },
@@ -71,6 +72,7 @@ const listWorkspaceMembers = createRoute({
       description: "The workspace's members",
       content: { "application/json": { schema: WorkspaceMembersResponse } },
     },
+    400: problem("The workspace id is invalid"),
     401: problem("Not signed in"),
     403: problem("Not an owner of this workspace"),
     404: problem("No accessible shared workspace"),
@@ -118,7 +120,9 @@ const inviteWorkspaceMember = createRoute({
     401: problem("Not signed in"),
     403: problem("Not an owner, or the inviter's email is unverified"),
     404: problem("No shared workspace with this id is accessible to the caller"),
-    409: problem("The invitee is already a member or already has a pending invitation"),
+    409: problem(
+      "The invitee is already a member or already has a pending invitation, or SMTP is not configured or its stored password is unreadable",
+    ),
     502: problem("The SMTP server refused the message; the code says why"),
   },
 });
@@ -159,7 +163,7 @@ const acceptWorkspaceInvitation = createRoute({
     400: problem("The token is invalid, expired, or already used"),
     401: problem("Not signed in"),
     403: problem(
-      "The signed-in account has a different or unverified email; the inviter is no longer an owner",
+      "The signed-in account has a different or unverified email, or the inviter no longer has authority",
     ),
     409: problem("The account is already a member of the workspace"),
   },
@@ -185,6 +189,7 @@ const registerThroughWorkspaceInvitation = createRoute({
       content: { "application/json": { schema: SessionResponse } },
     },
     400: problem("The token is invalid, expired, or already used"),
+    403: problem("The inviter no longer has authority to invite to this workspace"),
     409: problem("The invited email already has an account"),
   },
 });
@@ -223,6 +228,7 @@ const removeWorkspaceMember = createRoute({
   request: { params: memberParams },
   responses: {
     204: { description: "The membership was removed" },
+    400: problem("The workspace or member id is invalid"),
     401: problem("Not signed in"),
     403: problem("Not an owner of this workspace"),
     404: problem("No accessible shared workspace or member"),
@@ -250,6 +256,7 @@ const statusFor = {
   workspace_not_found: 404,
   not_workspace_owner: 403,
   inviter_unverified: 403,
+  inviter_not_authorized: 403,
   invitation_invalid: 400,
   invitation_recipient_mismatch: 403,
   email_unverified: 403,
@@ -287,11 +294,12 @@ const previewKinds = ["invitation_invalid"] as const;
 const acceptKinds = [
   "not_signed_in",
   "invitation_invalid",
+  "inviter_not_authorized",
   "invitation_recipient_mismatch",
   "email_unverified",
   "already_member",
 ] as const;
-const registerKinds = ["invitation_invalid", "account_exists"] as const;
+const registerKinds = ["invitation_invalid", "inviter_not_authorized", "account_exists"] as const;
 const appointKinds = [
   "not_signed_in",
   "workspace_not_found",

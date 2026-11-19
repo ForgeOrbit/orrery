@@ -2,8 +2,14 @@
 // import only this file.
 export {
   acceptWorkspaceInvitation,
+  appointWorkspaceOwner,
   createWorkspace,
   inviteWorkspaceMember,
   registerThroughWorkspaceInvitation,
 } from "./commands.ts";
-export { workspaceInvitationPreviewQuery, workspaceQuery, workspacesQuery } from "./queries.ts";
+export {
+  workspaceInvitationPreviewQuery,
+  workspaceMembersQuery,
+  workspaceQuery,
+  workspacesQuery,
+} from "./queries.ts";

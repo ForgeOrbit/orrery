@@ -1169,6 +1169,16 @@
               }
             }
           },
+          "400": {
+            "description": "The workspace id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "401": {
             "description": "Not signed in",
             "content": {
@@ -1215,6 +1225,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/WorkspaceMembersResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The workspace id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -1330,7 +1350,7 @@
             }
           },
           "409": {
-            "description": "The invitee is already a member or already has a pending invitation",
+            "description": "The invitee is already a member or already has a pending invitation, or SMTP is not configured or its stored password is unreadable",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1438,7 +1458,7 @@
             }
           },
           "403": {
-            "description": "The signed-in account has a different or unverified email; the inviter is no longer an owner",
+            "description": "The signed-in account has a different or unverified email, or the inviter no longer has authority",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1487,6 +1507,16 @@
           },
           "400": {
             "description": "The token is invalid, expired, or already used",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The inviter no longer has authority to invite to this workspace",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1617,6 +1647,16 @@
         "responses": {
           "204": {
             "description": "The membership was removed"
+          },
+          "400": {
+            "description": "The workspace or member id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           },
           "401": {
             "description": "Not signed in",
