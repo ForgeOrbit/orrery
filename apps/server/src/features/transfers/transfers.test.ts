@@ -22,6 +22,7 @@ import {
   projectActivity,
   projectTransferAuthorizations,
   projects,
+  questions,
   runs,
   workSessions,
   workspaceEvents,
@@ -382,6 +383,7 @@ afterAll(async () => {
 
 afterEach(async () => {
   await database.db.transaction(async (tx) => {
+    await tx.execute(sql`delete from questions`);
     await tx.execute(sql`delete from work_sessions`);
     await tx.execute(sql`delete from project_transfer_authorizations`);
     await tx.execute(sql`delete from agent_key_events`);
@@ -882,6 +884,57 @@ describe("personal-to-shared project transfer against real Postgres", () => {
     expect(authorizations.find((row) => row.id === secondAuth.authorizationId)?.status).toBe(
       "revoked",
     );
+  });
+
+  it("moves project questions to the destination workspace so they remain visible in the inbox", async () => {
+    const s = await source();
+    const dest = await createSharedWorkspace(s.cookie, "Inbox Team", ADMIN_EMAIL);
+    const issueId = await createIssue(s.cookie, s.project.id, "Paused question issue");
+    const secret = await issueKey(s.cookie, s.workspaceId, s.project.id);
+    const identity = await identityFor(secret);
+    const runId = randomUUID();
+    const sessionId = randomUUID();
+    const questionId = randomUUID();
+
+    await database.db.insert(runs).values({
+      id: runId,
+      agentId: identity.agentId,
+      workspaceId: s.workspaceId,
+      status: "active",
+    });
+    await database.db.insert(workSessions).values({
+      id: sessionId,
+      agentId: identity.agentId,
+      runId,
+      workspaceId: s.workspaceId,
+      issueId,
+      status: "released",
+      leaseExpiresAt: sql`statement_timestamp() - interval '10 minutes'`,
+      endedAt: sql`statement_timestamp() - interval '10 minutes'`,
+    });
+    await database.db.insert(questions).values({
+      id: questionId,
+      issueId,
+      projectId: s.project.id,
+      workspaceId: s.workspaceId,
+      agentId: identity.agentId,
+      runId,
+      sessionId,
+      question: "Which region should we deploy to?",
+      proposedFallback: "us-east-1",
+      status: "paused",
+      responseDeadlineAt: sql`statement_timestamp() + interval '1 hour'`,
+      resolvedAt: sql`statement_timestamp()`,
+    });
+
+    const res = await complete(s.cookie, s.project.id, dest.workspaceId);
+    expect(res.status).toBe(200);
+
+    const [moved] = await database.db
+      .select({ workspaceId: questions.workspaceId })
+      .from(questions)
+      .where(eq(questions.id, questionId));
+    expect(moved?.workspaceId).toBe(dest.workspaceId);
   });
 });
 

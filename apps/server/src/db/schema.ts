@@ -1,6 +1,7 @@
 import {
   AgentKeyEventType,
   AgentKeyValidity,
+  FallbackPolicy,
   InvitationDelivery,
   InvitationStatus,
   IssueStatus,
@@ -43,6 +44,11 @@ export const humans = pgTable(
     emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
     isSystemAdministrator: boolean("is_system_administrator").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // Account deactivation (#38). A non-null timestamp means the identity is suspended
+    // across the installation: login, sessions, and agent keys stop, but the row (and
+    // everything attributed to it) stays. Reactivation clears this same timestamp; it
+    // never restores shared authority or old credentials.
+    deactivatedAt: timestamp("deactivated_at", { withTimezone: true }),
   },
   (t) => [check("humans_email_normalized", sql`${t.email} = lower(btrim(${t.email}))`)],
 );
@@ -122,6 +128,14 @@ export const workspaceMemberships = pgTable(
     canRemoveMembers: boolean("can_remove_members").notNull().default(false),
     canManageMemberPermissions: boolean("can_manage_member_permissions").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // A suspended membership (#38) grants no shared access. Deactivation suspends in
+    // place rather than deleting, so it keeps the human's place in the workspace's history.
+    // Re-inviting a reactivated human clears this and issues fresh grants.
+    suspendedAt: timestamp("suspended_at", { withTimezone: true }),
+    // Ownership held at suspension time, kept so a workspace whose only owner was
+    // deactivated is eligible for later ownership recovery (#43) without ever restoring
+    // ownership automatically on reactivation.
+    isFormerOwner: boolean("is_former_owner").notNull().default(false),
   },
   (t) => [
     // One membership per person per workspace: accepting twice cannot double access.
@@ -332,6 +346,10 @@ export const accountRecoveryEventTypes = [
   "password_reset_requested",
   "password_reset_completed",
   "local_recovery_completed",
+  // #38: installation-wide account status changes. `humanId` is the affected account;
+  // `actorHumanId` is the administrator who made the change. Secret-free by design.
+  "account_deactivated",
+  "account_reactivated",
 ] as const;
 export type AccountRecoveryEventType = (typeof accountRecoveryEventTypes)[number];
 
@@ -342,6 +360,9 @@ export const accountRecoveryEvents = pgTable(
     humanId: text("human_id")
       .notNull()
       .references(() => humans.id),
+    // Null for password-recovery events, whose subject is also the actor. Set for the
+    // deactivation/reactivation events (#38), recorded by a system administrator.
+    actorHumanId: text("actor_human_id").references(() => humans.id),
     type: text("type").$type<AccountRecoveryEventType>().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -420,9 +441,19 @@ export const projects = pgTable(
       .references(() => humans.id),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     nextIssueNumber: integer("next_issue_number").notNull().default(1),
+    // Fallback policy (#42): require_human is the default, so no project silently
+    // authorizes an agent's proposed fallback. Only project Manage may change it.
+    fallbackPolicy: text("fallback_policy")
+      .$type<FallbackPolicy>()
+      .notNull()
+      .default("require_human"),
   },
   (t) => [
     check("projects_next_issue_number_positive", sql`${t.nextIssueNumber} > 0`),
+    check(
+      "projects_fallback_policy",
+      sql`${t.fallbackPolicy} in (${sql.raw(sqlLiteralList(FallbackPolicy))})`,
+    ),
     index("projects_workspace_created").on(t.workspaceId, t.createdAt),
   ],
 );
@@ -816,9 +847,11 @@ export const issues = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     closedAt: timestamp("closed_at", { withTimezone: true }),
-    // Needs input is an issue state owned by the later human-input slice (#37). The flag
-    // exists now so ready-work can exclude paused issues; no other writer sets it yet.
+    // Needs input is owned by the human-input slice (#37/#41); deadline resolution keeps
+    // it in sync. The issue override (#42) tightens or, with project Manage, loosens the
+    // project's fallback policy; null means "use the project's policy".
     needsInput: boolean("needs_input").notNull().default(false),
+    fallbackPolicyOverride: text("fallback_policy_override").$type<FallbackPolicy>(),
   },
   (t) => [
     // Exactly one author/editor identity: a human or an agent.
@@ -836,6 +869,12 @@ export const issues = pgTable(
     check("issues_number_positive", sql`${t.number} > 0`),
     // DDL cannot bind parameters; the values come from the IssueStatus contract enum.
     check("issues_status", sql`${t.status} in (${sql.raw(sqlLiteralList(IssueStatus))})`),
+    check(
+      "issues_fallback_policy_override",
+      sql`(${t.fallbackPolicyOverride} is null or ${t.fallbackPolicyOverride} in (${sql.raw(
+        sqlLiteralList(FallbackPolicy),
+      )}))`,
+    ),
     check(
       "issues_closed_at_matches_status",
       sql`(${t.status} = 'closed') = (${t.closedAt} is not null)`,
@@ -1025,7 +1064,8 @@ export const knowledgeEntries = pgTable(
 // literals come from the ProjectActivityType enum, never from input; DDL cannot bind
 // parameters, so they are raw SQL text.
 const projectActivityTypesSql = sql.raw(
-  [ProjectActivityType.enum.project_created, ProjectActivityType.enum.project_renamed]
+  ProjectActivityType.options
+    .filter((type) => type.startsWith("project_"))
     .map((type) => `'${type}'`)
     .join(", "),
 );

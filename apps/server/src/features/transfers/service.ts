@@ -7,7 +7,7 @@ import type {
   TransferPreview,
 } from "@orrery/contract";
 import { InvitationStatus, ProjectAccessEventType, WorkspaceKind } from "@orrery/contract";
-import { and, eq, gt, inArray, lte, ne, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, lte, ne, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import {
   agentApiKeyProjects,
@@ -17,6 +17,7 @@ import {
   projectAccessGrants,
   projectTransferAuthorizations,
   projects,
+  questions,
   workSessions,
   workspaceEvents,
   workspaceInvitationGrants,
@@ -28,6 +29,7 @@ import {
 import type { DbTransaction } from "../../platform/db.ts";
 import { tokenHash as hashToken } from "../../platform/tokens.ts";
 import type { SessionAccount } from "../accounts/index.ts";
+import { transferAuthorizationMachine } from "./state-machine.ts";
 
 // Personal-to-shared project transfer (#39). Every authority decision is here; the REST
 // adapter only reads a human session and maps the result. Acceptance is one transaction:
@@ -172,6 +174,7 @@ async function readSharedSourceProject(
         eq(workspaceMemberships.workspaceId, workspaces.id),
         eq(workspaceMemberships.humanId, humanId),
         eq(workspaceMemberships.isOwner, true),
+        isNull(workspaceMemberships.suspendedAt),
       ),
     )
     .where(and(eq(projects.id, projectId), eq(workspaces.kind, WorkspaceKind.enum.shared)))
@@ -231,6 +234,7 @@ async function hasDestinationMembership(
       and(
         eq(workspaceMemberships.workspaceId, workspaceId),
         eq(workspaceMemberships.humanId, humanId),
+        isNull(workspaceMemberships.suspendedAt),
       ),
     )
     .limit(1);
@@ -262,6 +266,7 @@ async function hasCreateProjectsAuthority(
       and(
         eq(workspaceMemberships.workspaceId, workspaceId),
         eq(workspaceMemberships.humanId, humanId),
+        isNull(workspaceMemberships.suspendedAt),
       ),
     )
     .limit(1);
@@ -284,6 +289,7 @@ async function manageRecipients(
       and(
         eq(workspaceMemberships.workspaceId, destinationWorkspaceId),
         eq(workspaceMemberships.isOwner, true),
+        isNull(workspaceMemberships.suspendedAt),
       ),
     )
     .orderBy(humans.email);
@@ -384,6 +390,7 @@ function toProject(
     creatorId: string;
     creatorEmail: string;
     kind: Project["workspaceKind"];
+    fallbackPolicy: Project["fallbackPolicy"];
   },
   accessLevel: ProjectAccessLevel,
 ): Project {
@@ -399,6 +406,7 @@ function toProject(
     },
     workspaceKind: row.kind,
     accessLevel,
+    fallbackPolicy: row.fallbackPolicy,
   };
 }
 
@@ -416,6 +424,7 @@ async function readProjectView(
       creatorId: humans.id,
       creatorEmail: humans.email,
       kind: workspaces.kind,
+      fallbackPolicy: projects.fallbackPolicy,
     })
     .from(projects)
     .innerJoin(humans, eq(projects.createdByHumanId, humans.id))
@@ -576,6 +585,7 @@ async function acceptInTransaction(
           eq(workspaceMemberships.workspaceId, source.id),
           eq(workspaceMemberships.humanId, auth.authorizedByHumanId),
           eq(workspaceMemberships.isOwner, true),
+          isNull(workspaceMemberships.suspendedAt),
         ),
       )
       .limit(1);
@@ -666,11 +676,16 @@ async function acceptInTransaction(
   }
 
   // Move the identity. Issues, comments, knowledge, activity and runs all key on the
-  // project id, so the whole history travels with this one row change.
+  // project id, so the whole history travels with this one row change. Questions also
+  // denormalize workspace_id for inbox scoping, so keep them synchronized with the move.
   await tx
     .update(projects)
     .set({ workspaceId: destination.id })
     .where(eq(projects.id, auth.projectId));
+  await tx
+    .update(questions)
+    .set({ workspaceId: destination.id })
+    .where(eq(questions.projectId, auth.projectId));
 
   const recipients = await manageRecipients(tx, destination.id, acceptorHumanId);
   for (const recipient of recipients) {
@@ -722,15 +737,23 @@ async function acceptInTransaction(
       ),
     );
 
+  transferAuthorizationMachine.assertTransition("pending", "accepted");
   await tx
     .update(projectTransferAuthorizations)
-    .set({ status: "accepted", acceptedAt: sql`statement_timestamp()` })
+    .set({
+      status: "accepted",
+      acceptedAt: sql`statement_timestamp()`,
+    })
     .where(eq(projectTransferAuthorizations.id, auth.id));
   // A project can be authorized for several destinations; only one can win. Every other
   // pending authorization is revoked, never revived into access after a later move.
+  transferAuthorizationMachine.assertTransition("pending", "revoked");
   await tx
     .update(projectTransferAuthorizations)
-    .set({ status: "revoked", revokedAt: sql`statement_timestamp()` })
+    .set({
+      status: "revoked",
+      revokedAt: sql`statement_timestamp()`,
+    })
     .where(
       and(
         eq(projectTransferAuthorizations.projectId, auth.projectId),

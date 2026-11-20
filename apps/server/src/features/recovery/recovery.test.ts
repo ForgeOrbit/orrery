@@ -201,6 +201,21 @@ describe("password recovery", () => {
     expect(events.map((event) => event.type)).toEqual(["password_reset_requested"]);
   });
 
+  it("sends no reset link to a deactivated account, but answers like every other address", async () => {
+    await bootstrap(true);
+    await database.db
+      .update(humans)
+      .set({ deactivatedAt: sql`now()` })
+      .where(eq(humans.email, EMAIL));
+
+    expect(await service.requestReset(EMAIL)).toEqual({
+      message: PASSWORD_RESET_REQUEST_MESSAGE,
+    });
+    expect(delivered).toHaveLength(0);
+    expect(await database.db.select().from(passwordResetTokens)).toHaveLength(0);
+    expect(await database.db.select().from(accountRecoveryEvents)).toHaveLength(0);
+  });
+
   it("swallows a broken relay, leaves no redeemable link, and still answers the same", async () => {
     await bootstrap(true);
     const broken = makeService(async () => {
@@ -317,6 +332,23 @@ describe("password recovery", () => {
     ]);
     expect(adminId).not.toBe("");
     expect(nonAdminId).not.toBe("");
+  });
+
+  it("refuses local recovery for a deactivated administrator", async () => {
+    await bootstrap(false);
+    await database.db
+      .update(humans)
+      .set({ deactivatedAt: sql`now()` })
+      .where(eq(humans.email, EMAIL));
+
+    const refused = await rejection(service.localRecover(EMAIL, NEW_PASSWORD));
+    expect(refused).toBeInstanceOf(RecoveryError);
+    expect(refused).toMatchObject({ kind: "account_deactivated" });
+    // No password change, no sessions ended, no credential events written.
+    expect(
+      await rejection(accounts().login({ email: EMAIL, password: NEW_PASSWORD })),
+    ).toMatchObject({ kind: "invalid_credentials" });
+    expect(await database.db.select().from(accountRecoveryEvents)).toHaveLength(0);
   });
 
   it("signs out every prior browser session, leaves other sessions and agent keys alone", async () => {
@@ -496,7 +528,13 @@ describe("password recovery", () => {
 
     const events = await database.db.select().from(accountRecoveryEvents);
     const stored = JSON.stringify(events);
-    expect(Object.keys(events[0] ?? {}).toSorted()).toEqual(["createdAt", "humanId", "id", "type"]);
+    expect(Object.keys(events[0] ?? {}).toSorted()).toEqual([
+      "actorHumanId",
+      "createdAt",
+      "humanId",
+      "id",
+      "type",
+    ]);
     expect(stored).not.toContain(token);
     expect(stored).not.toContain(NEW_PASSWORD);
   });

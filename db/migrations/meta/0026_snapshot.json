@@ -1,5 +1,5 @@
 {
-  "id": "6da60e84-ac87-4f37-ac29-c968d041f336",
+  "id": "50e9d9cc-dbfe-4a93-b89f-2410263f8c25",
   "prevId": "2cb42d8f-8d3d-449f-9f25-92e907e7da76",
   "version": "7",
   "dialect": "postgresql",
@@ -19,6 +19,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "actor_human_id": {
+          "name": "actor_human_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "type": {
           "name": "type",
@@ -66,6 +72,15 @@
           "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
+        },
+        "account_recovery_events_actor_human_id_humans_id_fk": {
+          "name": "account_recovery_events_actor_human_id_humans_id_fk",
+          "tableFrom": "account_recovery_events",
+          "tableTo": "humans",
+          "columnsFrom": ["actor_human_id"],
+          "columnsTo": ["id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -74,7 +89,7 @@
       "checkConstraints": {
         "account_recovery_events_type": {
           "name": "account_recovery_events_type",
-          "value": "\"account_recovery_events\".\"type\" in ('password_reset_requested', 'password_reset_completed', 'local_recovery_completed')"
+          "value": "\"account_recovery_events\".\"type\" in ('password_reset_requested', 'password_reset_completed', 'local_recovery_completed', 'account_deactivated', 'account_reactivated')"
         }
       },
       "isRLSEnabled": false
@@ -720,6 +735,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "deactivated_at": {
+          "name": "deactivated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
@@ -1543,12 +1564,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
         "actor_human_id": {
           "name": "actor_human_id",
           "type": "text",
@@ -1608,27 +1623,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "project_access_events_workspace_created": {
-          "name": "project_access_events_workspace_created",
-          "columns": [
-            {
-              "expression": "workspace_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -1637,15 +1631,6 @@
           "tableFrom": "project_access_events",
           "tableTo": "projects",
           "columnsFrom": ["project_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "project_access_events_workspace_id_workspaces_id_fk": {
-          "name": "project_access_events_workspace_id_workspaces_id_fk",
-          "tableFrom": "project_access_events",
-          "tableTo": "workspaces",
-          "columnsFrom": ["workspace_id"],
           "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
@@ -3528,6 +3513,19 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "suspended_at": {
+          "name": "suspended_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_former_owner": {
+          "name": "is_former_owner",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         }
       },
       "indexes": {

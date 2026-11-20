@@ -17,6 +17,7 @@ import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
 import {
   agents,
+  humans,
   issues,
   projects,
   runs,
@@ -25,6 +26,7 @@ import {
   workspaces,
 } from "../../db/schema.ts";
 import type { WorkActor } from "../projects/index.ts";
+import { decideReacquire, resumeDispositionFor, workSessionMachine } from "./state-machine.ts";
 
 // The service is the only file that decides anything for work sessions (#36). REST and MCP
 // authenticate the bearer key and validate input, then call here with the resulting agent
@@ -206,6 +208,7 @@ async function humanStillHasWorkspaceAccess(
       and(
         eq(workspaceMemberships.workspaceId, workspaceId),
         eq(workspaceMemberships.humanId, humanId),
+        isNull(workspaceMemberships.suspendedAt),
       ),
     )
     .limit(1);
@@ -220,6 +223,19 @@ async function humanStillHasWorkspaceAccess(
 // then sees the newly committed claim. Personal workspaces have no membership row; their
 // single owner is checked directly and cannot be removed.
 async function lockAgentWorkspaceAccess(tx: DbTransaction, identity: AgentIdentity): Promise<void> {
+  // Lock the agent owner's account before any workspace or issue lock, for personal and
+  // shared workspaces alike. Deactivation writes humans.deactivated_at in its own
+  // transaction; waiting on this key-share lock makes a claim/renewal/reacquire that read
+  // an active account either commit before the deactivation (and be visible to its claim
+  // release pass) or see the deactivated account and fail here. No active session can be
+  // inserted after the account was suspended.
+  const [owner] = await tx
+    .select({ id: humans.id })
+    .from(humans)
+    .where(and(eq(humans.id, identity.humanId), isNull(humans.deactivatedAt)))
+    .for("key share");
+  if (owner === undefined) throw new SessionsError("insufficient_access");
+
   const [workspace] = await tx
     .select({ personalOwnerHumanId: workspaces.personalOwnerHumanId })
     .from(workspaces)
@@ -234,6 +250,7 @@ async function lockAgentWorkspaceAccess(tx: DbTransaction, identity: AgentIdenti
       and(
         eq(workspaceMemberships.workspaceId, identity.workspaceId),
         eq(workspaceMemberships.humanId, identity.humanId),
+        isNull(workspaceMemberships.suspendedAt),
       ),
     )
     .for("key share");
@@ -273,11 +290,31 @@ export async function releaseMemberWorkSessions(
     .orderBy(issues.id)
     .for("update");
 
+  const claimIds = claims.map((claim) => claim.id);
+  // Materialize already-lapsed claims as 'expired' first so a departure never overwrites
+  // an already-expired session into 'released' (preserving terminal expiry semantics).
+  workSessionMachine.assertTransition("active", WorkSessionStatus.enum.expired);
   await tx
     .update(workSessions)
     .set({
-      // "released" ends the claim without marking it failed or completed: the human left,
-      // the work itself is untouched and stays open for another worker to claim.
+      status: WorkSessionStatus.enum.expired,
+      endedAt: sql`statement_timestamp()`,
+      updatedAt: sql`statement_timestamp()`,
+    })
+    .where(
+      and(
+        eq(workSessions.status, WorkSessionStatus.enum.active),
+        lte(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
+        inArray(workSessions.id, claimIds),
+      ),
+    );
+
+  workSessionMachine.assertTransition("active", WorkSessionStatus.enum.released);
+  await tx
+    .update(workSessions)
+    .set({
+      // "released" ends the live claim without marking it failed or completed: the human
+      // left, the work itself is untouched and stays open for another worker to claim.
       status: WorkSessionStatus.enum.released,
       endedAt: sql`statement_timestamp()`,
       updatedAt: sql`statement_timestamp()`,
@@ -285,12 +322,10 @@ export async function releaseMemberWorkSessions(
     .where(
       and(
         // A claim that legitimately completed or expired after the read above must not be
-        // overwritten to "released"; only the still-active ones are ended by a departure.
+        // overwritten to "released"; only the still-live ones are ended by a departure.
         eq(workSessions.status, WorkSessionStatus.enum.active),
-        inArray(
-          workSessions.id,
-          claims.map((claim) => claim.id),
-        ),
+        gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
+        inArray(workSessions.id, claimIds),
       ),
     );
 }
@@ -686,11 +721,12 @@ export function createSessionsService({
     },
 
     async stop(actor, issueId, outcome, sessionId) {
+      const nextStatus = workSessionMachine.assertTransition("active", outcome);
       return withLiveSession(actor, issueId, sessionId, async (tx, id) => {
         const [updated] = await tx
           .update(workSessions)
           .set({
-            status: outcome,
+            status: nextStatus,
             endedAt: sql`statement_timestamp()`,
             updatedAt: sql`statement_timestamp()`,
           })
@@ -737,15 +773,10 @@ export function createSessionsService({
               session: null,
             };
           }
-          // The DB-time projection distinguishes a live claim from an expired one without
+          // The DB-time projection distinguishes a live claim from an "expired" one without
           // mutating the row: progress stays intact and the old lease stays expired.
-          const effective = row.effectiveStatus ?? row.status;
-          const disposition: ResumeDisposition =
-            effective === WorkSessionStatus.enum.active
-              ? "active"
-              : effective === WorkSessionStatus.enum.expired
-                ? "expired"
-                : "ended";
+          const effective = WorkSessionStatus.parse(row.effectiveStatus ?? row.status);
+          const disposition: ResumeDisposition = resumeDispositionFor(effective);
           return {
             runId: input.runId,
             issueId: input.issueId,
@@ -759,8 +790,11 @@ export function createSessionsService({
 
     async reacquire(actor, input) {
       const identity = requireAgent(actor);
-      // As with claim, materialize any lapsed lease in a committed transaction first so a
-      // refused reacquisition still releases it. The locked check below is the decision.
+      // As with claim, materialize a lapsed lease and a due one-hour question in committed
+      // transactions first, so a refused reacquisition still releases them. Under
+      // fallback_allowed the deadline may clear Needs input and keep a live claim here;
+      // the locked check below is the availability decision.
+      await deadlineCommitted(input.issueId);
       await expireCommitted(input.issueId);
       return db.transaction(async (tx) => {
         // Membership first, issue second: serialize with member removal just like claim.
@@ -768,6 +802,14 @@ export function createSessionsService({
         const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
         const issue = await lockIssue(tx, input.issueId);
         await expireStale(tx, issue.id);
+        await checkDeadline(tx, issue.id);
+        // Re-read the availability flags after the locked evaluation: the deadline may
+        // have just paused the issue (Needs input kept) or authorized a fallback (cleared).
+        const [fresh] = await tx
+          .select({ status: issues.status, needsInput: issues.needsInput })
+          .from(issues)
+          .where(eq(issues.id, issue.id))
+          .limit(1);
         await requireAccess(
           { kind: "agent", identity },
           issue.projectId,
@@ -788,11 +830,26 @@ export function createSessionsService({
         // claimed, or one whose session already ended, has nothing to reacquire; it must
         // use claim instead. A stale write can never become this fresh claim.
         const prior = await findLatestForRun(tx, issue.id, identity, input.runId);
-        if (prior === undefined || prior.status !== WorkSessionStatus.enum.expired) {
+        const decision = decideReacquire(
+          prior?.status,
+          fresh?.status ?? issue.status,
+          fresh?.needsInput ?? issue.needsInput,
+        );
+        if (
+          prior === undefined ||
+          prior.status !== WorkSessionStatus.enum.expired ||
+          decision === "session_required"
+        ) {
           throw new SessionsError("session_required");
         }
-        // A closed or paused issue is not available, even with no competing claimant.
-        if (issue.status !== "open" || issue.needsInput) throw new SessionsError("issue_blocked");
+        // A closed or Needs-input issue is not available, even with no competing claimant.
+        if (
+          fresh?.status !== "open" ||
+          (fresh?.needsInput ?? false) ||
+          decision === "issue_blocked"
+        ) {
+          throw new SessionsError("issue_blocked");
+        }
 
         // A fresh active row for the same identity, carrying forward the recorded progress
         // so an interruption does not erase work already reported.

@@ -217,6 +217,7 @@ const statusFor = {
   key_workspace_inaccessible: 401,
   key_out_of_scope: 403,
   insufficient_agent_access: 403,
+  human_deactivated: 401,
   source_key_revoked: 409,
   source_key_expired: 409,
 } as const satisfies Record<AgentsErrorKind, number>;
@@ -267,6 +268,7 @@ const identityKinds = [
   "key_workspace_inaccessible",
   "key_out_of_scope",
   "insufficient_agent_access",
+  "human_deactivated",
 ] as const;
 
 // A bearer key is a transport detail of this feature: the header is read here, and the

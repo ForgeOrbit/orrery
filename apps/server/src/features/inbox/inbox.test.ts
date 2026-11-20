@@ -9,11 +9,13 @@ import {
   agents,
   humans,
   issues,
+  projectAccessGrants,
   projectActivity,
   projects,
   questions as questionRows,
   runs as runRows,
   workSessions,
+  workspaceMemberships,
   workspaces,
 } from "../../db/schema.ts";
 import { createDb, type Database } from "../../platform/db.ts";
@@ -23,8 +25,12 @@ import { tokenHash } from "../../platform/tokens.ts";
 import { createAccountsFeature } from "../accounts/index.ts";
 import { createAgentsFeature, type AgentAuthenticator } from "../agents/index.ts";
 import { createHistoryService } from "../history/index.ts";
-import { createProjectsFeature, projectAccessAtLeast } from "../projects/index.ts";
-import { createSessionsFeature, type SessionsService } from "../work-sessions/index.ts";
+import { createProjectsFeature, projectAccessAtLeast, ProjectsError } from "../projects/index.ts";
+import {
+  createSessionsFeature,
+  SessionsError,
+  type SessionsService,
+} from "../work-sessions/index.ts";
 import type { OutgoingMail } from "../settings/index.ts";
 import { createInboxService, InboxError, type InboxService } from "./service.ts";
 
@@ -64,6 +70,9 @@ beforeAll(async () => {
     publicUrl: PUBLIC_URL,
   });
   let gate: Parameters<typeof createProjectsFeature>[0]["sessionGate"] | undefined;
+  let deadlineEvaluate:
+    | Parameters<typeof createProjectsFeature>[0]["evaluateQuestionDeadline"]
+    | undefined;
   const projectsFeature = createProjectsFeature({
     db: database.db,
     sessionReader: accounts.sessionReader,
@@ -71,6 +80,10 @@ beforeAll(async () => {
     sessionGate: (tx, agentId, workspaceId, issueId) => {
       if (gate === undefined) throw new Error("gate not wired");
       return gate(tx, agentId, workspaceId, issueId);
+    },
+    evaluateQuestionDeadline: (tx, issueId) => {
+      if (deadlineEvaluate === undefined) throw new Error("deadline seam not wired");
+      return deadlineEvaluate(tx, issueId);
     },
   });
   const agentsFeature = createAgentsFeature({
@@ -106,6 +119,7 @@ beforeAll(async () => {
   });
   projectsService = projectsFeature.service;
   sessions = sessionsFeature.service;
+  deadlineEvaluate = (tx, issueId) => inbox.evaluateDeadline(tx, issueId);
   history = createHistoryService({
     db: database.db,
     projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
@@ -550,5 +564,635 @@ describe("questions against real Postgres", () => {
     expect(types).toContain("issue_question_answered");
     const rows = await database.db.select().from(projectActivity);
     expect(rows.map((row) => row.issueId)).toContain(issue.id);
+  });
+
+  it("preserves an already-lapsed session as expired (not released) when the question deadline pauses", async () => {
+    const f = await bootstrap();
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    const claimed = await claim(f, issue.id, runId);
+    const actor = { kind: "agent" as const, identity: f.identity };
+    await sessions.progress(actor, issue.id, "halfway through migration");
+    const question = await ask(f, issue.id, runId);
+
+    // The 5-minute claim lapses BEFORE the 1-hour question deadline passes, without being
+    // lazily materialized yet.
+    await database.db
+      .update(workSessions)
+      .set({ leaseExpiresAt: sql`statement_timestamp() - interval '10 minutes'` })
+      .where(eq(workSessions.id, claimed.id));
+    await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
+
+    // Human answers after the 1-hour deadline: evaluateDeadline runs first, pauses, then
+    // resolves to answered. The already-lapsed session must materialize as 'expired',
+    // never be clobbered to 'released', so the interrupted run can reacquire with progress.
+    await inbox.answer(await humanActor(f), question.id, "proceed with option A");
+
+    const resumed = await sessions.resume(actor, { issueId: issue.id, runId });
+    expect(resumed.disposition).toBe("expired");
+    expect(resumed.session?.status).toBe("expired");
+    expect(resumed.session?.progress).toBe("halfway through migration");
+
+    const reacquired = await sessions.reacquire(actor, { issueId: issue.id, runId });
+    expect(reacquired.status).toBe("active");
+    expect(reacquired.progress).toBe("halfway through migration");
+  });
+});
+
+function errorKindOf(error: unknown): string {
+  if (error instanceof InboxError) return error.kind;
+  if (error instanceof ProjectsError) return error.kind;
+  if (error instanceof SessionsError) return error.kind;
+  return "unexpected_error";
+}
+
+type Member = { humanId: string; email: string };
+
+function actorOf(member: Member) {
+  return {
+    humanId: member.humanId,
+    email: member.email,
+    isSystemAdministrator: false,
+    emailVerifiedAt: new Date(),
+  };
+}
+
+// A shared project with an owning human, a Contribute member (who also owns an agent key),
+// a Reader and a complete outsider. This is the permission matrix #42 changes: the owner
+// has Manage, the member has Contribute, and neither membership alone nor a key grants
+// policy authority.
+async function sharedFixture() {
+  const owner = await bootstrap();
+  const humansIn: Member[] = [];
+  for (const role of ["contributor", "reader", "outsider"]) {
+    const [human] = await database.db
+      .insert(humans)
+      .values({
+        id: randomUUID(),
+        email: `${role}-${randomUUID()}@example.com`,
+        passwordHash: tokenHash(randomBytes(32).toString("hex")),
+        emailVerifiedAt: new Date(),
+      })
+      .returning();
+    humansIn.push({ humanId: human!.id, email: human!.email });
+  }
+  const contributor = humansIn[0]!;
+  const reader = humansIn[1]!;
+  const outsider = humansIn[2]!;
+  const workspaceId = randomUUID();
+  // The shared-workspace owner trigger is checked at commit, so the owner membership is
+  // inserted in the same transaction as the workspace row.
+  await database.db.transaction(async (tx) => {
+    await tx
+      .insert(workspaces)
+      .values({ id: workspaceId, kind: "shared", name: "Shared fallback workspace" });
+    await tx.insert(workspaceMemberships).values([
+      {
+        id: randomUUID(),
+        workspaceId,
+        humanId: owner.humanId,
+        isOwner: true,
+      },
+      {
+        id: randomUUID(),
+        workspaceId,
+        humanId: contributor.humanId,
+        isOwner: false,
+      },
+      {
+        id: randomUUID(),
+        workspaceId,
+        humanId: reader.humanId,
+        isOwner: false,
+      },
+    ]);
+  });
+  const [project] = await database.db
+    .insert(projects)
+    .values({
+      id: randomUUID(),
+      workspaceId,
+      name: "Shared fallback project",
+      createdByHumanId: owner.humanId,
+    })
+    .returning();
+  const projectId = project!.id;
+  await database.db.insert(projectAccessGrants).values([
+    {
+      id: randomUUID(),
+      projectId,
+      humanId: contributor.humanId,
+      level: "contribute",
+      grantedByHumanId: owner.humanId,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    },
+    {
+      id: randomUUID(),
+      projectId,
+      humanId: reader.humanId,
+      level: "read",
+      grantedByHumanId: owner.humanId,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    },
+  ]);
+
+  const [agent] = await database.db
+    .insert(agents)
+    .values({
+      id: randomUUID(),
+      humanId: contributor.humanId,
+      name: `fallback-agent-${randomUUID()}`,
+    })
+    .returning();
+  const [key] = await database.db
+    .insert(agentApiKeys)
+    .values({
+      id: randomUUID(),
+      agentId: agent!.id,
+      workspaceId,
+      createdByHumanId: contributor.humanId,
+      validity: "90",
+      tokenHash: tokenHash(randomBytes(24).toString("hex")),
+      createdAt: new Date(),
+    })
+    .returning();
+  await database.db.insert(agentApiKeyProjects).values({
+    id: randomUUID(),
+    keyId: key!.id,
+    projectId,
+    level: "contribute",
+  });
+  const identity = AgentIdentity.parse({
+    agentId: agent!.id,
+    name: agent!.name,
+    humanId: contributor.humanId,
+    keyId: key!.id,
+    workspaceId,
+    validity: "90",
+    projects: [{ projectId, projectName: project!.name, level: "contribute" }],
+  });
+  return {
+    owner,
+    projectId,
+    contributor,
+    reader,
+    outsider,
+    identity,
+  };
+}
+
+async function activityTypes(projectId: string): Promise<string[]> {
+  const rows = await database.db
+    .select({ type: projectActivity.type })
+    .from(projectActivity)
+    .where(eq(projectActivity.projectId, projectId));
+  return rows.map((row) => row.type);
+}
+
+async function questionOf(questionId: string) {
+  const [row] = await database.db
+    .select()
+    .from(questionRows)
+    .where(eq(questionRows.id, questionId))
+    .limit(1);
+  return row;
+}
+
+describe("fallback policy permission matrix against real Postgres", () => {
+  it("defaults to require_human and lets only Manage set the project policy", async () => {
+    const s = await sharedFixture();
+    const manage = (await humanActor(s.owner)).account;
+    expect(
+      (await projectsService.getProject(await humanActor(s.owner), s.projectId)).fallbackPolicy,
+    ).toBe("require_human");
+
+    expect(
+      errorKindOf(
+        await refused(
+          projectsService.setProjectFallbackPolicy(actorOf(s.contributor), s.projectId, {
+            fallbackPolicy: "fallback_allowed",
+          }),
+        ),
+      ),
+    ).toBe("insufficient_project_access");
+    expect(
+      errorKindOf(
+        await refused(
+          projectsService.setProjectFallbackPolicy(actorOf(s.reader), s.projectId, {
+            fallbackPolicy: "fallback_allowed",
+          }),
+        ),
+      ),
+    ).toBe("insufficient_project_access");
+    // An outsider cannot even learn that the project exists.
+    expect(
+      errorKindOf(
+        await refused(
+          projectsService.setProjectFallbackPolicy(actorOf(s.outsider), s.projectId, {
+            fallbackPolicy: "fallback_allowed",
+          }),
+        ),
+      ),
+    ).toBe("project_not_found");
+
+    const changed = await projectsService.setProjectFallbackPolicy(manage, s.projectId, {
+      fallbackPolicy: "fallback_allowed",
+    });
+    expect(changed.fallbackPolicy).toBe("fallback_allowed");
+    expect(
+      (await projectsService.getProject(await humanActor(s.owner), s.projectId)).fallbackPolicy,
+    ).toBe("fallback_allowed");
+    expect(await activityTypes(s.projectId)).toContain("project_fallback_policy_changed");
+  });
+
+  it("lets Contribute tighten but only Manage loosen an issue override", async () => {
+    const s = await sharedFixture();
+    const manage = (await humanActor(s.owner)).account;
+    await projectsService.setProjectFallbackPolicy(manage, s.projectId, {
+      fallbackPolicy: "fallback_allowed",
+    });
+    const issue = await projectsService.createIssue(await humanActor(s.owner), s.projectId, {
+      title: "Override matrix",
+    });
+
+    // Contributors can tighten an issue below a fallback_allowed project.
+    const tightened = await projectsService.setIssueFallbackPolicyOverride(
+      actorOf(s.contributor),
+      issue.id,
+      { override: "require_human" },
+    );
+    expect(tightened.fallbackPolicyOverride).toBe("require_human");
+    expect(tightened.effectiveFallbackPolicy).toBe("require_human");
+
+    // Clearing that override would loosen back to fallback_allowed: Manage only.
+    expect(
+      errorKindOf(
+        await refused(
+          projectsService.setIssueFallbackPolicyOverride(actorOf(s.contributor), issue.id, {
+            override: null,
+          }),
+        ),
+      ),
+    ).toBe("insufficient_project_access");
+    expect(
+      errorKindOf(
+        await refused(
+          projectsService.setIssueFallbackPolicyOverride(actorOf(s.contributor), issue.id, {
+            override: "fallback_allowed",
+          }),
+        ),
+      ),
+    ).toBe("insufficient_project_access");
+    expect(
+      errorKindOf(
+        await refused(
+          projectsService.setIssueFallbackPolicyOverride(actorOf(s.reader), issue.id, {
+            override: "require_human",
+          }),
+        ),
+      ),
+    ).toBe("insufficient_project_access");
+    expect(
+      errorKindOf(
+        await refused(
+          projectsService.setIssueFallbackPolicyOverride(actorOf(s.outsider), issue.id, {
+            override: "require_human",
+          }),
+        ),
+      ),
+    ).toBe("issue_not_found");
+
+    const cleared = await projectsService.setIssueFallbackPolicyOverride(manage, issue.id, {
+      override: null,
+    });
+    expect(cleared.fallbackPolicyOverride).toBeNull();
+    expect(cleared.effectiveFallbackPolicy).toBe("fallback_allowed");
+    const explicit = await projectsService.setIssueFallbackPolicyOverride(manage, issue.id, {
+      override: "fallback_allowed",
+    });
+    expect(explicit.effectiveFallbackPolicy).toBe("fallback_allowed");
+    expect(await activityTypes(s.projectId)).toContain("issue_fallback_policy_override_changed");
+  });
+
+  it("never enlarges agent permissions after a fallback is authorized", async () => {
+    const s = await sharedFixture();
+    await projectsService.setProjectFallbackPolicy(
+      (await humanActor(s.owner)).account,
+      s.projectId,
+      {
+        fallbackPolicy: "fallback_allowed",
+      },
+    );
+    const issue = await projectsService.createIssue(await humanActor(s.owner), s.projectId, {
+      title: "No permission growth",
+    });
+    const [run] = await database.db
+      .insert(runRows)
+      .values({
+        id: randomUUID(),
+        agentId: s.identity.agentId,
+        workspaceId: s.identity.workspaceId,
+        status: "active",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .returning();
+    const agentActor = { kind: "agent" as const, identity: s.identity };
+    await sessions.claim(agentActor, { issueId: issue.id, runId: run!.id });
+    const question = await inbox.ask(agentActor, {
+      issueId: issue.id,
+      runId: run!.id,
+      question: "Proceed?",
+      proposedFallback: "Use v1",
+    });
+    await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
+    await sessions.renew(agentActor, issue.id);
+    expect((await questionOf(question.id))?.status).toBe("fallback_used");
+    expect(await isNeedsInput(issue.id)).toBe(false);
+
+    // Authorization let the existing Contribute worker continue, not grow its level. A
+    // key whose current ceiling is Read (as after a downgrade) is still refused both the
+    // fenced write and a renewal, with the same stable codes as before the deadline.
+    const readIdentity = AgentIdentity.parse({
+      ...s.identity,
+      projects: [{ projectId: s.projectId, projectName: "Shared fallback project", level: "read" }],
+    });
+    const readActor = { kind: "agent" as const, identity: readIdentity };
+    expect(
+      errorKindOf(await refused(projectsService.updateIssue(readActor, issue.id, { title: "x" }))),
+    ).toBe("insufficient_project_access");
+    expect(errorKindOf(await refused(sessions.renew(readActor, issue.id)))).toBe(
+      "insufficient_access",
+    );
+    expect((await projectsService.getIssue(await humanActor(s.owner), issue.id)).title).toBe(
+      "No permission growth",
+    );
+  });
+});
+
+describe("fallback deadline and late answers against real Postgres", () => {
+  it("at the deadline returns only the authorized fallback and keeps a checking-in claim", async () => {
+    const f = await bootstrap();
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const question = await ask(f, issue.id, runId);
+    expect(question.authorizedFallback).toBeNull();
+
+    await projectsService.setProjectFallbackPolicy((await humanActor(f)).account, f.projectId, {
+      fallbackPolicy: "fallback_allowed",
+    });
+    await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
+
+    // A pure read projects fallback_used in database time, before any check-in writes it.
+    const projected = (
+      await inbox.issueHistory({ kind: "agent", identity: f.identity }, issue.id)
+    )[0];
+    expect(projected?.status).toBe("fallback_used");
+    expect(projected?.authorizedFallback).toBe("Use v1");
+
+    // Checking in exactly at the boundary resolves the fallback without releasing the claim.
+    await sessions.renew({ kind: "agent", identity: f.identity }, issue.id);
+    expect((await questionOf(question.id))?.status).toBe("fallback_used");
+    expect((await questionOf(question.id))?.resolvedAt).not.toBeNull();
+    expect(await isNeedsInput(issue.id)).toBe(false);
+    expect(await activeSessions(issue.id)).toBe(1);
+    expect(await activityTypes(f.projectId)).toContain("issue_question_fallback_used");
+
+    // The worker keeps a fresh five-minute lease, not one clipped to the passed deadline.
+    const [row] = await database.db
+      .select({ lease: workSessions.leaseExpiresAt })
+      .from(workSessions)
+      .where(eq(workSessions.issueId, issue.id));
+    expect(row?.lease.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("requires human: pauses at the deadline, releases the claim and authorizes nothing", async () => {
+    const f = await bootstrap();
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const question = await ask(f, issue.id, runId);
+    await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
+
+    expect(
+      errorKindOf(await refused(sessions.renew({ kind: "agent", identity: f.identity }, issue.id))),
+    ).toBe("session_required");
+    const stored = await questionOf(question.id);
+    expect(stored?.status).toBe("paused");
+    expect(await isNeedsInput(issue.id)).toBe(true);
+    expect(await activeSessions(issue.id)).toBe(0);
+    const listed = (await inbox.list(await humanActor(f))).find((row) => row.id === question.id);
+    expect(listed?.status).toBe("paused");
+    expect(listed?.authorizedFallback).toBeNull();
+  });
+
+  it("an issue require_human override wins over a fallback_allowed project", async () => {
+    const f = await bootstrap();
+    await projectsService.setProjectFallbackPolicy((await humanActor(f)).account, f.projectId, {
+      fallbackPolicy: "fallback_allowed",
+    });
+    const issue = await newIssue(f);
+    await projectsService.setIssueFallbackPolicyOverride((await humanActor(f)).account, issue.id, {
+      override: "require_human",
+    });
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const question = await ask(f, issue.id, runId);
+    await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
+
+    expect(
+      errorKindOf(await refused(sessions.renew({ kind: "agent", identity: f.identity }, issue.id))),
+    ).toBe("session_required");
+    expect((await questionOf(question.id))?.status).toBe("paused");
+    expect(await isNeedsInput(issue.id)).toBe(true);
+  });
+
+  it("stores a late answer on fallback_used as a follow-up without reversing work", async () => {
+    const f = await bootstrap();
+    await projectsService.setProjectFallbackPolicy((await humanActor(f)).account, f.projectId, {
+      fallbackPolicy: "fallback_allowed",
+    });
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const question = await ask(f, issue.id, runId);
+    await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
+    await sessions.renew({ kind: "agent", identity: f.identity }, issue.id);
+
+    // Work already proceeded with the fallback; the issue was closed afterwards.
+    await projectsService.updateIssue(await humanActor(f), issue.id, { status: "closed" });
+    const late = await inbox.answer(await humanActor(f), question.id, "Use v2 after all");
+
+    expect(late.status).toBe("fallback_used");
+    expect(late.authorizedFallback).toBe("Use v1");
+    expect(late.answer).toBeNull();
+    expect(late.followUp).toBe("Use v2 after all");
+    expect(late.followUpByHumanId).toBe(f.humanId);
+    expect(late.followUpAt).not.toBeNull();
+    expect((await questionOf(question.id))?.status).toBe("fallback_used");
+    expect(await isNeedsInput(issue.id)).toBe(false);
+    expect((await projectsService.getIssue(await humanActor(f), issue.id)).status).toBe("closed");
+    expect(await activityTypes(f.projectId)).toContain("issue_question_follow_up");
+
+    // A second answer cannot overwrite the first follow-up.
+    expect(
+      errorKindOf(
+        await refused(inbox.answer(await humanActor(f), question.id, "another follow-up")),
+      ),
+    ).toBe("question_resolved");
+  });
+
+  it("records an answer racing the deadline under fallback_allowed as a follow-up", async () => {
+    const f = await bootstrap();
+    await projectsService.setProjectFallbackPolicy((await humanActor(f)).account, f.projectId, {
+      fallbackPolicy: "fallback_allowed",
+    });
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const question = await ask(f, issue.id, runId);
+    // The deadline lands between the ask and the answer; evaluation runs inside answer.
+    await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
+
+    const raced = await inbox.answer(await humanActor(f), question.id, "late answer");
+    expect(raced.status).toBe("fallback_used");
+    expect(raced.answer).toBeNull();
+    expect(raced.followUp).toBe("late answer");
+    expect(await isNeedsInput(issue.id)).toBe(false);
+  });
+
+  it("keeps a checking-in claim across the boundary when the fallback is authorized", async () => {
+    const f = await bootstrap();
+    await projectsService.setProjectFallbackPolicy((await humanActor(f)).account, f.projectId, {
+      fallbackPolicy: "fallback_allowed",
+    });
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const question = await ask(f, issue.id, runId);
+    const agentActor = { kind: "agent" as const, identity: f.identity };
+
+    // T≈57m: a check-in keeps a full lease instead of clipping it to the response deadline.
+    await setDeadline(question.id, "statement_timestamp() + interval '10 seconds'");
+    await sessions.renew(agentActor, issue.id);
+    const [leaseBefore] = await database.db
+      .select({ lease: workSessions.leaseExpiresAt })
+      .from(workSessions)
+      .where(eq(workSessions.issueId, issue.id));
+    const [deadlineRow] = await database.db
+      .select({ deadline: questionRows.responseDeadlineAt })
+      .from(questionRows)
+      .where(eq(questionRows.id, question.id));
+    expect(leaseBefore!.lease.getTime()).toBeGreaterThan(deadlineRow!.deadline.getTime());
+
+    // T=60m+1s: the lease is still live, so the worker checks in again and keeps its claim.
+    await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
+    await sessions.renew(agentActor, issue.id);
+    expect((await questionOf(question.id))?.status).toBe("fallback_used");
+    expect(await isNeedsInput(issue.id)).toBe(false);
+    expect(await activeSessions(issue.id)).toBe(1);
+  });
+
+  it("releases a checking-in claim at the boundary when a human is required", async () => {
+    const f = await bootstrap();
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const question = await ask(f, issue.id, runId);
+    const agentActor = { kind: "agent" as const, identity: f.identity };
+
+    // require_human still clamps the lease to the deadline, so a worker checking in near
+    // the boundary cannot extend its claim past the moment the question pauses.
+    await setDeadline(question.id, "statement_timestamp() + interval '10 seconds'");
+    await sessions.renew(agentActor, issue.id);
+    const [leaseBefore] = await database.db
+      .select({ lease: workSessions.leaseExpiresAt })
+      .from(workSessions)
+      .where(eq(workSessions.issueId, issue.id));
+    const [deadlineRow] = await database.db
+      .select({ deadline: questionRows.responseDeadlineAt })
+      .from(questionRows)
+      .where(eq(questionRows.id, question.id));
+    expect(leaseBefore!.lease.getTime()).toBeLessThanOrEqual(deadlineRow!.deadline.getTime());
+
+    await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
+    expect(errorKindOf(await refused(sessions.renew(agentActor, issue.id)))).toBe(
+      "session_required",
+    );
+    expect((await questionOf(question.id))?.status).toBe("paused");
+    expect(await isNeedsInput(issue.id)).toBe(true);
+    expect(await activeSessions(issue.id)).toBe(0);
+  });
+
+  it("reacquires a lapsed claim after the deadline once the fallback is authorized", async () => {
+    const f = await bootstrap();
+    await projectsService.setProjectFallbackPolicy((await humanActor(f)).account, f.projectId, {
+      fallbackPolicy: "fallback_allowed",
+    });
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const question = await ask(f, issue.id, runId);
+    await database.db.execute(
+      sql`update work_sessions set lease_expires_at = statement_timestamp() - interval '1 second' where issue_id = ${issue.id}`,
+    );
+    await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
+
+    const reacquired = await sessions.reacquire(
+      { kind: "agent", identity: f.identity },
+      { issueId: issue.id, runId },
+    );
+    expect(reacquired.status).toBe("active");
+    expect((await questionOf(question.id))?.status).toBe("fallback_used");
+    expect(await isNeedsInput(issue.id)).toBe(false);
+    expect(await activeSessions(issue.id)).toBe(1);
+  });
+
+  it("freezes an already-due question before changing the project policy", async () => {
+    const f = await bootstrap();
+    await projectsService.setProjectFallbackPolicy((await humanActor(f)).account, f.projectId, {
+      fallbackPolicy: "fallback_allowed",
+    });
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const question = await ask(f, issue.id, runId);
+    await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
+
+    const read = () =>
+      inbox.issueHistory({ kind: "agent", identity: f.identity }, issue.id).then((rows) => rows[0]);
+    expect((await read())?.status).toBe("fallback_used");
+    // A manager changing the policy must not re-project the resolved answer as paused.
+    await projectsService.setProjectFallbackPolicy((await humanActor(f)).account, f.projectId, {
+      fallbackPolicy: "require_human",
+    });
+    expect((await read())?.status).toBe("fallback_used");
+    expect((await read())?.authorizedFallback).toBe("Use v1");
+    expect((await questionOf(question.id))?.status).toBe("fallback_used");
+  });
+
+  it("freezes an already-due question before setting an issue override", async () => {
+    const f = await bootstrap();
+    await projectsService.setProjectFallbackPolicy((await humanActor(f)).account, f.projectId, {
+      fallbackPolicy: "fallback_allowed",
+    });
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const question = await ask(f, issue.id, runId);
+    await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
+
+    await projectsService.setIssueFallbackPolicyOverride((await humanActor(f)).account, issue.id, {
+      override: "require_human",
+    });
+    expect((await questionOf(question.id))?.status).toBe("fallback_used");
+    const fromHistory = (
+      await inbox.issueHistory({ kind: "agent", identity: f.identity }, issue.id)
+    )[0];
+    expect(fromHistory?.status).toBe("fallback_used");
+    expect(fromHistory?.authorizedFallback).toBe("Use v1");
   });
 });

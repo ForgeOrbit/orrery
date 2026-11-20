@@ -16,12 +16,29 @@ export type ProjectAccessLevel = z.infer<typeof ProjectAccessLevel>;
 export const IssueStatus = z.enum(["open", "closed"]).meta({ id: "IssueStatus" });
 export type IssueStatus = z.infer<typeof IssueStatus>;
 
+// Fallback policy (#42). A project defaults to `require_human`: at the one-hour deadline
+// the question pauses and the claim is released. `fallback_allowed` authorizes returning
+// the agent's proposed fallback to the harness instead. An issue may tighten the project
+// policy with a `require_human` override; only project Manage may loosen one (#42's
+// transition/permission matrix lives in the projects service, never in a transport).
+export const FallbackPolicy = z
+  .enum(["require_human", "fallback_allowed"])
+  .meta({ id: "FallbackPolicy" });
+export type FallbackPolicy = z.infer<typeof FallbackPolicy>;
+
+// `null` means "no override": the issue uses its project's policy.
+export const FallbackPolicyOverride = FallbackPolicy.nullable().meta({
+  id: "FallbackPolicyOverride",
+});
+export type FallbackPolicyOverride = z.infer<typeof FallbackPolicyOverride>;
+
 // Every activity event a project records. The event names are stable codes; the summary
 // is the human-readable snapshot (an issue or knowledge title) taken when it happened.
 export const ProjectActivityType = z
   .enum([
     "project_created",
     "project_renamed",
+    "project_fallback_policy_changed",
     "issue_created",
     "issue_edited",
     "issue_commented",
@@ -30,6 +47,9 @@ export const ProjectActivityType = z
     "issue_question_asked",
     "issue_question_answered",
     "issue_question_paused",
+    "issue_question_fallback_used",
+    "issue_question_follow_up",
+    "issue_fallback_policy_override_changed",
     "knowledge_created",
     "knowledge_edited",
   ])
@@ -39,7 +59,9 @@ export type ProjectActivityType = z.infer<typeof ProjectActivityType>;
 // Who did something. The stable identity is either a human or an agent: an agent's work
 // is attributed to the agent itself, never misattributed to the human who owns its key.
 // `displayName` is the stable label readers see (the human's email or the agent's name),
-// so a reader never has to guess which identity an event names.
+// so a reader never has to guess which identity an event names. A deactivated human
+// keeps that same identity and label: `deactivated` marks it suspended instead of
+// dropping the author and showing "unknown" (#38).
 export const Actor = z
   .object({
     humanId: z.string().nullable().optional(),
@@ -47,6 +69,7 @@ export const Actor = z
     agentId: z.string().nullable().optional(),
     agentName: z.string().nullable().optional(),
     displayName: z.string(),
+    deactivated: z.boolean().optional(),
   })
   .meta({ id: "Actor" });
 export type Actor = z.infer<typeof Actor>;
@@ -64,6 +87,8 @@ export const Project = z
     // The caller's effective level: the workspace owner's Manage, a shared project
     // grant, or the personal workspace owner's Manage. It is computed per request.
     accessLevel: ProjectAccessLevel,
+    // The project-wide fallback policy (#42); defaults to require_human.
+    fallbackPolicy: FallbackPolicy,
   })
   .meta({ id: "Project" });
 export type Project = z.infer<typeof Project>;
@@ -86,6 +111,13 @@ export const UpdateProjectRequest = z
   })
   .meta({ id: "UpdateProjectRequest" });
 export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;
+
+// A human, project Manage setting changes the project-wide fallback policy. Agents have no
+// path to this setting: it is a human-session REST route with no MCP tool.
+export const SetProjectFallbackPolicyRequest = z
+  .object({ fallbackPolicy: FallbackPolicy })
+  .meta({ id: "SetProjectFallbackPolicyRequest" });
+export type SetProjectFallbackPolicyRequest = z.infer<typeof SetProjectFallbackPolicyRequest>;
 
 // One explicit project access grant. Workspace owners have Manage implicitly and are not
 // listed here; the grant records who granted the level, so access-change history can
@@ -141,6 +173,10 @@ export const Issue = z
     closedAt: Timestamp.nullable(),
     createdBy: Actor,
     updatedBy: Actor,
+    // The issue's explicit override and the policy it resolves to (#42). `null` override
+    // means "use the project's policy"; effectiveFallbackPolicy is never null.
+    fallbackPolicyOverride: FallbackPolicyOverride,
+    effectiveFallbackPolicy: FallbackPolicy,
   })
   .meta({ id: "Issue" });
 export type Issue = z.infer<typeof Issue>;
@@ -172,6 +208,15 @@ export const UpdateIssueRequest = z
   })
   .meta({ id: "UpdateIssueRequest" });
 export type UpdateIssueRequest = z.infer<typeof UpdateIssueRequest>;
+
+// A human with Contribute or Manage sets or clears an issue's fallback override. Setting
+// `require_human` (tightening) needs only Contribute; loosening to `fallback_allowed`,
+// including clearing a require_human override under a fallback_allowed project, needs
+// Manage. Agents cannot reach this setting at all.
+export const SetIssueFallbackPolicyRequest = z
+  .object({ override: FallbackPolicyOverride })
+  .meta({ id: "SetIssueFallbackPolicyRequest" });
+export type SetIssueFallbackPolicyRequest = z.infer<typeof SetIssueFallbackPolicyRequest>;
 
 export const IssueComment = z
   .object({

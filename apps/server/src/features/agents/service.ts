@@ -23,11 +23,13 @@ import {
   agentApiKeys,
   agentKeyEvents,
   agents,
+  humans,
   projects,
   workspaceMemberships,
   workspaces,
 } from "../../db/schema.ts";
 import type { SessionAccount } from "../accounts/index.ts";
+import { canAuthenticateKey, canRotateKey, effectiveAgentKeyState } from "./state-machine.ts";
 
 // The service is the only file in this feature that decides anything. rest.ts validates
 // and maps results; every rule about who may act, which workspace a key can reach, and
@@ -71,6 +73,7 @@ export type AgentsErrorKind =
   | "key_workspace_inaccessible"
   | "key_out_of_scope"
   | "insufficient_agent_access"
+  | "human_deactivated"
   | "source_key_revoked"
   | "source_key_expired";
 
@@ -88,6 +91,7 @@ const messages: Record<AgentsErrorKind, string> = {
   key_workspace_inaccessible: "The human who owns this key can no longer use its workspace.",
   key_out_of_scope: "The API key is not scoped to this workspace.",
   insufficient_agent_access: "The agent has no access to this project.",
+  human_deactivated: "The human who owns this key is deactivated.",
   source_key_revoked: "A revoked key cannot be rotated.",
   source_key_expired: "An expired key cannot be rotated.",
 };
@@ -190,18 +194,25 @@ async function humanCanUseWorkspace(
     .select({
       personalOwnerHumanId: workspaces.personalOwnerHumanId,
       membershipId: workspaceMemberships.id,
+      humanDeactivatedAt: humans.deactivatedAt,
     })
     .from(workspaces)
+    // The account itself is part of the access decision: a deactivated human cannot use
+    // any workspace, including their personal one, so a key issued just before
+    // deactivation cannot keep working afterwards (#38).
+    .innerJoin(humans, eq(humans.id, humanId))
     .leftJoin(
       workspaceMemberships,
       and(
         eq(workspaceMemberships.workspaceId, workspaces.id),
         eq(workspaceMemberships.humanId, humanId),
+        // A suspended membership (#38) grants no workspace access to the key's human.
+        isNull(workspaceMemberships.suspendedAt),
       ),
     )
     .where(eq(workspaces.id, workspaceId))
     .limit(1);
-  if (row === undefined) return false;
+  if (row === undefined || row.humanDeactivatedAt !== null) return false;
   return row.personalOwnerHumanId === humanId || row.membershipId !== null;
 }
 
@@ -221,6 +232,7 @@ async function requireWorkspaceOwner(
       and(
         eq(workspaceMemberships.workspaceId, workspaces.id),
         eq(workspaceMemberships.humanId, humanId),
+        isNull(workspaceMemberships.suspendedAt),
       ),
     )
     .where(eq(workspaces.id, workspaceId))
@@ -423,16 +435,31 @@ async function resolveKeyInTransaction(
       key: keyRowColumns(),
       agentName: agents.name,
       humanId: agents.humanId,
+      humanDeactivatedAt: humans.deactivatedAt,
     })
     .from(agentApiKeys)
     .innerJoin(agents, eq(agents.id, agentApiKeys.agentId))
+    .innerJoin(humans, eq(humans.id, agents.humanId))
     .where(eq(agentApiKeys.tokenHash, tokenHash(token)))
     .limit(1);
   if (row === undefined) throw new AgentsError("invalid_key");
 
+  // A deactivated owner's key never authenticates (#38). Deactivation also revokes every
+  // key in the same transaction; this independent check means a key cannot authenticate
+  // even if it somehow escaped revocation. The human row is always present (deactivation
+  // keeps the identity), so a null here is a corrupt key owner, not a deactivated one.
+  if (row.humanDeactivatedAt !== null) throw new AgentsError("human_deactivated");
+
   // Revocation wins over everything, including "Never": it is checked on every request
   // and takes effect immediately, independently of any connection state.
-  if (row.key.revokedAt !== null) throw new AgentsError("key_revoked");
+  if (row.key.revokedAt !== null) {
+    effectiveAgentKeyState({
+      revokedAt: row.key.revokedAt,
+      validity: AgentKeyValidity.parse(row.key.validity),
+      expired: false,
+    });
+    throw new AgentsError("key_revoked");
+  }
 
   // Membership is an access check, not a transport detail: removing the human from the
   // key's workspace stops the key immediately, even a Never key with no project grants.
@@ -448,7 +475,12 @@ async function resolveKeyInTransaction(
       .from(agentApiKeys)
       .where(and(eq(agentApiKeys.id, row.key.id), gt(agentApiKeys.expiresAt, sql`now()`)))
       .limit(1);
-    if (live === undefined) throw new AgentsError("key_expired");
+    const keyState = effectiveAgentKeyState({
+      revokedAt: null,
+      validity: AgentKeyValidity.parse(row.key.validity),
+      expired: live === undefined,
+    });
+    if (!canAuthenticateKey(keyState)) throw new AgentsError("key_expired");
   }
 
   // A key is scoped to exactly one workspace. A request naming another workspace fails
@@ -645,15 +677,30 @@ export function createAgentsService({
         // be a lie. A revoked key is refused outright; an expired one is checked in
         // database time even if no sweeper has stamped it. The check is about the
         // source's own state, independent of the requested replacement validity.
-        if (source.key.revokedAt !== null) throw new AgentsError("source_key_revoked");
-        if (AgentKeyValidity.parse(source.key.validity) !== AgentKeyValidity.enum.never) {
+        const sourceValidity = AgentKeyValidity.parse(source.key.validity);
+        let sourceExpired = false;
+        if (source.key.revokedAt !== null) {
+          effectiveAgentKeyState({
+            revokedAt: source.key.revokedAt,
+            validity: sourceValidity,
+            expired: false,
+          });
+          throw new AgentsError("source_key_revoked");
+        }
+        if (sourceValidity !== AgentKeyValidity.enum.never) {
           const [live] = await tx
             .select({ id: agentApiKeys.id })
             .from(agentApiKeys)
             .where(and(eq(agentApiKeys.id, keyId), gt(agentApiKeys.expiresAt, sql`now()`)))
             .limit(1);
-          if (live === undefined) throw new AgentsError("source_key_expired");
+          sourceExpired = live === undefined;
         }
+        const sourceState = effectiveAgentKeyState({
+          revokedAt: source.key.revokedAt,
+          validity: sourceValidity,
+          expired: sourceExpired,
+        });
+        if (!canRotateKey(sourceState)) throw new AgentsError("source_key_expired");
 
         // A key whose human owner can no longer use its workspace cannot be the source
         // of a fresh credential for that workspace.

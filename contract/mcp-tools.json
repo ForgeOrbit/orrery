@@ -59,6 +59,9 @@
             },
             "accessLevel": {
               "$ref": "#/$defs/ProjectAccessLevel"
+            },
+            "fallbackPolicy": {
+              "$ref": "#/$defs/FallbackPolicy"
             }
           },
           "required": [
@@ -68,7 +71,8 @@
             "createdAt",
             "createdBy",
             "workspaceKind",
-            "accessLevel"
+            "accessLevel",
+            "fallbackPolicy"
           ],
           "additionalProperties": false
         },
@@ -110,6 +114,9 @@
             },
             "displayName": {
               "type": "string"
+            },
+            "deactivated": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -135,6 +142,13 @@
             "read",
             "contribute",
             "manage"
+          ]
+        },
+        "FallbackPolicy": {
+          "type": "string",
+          "enum": [
+            "require_human",
+            "fallback_allowed"
           ]
         }
       }
@@ -194,6 +208,9 @@
             },
             "accessLevel": {
               "$ref": "#/$defs/ProjectAccessLevel"
+            },
+            "fallbackPolicy": {
+              "$ref": "#/$defs/FallbackPolicy"
             }
           },
           "required": [
@@ -203,7 +220,8 @@
             "createdAt",
             "createdBy",
             "workspaceKind",
-            "accessLevel"
+            "accessLevel",
+            "fallbackPolicy"
           ],
           "additionalProperties": false
         },
@@ -245,6 +263,9 @@
             },
             "displayName": {
               "type": "string"
+            },
+            "deactivated": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -270,6 +291,13 @@
             "read",
             "contribute",
             "manage"
+          ]
+        },
+        "FallbackPolicy": {
+          "type": "string",
+          "enum": [
+            "require_human",
+            "fallback_allowed"
           ]
         }
       }
@@ -356,6 +384,12 @@
             },
             "updatedBy": {
               "$ref": "#/$defs/Actor"
+            },
+            "fallbackPolicyOverride": {
+              "$ref": "#/$defs/FallbackPolicyOverride"
+            },
+            "effectiveFallbackPolicy": {
+              "$ref": "#/$defs/FallbackPolicy"
             }
           },
           "required": [
@@ -369,7 +403,9 @@
             "updatedAt",
             "closedAt",
             "createdBy",
-            "updatedBy"
+            "updatedBy",
+            "fallbackPolicyOverride",
+            "effectiveFallbackPolicy"
           ],
           "additionalProperties": false
         },
@@ -418,6 +454,9 @@
             },
             "displayName": {
               "type": "string"
+            },
+            "deactivated": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -429,6 +468,23 @@
           "type": "string",
           "format": "email",
           "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        },
+        "FallbackPolicyOverride": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FallbackPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "FallbackPolicy": {
+          "type": "string",
+          "enum": [
+            "require_human",
+            "fallback_allowed"
+          ]
         }
       }
     }
@@ -508,6 +564,12 @@
             },
             "updatedBy": {
               "$ref": "#/$defs/Actor"
+            },
+            "fallbackPolicyOverride": {
+              "$ref": "#/$defs/FallbackPolicyOverride"
+            },
+            "effectiveFallbackPolicy": {
+              "$ref": "#/$defs/FallbackPolicy"
             }
           },
           "required": [
@@ -521,7 +583,9 @@
             "updatedAt",
             "closedAt",
             "createdBy",
-            "updatedBy"
+            "updatedBy",
+            "fallbackPolicyOverride",
+            "effectiveFallbackPolicy"
           ],
           "additionalProperties": false
         },
@@ -570,6 +634,9 @@
             },
             "displayName": {
               "type": "string"
+            },
+            "deactivated": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -581,6 +648,23 @@
           "type": "string",
           "format": "email",
           "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        },
+        "FallbackPolicyOverride": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FallbackPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "FallbackPolicy": {
+          "type": "string",
+          "enum": [
+            "require_human",
+            "fallback_allowed"
+          ]
         }
       }
     }
@@ -675,6 +759,12 @@
             },
             "updatedBy": {
               "$ref": "#/$defs/Actor"
+            },
+            "fallbackPolicyOverride": {
+              "$ref": "#/$defs/FallbackPolicyOverride"
+            },
+            "effectiveFallbackPolicy": {
+              "$ref": "#/$defs/FallbackPolicy"
             }
           },
           "required": [
@@ -688,7 +778,9 @@
             "updatedAt",
             "closedAt",
             "createdBy",
-            "updatedBy"
+            "updatedBy",
+            "fallbackPolicyOverride",
+            "effectiveFallbackPolicy"
           ],
           "additionalProperties": false
         },
@@ -737,6 +829,9 @@
             },
             "displayName": {
               "type": "string"
+            },
+            "deactivated": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -748,6 +843,23 @@
           "type": "string",
           "format": "email",
           "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        },
+        "FallbackPolicyOverride": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FallbackPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "FallbackPolicy": {
+          "type": "string",
+          "enum": [
+            "require_human",
+            "fallback_allowed"
+          ]
         }
       }
     }
@@ -851,6 +963,12 @@
             },
             "updatedBy": {
               "$ref": "#/$defs/Actor"
+            },
+            "fallbackPolicyOverride": {
+              "$ref": "#/$defs/FallbackPolicyOverride"
+            },
+            "effectiveFallbackPolicy": {
+              "$ref": "#/$defs/FallbackPolicy"
             }
           },
           "required": [
@@ -864,7 +982,9 @@
             "updatedAt",
             "closedAt",
             "createdBy",
-            "updatedBy"
+            "updatedBy",
+            "fallbackPolicyOverride",
+            "effectiveFallbackPolicy"
           ],
           "additionalProperties": false
         },
@@ -913,6 +1033,9 @@
             },
             "displayName": {
               "type": "string"
+            },
+            "deactivated": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -924,6 +1047,23 @@
           "type": "string",
           "format": "email",
           "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        },
+        "FallbackPolicyOverride": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FallbackPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "FallbackPolicy": {
+          "type": "string",
+          "enum": [
+            "require_human",
+            "fallback_allowed"
+          ]
         }
       }
     }
@@ -1031,6 +1171,9 @@
             },
             "displayName": {
               "type": "string"
+            },
+            "deactivated": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -1149,6 +1292,9 @@
             },
             "displayName": {
               "type": "string"
+            },
+            "deactivated": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -1252,6 +1398,7 @@
           "enum": [
             "project_created",
             "project_renamed",
+            "project_fallback_policy_changed",
             "issue_created",
             "issue_edited",
             "issue_commented",
@@ -1260,6 +1407,9 @@
             "issue_question_asked",
             "issue_question_answered",
             "issue_question_paused",
+            "issue_question_fallback_used",
+            "issue_question_follow_up",
+            "issue_fallback_policy_override_changed",
             "knowledge_created",
             "knowledge_edited"
           ]
@@ -1302,6 +1452,9 @@
             },
             "displayName": {
               "type": "string"
+            },
+            "deactivated": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -1432,6 +1585,9 @@
             },
             "displayName": {
               "type": "string"
+            },
+            "deactivated": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -1556,6 +1712,9 @@
             },
             "displayName": {
               "type": "string"
+            },
+            "deactivated": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -1695,6 +1854,9 @@
             },
             "displayName": {
               "type": "string"
+            },
+            "deactivated": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -1833,6 +1995,9 @@
             },
             "displayName": {
               "type": "string"
+            },
+            "deactivated": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -3190,6 +3355,12 @@
             },
             "updatedBy": {
               "$ref": "#/$defs/Actor"
+            },
+            "fallbackPolicyOverride": {
+              "$ref": "#/$defs/FallbackPolicyOverride"
+            },
+            "effectiveFallbackPolicy": {
+              "$ref": "#/$defs/FallbackPolicy"
             }
           },
           "required": [
@@ -3203,7 +3374,9 @@
             "updatedAt",
             "closedAt",
             "createdBy",
-            "updatedBy"
+            "updatedBy",
+            "fallbackPolicyOverride",
+            "effectiveFallbackPolicy"
           ],
           "additionalProperties": false
         },
@@ -3252,6 +3425,9 @@
             },
             "displayName": {
               "type": "string"
+            },
+            "deactivated": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -3263,6 +3439,23 @@
           "type": "string",
           "format": "email",
           "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        },
+        "FallbackPolicyOverride": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FallbackPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "FallbackPolicy": {
+          "type": "string",
+          "enum": [
+            "require_human",
+            "fallback_allowed"
+          ]
         }
       }
     }
@@ -3398,7 +3591,7 @@
   },
   {
     "name": "ask_for_input",
-    "description": "Ask the team a blocking question about an issue this agent currently holds. Include a concrete proposed fallback; the agent cannot authorize it. The question opens for one hour in database time, keeps the claim while the agent checks in, sets the issue to Needs input and emails the agent's owner. A human with Contribute or Manage answers through the inbox; at the deadline with no authorized fallback the question is paused, the claim released, and the issue stays Needs input until a human answers.",
+    "description": "Ask the team a blocking question about an issue this agent currently holds. Include a concrete proposed fallback; the agent cannot authorize it. The question opens for one hour in database time, keeps the claim while the agent checks in, sets the issue to Needs input and emails the agent's owner. A human with Contribute or Manage answers through the inbox. Only a human may set the project fallback policy or an issue override; the agent cannot authorize its own fallback. At the deadline a require_human question pauses, releasing the claim and keeping Needs input; a fallback_allowed question resolves to fallback_used, clears Needs input and lets the worker continue without releasing its claim.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "$ref": "#/$defs/AskForInputInput",
@@ -3483,6 +3676,12 @@
             "status": {
               "$ref": "#/$defs/QuestionStatus"
             },
+            "authorizedFallback": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "responseDeadlineAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -3554,6 +3753,7 @@
             "question",
             "proposedFallback",
             "status",
+            "authorizedFallback",
             "responseDeadlineAt",
             "answer",
             "answeredByHumanId",
@@ -3585,7 +3785,7 @@
   },
   {
     "name": "list_issue_questions",
-    "description": "List every question asked about an in-scope issue and its resolution, newest first. A pending question may be reported as paused in database time once its one-hour deadline has passed. Needs no claim; answering remains a human-only REST operation.",
+    "description": "List every question asked about an in-scope issue and its resolution, newest first. A pending question past its one-hour deadline is reported in database time as paused (require_human) or fallback_used (fallback_allowed). A fallback_used question carries authorizedFallback, the proposed fallback the harness may act on; before authorization, on pause or on answer, authorizedFallback is null. Needs no claim; answering remains a human-only REST operation, and a late human answer is a follow-up that never reverses the fallback.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "$ref": "#/$defs/IssueQuestionParams",
@@ -3655,6 +3855,12 @@
             "status": {
               "$ref": "#/$defs/QuestionStatus"
             },
+            "authorizedFallback": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "responseDeadlineAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -3726,6 +3932,7 @@
             "question",
             "proposedFallback",
             "status",
+            "authorizedFallback",
             "responseDeadlineAt",
             "answer",
             "answeredByHumanId",

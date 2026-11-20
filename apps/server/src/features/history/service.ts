@@ -5,11 +5,12 @@ import {
   type Actor,
   type HistoryEvent,
 } from "@orrery/contract";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
 import {
+  accountRecoveryEvents,
   agentKeyEvents,
   agents,
   humans,
@@ -85,10 +86,22 @@ function requireAccount(account: SessionAccount | null): SessionAccount {
 }
 
 // The actors are stable identities. A human's email is the label readers already see in
-// project activity; an agent is named itself, never by its owner. The fallbacks keep a
-// historical row readable if a label is missing without inventing a name.
-function humanActor(id: string | null, email: string | null): Actor {
-  return { humanId: id, email, displayName: email ?? id ?? "unknown human" };
+// project activity; an agent is named itself, never by its owner. A deactivated human
+// keeps that label and is marked `deactivated` (#38), so history never says "unknown" for
+// an author whose account was suspended.
+function humanActor(
+  id: string | null,
+  email: string | null,
+  deactivatedAt: Date | null = null,
+): Actor {
+  const deactivated = deactivatedAt !== null;
+  const label = email ?? id ?? "unknown human";
+  return {
+    humanId: id,
+    email,
+    displayName: deactivated ? `${label} (deactivated)` : label,
+    ...(deactivated ? { deactivated: true } : {}),
+  };
 }
 
 function agentActor(id: string | null, name: string | null): Actor {
@@ -131,8 +144,10 @@ async function loadWorkspaceEvents(db: Db, workspaceId: string, workspaceName: s
       createdAt: workspaceEvents.createdAt,
       actorId: actorHuman.id,
       actorEmail: actorHuman.email,
+      actorDeactivatedAt: actorHuman.deactivatedAt,
       subjectId: subjectHuman.id,
       subjectEmail: subjectHuman.email,
+      subjectDeactivatedAt: subjectHuman.deactivatedAt,
     })
     .from(workspaceEvents)
     .leftJoin(actorHuman, eq(actorHuman.id, workspaceEvents.actorHumanId))
@@ -146,8 +161,8 @@ async function loadWorkspaceEvents(db: Db, workspaceId: string, workspaceName: s
     type: row.type,
     scope,
     createdAt: row.createdAt.toISOString(),
-    actor: humanActor(row.actorId, row.actorEmail),
-    subject: humanActor(row.subjectId, row.subjectEmail),
+    actor: humanActor(row.actorId, row.actorEmail, row.actorDeactivatedAt),
+    subject: humanActor(row.subjectId, row.subjectEmail, row.subjectDeactivatedAt),
     summary: null,
     level: null,
     previousLevel: null,
@@ -163,6 +178,7 @@ async function loadKeyEvents(db: Db, workspaceId: string, workspaceName: string)
       createdAt: agentKeyEvents.createdAt,
       actorId: actorHuman.id,
       actorEmail: actorHuman.email,
+      actorDeactivatedAt: actorHuman.deactivatedAt,
       agentId: agents.id,
       agentName: agents.name,
     })
@@ -179,7 +195,7 @@ async function loadKeyEvents(db: Db, workspaceId: string, workspaceName: string)
     type: row.type,
     scope,
     createdAt: row.createdAt.toISOString(),
-    actor: humanActor(row.actorId, row.actorEmail),
+    actor: humanActor(row.actorId, row.actorEmail, row.actorDeactivatedAt),
     subject: agentActor(row.agentId, row.agentName),
     summary: null,
     level: null,
@@ -214,8 +230,10 @@ async function loadProjectAccessEvents(
       createdAt: projectAccessEvents.createdAt,
       actorId: actorHuman.id,
       actorEmail: actorHuman.email,
+      actorDeactivatedAt: actorHuman.deactivatedAt,
       subjectId: subjectHuman.id,
       subjectEmail: subjectHuman.email,
+      subjectDeactivatedAt: subjectHuman.deactivatedAt,
     })
     .from(projectAccessEvents)
     .leftJoin(actorHuman, eq(actorHuman.id, projectAccessEvents.actorHumanId))
@@ -240,8 +258,8 @@ async function loadProjectAccessEvents(
       name: names.get(row.projectId) ?? null,
     },
     createdAt: row.createdAt.toISOString(),
-    actor: humanActor(row.actorId, row.actorEmail),
-    subject: humanActor(row.subjectId, row.subjectEmail),
+    actor: humanActor(row.actorId, row.actorEmail, row.actorDeactivatedAt),
+    subject: humanActor(row.subjectId, row.subjectEmail, row.subjectDeactivatedAt),
     summary: null,
     level: row.level === null ? null : ProjectAccessLevel.parse(row.level),
     previousLevel: row.previousLevel === null ? null : ProjectAccessLevel.parse(row.previousLevel),
@@ -259,6 +277,7 @@ async function loadProjectActivity(db: Db, projectId: string, projectName: strin
       createdAt: projectActivity.createdAt,
       humanId: actorHuman.id,
       humanEmail: actorHuman.email,
+      humanDeactivatedAt: actorHuman.deactivatedAt,
       agentId: actorAgent.id,
       agentName: actorAgent.name,
     })
@@ -277,7 +296,7 @@ async function loadProjectActivity(db: Db, projectId: string, projectName: strin
     actor:
       row.agentId !== null
         ? agentActor(row.agentId, row.agentName)
-        : humanActor(row.humanId, row.humanEmail),
+        : humanActor(row.humanId, row.humanEmail, row.humanDeactivatedAt),
     subject: null,
     summary: row.summary,
     level: null,
@@ -293,6 +312,7 @@ async function loadInstallationEvents(db: Db): Promise<HistoryEvent[]> {
     .select({
       humanId: instanceSetup.administratorHumanId,
       email: humans.email,
+      deactivatedAt: humans.deactivatedAt,
       createdAt: instanceSetup.completedAt,
     })
     .from(instanceSetup)
@@ -305,8 +325,8 @@ async function loadInstallationEvents(db: Db): Promise<HistoryEvent[]> {
       type: INSTALLATION_TYPE.bootstrap,
       scope,
       createdAt: setup.createdAt.toISOString(),
-      actor: humanActor(setup.humanId, setup.email),
-      subject: humanActor(setup.humanId, setup.email),
+      actor: humanActor(setup.humanId, setup.email, setup.deactivatedAt),
+      subject: humanActor(setup.humanId, setup.email, setup.deactivatedAt),
       summary: `Installation bootstrapped by ${setup.email}`,
       level: null,
       previousLevel: null,
@@ -326,12 +346,13 @@ async function loadInstallationEvents(db: Db): Promise<HistoryEvent[]> {
       revokedAt: invitations.revokedAt,
       inviterId: inviter.id,
       inviterEmail: inviter.email,
+      inviterDeactivatedAt: inviter.deactivatedAt,
     })
     .from(invitations)
     .leftJoin(inviter, eq(inviter.id, invitations.invitedByHumanId))
     .orderBy(desc(invitations.createdAt), desc(invitations.id));
   for (const row of rows) {
-    const inviterActor = humanActor(row.inviterId, row.inviterEmail);
+    const inviterActor = humanActor(row.inviterId, row.inviterEmail, row.inviterDeactivatedAt);
     const inviteeActor = humanActor(null, row.email);
     const add = (type: string, at: Date | null, actor: Actor, subject: Actor) => {
       if (at === null) return;
@@ -361,6 +382,50 @@ async function loadInstallationEvents(db: Db): Promise<HistoryEvent[]> {
       add(INSTALLATION_TYPE.revoked, row.revokedAt, inviterActor, inviteeActor);
   }
   return events;
+}
+
+// Installation-wide account status changes (#38). The events are stored in the same
+// secret-free account event table as password recovery; only the two deactivation codes
+// are read here. The actor is the administrator who made the change, the subject the
+// account it concerned. Both labels stay stable after deactivation.
+async function loadAccountStatusEvents(db: Db): Promise<HistoryEvent[]> {
+  const subjectHuman = alias(humans, "history_account_subject");
+  const actorHuman = alias(humans, "history_account_actor");
+  const rows = await db
+    .select({
+      id: accountRecoveryEvents.id,
+      type: accountRecoveryEvents.type,
+      createdAt: accountRecoveryEvents.createdAt,
+      subjectId: subjectHuman.id,
+      subjectEmail: subjectHuman.email,
+      subjectDeactivatedAt: subjectHuman.deactivatedAt,
+      actorId: actorHuman.id,
+      actorEmail: actorHuman.email,
+      actorDeactivatedAt: actorHuman.deactivatedAt,
+    })
+    .from(accountRecoveryEvents)
+    .innerJoin(subjectHuman, eq(subjectHuman.id, accountRecoveryEvents.humanId))
+    .leftJoin(actorHuman, eq(actorHuman.id, accountRecoveryEvents.actorHumanId))
+    .where(inArray(accountRecoveryEvents.type, ["account_deactivated", "account_reactivated"]))
+    .orderBy(desc(accountRecoveryEvents.createdAt), desc(accountRecoveryEvents.id));
+  const scope = installationScope();
+  return rows.map((row): HistoryEvent => ({
+    id: row.id,
+    kind: "account_status",
+    type: row.type,
+    scope,
+    createdAt: row.createdAt.toISOString(),
+    // Older events have no actor column; fall back to the subject so the label is stable.
+    actor: humanActor(
+      row.actorId ?? row.subjectId,
+      row.actorEmail ?? row.subjectEmail,
+      row.actorDeactivatedAt ?? row.subjectDeactivatedAt,
+    ),
+    subject: humanActor(row.subjectId, row.subjectEmail, row.subjectDeactivatedAt),
+    summary: null,
+    level: null,
+    previousLevel: null,
+  }));
 }
 
 export interface HistoryDeps {
@@ -397,6 +462,7 @@ export function createHistoryService({ db, projectAccessCeiling }: HistoryDeps):
               and(
                 eq(workspaceMemberships.workspaceId, workspaces.id),
                 eq(workspaceMemberships.humanId, actor.humanId),
+                isNull(workspaceMemberships.suspendedAt),
               ),
             )
             .where(eq(workspaces.id, workspaceId))
@@ -486,7 +552,10 @@ export function createHistoryService({ db, projectAccessCeiling }: HistoryDeps):
       if (!actor.isSystemAdministrator) throw new HistoryError("not_system_administrator");
       // Installation events are derived from the installation's own records only; a
       // workspace or project the administrator does not belong to never appears here.
-      return sortNewestFirst(await loadInstallationEvents(db));
+      return sortNewestFirst([
+        ...(await loadInstallationEvents(db)),
+        ...(await loadAccountStatusEvents(db)),
+      ]);
     },
   };
 }
