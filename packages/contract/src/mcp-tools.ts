@@ -21,8 +21,11 @@ import {
   GetWorkSessionInput,
   ReadyWorkInput,
   ReadyWorkResponse,
+  ReacquireWorkSessionInput,
   RenewWorkSessionInput,
   ReportProgressInput,
+  ResumeWorkSessionInput,
+  ResumeWorkSessionResponse,
   StopWorkSessionInput,
   WorkSessionResponse,
   WorkSessionsListInput,
@@ -166,7 +169,7 @@ const claimIssue = {
 const renewClaim = {
   name: "renew_claim",
   description:
-    "Check in on an issue this agent currently holds and refresh its five-minute lease in database time. Requires a live session; an expired or released session is never renewed or silently reacquired.",
+    "Check in on an issue this agent currently holds and refresh its five-minute lease in database time. Requires a live session; an expired or released session is never renewed or silently reacquired. Pass sessionId to fence a delayed call from an interrupted session: it is refused if that session is no longer the live one, even after reacquisition.",
   input: RenewWorkSessionInput,
   output: WorkSessionResponse,
 };
@@ -174,7 +177,7 @@ const renewClaim = {
 const reportProgress = {
   name: "report_progress",
   description:
-    "Record progress on the live session this agent holds for an issue. Progress is stored independently of the lease, so an interruption never erases it. Requires a live session.",
+    "Record progress on the live session this agent holds for an issue. Progress is stored independently of the lease, so an interruption never erases it. Requires a live session; pass sessionId to refuse a delayed report from an expired session instead of writing to a newer one.",
   input: ReportProgressInput,
   output: WorkSessionResponse,
 };
@@ -182,7 +185,7 @@ const reportProgress = {
 const stopSession = {
   name: "stop_session",
   description:
-    "Complete or release the live session this agent holds for an issue. Requires a live session; stopping is distinct from closing the issue.",
+    "Complete or release the live session this agent holds for an issue. Requires a live session; stopping is distinct from closing the issue. Pass sessionId to fence a delayed completion from an interrupted session: it is refused rather than completing a newer session.",
   input: StopWorkSessionInput,
   output: WorkSessionResponse,
 };
@@ -192,6 +195,27 @@ const getWorkSession = {
   description:
     "Read the latest work session recorded for an issue, from any agent, including its recorded progress and lease deadline. This is a read: it needs no live claim and never renews one.",
   input: GetWorkSessionInput,
+  output: WorkSessionResponse,
+};
+
+// Resume and reacquisition (issue #40). Resume is a pure read for the original run: it
+// reports whether that run still holds a live claim, has an expired one, or never claimed,
+// and keeps the recorded progress visible. Reacquire re-arms only the run's own expired
+// claim, and only when the issue has no live claimant and is not paused for input. Neither
+// call ever resurrects an expired lease or turns a stale call into a fresh claim.
+const resumeWorkSession = {
+  name: "resume_work_session",
+  description:
+    "Inspect the work session the given run (the harness conversation, including resumes) recorded for an issue. Returns disposition active, expired, ended or none, and the session with its recorded progress. This is a read in database time: it never renews or resurrects an expired lease.",
+  input: ResumeWorkSessionInput,
+  output: ResumeWorkSessionResponse,
+};
+
+const reacquireWorkSession = {
+  name: "reacquire_issue",
+  description:
+    "Reacquire this run's expired claim on an issue after an interruption. Creates a new active session for the same agent, run, workspace and issue, carrying forward the recorded progress, and only when no other worker holds a live claim and the issue is not paused for input. Retries with the same run return the same session; a stale call on an expired session is refused, never turned into a fresh claim.",
+  input: ReacquireWorkSessionInput,
   output: WorkSessionResponse,
 };
 
@@ -237,6 +261,8 @@ export const sessionTools: readonly ToolContract[] = [
   reportProgress,
   stopSession,
   getWorkSession,
+  resumeWorkSession,
+  reacquireWorkSession,
   readyWork,
   allSessionsForIssue,
 ];
