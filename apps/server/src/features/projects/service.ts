@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  FallbackPolicy,
   IssueStatus,
   ProjectAccessEventType,
   ProjectAccessLevel,
@@ -17,7 +18,9 @@ import {
   type ProjectAccessGrant,
   type ProjectActivity,
   type ProjectActivityType,
+  type SetIssueFallbackPolicyRequest,
   type SetProjectAccessRequest,
+  type SetProjectFallbackPolicyRequest,
   type UpdateIssueRequest,
   type UpdateKnowledgeEntryRequest,
   type UpdateProjectRequest,
@@ -313,6 +316,7 @@ const projectColumns = {
   createdAt: projects.createdAt,
   createdByHumanId: projects.createdByHumanId,
   createdByEmail: projectCreator.email,
+  fallbackPolicy: projects.fallbackPolicy,
 };
 
 const issueColumns = {
@@ -322,6 +326,7 @@ const issueColumns = {
   title: issues.title,
   body: issues.body,
   status: issues.status,
+  fallbackPolicyOverride: issues.fallbackPolicyOverride,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
   closedAt: issues.closedAt,
@@ -386,6 +391,7 @@ type ProjectRow = {
   createdByEmail: string;
   workspaceKind: WorkspaceKind;
   accessLevel: ProjectAccessLevel;
+  fallbackPolicy: FallbackPolicy;
 };
 
 type ProjectGrantRow = {
@@ -405,6 +411,9 @@ type IssueRow = {
   title: string;
   body: string;
   status: IssueStatus;
+  fallbackPolicyOverride: FallbackPolicy | null;
+  // The project's policy, joined by requireIssue so a single DTO carries the resolved one.
+  projectFallbackPolicy: FallbackPolicy;
   createdAt: Date;
   updatedAt: Date;
   closedAt: Date | null;
@@ -473,6 +482,7 @@ function toProject(row: ProjectRow): Project {
     },
     workspaceKind: row.workspaceKind,
     accessLevel: row.accessLevel,
+    fallbackPolicy: row.fallbackPolicy,
   };
 }
 
@@ -502,6 +512,8 @@ function toIssue(row: IssueRow): Issue {
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     closedAt: row.closedAt?.toISOString() ?? null,
+    fallbackPolicyOverride: row.fallbackPolicyOverride,
+    effectiveFallbackPolicy: row.fallbackPolicyOverride ?? row.projectFallbackPolicy,
     createdBy: actorFromRow(
       row.createdByHumanId,
       row.createdByEmail,
@@ -686,6 +698,7 @@ async function requireIssue(
       membershipIsOwner: workspaceMemberships.isOwner,
       grantLevel: projectAccessGrants.level,
       workspaceId: projects.workspaceId,
+      projectFallbackPolicy: projects.fallbackPolicy,
     })
     .from(issues)
     .innerJoin(projects, eq(projects.id, issues.projectId))
@@ -748,7 +761,7 @@ async function requireKnowledge(
 type RecordActivityInput =
   | {
       projectId: string;
-      type: "project_created" | "project_renamed";
+      type: "project_created" | "project_renamed" | "project_fallback_policy_changed";
       actor: WorkActor;
       summary: string;
     }
@@ -759,7 +772,8 @@ type RecordActivityInput =
         | "issue_edited"
         | "issue_commented"
         | "issue_closed"
-        | "issue_reopened";
+        | "issue_reopened"
+        | "issue_fallback_policy_override_changed";
       actor: WorkActor;
       summary: string;
       issueId: string;
@@ -1008,6 +1022,18 @@ export interface ProjectsService {
     projectId: string,
     input: SetProjectAccessRequest,
   ): Promise<ProjectAccessGrant>;
+  // #42: human-session-only policy settings. An agent key is never passed here, so it
+  // cannot authorize its own fallback; both decisions are made in this service.
+  setProjectFallbackPolicy(
+    account: SessionAccount | null,
+    projectId: string,
+    input: SetProjectFallbackPolicyRequest,
+  ): Promise<Project>;
+  setIssueFallbackPolicyOverride(
+    account: SessionAccount | null,
+    issueId: string,
+    input: SetIssueFallbackPolicyRequest,
+  ): Promise<Issue>;
   removeProjectAccess(
     account: SessionAccount | null,
     projectId: string,
@@ -1209,6 +1235,7 @@ export function createProjectsService({ db, sessionGate }: ProjectsDeps): Projec
           createdBy: { humanId: actor.humanId, email: actor.email, displayName: actor.email },
           workspaceKind: workspace.kind,
           accessLevel: ProjectAccessLevel.enum.manage,
+          fallbackPolicy: FallbackPolicy.enum.require_human,
         };
       });
     },
@@ -1242,6 +1269,83 @@ export function createProjectsService({ db, sessionGate }: ProjectsDeps): Projec
           summary: updated.name,
         });
         return toProject({ ...current, name: updated.name });
+      });
+    },
+
+    // The project-wide fallback policy (#42). Only a human with Manage may set it; the
+    // row lock serializes a change against an answer or deadline evaluation reading it.
+    // A no-op records no activity, like a repeated rename.
+    async setProjectFallbackPolicy(account, projectId, input) {
+      const actor = requireAccount(account);
+      const workActor: WorkActor = { kind: "human", account: actor };
+      return db.transaction(async (tx) => {
+        await lockProjectForMutation(tx, projectId);
+        const current = await requireProject(
+          tx,
+          projectId,
+          workActor,
+          ProjectAccessLevel.enum.manage,
+        );
+        if (current.fallbackPolicy === input.fallbackPolicy) return toProject(current);
+        const [updated] = await tx
+          .update(projects)
+          .set({ fallbackPolicy: input.fallbackPolicy })
+          .where(eq(projects.id, projectId))
+          .returning({ fallbackPolicy: projects.fallbackPolicy });
+        if (updated === undefined) throw new ProjectsError("project_not_found");
+        await recordActivity(tx, {
+          projectId,
+          type: "project_fallback_policy_changed",
+          actor: workActor,
+          summary: `Fallback policy changed to ${updated.fallbackPolicy}`,
+        });
+        return toProject({ ...current, fallbackPolicy: updated.fallbackPolicy });
+      });
+    },
+
+    // An issue override may only tighten the policy without Manage. Loosening — an
+    // explicit fallback_allowed override, or clearing a require_human override under a
+    // fallback_allowed project — needs Manage. Effective policy is override ?? project;
+    // neither this write nor the fallback it authorizes changes any project access.
+    async setIssueFallbackPolicyOverride(account, issueId, input) {
+      const actor = requireAccount(account);
+      const workActor: WorkActor = { kind: "human", account: actor };
+      return db.transaction(async (tx) => {
+        await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issueId)).for("update");
+        const current = await requireIssue(
+          tx,
+          issueId,
+          workActor,
+          ProjectAccessLevel.enum.contribute,
+        );
+        const override = input.override;
+        const currentEffective = current.fallbackPolicyOverride ?? current.projectFallbackPolicy;
+        const nextEffective = override ?? current.projectFallbackPolicy;
+        const loosens =
+          override === FallbackPolicy.enum.fallback_allowed ||
+          (nextEffective === FallbackPolicy.enum.fallback_allowed &&
+            currentEffective === FallbackPolicy.enum.require_human);
+        if (loosens && !projectAccessAtLeast(current.accessLevel, ProjectAccessLevel.enum.manage)) {
+          throw new ProjectsError("insufficient_project_access");
+        }
+        if (current.fallbackPolicyOverride === override) return toIssue(current);
+        const [updated] = await tx
+          .update(issues)
+          .set({
+            fallbackPolicyOverride: override,
+            updatedAt: sql`statement_timestamp()`,
+          })
+          .where(eq(issues.id, issueId))
+          .returning({ fallbackPolicyOverride: issues.fallbackPolicyOverride });
+        if (updated === undefined) throw new ProjectsError("issue_not_found");
+        await recordActivity(tx, {
+          projectId: current.projectId,
+          type: "issue_fallback_policy_override_changed",
+          actor: workActor,
+          issueId,
+          summary: `Fallback policy override ${override === null ? "cleared" : `set to ${override}`}`,
+        });
+        return toIssue({ ...current, fallbackPolicyOverride: updated.fallbackPolicyOverride });
       });
     },
 
@@ -1470,8 +1574,9 @@ export function createProjectsService({ db, sessionGate }: ProjectsDeps): Projec
         async (tx) => {
           await requireProject(tx, projectId, actor, ProjectAccessLevel.enum.read);
           const rows = await tx
-            .select(issueColumns)
+            .select({ ...issueColumns, projectFallbackPolicy: projects.fallbackPolicy })
             .from(issues)
+            .innerJoin(projects, eq(projects.id, issues.projectId))
             .leftJoin(issueCreator, eq(issueCreator.id, issues.createdByHumanId))
             .leftJoin(issueAgentCreator, eq(issueAgentCreator.id, issues.createdByAgentId))
             .leftJoin(issueEditor, eq(issueEditor.id, issues.updatedByHumanId))
@@ -1497,7 +1602,12 @@ export function createProjectsService({ db, sessionGate }: ProjectsDeps): Projec
     async createIssue(actorArg, projectId, input) {
       const actor = requireActor(actorArg);
       return db.transaction(async (tx) => {
-        await requireProject(tx, projectId, actor, ProjectAccessLevel.enum.contribute);
+        const project = await requireProject(
+          tx,
+          projectId,
+          actor,
+          ProjectAccessLevel.enum.contribute,
+        );
         const [counter] = await tx
           .update(projects)
           .set({ nextIssueNumber: sql`${projects.nextIssueNumber} + 1` })
@@ -1554,6 +1664,8 @@ export function createProjectsService({ db, sessionGate }: ProjectsDeps): Projec
           closedAt: created.closedAt === null ? null : created.closedAt.toISOString(),
           createdBy: author,
           updatedBy: author,
+          fallbackPolicyOverride: null,
+          effectiveFallbackPolicy: project.fallbackPolicy,
         };
       });
     },
@@ -1645,6 +1757,8 @@ export function createProjectsService({ db, sessionGate }: ProjectsDeps): Projec
             current.createdByAgentName,
           ),
           updatedBy: actorForWrite(actor),
+          fallbackPolicyOverride: current.fallbackPolicyOverride,
+          effectiveFallbackPolicy: current.fallbackPolicyOverride ?? current.projectFallbackPolicy,
         };
       });
     },

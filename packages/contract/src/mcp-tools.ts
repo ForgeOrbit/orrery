@@ -236,12 +236,14 @@ const allSessionsForIssue = {
   output: z.object({ sessions: WorkSessionsResponse }),
 };
 
-// Human input (issue #41). An agent asks through this tool; answering is a human-only
-// REST operation so no agent key — including a sibling run — can ever answer a question.
+// Human input (issue #41, fallback policy in #42). An agent asks through this tool;
+// answering, setting the project policy and setting an issue override are human-only
+// REST operations, so no agent key — including a sibling run — can authorize its own
+// fallback or answer a question.
 const askForInput = {
   name: "ask_for_input",
   description:
-    "Ask the team a blocking question about an issue this agent currently holds. Include a concrete proposed fallback; the agent cannot authorize it. The question opens for one hour in database time, keeps the claim while the agent checks in, sets the issue to Needs input and emails the agent's owner. A human with Contribute or Manage answers through the inbox; at the deadline with no authorized fallback the question is paused, the claim released, and the issue stays Needs input until a human answers.",
+    "Ask the team a blocking question about an issue this agent currently holds. Include a concrete proposed fallback; the agent cannot authorize it. The question opens for one hour in database time, keeps the claim while the agent checks in, sets the issue to Needs input and emails the agent's owner. A human with Contribute or Manage answers through the inbox. Only a human may set the project fallback policy or an issue override; the agent cannot authorize its own fallback. At the deadline a require_human question pauses, releasing the claim and keeping Needs input; a fallback_allowed question resolves to fallback_used, clears Needs input and lets the worker continue without releasing its claim.",
   input: AskForInputInput,
   output: QuestionResponse,
 };
@@ -251,7 +253,7 @@ const askForInput = {
 const listIssueQuestions = {
   name: "list_issue_questions",
   description:
-    "List every question asked about an in-scope issue and its resolution, newest first. A pending question may be reported as paused in database time once its one-hour deadline has passed. Needs no claim; answering remains a human-only REST operation.",
+    "List every question asked about an in-scope issue and its resolution, newest first. A pending question past its one-hour deadline is reported in database time as paused (require_human) or fallback_used (fallback_allowed). A fallback_used question carries authorizedFallback, the proposed fallback the harness may act on; before authorization, on pause or on answer, authorizedFallback is null. Needs no claim; answering remains a human-only REST operation, and a late human answer is a follow-up that never reverses the fallback.",
   input: IssueQuestionParams,
   output: z.object({ questions: InboxResponse }),
 };

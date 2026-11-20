@@ -104,7 +104,8 @@ type QuestionRow = typeof questions.$inferSelect;
 type QuestionView = Omit<QuestionRow, "sessionId"> & { effectiveStatus?: string };
 
 // Reads must never show an open question past the one-hour deadline: the same DB-time
-// predicate as the write path is projected in SQL, so a stale row reads as paused.
+// predicate as the write path is projected in SQL using the effective fallback policy
+// (issue override ?? project policy), so a stale row reads as paused or fallback_used.
 const questionColumns = {
   id: questions.id,
   issueId: questions.issueId,
@@ -115,7 +116,7 @@ const questionColumns = {
   question: questions.question,
   proposedFallback: questions.proposedFallback,
   status: questions.status,
-  effectiveStatus: sql<string>`case when ${questions.status} = 'open' and ${questions.responseDeadlineAt} <= statement_timestamp() then 'paused' else ${questions.status} end`,
+  effectiveStatus: sql<string>`case when ${questions.status} = 'open' and ${questions.responseDeadlineAt} <= statement_timestamp() then case when coalesce((select ${issues.fallbackPolicyOverride} from ${issues} where ${issues.id} = ${questions.issueId}), (select ${projects.fallbackPolicy} from ${projects} where ${projects.id} = ${questions.projectId})) = 'fallback_allowed' then 'fallback_used' else 'paused' end else ${questions.status} end`,
   responseDeadlineAt: questions.responseDeadlineAt,
   answer: questions.answer,
   answeredByHumanId: questions.answeredByHumanId,
@@ -130,6 +131,7 @@ const questionColumns = {
 const iso = (value: Date | null) => value?.toISOString() ?? null;
 
 function toQuestion(row: QuestionView): Question {
+  const status = QuestionStatus.parse(row.effectiveStatus ?? row.status);
   return {
     id: row.id,
     issueId: row.issueId,
@@ -139,7 +141,9 @@ function toQuestion(row: QuestionView): Question {
     runId: row.runId,
     question: row.question,
     proposedFallback: row.proposedFallback,
-    status: QuestionStatus.parse(row.effectiveStatus ?? row.status),
+    status,
+    // Only a resolved fallback authorizes the proposed fallback to reach the harness.
+    authorizedFallback: status === QuestionStatus.enum.fallback_used ? row.proposedFallback : null,
     responseDeadlineAt: row.responseDeadlineAt.toISOString(),
     answer: row.answer,
     answeredByHumanId: row.answeredByHumanId,
@@ -178,7 +182,12 @@ async function recordActivity(
   input: {
     projectId: string;
     issueId: string;
-    type: "issue_question_asked" | "issue_question_answered" | "issue_question_paused";
+    type:
+      | "issue_question_asked"
+      | "issue_question_answered"
+      | "issue_question_paused"
+      | "issue_question_fallback_used"
+      | "issue_question_follow_up";
     summary: string;
     agentId?: string;
     humanId?: string;
@@ -194,6 +203,46 @@ async function recordActivity(
     actorHumanId: input.humanId ?? null,
     createdAt: sql`statement_timestamp()`,
   });
+}
+
+// A late answer to an authorized fallback is a follow-up, never a reversal: status stays
+// fallback_used, Needs input and the issue's status are untouched, and the work already
+// done with the fallback is not undone. The isNull guard makes a repeated answer idempotent
+// by refusing a second follow-up instead of overwriting the first.
+async function storeFollowUp(
+  tx: DbTransaction,
+  input: {
+    questionId: string;
+    projectId: string;
+    issueId: string;
+    answer: string;
+    humanId: string;
+  },
+) {
+  const [followed] = await tx
+    .update(questions)
+    .set({
+      followUp: input.answer,
+      followUpByHumanId: input.humanId,
+      followUpAt: sql`statement_timestamp()`,
+    })
+    .where(
+      and(
+        eq(questions.id, input.questionId),
+        eq(questions.status, "fallback_used"),
+        isNull(questions.followUp),
+      ),
+    )
+    .returning();
+  if (followed === undefined) throw new InboxError("question_resolved");
+  await recordActivity(tx, {
+    projectId: input.projectId,
+    issueId: input.issueId,
+    type: "issue_question_follow_up",
+    summary: `Follow-up on an authorized fallback: ${input.answer}`,
+    humanId: input.humanId,
+  });
+  return followed;
 }
 
 function humanIdOf(actor: WorkActor): string {
@@ -252,8 +301,10 @@ function requireAgent(actor: AgentActor | null): AgentIdentity {
 }
 
 // The deadline and the resolution are decided in one conditional UPDATE in database time.
-// Two concurrent deadline evaluations cannot both pause a question; the issue row lock
+// Two concurrent deadline evaluations cannot both resolve a question; the issue row lock
 // taken by the caller serializes them, and the guard makes the transition idempotent.
+// The effective policy is read on that same locked transaction: an issue override wins
+// over the project policy, and only a human-set fallback_allowed authorizes the fallback.
 const evaluateDeadline: InboxService["evaluateDeadline"] = async (tx, issueId) => {
   const [due] = await tx
     .select({ id: questions.id })
@@ -267,20 +318,55 @@ const evaluateDeadline: InboxService["evaluateDeadline"] = async (tx, issueId) =
     )
     .limit(1);
   if (due === undefined) return;
+  const [policy] = await tx
+    .select({
+      override: issues.fallbackPolicyOverride,
+      projectPolicy: projects.fallbackPolicy,
+    })
+    .from(issues)
+    .innerJoin(projects, eq(projects.id, issues.projectId))
+    .where(eq(issues.id, issueId))
+    .limit(1);
+  const effectivePolicy = policy?.override ?? policy?.projectPolicy ?? "require_human";
+  const stillDue = and(
+    eq(questions.id, due.id),
+    eq(questions.status, "open"),
+    lte(questions.responseDeadlineAt, sql`statement_timestamp()`),
+  );
+
+  if (effectivePolicy === "fallback_allowed") {
+    const [used] = await tx
+      .update(questions)
+      .set({ status: "fallback_used", resolvedAt: sql`statement_timestamp()` })
+      .where(stillDue)
+      .returning();
+    if (used === undefined) return;
+    // Work continues with the authorized fallback: clear Needs input so the issue is
+    // ready as soon as the claim lapses, but never release a live, checking-in claim.
+    // The harness only receives proposedFallback via the resolved question's
+    // authorizedFallback field; an agent can never set or loosen this policy itself.
+    await tx
+      .update(issues)
+      .set({ needsInput: false, updatedAt: sql`statement_timestamp()` })
+      .where(eq(issues.id, issueId));
+    await recordActivity(tx, {
+      projectId: used.projectId,
+      issueId,
+      type: "issue_question_fallback_used",
+      summary: `Authorized fallback used at the one-hour deadline: ${used.question}`,
+      agentId: used.agentId,
+    });
+    return;
+  }
+
   const [paused] = await tx
     .update(questions)
     .set({ status: "paused", resolvedAt: sql`statement_timestamp()` })
-    .where(
-      and(
-        eq(questions.id, due.id),
-        eq(questions.status, "open"),
-        lte(questions.responseDeadlineAt, sql`statement_timestamp()`),
-      ),
-    )
+    .where(stillDue)
     .returning();
   if (paused === undefined) return;
-  // #41 has no authorized fallback, so the one-hour deadline pauses: release the live
-  // claim, keep Needs input, and leave the issue out of ready work until a human answers.
+  // require_human: release the live claim, keep Needs input, and leave the issue out of
+  // ready work until a human unblocks it with an answer.
   await tx
     .update(workSessions)
     .set({
@@ -457,36 +543,31 @@ export function createInboxService(deps: InboxDeps): InboxService {
           "question_not_found",
         );
         // Evaluate the deadline in database time before reading the resolution: an answer
-        // that races the boundary first pauses (releasing the claim), then unblocks.
+        // that races the boundary first pauses (require_human, releasing the claim) or
+        // resolves to fallback_used (fallback_allowed). In the latter case the answer is
+        // recorded as a follow-up, never as an on-time answer.
         await evaluateDeadline(tx, issue.id);
-        const [row] = await tx
-          .select()
-          .from(questions)
-          .where(eq(questions.id, questionId))
-          .limit(1)
-          .for("update");
-        if (row === undefined) throw new InboxError("question_not_found");
+        const freshRow = async () => {
+          const [fresh] = await tx
+            .select()
+            .from(questions)
+            .where(eq(questions.id, questionId))
+            .limit(1)
+            .for("update");
+          if (fresh === undefined) throw new InboxError("question_not_found");
+          return fresh;
+        };
+        const followUp = () =>
+          storeFollowUp(tx, {
+            questionId,
+            projectId: issue.projectId,
+            issueId: issue.id,
+            answer,
+            humanId: actor.account.humanId,
+          });
+        const row = await freshRow();
         if (row.status === "answered") throw new InboxError("question_resolved");
-        if (row.status === "fallback_used") {
-          // #42 territory: a late answer is a follow-up, never a reversal of fallback work.
-          const [followed] = await tx
-            .update(questions)
-            .set({
-              followUp: answer,
-              followUpByHumanId: actor.account.humanId,
-              followUpAt: sql`statement_timestamp()`,
-            })
-            .where(
-              and(
-                eq(questions.id, questionId),
-                eq(questions.status, "fallback_used"),
-                isNull(questions.followUp),
-              ),
-            )
-            .returning();
-          if (followed === undefined) throw new InboxError("question_resolved");
-          return toQuestion(followed);
-        }
+        if (row.status === "fallback_used") return toQuestion(await followUp());
         // Exactly one conditional update wins: open (before the deadline) or paused (after
         // a deadline pause) becomes answered. Two concurrent answers serialize on the
         // issue row lock and the guard; only one can transition the question.
@@ -505,7 +586,7 @@ export function createInboxService(deps: InboxDeps): InboxService {
                 eq(questions.id, questionId),
                 sql`${questions.status} in ('open', 'paused')`,
                 // An open question is answered directly only strictly before the deadline
-                // in database time; at/after it the deadline pause must release the claim.
+                // in database time; at/after it the deadline must resolve first.
                 or(
                   gt(questions.responseDeadlineAt, sql`statement_timestamp()`),
                   eq(questions.status, "paused"),
@@ -515,12 +596,18 @@ export function createInboxService(deps: InboxDeps): InboxService {
             .returning();
         const [first] = await resolveAnswered();
         let answered = first;
-        if (answered === undefined && row.status === "open") {
-          // The deadline can land between the evaluation and this statement. Pause first,
-          // then resolve the now-paused question instead of returning a spurious 409.
+        if (answered === undefined) {
+          // The deadline can land between the evaluation and this statement. Re-evaluate,
+          // then re-read: under fallback_allowed the answer becomes a follow-up; under
+          // require_human the now-paused question is resolved instead of a spurious 409.
           await evaluateDeadline(tx, issue.id);
-          const [retried] = await resolveAnswered();
-          answered = retried;
+          const retried = await freshRow();
+          if (retried.status === "fallback_used") return toQuestion(await followUp());
+          if (retried.status === "answered") throw new InboxError("question_resolved");
+          if (retried.status === "paused" || retried.status === "open") {
+            const [resolved] = await resolveAnswered();
+            answered = resolved;
+          }
         }
         if (answered === undefined) throw new InboxError("question_resolved");
         // Clears Needs input whether the claim is still held (continue) or lapsed/released

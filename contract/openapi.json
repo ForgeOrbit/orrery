@@ -1250,6 +1250,9 @@
           },
           "accessLevel": {
             "$ref": "#/components/schemas/ProjectAccessLevel"
+          },
+          "fallbackPolicy": {
+            "$ref": "#/components/schemas/FallbackPolicy"
           }
         },
         "required": [
@@ -1259,7 +1262,8 @@
           "createdAt",
           "createdBy",
           "workspaceKind",
-          "accessLevel"
+          "accessLevel",
+          "fallbackPolicy"
         ]
       },
       "Actor": {
@@ -1304,6 +1308,13 @@
           "displayName"
         ]
       },
+      "FallbackPolicy": {
+        "type": "string",
+        "enum": [
+          "require_human",
+          "fallback_allowed"
+        ]
+      },
       "CreateProjectRequest": {
         "type": "object",
         "properties": {
@@ -1328,6 +1339,17 @@
         },
         "required": [
           "name"
+        ]
+      },
+      "SetProjectFallbackPolicyRequest": {
+        "type": "object",
+        "properties": {
+          "fallbackPolicy": {
+            "$ref": "#/components/schemas/FallbackPolicy"
+          }
+        },
+        "required": [
+          "fallbackPolicy"
         ]
       },
       "ProjectAccessGrantsResponse": {
@@ -1434,6 +1456,12 @@
           },
           "updatedBy": {
             "$ref": "#/components/schemas/Actor"
+          },
+          "fallbackPolicyOverride": {
+            "$ref": "#/components/schemas/FallbackPolicyOverride"
+          },
+          "effectiveFallbackPolicy": {
+            "$ref": "#/components/schemas/FallbackPolicy"
           }
         },
         "required": [
@@ -1447,7 +1475,9 @@
           "updatedAt",
           "closedAt",
           "createdBy",
-          "updatedBy"
+          "updatedBy",
+          "fallbackPolicyOverride",
+          "effectiveFallbackPolicy"
         ]
       },
       "IssueStatus": {
@@ -1455,6 +1485,17 @@
         "enum": [
           "open",
           "closed"
+        ]
+      },
+      "FallbackPolicyOverride": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "enum": [
+          "require_human",
+          "fallback_allowed",
+          null
         ]
       },
       "CreateIssueRequest": {
@@ -1492,6 +1533,17 @@
             "$ref": "#/components/schemas/IssueStatus"
           }
         }
+      },
+      "SetIssueFallbackPolicyRequest": {
+        "type": "object",
+        "properties": {
+          "override": {
+            "$ref": "#/components/schemas/FallbackPolicyOverride"
+          }
+        },
+        "required": [
+          "override"
+        ]
       },
       "IssueCommentsResponse": {
         "type": "array",
@@ -1595,6 +1647,7 @@
         "enum": [
           "project_created",
           "project_renamed",
+          "project_fallback_policy_changed",
           "issue_created",
           "issue_edited",
           "issue_commented",
@@ -1603,6 +1656,9 @@
           "issue_question_asked",
           "issue_question_answered",
           "issue_question_paused",
+          "issue_question_fallback_used",
+          "issue_question_follow_up",
+          "issue_fallback_policy_override_changed",
           "knowledge_created",
           "knowledge_edited"
         ]
@@ -2409,6 +2465,12 @@
           "status": {
             "$ref": "#/components/schemas/QuestionStatus"
           },
+          "authorizedFallback": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "responseDeadlineAt": {
             "$ref": "#/components/schemas/Timestamp"
           },
@@ -2489,6 +2551,7 @@
           "question",
           "proposedFallback",
           "status",
+          "authorizedFallback",
           "responseDeadlineAt",
           "answer",
           "answeredByHumanId",
@@ -5539,6 +5602,86 @@
         }
       }
     },
+    "/api/projects/{projectId}/fallback-policy": {
+      "patch": {
+        "summary": "Set a project's fallback policy",
+        "description": "Human, Manage only. `require_human` (the default) pauses a question at its one-hour deadline; `fallback_allowed` authorizes returning the agent's proposed fallback and lets work continue. No agent key is accepted: an agent cannot authorize its own fallback. A real change is recorded in the project's activity.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetProjectFallbackPolicyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The project with its new fallback policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Project"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in as a human",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Manage access is required to set the project fallback policy",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No project with this id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/projects/{projectId}/access": {
       "get": {
         "summary": "The explicit access grants on a project",
@@ -6055,6 +6198,86 @@
           },
           "409": {
             "description": "The agent holds no live work session for this issue",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/{issueId}/fallback-policy": {
+      "patch": {
+        "summary": "Set or clear an issue's fallback policy override",
+        "description": "Human, Contribute or Manage. `require_human` tightens an issue below a fallback_allowed project and needs only Contribute. Loosening — an explicit `fallback_allowed` override, or clearing a `require_human` override under a fallback_allowed project — needs Manage. `null` clears the override so the issue uses its project's policy. No agent key is accepted, and the fallback never grants project access: fenced writes still check the current access ceiling.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "issueId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetIssueFallbackPolicyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The issue with its override and effective fallback policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Issue"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in as a human",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Contribute access, or Manage to loosen, is required",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No issue with this id is accessible to the caller",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -7639,7 +7862,7 @@
     "/api/questions": {
       "post": {
         "summary": "Ask the team a blocking question",
-        "description": "An agent with a live claim asks a question, proposes a fallback and sets its issue to Needs input. The agent's owner is emailed after the question commits. No fallback is authorized in this slice: at the one-hour deadline the question pauses and releases the claim.",
+        "description": "An agent with a live claim asks a question, proposes a fallback and sets its issue to Needs input. The agent's owner is emailed after the question commits. The agent cannot authorize its own fallback: at the one-hour deadline a require_human question pauses and releases the claim, while a fallback_allowed question resolves to fallback_used, clears Needs input and keeps a checking-in worker's claim.",
         "requestBody": {
           "required": true,
           "content": {
@@ -7765,7 +7988,7 @@
     "/api/questions/{questionId}/answer": {
       "post": {
         "summary": "Answer a question in the inbox",
-        "description": "A human with Contribute or Manage answers a question. Answering before the one-hour deadline, or after a paused question, resolves it exactly once and clears Needs input. Agents and sibling runs are refused, as are Readers and unrelated members.",
+        "description": "A human with Contribute or Manage answers a question. Answering before the one-hour deadline, or after a paused question, resolves it exactly once and clears Needs input. An answer on or after the deadline to a fallback_allowed question is stored as a follow-up: it never reverses the authorized fallback, reopens the issue, or restores Needs input. Agents and sibling runs are refused, as are Readers and unrelated members.",
         "parameters": [
           {
             "schema": {
