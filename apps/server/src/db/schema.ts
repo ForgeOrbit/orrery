@@ -221,6 +221,9 @@ export const workspaceEventTypes = [
   "project_transfer_authorized",
   "project_transfer_received",
   "project_transferred_out",
+  // #43: an administrator restored ownership of an ownerless shared workspace. The event
+  // names only the actor and the promoted human, never a project or workspace content.
+  "workspace_ownership_recovered",
 ] as const;
 export type WorkspaceEventType = (typeof workspaceEventTypes)[number];
 
@@ -350,6 +353,9 @@ export const accountRecoveryEventTypes = [
   // `actorHumanId` is the administrator who made the change. Secret-free by design.
   "account_deactivated",
   "account_reactivated",
+  // #43: the same recovery is visible in the administrator's installation history. No
+  // workspace name, project, or content is stored here — only the two people involved.
+  "workspace_ownership_recovered",
 ] as const;
 export type AccountRecoveryEventType = (typeof accountRecoveryEventTypes)[number];
 

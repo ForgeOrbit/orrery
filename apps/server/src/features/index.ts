@@ -12,6 +12,7 @@ import type { WorkSessionGate } from "./projects/index.ts";
 import { createHistoryFeature, historyRoutes } from "./history/index.ts";
 import { createInboxFeature, inboxRoutes } from "./inbox/index.ts";
 import { createInvitationsFeature, invitationsRoutes } from "./invitations/index.ts";
+import { createOwnershipFeature, ownershipRoutes } from "./ownership/index.ts";
 import { createProjectsFeature, projectAccessAtLeast, projectsRoutes } from "./projects/index.ts";
 import { createRecoveryFeature, recoveryRoutes } from "./recovery/index.ts";
 import { createRunsFeature, runsRoutes } from "./runs/index.ts";
@@ -122,6 +123,15 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     // Deactivation borrows only accounts' session reader: the human, key, claim, grant,
     // membership and history writes it makes are decided in its own one service.
     createDeactivationFeature({ db: database.db, sessionReader: accounts.sessionReader }),
+    // Ownership recovery builds on #38's suspended former owners. It borrows accounts'
+    // human session reader (never an agent key) and settings' one mail sender, and writes
+    // ownership and both audit trails in its own single service transaction.
+    createOwnershipFeature({
+      db: database.db,
+      sessionReader: accounts.sessionReader,
+      deliver: settings.deliver,
+      log,
+    }),
     settings,
     // Recovery borrows accounts' credential seams and settings' one mail sender. The
     // local command uses the same service, so its policy cannot drift from the HTTP flow.
@@ -199,6 +209,7 @@ export const routes = [
   ...systemRoutes,
   ...accountsRoutes,
   ...deactivationRoutes,
+  ...ownershipRoutes,
   ...agentsRoutes,
   ...settingsRoutes,
   ...recoveryRoutes,
