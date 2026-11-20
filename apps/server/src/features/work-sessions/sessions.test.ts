@@ -1,14 +1,18 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import {
+  ActivityDetailBlockV1,
   ActiveWorkSessionsResponse,
   AgentIdentity,
   CreateAgentKeyResponse,
   IssuesResponse,
   Problem,
+  RenewWorkSessionInput,
   RequestStopWorkSessionInput,
   SessionActivitiesResponse,
   SessionActivity,
+  SessionActivityDetail,
+  StopWorkSessionInput,
   WorkSession,
 } from "@orrery/contract";
 import { and, eq, sql } from "drizzle-orm";
@@ -2173,5 +2177,285 @@ describe("agent assignment and the ready queue (#84)", () => {
     expect(rest.status).toBe(200);
     const rows = IssuesResponse.parse(await rest.json());
     expect(rows.map((row) => row.id)).toEqual([mineUrgent.id, mineLow.id]);
+  });
+});
+
+// #96: telemetry totals are overwritten only when reported, and a `block` is validated only
+// when present. Both are proved against real rows so the contract's validation and the
+// database's non-negative CHECK constraints are exercised together.
+describe("cumulative session telemetry and v1 activity blocks (#96)", () => {
+  it("overwrites reported totals on renew/progress/complete and preserves omitted fields", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const actor = { kind: "agent" as const, identity };
+    const issue = await humanIssue(f, "Telemetry issue");
+    const claim = await sessionsService.claim(actor, {
+      issueId: issue.id,
+      runId: await newRun(identity),
+    });
+    expect(WorkSession.parse(claim)).toMatchObject({
+      inputTokens: null,
+      outputTokens: null,
+      costUsdMicros: null,
+    });
+
+    const renewed = await sessionsService.renew(actor, issue.id, undefined, {
+      inputTokens: 100,
+      outputTokens: 20,
+    });
+    expect(renewed).toMatchObject({ inputTokens: 100, outputTokens: 20, costUsdMicros: null });
+
+    // A retry of the same cumulative totals writes the same values, never a sum.
+    const retried = await sessionsService.renew(actor, issue.id, undefined, {
+      inputTokens: 100,
+      outputTokens: 20,
+    });
+    expect(retried).toMatchObject({ inputTokens: 100, outputTokens: 20, costUsdMicros: null });
+
+    // Progress reports a higher input total and the first cost; output is preserved.
+    const progressed = await sessionsService.progress(actor, issue.id, "Halfway", undefined, {
+      inputTokens: 250,
+      costUsdMicros: 750,
+    });
+    expect(progressed).toMatchObject({ inputTokens: 250, outputTokens: 20, costUsdMicros: 750 });
+
+    // A check-in that omits telemetry entirely leaves every stored total untouched.
+    expect(await sessionsService.progress(actor, issue.id, "Still going")).toMatchObject({
+      inputTokens: 250,
+      outputTokens: 20,
+      costUsdMicros: 750,
+    });
+    expect(await sessionsService.renew(actor, issue.id)).toMatchObject({
+      inputTokens: 250,
+      outputTokens: 20,
+      costUsdMicros: 750,
+    });
+
+    // Completion reports final input and cost totals; output carries forward.
+    const stopped = await sessionsService.stop(actor, issue.id, "completed", undefined, {
+      inputTokens: 400,
+      costUsdMicros: 1200,
+    });
+    expect(stopped).toMatchObject({ inputTokens: 400, outputTokens: 20, costUsdMicros: 1200 });
+    expect(await sessionsService.getSession(actor, issue.id)).toMatchObject({
+      inputTokens: 400,
+      outputTokens: 20,
+      costUsdMicros: 1200,
+    });
+
+    // A session that never reported telemetry keeps all three null through every write.
+    const quiet = await humanIssue(f, "Quiet issue");
+    await sessionsService.claim(actor, { issueId: quiet.id, runId: await newRun(identity) });
+    expect(await sessionsService.renew(actor, quiet.id)).toMatchObject({
+      inputTokens: null,
+      outputTokens: null,
+      costUsdMicros: null,
+    });
+    expect(await sessionsService.progress(actor, quiet.id, "No numbers")).toMatchObject({
+      inputTokens: null,
+      outputTokens: null,
+      costUsdMicros: null,
+    });
+    expect(await sessionsService.stop(actor, quiet.id, "completed")).toMatchObject({
+      inputTokens: null,
+      outputTokens: null,
+      costUsdMicros: null,
+    });
+  });
+
+  it("rejects negative or fractional totals in the contract and in the database", async () => {
+    for (const input of [
+      { issueId: "i", inputTokens: -1 },
+      { issueId: "i", outputTokens: -1 },
+      { issueId: "i", costUsdMicros: -1 },
+      { issueId: "i", inputTokens: 1.5 },
+    ]) {
+      expect(RenewWorkSessionInput.safeParse(input).success).toBe(false);
+    }
+    expect(StopWorkSessionInput.safeParse({ issueId: "i", inputTokens: -1 }).success).toBe(false);
+
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "Constraint issue");
+    const session = await sessionsService.claim(
+      { kind: "agent", identity },
+      {
+        issueId: issue.id,
+        runId: await newRun(identity),
+      },
+    );
+    // The CHECK constraints are the backstop for any writer that bypasses the contract.
+    for (const [column, constraint] of [
+      ["inputTokens", "work_sessions_input_tokens_nonnegative"],
+      ["outputTokens", "work_sessions_output_tokens_nonnegative"],
+      ["costUsdMicros", "work_sessions_cost_usd_micros_nonnegative"],
+    ] as const) {
+      let updateError: unknown;
+      try {
+        await database.db
+          .update(workSessions)
+          .set({ [column]: -1 })
+          .where(eq(workSessions.id, session.id));
+      } catch (error) {
+        updateError = error;
+      }
+      expect(rootCause(updateError)).toMatchObject({ code: "23514", constraint_name: constraint });
+    }
+    // Zero and positive totals remain writable.
+    await database.db
+      .update(workSessions)
+      .set({ inputTokens: 0, outputTokens: 0, costUsdMicros: 0 })
+      .where(eq(workSessions.id, session.id));
+    expect(await sessionsService.getSession({ kind: "agent", identity }, issue.id)).toMatchObject({
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsdMicros: 0,
+    });
+  });
+
+  it("validates every v1 block, rejects malformed ones and keeps arbitrary JSON without a block", async () => {
+    const blocks = [
+      { version: 1, type: "key_value", items: [{ key: "model", value: "gpt" }] },
+      { version: 1, type: "table", columns: ["name", "value"], rows: [["a", "1"]] },
+      { version: 1, type: "checklist", items: [{ label: "tests", checked: true }] },
+      {
+        version: 1,
+        type: "test_results",
+        passed: 3,
+        failed: 0,
+        skipped: 1,
+        cases: [{ name: "adds", status: "passed" }],
+      },
+    ] as const;
+    for (const block of blocks) {
+      expect(ActivityDetailBlockV1.parse(block)).toEqual(block);
+      expect(SessionActivityDetail.safeParse({ source: "ci", block }).success).toBe(true);
+    }
+    for (const malformed of [
+      { version: 2, type: "table", columns: [], rows: [] },
+      { version: 1, type: "unknown", items: [] },
+      { version: 1, type: "key_value", items: [{ key: "missing value" }] },
+      { version: 1, type: "test_results", passed: -1, failed: 0 },
+    ]) {
+      expect(ActivityDetailBlockV1.safeParse(malformed).success).toBe(false);
+      expect(SessionActivityDetail.safeParse({ source: "ci", block: malformed }).success).toBe(
+        false,
+      );
+    }
+    // Without a block, arbitrary JSON passes through as before #83.
+    expect(SessionActivityDetail.parse({ tool: "edit", nested: { n: 1 } })).toEqual({
+      tool: "edit",
+      nested: { n: 1 },
+    });
+    // The 64000-character size bound still applies to a detail carrying a block.
+    expect(
+      SessionActivityDetail.safeParse({ block: blocks[0], blob: "x".repeat(64_001) }).success,
+    ).toBe(false);
+
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "Block issue");
+    const actor = { kind: "agent" as const, identity };
+    const session = await sessionsService.claim(actor, {
+      issueId: issue.id,
+      runId: await newRun(identity),
+    });
+    const withBlock = await sessionsService.logActivity(actor, {
+      issueId: issue.id,
+      kind: "status",
+      summary: "Tests finished",
+      detail: { source: "ci", block: blocks[3] },
+    });
+    expect(withBlock.detail).toEqual({ source: "ci", block: blocks[3] });
+    const custom = await sessionsService.logActivity(actor, {
+      issueId: issue.id,
+      kind: "thought",
+      summary: "Custom telemetry",
+      detail: { tool: "edit", nested: { n: 1 } },
+    });
+    expect(custom.detail).toEqual({ tool: "edit", nested: { n: 1 } });
+    const timeline = await sessionsService.listActivities(actor, issue.id, session.id);
+    expect(timeline.map((entry) => entry.detail)).toEqual([custom.detail, withBlock.detail]);
+  });
+
+  it("accepts telemetry on REST check-ins and validates v1 blocks on the activity route", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "REST telemetry issue");
+    await sessionsService.claim(
+      { kind: "agent", identity },
+      {
+        issueId: issue.id,
+        runId: await newRun(identity),
+      },
+    );
+
+    const renewed = await postJson(
+      `/api/issues/${issue.id}/work-sessions/renew`,
+      { inputTokens: 12, outputTokens: 3 },
+      undefined,
+      f.secret,
+    );
+    expect(renewed.status).toBe(200);
+    expect(WorkSession.parse(await renewed.json())).toMatchObject({
+      inputTokens: 12,
+      outputTokens: 3,
+      costUsdMicros: null,
+    });
+
+    const progressed = await postJson(
+      `/api/issues/${issue.id}/work-sessions/progress`,
+      { summary: "REST progress", costUsdMicros: 42 },
+      undefined,
+      f.secret,
+    );
+    expect(progressed.status).toBe(200);
+    expect(WorkSession.parse(await progressed.json())).toMatchObject({
+      inputTokens: 12,
+      outputTokens: 3,
+      costUsdMicros: 42,
+    });
+
+    const block = { version: 1, type: "checklist", items: [{ label: "done", checked: true }] };
+    const activity = await postJson(
+      `/api/issues/${issue.id}/work-sessions/activities`,
+      { kind: "status", summary: "REST block", detail: { source: "ci", block } },
+      undefined,
+      f.secret,
+    );
+    expect(activity.status).toBe(201);
+    expect(SessionActivity.parse(await activity.json()).detail).toEqual({ source: "ci", block });
+
+    const malformed = await postJson(
+      `/api/issues/${issue.id}/work-sessions/activities`,
+      {
+        kind: "status",
+        summary: "Bad block",
+        detail: { block: { version: 1, type: "checklist", items: [{ label: "done" }] } },
+      },
+      undefined,
+      f.secret,
+    );
+    await expectProblem(malformed, 400, "validation_failed");
+    const negative = await postJson(
+      `/api/issues/${issue.id}/work-sessions/renew`,
+      { inputTokens: -1 },
+      undefined,
+      f.secret,
+    );
+    await expectProblem(negative, 400, "validation_failed");
+
+    const stopped = await postJson(
+      `/api/issues/${issue.id}/work-sessions/stop`,
+      { outcome: "completed", inputTokens: 20 },
+      undefined,
+      f.secret,
+    );
+    expect(stopped.status).toBe(200);
+    expect(WorkSession.parse(await stopped.json())).toMatchObject({
+      inputTokens: 20,
+      outputTokens: 3,
+      costUsdMicros: 42,
+    });
   });
 });

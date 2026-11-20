@@ -1,5 +1,10 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import { ReadyWorkFilter, SessionActivityKind, type AgentIdentity } from "@orrery/contract";
+import {
+  ReadyWorkFilter,
+  SessionActivityKind,
+  type AgentIdentity,
+  type SessionTelemetry,
+} from "@orrery/contract";
 import { sessionTools } from "@orrery/contract";
 import { isAgentError, type AgentAuthenticator } from "../agents/index.ts";
 import { SessionsError, type SessionsService } from "./service.ts";
@@ -19,6 +24,16 @@ const str = (value: unknown, field: string): string => {
 // one keeps #36 callers working, a present one pins the write to that exact session.
 const sessionFence = (args: Args): string | undefined =>
   typeof args.sessionId === "string" ? args.sessionId : undefined;
+
+// The tool's input schema already validated these as non-negative integers; send only the
+// cumulative totals the caller actually reported so the service preserves the rest (#96).
+const telemetry = (args: Args): SessionTelemetry | undefined => {
+  const reported: SessionTelemetry = {};
+  if (typeof args.inputTokens === "number") reported.inputTokens = args.inputTokens;
+  if (typeof args.outputTokens === "number") reported.outputTokens = args.outputTokens;
+  if (typeof args.costUsdMicros === "number") reported.costUsdMicros = args.costUsdMicros;
+  return Object.keys(reported).length === 0 ? undefined : reported;
+};
 
 // The tool's input schema already validated the detail; this narrows the parsed `unknown`
 // to the service's type without a second parser or an unchecked assertion. The kind uses
@@ -41,6 +56,7 @@ export function createSessionsMcp(service: SessionsService, authenticate: AgentA
         { kind: "agent", identity },
         str(args.issueId, "issueId"),
         sessionFence(args),
+        telemetry(args),
       ),
     }),
     report_progress: async (identity, args) => ({
@@ -49,6 +65,7 @@ export function createSessionsMcp(service: SessionsService, authenticate: AgentA
         str(args.issueId, "issueId"),
         str(args.summary, "summary"),
         sessionFence(args),
+        telemetry(args),
       ),
     }),
     stop_session: async (identity, args) => ({
@@ -57,6 +74,7 @@ export function createSessionsMcp(service: SessionsService, authenticate: AgentA
         str(args.issueId, "issueId"),
         args.outcome === "released" ? "released" : "completed",
         sessionFence(args),
+        telemetry(args),
       ),
     }),
     get_work_session: async (identity, args) => ({

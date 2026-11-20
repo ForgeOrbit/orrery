@@ -20,6 +20,19 @@ export const WorkSessionOutcome = z
   .meta({ id: "WorkSessionOutcome" });
 export type WorkSessionOutcome = z.infer<typeof WorkSessionOutcome>;
 
+// Cumulative session telemetry (#96). A reported value is the session's running total, not
+// a delta: overwriting it on a retry is idempotent, and omitting a field leaves the stored
+// value untouched. All three are non-negative integers in the contract and in the database;
+// a field the client never reports stays null. Orrery records only what the client reports.
+export const SessionTelemetry = z
+  .object({
+    inputTokens: z.number().int().nonnegative().optional(),
+    outputTokens: z.number().int().nonnegative().optional(),
+    costUsdMicros: z.number().int().nonnegative().optional(),
+  })
+  .meta({ id: "SessionTelemetry" });
+export type SessionTelemetry = z.infer<typeof SessionTelemetry>;
+
 export const WorkSession = z
   .object({
     id: z.string(),
@@ -40,6 +53,10 @@ export const WorkSession = z
     stopRequested: z.boolean(),
     stopRequestedAt: Timestamp.nullable(),
     stopReason: z.string().nullable(),
+    // Cumulative telemetry, null until the client first reports it (#96).
+    inputTokens: z.number().int().nullable(),
+    outputTokens: z.number().int().nullable(),
+    costUsdMicros: z.number().int().nullable(),
     createdAt: Timestamp,
     updatedAt: Timestamp,
     endedAt: Timestamp.nullable(),
@@ -87,30 +104,26 @@ export type ClaimWorkSessionInput = z.infer<typeof ClaimWorkSessionInput>;
 // Omitting it keeps #36 callers (helpers, older clients) working unchanged.
 const SessionFence = z.string().trim().min(1).max(200);
 
-export const RenewWorkSessionInput = z
-  .object({
-    issueId: z.string().trim().min(1).max(200),
-    sessionId: SessionFence.optional(),
-  })
-  .meta({ id: "RenewWorkSessionInput" });
+// Renew, progress and completion all accept the same optional cumulative telemetry (#96).
+// Each field overwrites the stored total when present and preserves it when omitted.
+export const RenewWorkSessionInput = SessionTelemetry.extend({
+  issueId: z.string().trim().min(1).max(200),
+  sessionId: SessionFence.optional(),
+}).meta({ id: "RenewWorkSessionInput" });
 export type RenewWorkSessionInput = z.infer<typeof RenewWorkSessionInput>;
 
-export const ReportProgressInput = z
-  .object({
-    issueId: z.string().trim().min(1).max(200),
-    summary: z.string().trim().min(1).max(20_000),
-    sessionId: SessionFence.optional(),
-  })
-  .meta({ id: "ReportProgressInput" });
+export const ReportProgressInput = SessionTelemetry.extend({
+  issueId: z.string().trim().min(1).max(200),
+  summary: z.string().trim().min(1).max(20_000),
+  sessionId: SessionFence.optional(),
+}).meta({ id: "ReportProgressInput" });
 export type ReportProgressInput = z.infer<typeof ReportProgressInput>;
 
-export const StopWorkSessionInput = z
-  .object({
-    issueId: z.string().trim().min(1).max(200),
-    outcome: WorkSessionOutcome.default("completed"),
-    sessionId: SessionFence.optional(),
-  })
-  .meta({ id: "StopWorkSessionInput" });
+export const StopWorkSessionInput = SessionTelemetry.extend({
+  issueId: z.string().trim().min(1).max(200),
+  outcome: WorkSessionOutcome.default("completed"),
+  sessionId: SessionFence.optional(),
+}).meta({ id: "StopWorkSessionInput" });
 export type StopWorkSessionInput = z.infer<typeof StopWorkSessionInput>;
 
 export const GetWorkSessionInput = z
@@ -216,14 +229,60 @@ export const SessionActivityKind = z
   .meta({ id: "SessionActivityKind" });
 export type SessionActivityKind = z.infer<typeof SessionActivityKind>;
 
+// A versioned structured block inside an activity's `detail` (#96). v1 is a closed
+// discriminated union on `type`, so a renderer can rely on each shape. Counts and sizes are
+// bounded non-negative integers; an unknown version or type is rejected rather than stored.
+export const ActivityDetailBlockV1 = z
+  .discriminatedUnion("type", [
+    z.object({
+      version: z.literal(1),
+      type: z.literal("key_value"),
+      items: z.array(z.object({ key: z.string(), value: z.string() })),
+    }),
+    z.object({
+      version: z.literal(1),
+      type: z.literal("table"),
+      columns: z.array(z.string()),
+      rows: z.array(z.array(z.string())),
+    }),
+    z.object({
+      version: z.literal(1),
+      type: z.literal("checklist"),
+      items: z.array(z.object({ label: z.string(), checked: z.boolean() })),
+    }),
+    z.object({
+      version: z.literal(1),
+      type: z.literal("test_results"),
+      passed: z.number().int().nonnegative(),
+      failed: z.number().int().nonnegative(),
+      skipped: z.number().int().nonnegative().optional(),
+      cases: z
+        .array(
+          z.object({
+            name: z.string(),
+            status: z.enum(["passed", "failed", "skipped"]),
+            message: z.string().optional(),
+          }),
+        )
+        .optional(),
+    }),
+  ])
+  .meta({ id: "ActivityDetailBlockV1" });
+export type ActivityDetailBlockV1 = z.infer<typeof ActivityDetailBlockV1>;
+
 // A flat JSON object. z.json() is deliberately avoided: its recursive schema makes the
 // OpenAPI generator recurse forever; an unknown-valued record is still fully extensible.
 // The bound keeps a single telemetry entry from becoming an unbounded JSONB payload; an
 // oversized detail is a 400 validation_failed, not a silently truncated value.
+// When `block` is present it must be a valid v1 block; without it, arbitrary JSON objects
+// remain accepted so custom harness telemetry is never rejected (#96).
 export const SessionActivityDetail = z
   .record(z.string(), z.unknown())
   .refine((value) => JSON.stringify(value).length <= 64_000, {
     message: "Activity detail must be at most 64000 characters when serialized.",
+  })
+  .refine((value) => !("block" in value) || ActivityDetailBlockV1.safeParse(value.block).success, {
+    message: "Activity detail.block must be a valid v1 block.",
   })
   .meta({ id: "SessionActivityDetail" });
 export type SessionActivityDetail = z.infer<typeof SessionActivityDetail>;

@@ -15,6 +15,7 @@ import {
   ResumeWorkSessionResult,
   SessionActivitiesResponse,
   SessionActivity,
+  type SessionTelemetry,
   StopWorkSessionInput,
   WorkSession,
   WorkSessionsResponse,
@@ -45,6 +46,16 @@ const resumeBody = ResumeWorkSessionInput.omit({ issueId: true });
 const reacquireBody = ReacquireWorkSessionInput.omit({ issueId: true });
 const logActivityBody = LogSessionActivityInput.omit({ issueId: true });
 const readyWorkQuery = ReadyWorkInput.omit({ projectId: true });
+
+// Only the three cumulative totals go to the service; the fence is passed separately.
+const telemetryOf = (body: SessionTelemetry | undefined): SessionTelemetry | undefined =>
+  body === undefined
+    ? undefined
+    : {
+        inputTokens: body.inputTokens,
+        outputTokens: body.outputTokens,
+        costUsdMicros: body.costUsdMicros,
+      };
 
 const claim = createRoute({
   method: "post",
@@ -463,11 +474,13 @@ export function createSessionsRest(
 
   app.openapi(renew, async (c) => {
     try {
+      const body = c.req.valid("json");
       return c.json(
         await service.renew(
           await agentActor(c),
           c.req.valid("param").issueId,
-          c.req.valid("json")?.sessionId,
+          body?.sessionId,
+          telemetryOf(body),
         ),
         200,
       );
@@ -478,12 +491,14 @@ export function createSessionsRest(
 
   app.openapi(progress, async (c) => {
     try {
+      const body = c.req.valid("json");
       return c.json(
         await service.progress(
           await agentActor(c),
           c.req.valid("param").issueId,
-          c.req.valid("json").summary,
-          c.req.valid("json").sessionId,
+          body.summary,
+          body.sessionId,
+          telemetryOf(body),
         ),
         200,
       );
@@ -494,12 +509,14 @@ export function createSessionsRest(
 
   app.openapi(stop, async (c) => {
     try {
+      const body = c.req.valid("json");
       return c.json(
         await service.stop(
           await agentActor(c),
           c.req.valid("param").issueId,
-          c.req.valid("json").outcome,
-          c.req.valid("json").sessionId,
+          body.outcome,
+          body.sessionId,
+          telemetryOf(body),
         ),
         200,
       );

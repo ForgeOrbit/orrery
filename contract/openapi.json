@@ -2730,6 +2730,24 @@
               "null"
             ]
           },
+          "inputTokens": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "outputTokens": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "costUsdMicros": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "createdAt": {
             "$ref": "#/components/schemas/Timestamp"
           },
@@ -2753,6 +2771,9 @@
           "stopRequested",
           "stopRequestedAt",
           "stopReason",
+          "inputTokens",
+          "outputTokens",
+          "costUsdMicros",
           "createdAt",
           "updatedAt",
           "endedAt"
@@ -2927,6 +2948,24 @@
               "null"
             ]
           },
+          "inputTokens": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "outputTokens": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "costUsdMicros": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "createdAt": {
             "$ref": "#/components/schemas/Timestamp"
           },
@@ -2953,6 +2992,9 @@
           "stopRequested",
           "stopRequestedAt",
           "stopReason",
+          "inputTokens",
+          "outputTokens",
+          "costUsdMicros",
           "createdAt",
           "updatedAt",
           "endedAt",
@@ -8495,6 +8537,18 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "inputTokens": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "outputTokens": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "costUsdMicros": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
                   "sessionId": {
                     "type": "string",
                     "minLength": 1,
@@ -8592,6 +8646,18 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "inputTokens": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "outputTokens": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "costUsdMicros": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
                   "summary": {
                     "type": "string",
                     "minLength": 1,
@@ -8697,6 +8763,18 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "inputTokens": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "outputTokens": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "costUsdMicros": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
                   "outcome": {
                     "$ref": "#/components/schemas/WorkSessionOutcome"
                   },
