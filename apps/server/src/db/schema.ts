@@ -7,11 +7,13 @@ import {
   ProjectAccessEventType,
   ProjectAccessLevel,
   ProjectActivityType,
+  RunStatus,
   WorkspaceKind,
   SmtpSecurity,
 } from "@orrery/contract";
 import { sql } from "drizzle-orm";
 import {
+  type AnyPgColumn,
   boolean,
   check,
   index,
@@ -634,6 +636,94 @@ export const agentKeyEvents = pgTable(
       sql`${t.type} in (${sql.raw(sqlLiteralList(AgentKeyEventType))})`,
     ),
     index("agent_key_events_workspace_created").on(t.workspaceId, t.createdAt),
+  ],
+);
+
+// A run is one harness conversation under one agent identity (issue #34). The bearer
+// key identifies the agent and scopes the workspace; the harness's native session id
+// distinguishes concurrent conversations and survives a resume. Reported fields that a
+// harness did not provide stay null so the UI can say `unknown` instead of inventing a
+// value. A partial unique index enforces identity only when both harness and native
+// session id were reported: two anonymous runs stay distinct instead of colliding on a
+// sentinel, while two clients sharing one key's session id still get one row.
+export const runs = pgTable(
+  "runs",
+  {
+    id: text("id").primaryKey(),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id),
+    harness: text("harness"),
+    harnessVersion: text("harness_version"),
+    nativeSessionId: text("native_session_id"),
+    model: text("model"),
+    status: text("status").$type<RunStatus>().notNull().default(RunStatus.enum.active),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    endedAt: timestamp("ended_at", { withTimezone: true }),
+    lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
+  },
+  (t) => [
+    check("runs_status", sql`${t.status} in (${sql.raw(sqlLiteralList(RunStatus))})`),
+    uniqueIndex("one_run_per_agent_workspace_harness_session")
+      .on(t.agentId, t.workspaceId, t.harness, t.nativeSessionId)
+      .where(sql`${t.harness} is not null and ${t.nativeSessionId} is not null`),
+    index("runs_workspace_created").on(t.workspaceId, t.createdAt),
+    index("runs_agent_created").on(t.agentId, t.createdAt),
+  ],
+);
+
+// Model values observed during a run. A change is written only when a reporter names a
+// model different from the current one; an absent model never overwrites a known one.
+export const runModelChanges = pgTable(
+  "run_model_changes",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id")
+      .notNull()
+      .references(() => runs.id, { onDelete: "cascade" }),
+    fromModel: text("from_model"),
+    toModel: text("to_model").notNull(),
+    reportedAt: timestamp("reported_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("run_model_changes_run_created").on(t.runId, t.createdAt)],
+);
+
+// A child worker observed inside a parent run. Codex and Claude report child
+// attribution in hooks on the parent's session; repeated events update this row in
+// place when an identity was reported. Every attribution field is nullable, so an
+// unreported one displays `unknown`, and two anonymous children stay distinct. A named
+// child run must belong to the same agent and workspace (checked in the service) and is
+// linked here by a foreign key that clears the link if that run is ever deleted.
+export const runChildren = pgTable(
+  "run_children",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id")
+      .notNull()
+      .references(() => runs.id, { onDelete: "cascade" }),
+    agentId: text("agent_id"),
+    agentType: text("agent_type"),
+    childRunId: text("child_run_id").references((): AnyPgColumn => runs.id, {
+      onDelete: "set null",
+    }),
+    model: text("model"),
+    status: text("status").$type<RunStatus>().notNull().default(RunStatus.enum.active),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    endedAt: timestamp("ended_at", { withTimezone: true }),
+  },
+  (t) => [
+    check("run_children_status", sql`${t.status} in (${sql.raw(sqlLiteralList(RunStatus))})`),
+    // Only a named child has a stable identity. Two children with neither an agent id
+    // nor a child run id are anonymous observations: both rows are kept, not collapsed.
+    uniqueIndex("one_child_per_run_and_reported_identity")
+      .on(t.runId, t.agentId, t.agentType, t.childRunId)
+      .where(sql`${t.agentId} is not null or ${t.childRunId} is not null`),
+    index("run_children_run_started").on(t.runId, t.startedAt),
   ],
 );
 

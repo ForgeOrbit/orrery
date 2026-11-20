@@ -60,6 +60,12 @@ def extract_code_facts() -> dict[str, Any]:
     inv_src = read_text("apps/server/src/features/invitations/service.ts")
     acc_src = read_text("apps/server/src/features/accounts/service.ts")
     set_src = read_text("apps/server/src/features/settings/service.ts")
+    # #32 history views: the scope decisions live in one service, the transport is thin,
+    # and the response shape is the shared contract. All three are read so deleting a
+    # guard flips the M13 attempts below to their wrong outcomes.
+    hist_src = read_text("apps/server/src/features/history/service.ts")
+    hist_rest = read_text("apps/server/src/features/history/rest.ts")
+    hist_contract = read_text("packages/contract/src/history.ts")
     mig_0007 = read_text("db/migrations/0007_workspace_owner_guards.sql")
     mig_0008 = read_text("db/migrations/0008_workspace_ownership_write_order.sql")
 
@@ -579,7 +585,180 @@ def extract_code_facts() -> dict[str, Any]:
         and "await sessionReader(c)" in set_access_rest
     )
 
-    # M13 (#31): password reset and local recovery. Each guard is read from the
+    # M13: history visibility boundaries (#32). Each guard is read from the decision that
+    # produces it: the three service methods, the installation projection, and the thin
+    # REST adapter. A missing scope check or a leaked secret field flips an attempt below.
+    hist_ws_fn = slice_between(hist_src, "async workspaceHistory(", "async projectHistory(")
+    hist_proj_fn = slice_between(hist_src, "async projectHistory(", "async installationHistory(")
+    hist_inst_fn = hist_src.split("async installationHistory(", 1)[1] if "async installationHistory(" in hist_src else ""
+    hist_install_fn = slice_between(hist_src, "async function loadInstallationEvents(", "export interface HistoryDeps")
+    hist_key_fn = slice_between(hist_src, "async function loadKeyEvents(", "async function loadProjectAccessEvents(")
+
+    m13_session_only = (
+        hist_rest.count("await sessionReader(c)") >= 3
+        and "agentAuthenticator" not in hist_rest
+        and "readBearerToken" not in hist_rest
+    )
+    m13_workspace_404 = (
+        'throw new HistoryError("workspace_not_found")' in hist_ws_fn
+        and "workspaceMemberships" in hist_ws_fn
+    )
+    m13_delegate_scope = (
+        'throw new HistoryError("workspace_history_forbidden")' in hist_ws_fn
+        and "row.canManageMemberPermissions !== true" in hist_ws_fn
+        and "eq(projectAccessGrants.level, ProjectAccessLevel.enum.manage)" in hist_ws_fn
+    )
+    m13_owner_keys = (
+        "if (isOwner) {" in hist_ws_fn
+        and "loadKeyEvents(" in hist_ws_fn
+        and "loadKeyEvents(" not in hist_ws_fn.split("if (isOwner) {", 1)[0]
+    )
+    m13_project_404 = (
+        'throw new HistoryError("project_not_found")' in hist_proj_fn
+        and "ceiling.get(projectId)" in hist_proj_fn
+    )
+    m13_manage_access = "projectAccessAtLeast(level, ProjectAccessLevel.enum.manage)" in hist_proj_fn
+    m13_activity_granted = ordered(
+        hist_proj_fn, "const events = await loadProjectActivity(", "projectAccessAtLeast("
+    )
+    m13_admin_only = (
+        "isSystemAdministrator" in hist_inst_fn
+        and 'throw new HistoryError("not_system_administrator")' in hist_inst_fn
+    )
+    m13_installation_scope = (
+        "from(instanceSetup)" in hist_install_fn
+        and "from(invitations)" in hist_install_fn
+        and not any(
+            table in hist_install_fn
+            for table in [
+                "workspaceEvents", "projectAccessEvents", "projectActivity",
+                "agentKeyEvents", "workspaceMemberships",
+            ]
+        )
+    )
+    m13_no_secret = not re.search(
+        r"(secret|tokenHash|token_hash|passwordHash|password_hash|smtpPassword)\s*:",
+        hist_contract + hist_key_fn + hist_install_fn,
+    )
+    # M14 (#34): runs and child workers. Identity is the authenticated agent plus the
+    # harness's native session id, enforced by a partial unique index. The whole report
+    # mutation runs in one transaction under a FOR UPDATE row lock, so concurrent model
+    # reports cannot duplicate history or drop a child update. Reported metadata is
+    # stored as reported (or null) and a report never leases.
+    run_src = read_text("apps/server/src/features/runs/service.ts")
+    run_mcp_src = read_text("apps/server/src/features/runs/mcp.ts")
+    run_rest_src = read_text("apps/server/src/features/runs/rest.ts")
+    run_contract_src = read_text("packages/contract/src/runs.ts")
+    mig_0019 = read_text("db/migrations/0019_perpetual_wallop.sql")
+    runs_table = slice_between(ag_schema, "export const runs = pgTable(", "// Model values observed")
+    children_table = slice_between(ag_schema, "export const runChildren = pgTable(", "// An issue in a project.")
+    report_fn = slice_between(run_src, "async report(identity, input)", "async listWorkspaceRuns(")
+    list_runs_fn = slice_between(run_src, "async listWorkspaceRuns(", "  };\n}")
+    child_fn = slice_between(run_src, "async function recordChild(", "export function createRunsService")
+
+    m14_db_identity = (
+        "one_run_per_agent_workspace_harness_session" in runs_table
+        and "is not null and" in runs_table
+        and "coalesce" not in runs_table
+        and 'CREATE UNIQUE INDEX "one_run_per_agent_workspace_harness_session"' in mig_0019
+        and "is not null and" in mig_0019
+        and "coalesce" not in mig_0019
+    )
+    m14_identity_key = all(
+        marker in report_fn
+        for marker in [
+            "agentId: identity.agentId",
+            "workspaceId: identity.workspaceId",
+            "harness: runKey.harness",
+            "nativeSessionId: runKey.nativeSessionId",
+        ]
+    )
+    m14_conflict = (
+        ".onConflictDoNothing()" in report_fn
+        and "eq(runs.harness, runKey.harness)" in report_fn
+        and "eq(runs.nativeSessionId, runKey.nativeSessionId)" in report_fn
+        and "row = created" in report_fn
+    )
+    m14_explicit_scope = all(
+        marker in report_fn
+        for marker in [
+            "eq(runs.id, input.runId)",
+            "eq(runs.agentId, identity.agentId)",
+            "eq(runs.workspaceId, identity.workspaceId)",
+            'throw new RunsError("run_not_found")',
+        ]
+    )
+    m14_child_link = (
+        "await recordChild(tx, identity, row.id, input, observedAt)" in report_fn
+        and "childRunId," in child_fn
+        and "agentId," in child_fn
+        and "one_child_per_run_and_reported_identity" in children_table
+        and "is not null or" in children_table
+        and "one_child_per_run_and_reported_identity" in mig_0019
+        and "is not null or" in mig_0019
+        and 'FOREIGN KEY ("child_run_id") REFERENCES "public"."runs"("id") ON DELETE set null' in mig_0019
+    )
+    m14_child_scope = all(
+        marker in child_fn
+        for marker in [
+            "childRunId === runId",
+            "eq(runs.id, childRunId)",
+            "eq(runs.agentId, identity.agentId)",
+            "eq(runs.workspaceId, identity.workspaceId)",
+            'throw new RunsError("run_not_found")',
+            '.for("update")',
+        ]
+    )
+    m14_serialized = (
+        "db.transaction(async (tx)" in report_fn
+        and 'const [locked]' in report_fn
+        and 'previousModel = locked.model' in report_fn
+        and '.for("update")' in report_fn
+        and '.for("update")' in child_fn
+    )
+    m14_model_change = (
+        "const modelChanged = reportedModel !== null && reportedModel !== previousModel;" in report_fn
+        and "if (modelChanged && !inserted)" in report_fn
+        and "fromModel: previousModel" in report_fn
+        and "toModel: reportedModel" in report_fn
+        and "insert(runModelChanges)" in report_fn
+    )
+    m14_unknown = (
+        "const reportedModel = input.model ?? input.reported?.model ?? null" in report_fn
+        and "runId: null," in report_fn
+        and "harness: null," in report_fn
+        and "harness: z.string().nullable()" in run_contract_src
+        and "model: z.string().nullable()" in run_contract_src
+        and "runId: z.string().nullable()" in run_contract_src
+    )
+    m14_reported_contract = (
+        "reported:" in run_contract_src
+        and "runKey: RunKey.nullable().optional()" in run_contract_src
+        and "input.checkIn?.at" in report_fn
+        and "input.reported?.harnessVersion" in report_fn
+    )
+    m14_no_lease = not any(
+        word in source
+        for word in ["leaseExpiresAt", "claimExpiresAt"]
+        for source in [run_src, run_contract_src, run_mcp_src, mig_0019]
+    )
+    m14_human_scope = (
+        "humanCanReadWorkspace(db, workspaceId, actor.humanId)" in list_runs_fn
+        and "innerJoin(agents" in list_runs_fn
+        and 'throw new RunsError("workspace_not_found")' in list_runs_fn
+    )
+    m14_adapters = (
+        "report(identity: AgentIdentity | null, input: RunReportInput)" in run_src
+        and "await authenticate(c.req.raw)" in run_rest_src
+        and "await authenticate(request)" in run_mcp_src
+        and "service.report(identity, c.req.valid(\"json\"))" in run_rest_src
+        and "service.report(identity, parsed)" in run_mcp_src
+        and "isAgentError(error)" in run_rest_src
+        and "isAgentError(error)" in run_mcp_src
+        and "Request" not in slice_between(run_src, "export interface RunsService", "type RunRow")
+    )
+    m14_tool = "orrery_run_checkin" in tool_names
+    # M15 (#31): password reset and local recovery. Each guard is read from the
     # function or table that owns the decision, so deleting one produces a short
     # counterexample naming the exact API path and TS function.
     rec_src = read_text("apps/server/src/features/recovery/service.ts")
@@ -593,7 +772,7 @@ def extract_code_facts() -> dict[str, Any]:
     rec_events_table = slice_between(schema_src, "export const accountRecoveryEvents = pgTable(", "// An invitation (issue #23)")
     rec_token_insert = slice_between(rec_request_fn, ".insert(passwordResetTokens)", "try {")
 
-    m13_token_hash_only = (
+    m15_token_hash_only = (
         "tokenHash: tokenHash(token)" in rec_token_insert
         and '"token_hash"' in rec_tokens_table
         and '"password"' not in rec_tokens_table
@@ -601,64 +780,64 @@ def extract_code_facts() -> dict[str, Any]:
     )
     verified_branch = rec_request_fn.find("account.emailVerifiedAt !== null")
     deliver_at = rec_request_fn.find("await deliver(")
-    m13_unverified_no_mail = (
+    m15_unverified_no_mail = (
         verified_branch >= 0 and deliver_at > verified_branch
     )
-    m13_uniform_response = (
+    m15_uniform_response = (
         "return { message: PASSWORD_RESET_REQUEST_MESSAGE };" in rec_request_fn
         and "return { email:" not in rec_request_fn
         and "return { humanId:" not in rec_request_fn
     )
-    m13_failed_send_deletes_token = (
+    m15_failed_send_deletes_token = (
         "await db.delete(passwordResetTokens)" in rec_request_fn
         and "catch (error)" in rec_request_fn
     )
-    m13_single_use = (
+    m15_single_use = (
         "isNull(passwordResetTokens.usedAt)" in rec_confirm_fn
         and 'throw new RecoveryError("reset_token_invalid")' in rec_confirm_fn
     )
-    m13_db_time_expiry = "gt(passwordResetTokens.expiresAt, sql`now()`)" in rec_confirm_fn
-    m13_one_tx = (
+    m15_db_time_expiry = "gt(passwordResetTokens.expiresAt, sql`now()`)" in rec_confirm_fn
+    m15_one_tx = (
         "await db.transaction(async (tx) =>" in rec_confirm_fn
         and "changePasswordAndSignOut(" in rec_confirm_fn
         and "await db.transaction(async (tx) =>" in rec_local_fn
     )
-    m13_sessions_cleared = (
+    m15_sessions_cleared = (
         "invalidateBrowserSessions(humanId, tx)" in rec_change_fn
         and "await runner.delete(browserSessions)" in acc_src
     )
-    m13_agent_keys_untouched = all(
+    m15_agent_keys_untouched = all(
         word not in rec_change_fn and word not in rec_cli_src
         for word in ("agentApiKeys", "agentKeyEvents", "agents)", "revokeAgent")
     )
-    m13_scope_untouched = all(
+    m15_scope_untouched = all(
         word not in rec_change_fn and word not in rec_local_fn and word not in rec_cli_src
         for word in ("instanceSetup", "workspaces", "workspaceMemberships", "setupAdmin", "appointOwner")
     )
-    m13_events_without_secret = (
+    m15_events_without_secret = (
         "insert(accountRecoveryEvents)" in rec_change_fn
         and '"token_hash"' not in rec_events_table
         and '"password"' not in rec_events_table
         and '"secret"' not in rec_events_table
         and "tokenHash:" not in rec_change_fn
     )
-    m13_local_no_smtp = (
+    m15_local_no_smtp = (
         "deliver(" not in rec_local_fn
         and "localRecover(" in rec_cli_src
         and "local recovery never sends mail" in rec_cli_src
     )
-    m13_http_problems = (
+    m15_http_problems = (
         rec_rest_src.count("400: problem(") >= 2
         and rec_rest_src.count("app.openapi(") >= 2
     )
     # A password change retires every outstanding link, and local recovery is an
     # administrator-only path: the role must come from accounts and be checked here.
-    m13_revokes_pending_tokens = (
+    m15_revokes_pending_tokens = (
         ".update(passwordResetTokens)" in rec_change_fn
         and "isNull(passwordResetTokens.usedAt)" in rec_change_fn
     )
     account_by_email_fn = slice_between(acc_src, "export async function accountByEmail(", "export async function setAccountPassword(")
-    m13_admin_only_local = (
+    m15_admin_only_local = (
         "isSystemAdministrator: humans.isSystemAdministrator" in account_by_email_fn
         and "!account.isSystemAdministrator" in rec_local_fn
         and 'throw new RecoveryError("not_system_administrator")' in rec_local_fn
@@ -738,21 +917,45 @@ def extract_code_facts() -> dict[str, Any]:
         "m12_rest_bearer": m12_rest_bearer,
         "m12_rest_admin_session": m12_rest_admin_session,
         "m12_list_scope": m12_list_scope,
-        "m13_token_hash_only": m13_token_hash_only,
-        "m13_unverified_no_mail": m13_unverified_no_mail,
-        "m13_uniform_response": m13_uniform_response,
-        "m13_failed_send_deletes_token": m13_failed_send_deletes_token,
-        "m13_single_use": m13_single_use,
-        "m13_db_time_expiry": m13_db_time_expiry,
-        "m13_one_tx": m13_one_tx,
-        "m13_sessions_cleared": m13_sessions_cleared,
-        "m13_agent_keys_untouched": m13_agent_keys_untouched,
-        "m13_scope_untouched": m13_scope_untouched,
-        "m13_events_without_secret": m13_events_without_secret,
-        "m13_local_no_smtp": m13_local_no_smtp,
-        "m13_http_problems": m13_http_problems,
-        "m13_revokes_pending_tokens": m13_revokes_pending_tokens,
-        "m13_admin_only_local": m13_admin_only_local,
+        "m13_session_only": m13_session_only,
+        "m13_workspace_404": m13_workspace_404,
+        "m13_delegate_scope": m13_delegate_scope,
+        "m13_owner_keys": m13_owner_keys,
+        "m13_project_404": m13_project_404,
+        "m13_manage_access": m13_manage_access,
+        "m13_activity_granted": m13_activity_granted,
+        "m13_admin_only": m13_admin_only,
+        "m13_installation_scope": m13_installation_scope,
+        "m13_no_secret": m13_no_secret,
+        "m14_db_identity": m14_db_identity,
+        "m14_identity_key": m14_identity_key,
+        "m14_conflict": m14_conflict,
+        "m14_explicit_scope": m14_explicit_scope,
+        "m14_child_link": m14_child_link,
+        "m14_child_scope": m14_child_scope,
+        "m14_serialized": m14_serialized,
+        "m14_model_change": m14_model_change,
+        "m14_unknown": m14_unknown,
+        "m14_reported_contract": m14_reported_contract,
+        "m14_no_lease": m14_no_lease,
+        "m14_human_scope": m14_human_scope,
+        "m14_adapters": m14_adapters,
+        "m14_tool": m14_tool,
+        "m15_token_hash_only": m15_token_hash_only,
+        "m15_unverified_no_mail": m15_unverified_no_mail,
+        "m15_uniform_response": m15_uniform_response,
+        "m15_failed_send_deletes_token": m15_failed_send_deletes_token,
+        "m15_single_use": m15_single_use,
+        "m15_db_time_expiry": m15_db_time_expiry,
+        "m15_one_tx": m15_one_tx,
+        "m15_sessions_cleared": m15_sessions_cleared,
+        "m15_agent_keys_untouched": m15_agent_keys_untouched,
+        "m15_scope_untouched": m15_scope_untouched,
+        "m15_events_without_secret": m15_events_without_secret,
+        "m15_local_no_smtp": m15_local_no_smtp,
+        "m15_http_problems": m15_http_problems,
+        "m15_revokes_pending_tokens": m15_revokes_pending_tokens,
+        "m15_admin_only_local": m15_admin_only_local,
     }
 
 
@@ -1622,23 +1825,93 @@ def check_m12(facts: dict[str, Any]) -> CheckResult:
 
 
 def check_m13(facts: dict[str, Any]) -> CheckResult:
+    # #32 history visibility. Every attempted read is a direct request against one of the
+    # three history routes; each guard is extracted from the decision that enforces it.
+    # The 4th tuple item is the outcome when the guard is missing: if a source guard is
+    # removed, that attempt resolves to the wrong outcome and this check FAILS. That is
+    # the sensitivity proof — positive controls below also fail if a guard over-blocks.
+    attempts: list[tuple[str, str, bool, str]] = [
+        # Positive controls: the entitled reader really does get the events.
+        ("workspace owner reads membership, key, and project access history", "visible", facts["m13_owner_keys"], "omitted"),
+        ("delegated permission manager reads workspace membership history", "visible", facts["m13_delegate_scope"], "403"),
+        ("project reader sees attributed activity in a granted project", "activity", facts["m13_activity_granted"], "404"),
+        ("project manager additionally sees access events in their project", "access+activity", facts["m13_manage_access"], "activity_only"),
+        ("system administrator reads installation history", "visible", facts["m13_admin_only"], "403"),
+        ("all three history routes use the human session reader", "session", facts["m13_session_only"], "bearer"),
+        # Scope isolation: out-of-scope workspaces and projects are indistinguishable
+        # from missing ones, and a delegate's project view stops at what they Manage.
+        ("non-member reads another workspace's history", "404", facts["m13_workspace_404"], "200"),
+        ("system administrator reads a workspace they do not belong to", "404", facts["m13_workspace_404"], "200"),
+        ("ordinary member reads workspace access history", "403", facts["m13_delegate_scope"], "200"),
+        ("delegated manager reads another workspace's history", "404", facts["m13_workspace_404"], "200"),
+        ("delegated manager reads access events for a project they do not Manage", "omitted", facts["m13_delegate_scope"], "included"),
+        ("ordinary member reads an ungranted project's history", "404", facts["m13_project_404"], "200"),
+        ("system administrator reads a private project's history", "404", facts["m13_project_404"], "200"),
+        ("ordinary member sees project access events in a granted project", "omitted", facts["m13_manage_access"], "included"),
+        ("delegated manager reads a key event from their workspace", "omitted", facts["m13_owner_keys"], "included"),
+        # Installation history carries only installation records; no private content.
+        ("ordinary account reads installation history", "403", facts["m13_admin_only"], "200"),
+        ("installation history includes another workspace's membership events", "absent", facts["m13_installation_scope"], "included"),
+        ("installation history includes a private project's activity", "absent", facts["m13_installation_scope"], "included"),
+        # Secrets never enter an event payload or a history response.
+        ("history response carries a credential secret", "absent", facts["m13_no_secret"], "included"),
+        ("credential event carries a token hash", "absent", facts["m13_no_secret"], "included"),
+    ]
+    init = ("start",)
+
+    def next_states(state):
+        if state != ("start",):
+            return []
+        return [
+            (f"{label} -> {expected if guard else wrong}", ("probed", idx, expected if guard else wrong))
+            for idx, (label, expected, guard, wrong) in enumerate(attempts)
+        ]
+
+    def inv(state):
+        if state[0] != "probed":
+            return True, ""
+        label, expected, _, _ = attempts[state[1]]
+        if state[2] != expected:
+            return False, f"{label} returned {state[2]}, expected {expected}"
+        return True, ""
+
+    return bfs_check(
+        "M13",
+        "History Visibility Boundaries (#32)",
+        "Owners and delegates see in-scope access history, members only granted-project activity, administrators only installation events, out-of-scope reads are 404, and no secret is returned",
+        "safety",
+        init,
+        next_states,
+        inv,
+        [
+            "apps/server/src/features/history/service.ts",
+            "apps/server/src/features/history/rest.ts",
+            "packages/contract/src/history.ts",
+            "apps/server/src/features/accounts/index.ts",
+            "apps/server/src/features/projects/index.ts",
+            "apps/server/src/db/schema.ts",
+        ],
+    )
+
+
+def check_m15(facts: dict[str, Any]) -> CheckResult:
     # #31 password recovery and local administrator recovery. BFS over the token
     # lifecycle (issued, just before/after expiry in database time, used), delivery
     # failures, and both password-change paths. Every guard comes from the source of
     # the decision; removing one makes the corresponding forbidden state reachable.
-    single_use = facts["m13_single_use"]
-    db_time = facts["m13_db_time_expiry"]
-    unverified_guard = facts["m13_unverified_no_mail"]
-    uniform = facts["m13_uniform_response"]
-    failed_send_deletes = facts["m13_failed_send_deletes_token"]
-    one_tx = facts["m13_one_tx"]
-    sessions_cleared = facts["m13_sessions_cleared"]
-    keys_untouched = facts["m13_agent_keys_untouched"]
-    scope_untouched = facts["m13_scope_untouched"]
-    audit_ok = facts["m13_events_without_secret"]
-    local_no_smtp = facts["m13_local_no_smtp"]
-    revoke_pending = facts["m13_revokes_pending_tokens"]
-    admin_only = facts["m13_admin_only_local"]
+    single_use = facts["m15_single_use"]
+    db_time = facts["m15_db_time_expiry"]
+    unverified_guard = facts["m15_unverified_no_mail"]
+    uniform = facts["m15_uniform_response"]
+    failed_send_deletes = facts["m15_failed_send_deletes_token"]
+    one_tx = facts["m15_one_tx"]
+    sessions_cleared = facts["m15_sessions_cleared"]
+    keys_untouched = facts["m15_agent_keys_untouched"]
+    scope_untouched = facts["m15_scope_untouched"]
+    audit_ok = facts["m15_events_without_secret"]
+    local_no_smtp = facts["m15_local_no_smtp"]
+    revoke_pending = facts["m15_revokes_pending_tokens"]
+    admin_only = facts["m15_admin_only_local"]
 
     fields = [
         "token", "verified", "smtp", "mailed", "pw_changed", "expired_used", "reused",
@@ -1662,7 +1935,7 @@ def check_m13(facts: dict[str, Any]) -> CheckResult:
     init = (
         "none", False, True, False, False, False, False, False, False, False,
         "closed", "u1", frozenset({"s1", "s2"}), frozenset({"k1"}), frozenset(),
-        False, False, not facts["m13_token_hash_only"], not facts["m13_http_problems"],
+        False, False, not facts["m15_token_hash_only"], not facts["m15_http_problems"],
         "none", False,
     )
 
@@ -1833,7 +2106,7 @@ def check_m13(facts: dict[str, Any]) -> CheckResult:
         return True, ""
 
     return bfs_check(
-        "M13",
+        "M15",
         "Password Recovery & Local Recovery (#31)",
         "Reset links are single-use, expire in database time, and are all retired on a password change; unverified addresses are never mailed, responses never enumerate accounts, both paths end browser sessions without touching agent keys/bootstrap/ownership, and local recovery is administrator-only and works without SMTP",
         "safety",
@@ -1846,6 +2119,87 @@ def check_m13(facts: dict[str, Any]) -> CheckResult:
             "apps/server/src/features/accounts/service.ts",
             "apps/server/src/recovery-cli.ts",
             "apps/server/src/db/schema.ts",
+            "db/migrations/0020_flippant_iceman.sql",
+        ],
+    )
+
+
+def check_m14(facts: dict[str, Any]) -> CheckResult:
+    # #34: run identity is isolated per agent/workspace/harness/session, a resume reuses
+    # the run, children link to their parent, model changes are events, and missing
+    # metadata stays unknown. Each attempt is a direct probe of one extracted guard.
+    identity = facts["m14_db_identity"] and facts["m14_identity_key"]
+    resume = facts["m14_conflict"]
+    scope = facts["m14_explicit_scope"]
+    child = facts["m14_child_link"]
+    child_scope = facts["m14_child_scope"]
+    serialized = facts["m14_serialized"]
+    history = facts["m14_model_change"]
+    unknown = facts["m14_unknown"]
+    reported = facts["m14_reported_contract"]
+    adapters = facts["m14_adapters"]
+
+    attempts: list[tuple[str, str, bool, str]] = [
+        ("two clients share one key but report different native session ids", "2_distinct_runs", identity, "1_shared_run"),
+        ("two anonymous children of one run are reported", "2_children", facts["m14_child_link"], "1_collapsed_child"),
+        ("two check-ins carry the same (harness, nativeSessionId) under one key", "1_run_resumed", resume and facts["m14_db_identity"], "2_runs"),
+        ("a resume reuses an explicit runId of this agent's run", "same_run", scope, "new_run"),
+        ("a report names a runId belonging to another workspace's agent", "run_not_found", scope, "run_hijacked"),
+        ("child_started reports agentId/agentType on the parent run", "linked_to_parent", child, "unlinked"),
+        ("a child runId points at the parent run itself", "run_not_found", child_scope, "self_loop"),
+        ("a child runId names a run of another agent", "run_not_found", child_scope, "foreign_agent_link"),
+        ("a child runId names a run in another workspace", "run_not_found", child_scope, "cross_workspace_link"),
+        ("a repeated child event updates the same child row under a row lock", "1_child_updated", child and serialized, "update_dropped"),
+        ("two simultaneous A-to-B model reports share one transaction and row lock", "history=1_no_duplicate", serialized and history, "duplicate_history"),
+        ("the model changes from A to B during one run", "history=A_to_B", history, "no_history"),
+        ("the same model is reported twice", "no_second_event", history, "duplicate_event"),
+        ("a report omits the model", "unknown_or_unchanged", unknown, "model_cleared"),
+        ("a report has no runId and no runKey", "runId=null_no_row", unknown, "transport_session_run"),
+        ("harness version and model are absent on a new run", "stored_null", unknown, "synthesised"),
+        ("a check-in sends reported:{model,harnessVersion} and runKey:null with a runId", "metadata_stored", reported and scope, "metadata_stripped"),
+        ("a check-in omits `at` but carries checkIn.at", "observed_at_used", reported, "time_missing"),
+        ("a revoked or keyless report is authenticated in the adapters", "refused", adapters, "accepted_by_service"),
+        ("REST hook and MCP check-in map key failures to the same codes", "same_codes", adapters, "divergent"),
+        ("a human outside the workspace lists its runs", "workspace_not_found", facts["m14_human_scope"], "listed"),
+        ("the workspace view names the agent, not only its id", "agentName", facts["m14_human_scope"], "raw_id"),
+        ("the run-reporting tool advertises a lease expiry or claim", "absent", facts["m14_no_lease"], "present"),
+        ("orrery_run_checkin is registered on MCP", "exposed", facts["m14_tool"], "missing"),
+        ("a run is attributed to the authenticated agent, never a reported name", "actor=agent", identity and adapters, "actor=reported"),
+    ]
+    init = ("start",)
+
+    def next_states(state):
+        if state != ("start",):
+            return []
+        return [
+            (f"{label} -> {expected if guard else wrong}", ("probed", idx, expected if guard else wrong))
+            for idx, (label, expected, guard, wrong) in enumerate(attempts)
+        ]
+
+    def inv(state):
+        if state[0] != "probed":
+            return True, ""
+        label, expected, _, _ = attempts[state[1]]
+        if state[2] != expected:
+            return False, f"{label} returned {state[2]}, expected {expected}"
+        return True, ""
+
+    return bfs_check(
+        "M14",
+        "Runs and Child Workers (#34)",
+        "Run identity is isolated per key and harness session, resumes reuse the run, children link to their parent, model changes are recorded, and unreported metadata stays unknown",
+        "safety",
+        init,
+        next_states,
+        inv,
+        [
+            "apps/server/src/features/runs/service.ts",
+            "apps/server/src/features/runs/mcp.ts",
+            "apps/server/src/features/runs/rest.ts",
+            "packages/contract/src/runs.ts",
+            "packages/contract/src/mcp-tools.ts",
+            "apps/server/src/db/schema.ts",
+            "db/migrations/0019_perpetual_wallop.sql",
         ],
     )
 
@@ -1867,6 +2221,8 @@ def main() -> None:
         check_m11(facts),
         check_m12(facts),
         check_m13(facts),
+        check_m14(facts),
+        check_m15(facts),
     ]
 
     if "--json" in sys.argv:
