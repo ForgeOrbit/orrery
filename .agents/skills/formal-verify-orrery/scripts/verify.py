@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Orrery Formal Verification Model Checker (M1-M10).
+Orrery Formal Verification Model Checker (M1-M13).
 
 Extracts critical concurrency, locking, and state-transition guards directly from
 Orrery's server source and SQL migrations, then runs an exhaustive BFS finite-state
@@ -60,6 +60,12 @@ def extract_code_facts() -> dict[str, Any]:
     inv_src = read_text("apps/server/src/features/invitations/service.ts")
     acc_src = read_text("apps/server/src/features/accounts/service.ts")
     set_src = read_text("apps/server/src/features/settings/service.ts")
+    # #32 history views: the scope decisions live in one service, the transport is thin,
+    # and the response shape is the shared contract. All three are read so deleting a
+    # guard flips the M13 attempts below to their wrong outcomes.
+    hist_src = read_text("apps/server/src/features/history/service.ts")
+    hist_rest = read_text("apps/server/src/features/history/rest.ts")
+    hist_contract = read_text("packages/contract/src/history.ts")
     mig_0007 = read_text("db/migrations/0007_workspace_owner_guards.sql")
     mig_0008 = read_text("db/migrations/0008_workspace_ownership_write_order.sql")
 
@@ -579,6 +585,62 @@ def extract_code_facts() -> dict[str, Any]:
         and "await sessionReader(c)" in set_access_rest
     )
 
+    # M13: history visibility boundaries (#32). Each guard is read from the decision that
+    # produces it: the three service methods, the installation projection, and the thin
+    # REST adapter. A missing scope check or a leaked secret field flips an attempt below.
+    hist_ws_fn = slice_between(hist_src, "async workspaceHistory(", "async projectHistory(")
+    hist_proj_fn = slice_between(hist_src, "async projectHistory(", "async installationHistory(")
+    hist_inst_fn = hist_src.split("async installationHistory(", 1)[1] if "async installationHistory(" in hist_src else ""
+    hist_install_fn = slice_between(hist_src, "async function loadInstallationEvents(", "export interface HistoryDeps")
+    hist_key_fn = slice_between(hist_src, "async function loadKeyEvents(", "async function loadProjectAccessEvents(")
+
+    m13_session_only = (
+        hist_rest.count("await sessionReader(c)") >= 3
+        and "agentAuthenticator" not in hist_rest
+        and "readBearerToken" not in hist_rest
+    )
+    m13_workspace_404 = (
+        'throw new HistoryError("workspace_not_found")' in hist_ws_fn
+        and "workspaceMemberships" in hist_ws_fn
+    )
+    m13_delegate_scope = (
+        'throw new HistoryError("workspace_history_forbidden")' in hist_ws_fn
+        and "row.canManageMemberPermissions !== true" in hist_ws_fn
+        and "eq(projectAccessGrants.level, ProjectAccessLevel.enum.manage)" in hist_ws_fn
+    )
+    m13_owner_keys = (
+        "if (isOwner) {" in hist_ws_fn
+        and "loadKeyEvents(" in hist_ws_fn
+        and "loadKeyEvents(" not in hist_ws_fn.split("if (isOwner) {", 1)[0]
+    )
+    m13_project_404 = (
+        'throw new HistoryError("project_not_found")' in hist_proj_fn
+        and "ceiling.get(projectId)" in hist_proj_fn
+    )
+    m13_manage_access = "projectAccessAtLeast(level, ProjectAccessLevel.enum.manage)" in hist_proj_fn
+    m13_activity_granted = ordered(
+        hist_proj_fn, "const events = await loadProjectActivity(", "projectAccessAtLeast("
+    )
+    m13_admin_only = (
+        "isSystemAdministrator" in hist_inst_fn
+        and 'throw new HistoryError("not_system_administrator")' in hist_inst_fn
+    )
+    m13_installation_scope = (
+        "from(instanceSetup)" in hist_install_fn
+        and "from(invitations)" in hist_install_fn
+        and not any(
+            table in hist_install_fn
+            for table in [
+                "workspaceEvents", "projectAccessEvents", "projectActivity",
+                "agentKeyEvents", "workspaceMemberships",
+            ]
+        )
+    )
+    m13_no_secret = not re.search(
+        r"(secret|tokenHash|token_hash|passwordHash|password_hash|smtpPassword)\s*:",
+        hist_contract + hist_key_fn + hist_install_fn,
+    )
+
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
         "m2a_supersedes_failed": m2a_supersedes_failed,
@@ -653,6 +715,16 @@ def extract_code_facts() -> dict[str, Any]:
         "m12_rest_bearer": m12_rest_bearer,
         "m12_rest_admin_session": m12_rest_admin_session,
         "m12_list_scope": m12_list_scope,
+        "m13_session_only": m13_session_only,
+        "m13_workspace_404": m13_workspace_404,
+        "m13_delegate_scope": m13_delegate_scope,
+        "m13_owner_keys": m13_owner_keys,
+        "m13_project_404": m13_project_404,
+        "m13_manage_access": m13_manage_access,
+        "m13_activity_granted": m13_activity_granted,
+        "m13_admin_only": m13_admin_only,
+        "m13_installation_scope": m13_installation_scope,
+        "m13_no_secret": m13_no_secret,
     }
 
 
@@ -1521,6 +1593,76 @@ def check_m12(facts: dict[str, Any]) -> CheckResult:
     )
 
 
+def check_m13(facts: dict[str, Any]) -> CheckResult:
+    # #32 history visibility. Every attempted read is a direct request against one of the
+    # three history routes; each guard is extracted from the decision that enforces it.
+    # The 4th tuple item is the outcome when the guard is missing: if a source guard is
+    # removed, that attempt resolves to the wrong outcome and this check FAILS. That is
+    # the sensitivity proof — positive controls below also fail if a guard over-blocks.
+    attempts: list[tuple[str, str, bool, str]] = [
+        # Positive controls: the entitled reader really does get the events.
+        ("workspace owner reads membership, key, and project access history", "visible", facts["m13_owner_keys"], "omitted"),
+        ("delegated permission manager reads workspace membership history", "visible", facts["m13_delegate_scope"], "403"),
+        ("project reader sees attributed activity in a granted project", "activity", facts["m13_activity_granted"], "404"),
+        ("project manager additionally sees access events in their project", "access+activity", facts["m13_manage_access"], "activity_only"),
+        ("system administrator reads installation history", "visible", facts["m13_admin_only"], "403"),
+        ("all three history routes use the human session reader", "session", facts["m13_session_only"], "bearer"),
+        # Scope isolation: out-of-scope workspaces and projects are indistinguishable
+        # from missing ones, and a delegate's project view stops at what they Manage.
+        ("non-member reads another workspace's history", "404", facts["m13_workspace_404"], "200"),
+        ("system administrator reads a workspace they do not belong to", "404", facts["m13_workspace_404"], "200"),
+        ("ordinary member reads workspace access history", "403", facts["m13_delegate_scope"], "200"),
+        ("delegated manager reads another workspace's history", "404", facts["m13_workspace_404"], "200"),
+        ("delegated manager reads access events for a project they do not Manage", "omitted", facts["m13_delegate_scope"], "included"),
+        ("ordinary member reads an ungranted project's history", "404", facts["m13_project_404"], "200"),
+        ("system administrator reads a private project's history", "404", facts["m13_project_404"], "200"),
+        ("ordinary member sees project access events in a granted project", "omitted", facts["m13_manage_access"], "included"),
+        ("delegated manager reads a key event from their workspace", "omitted", facts["m13_owner_keys"], "included"),
+        # Installation history carries only installation records; no private content.
+        ("ordinary account reads installation history", "403", facts["m13_admin_only"], "200"),
+        ("installation history includes another workspace's membership events", "absent", facts["m13_installation_scope"], "included"),
+        ("installation history includes a private project's activity", "absent", facts["m13_installation_scope"], "included"),
+        # Secrets never enter an event payload or a history response.
+        ("history response carries a credential secret", "absent", facts["m13_no_secret"], "included"),
+        ("credential event carries a token hash", "absent", facts["m13_no_secret"], "included"),
+    ]
+    init = ("start",)
+
+    def next_states(state):
+        if state != ("start",):
+            return []
+        return [
+            (f"{label} -> {expected if guard else wrong}", ("probed", idx, expected if guard else wrong))
+            for idx, (label, expected, guard, wrong) in enumerate(attempts)
+        ]
+
+    def inv(state):
+        if state[0] != "probed":
+            return True, ""
+        label, expected, _, _ = attempts[state[1]]
+        if state[2] != expected:
+            return False, f"{label} returned {state[2]}, expected {expected}"
+        return True, ""
+
+    return bfs_check(
+        "M13",
+        "History Visibility Boundaries (#32)",
+        "Owners and delegates see in-scope access history, members only granted-project activity, administrators only installation events, out-of-scope reads are 404, and no secret is returned",
+        "safety",
+        init,
+        next_states,
+        inv,
+        [
+            "apps/server/src/features/history/service.ts",
+            "apps/server/src/features/history/rest.ts",
+            "packages/contract/src/history.ts",
+            "apps/server/src/features/accounts/index.ts",
+            "apps/server/src/features/projects/index.ts",
+            "apps/server/src/db/schema.ts",
+        ],
+    )
+
+
 def main() -> None:
     facts = extract_code_facts()
     results = [
@@ -1537,6 +1679,7 @@ def main() -> None:
         check_m10(facts),
         check_m11(facts),
         check_m12(facts),
+        check_m13(facts),
     ]
 
     if "--json" in sys.argv:

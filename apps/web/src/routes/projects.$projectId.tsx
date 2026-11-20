@@ -66,6 +66,10 @@ function ProjectPage() {
       <p>
         <Link to="/workspaces/$workspaceId" params={{ workspaceId: project.workspaceId }}>
           Back to workspace
+        </Link>{" "}
+        ·{" "}
+        <Link to="/history/project/$projectId" params={{ projectId: project.id }}>
+          View history
         </Link>
       </p>
       <h1>{project.name}</h1>

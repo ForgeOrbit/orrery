@@ -4,6 +4,7 @@ export * from "./agents.ts";
 export * from "./auth.ts";
 export * from "./common.ts";
 export * from "./health.ts";
+export * from "./history.ts";
 export * from "./invitations.ts";
 export * from "./mcp-tools.ts";
 export * from "./projects.ts";
