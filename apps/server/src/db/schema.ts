@@ -190,6 +190,9 @@ export const workspaceEventTypes = [
   "owner_appointed",
   "member_removed",
   "owner_removed",
+  // #37: voluntary leave is a distinct audit act from being removed by someone else.
+  "member_left",
+  "owner_left",
   "create_projects_granted",
   "create_projects_revoked",
   "invite_members_granted",

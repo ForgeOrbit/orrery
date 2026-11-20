@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Orrery Formal Verification Model Checker (M1-M16).
+Orrery Formal Verification Model Checker (M1-M18).
 
 Extracts critical concurrency, locking, and state-transition guards directly from
 Orrery's server source and SQL migrations, then runs an exhaustive BFS finite-state
@@ -68,6 +68,10 @@ def extract_code_facts() -> dict[str, Any]:
     hist_contract = read_text("packages/contract/src/history.ts")
     mig_0007 = read_text("db/migrations/0007_workspace_owner_guards.sql")
     mig_0008 = read_text("db/migrations/0008_workspace_ownership_write_order.sql")
+
+    # #37: removal and voluntary leave share one private cleanup tail. M1, M8, M11 and M18
+    # all inspect it, so define it once here rather than repeating the slice below.
+    end_membership_fn = slice_between(ws_src, "async function endMembership(", "\n  }\n\n  return {")
 
     # M1: Workspace ownership serialization + deferred trigger
     remove_member_fn = slice_between(ws_src, "async removeMember(", "  };")
@@ -243,7 +247,10 @@ def extract_code_facts() -> dict[str, Any]:
         "lockWorkspaceOwnershipWrites(tx)" in create_project_fn
         and "lockWorkspaceOwnershipWrites(tx)" in set_access_fn
         and "lockWorkspaceOwnershipWrites(tx)" in remove_access_fn
-        and "revokeMemberProjectAccess(tx" in remove_member_fn
+        # #37 moved the grant revocation into the shared cleanup tail: the removal must
+        # call that tail, and the tail must still revoke the departing member's grants.
+        and "endMembership(" in remove_member_fn
+        and "revokeMemberProjectAccess(tx, workspaceId, humanId, actorHumanId)" in end_membership_fn
     )
 
     # M9: These source markers select transitions in a bounded design model. They do
@@ -424,7 +431,10 @@ def extract_code_facts() -> dict[str, Any]:
     # no INSERT can land after that revocation. Authentication reads one REPEATABLE READ
     # snapshot, and the database rejects a key grant outside the key's workspace.
     m11_member_removal_revokes_keys = (
-        "revokeMemberWorkspaceKeys(tx, workspaceId, humanId, actor.humanId)" in remove_member_fn
+        # #37: removeMember delegates the cleanup to endMembership; both the call and the
+        # key revocation inside the tail must be present for a rejoin to stay revoked.
+        "endMembership(" in remove_member_fn
+        and "revokeMemberWorkspaceKeys(tx, workspaceId, humanId, actorHumanId)" in end_membership_fn
         and "revokedAt: sql`now()`" in revoke_member_fn
         and "isNull(agentApiKeys.revokedAt)" in revoke_member_fn
         and "AgentKeyEventType.enum.agent_key_revoked" in revoke_member_fn
@@ -991,8 +1001,8 @@ def extract_code_facts() -> dict[str, Any]:
         and "keyId" not in claim_fn
     )
     m17_helper_shares = (
-        "return toSession(existing)" in claim_fn
-        and "existing.runId === input.runId" in claim_fn
+        "isSameRun(existing, identity, input.runId)" in claim_fn
+        and "return toSession(existing)" in claim_fn
     )
     m17_ready_db_time = (
         "gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`)" in ready_fn
@@ -1008,6 +1018,83 @@ def extract_code_facts() -> dict[str, Any]:
         and "isAgentError(error)" in sess_rest_src
         and "SessionsError" in sess_rest_src
     )
+
+    # M18 (#40): resume, progress retention, reacquisition and stale-session rejection.
+    # Each guard is read from the function that owns the decision, so a deleted guard
+    # produces a short counterexample naming the exact operation and TS function.
+    sess_contract = read_text("packages/contract/src/sessions.ts")
+    resume_fn = slice_between(sess_src, "async resume(actor, input)", "async reacquire(actor, input)")
+    reacquire_fn = slice_between(sess_src, "async reacquire(actor, input)", "async getSession(actorArg, issueId)")
+    renew_only_fn = slice_between(sess_src, "async renew(", "async progress(")
+    progress_only_fn = slice_between(sess_src, "async progress(", "async stop(")
+    stop_only_fn = slice_between(sess_src, "async stop(", "async resume(")
+    session_columns_fn = slice_between(sess_src, "const sessionColumns =", "const iso =")
+
+    m18_resume_read_only = (
+        'accessMode: "read only"' in resume_fn
+        and "expireCommitted(" not in resume_fn
+        and "expireStale(" not in resume_fn
+    )
+    m18_resume_db_time = (
+        '"expired"' in resume_fn
+        and "effectiveStatus" in session_columns_fn
+        and "statement_timestamp()" in session_columns_fn
+    )
+    m18_resume_keeps_progress = "session: toSession(row)" in resume_fn and "progress" in session_columns_fn
+    m18_stale_rejected = all(
+        "withLiveSession(" in fn
+        for fn in (renew_only_fn, progress_only_fn, stop_only_fn)
+    ) and 'throw new SessionsError("session_required")' in live_fn
+    m18_db_time_liveness = (
+        "lte(workSessions.leaseExpiresAt, sql`statement_timestamp()`)" in expire_fn
+        and "expireStale(tx" in live_fn
+        and "expireCommitted(issueId)" in sess_src
+    )
+    m18_reacquire_available = (
+        "const active = await findActive(tx, issue.id)" in reacquire_fn
+        and "issue.needsInput" in reacquire_fn
+        and 'throw new SessionsError("issue_claimed")' in reacquire_fn
+        and 'throw new SessionsError("issue_blocked")' in reacquire_fn
+    )
+    m18_reacquire_expired_only = (
+        "prior.status !== WorkSessionStatus.enum.expired" in reacquire_fn
+        and 'throw new SessionsError("session_required")' in reacquire_fn
+    )
+    m18_reacquire_carries_progress = (
+        "progress: prior.progress" in reacquire_fn
+        and "progressUpdatedAt: prior.progressUpdatedAt" in reacquire_fn
+    )
+    m18_reacquire_fresh_session = (
+        "id: randomUUID()" in reacquire_fn and "leaseExpiresAt: fiveMinutes" in reacquire_fn
+    )
+    m18_idempotent = (
+        "isSameRun(existing, identity, input.runId)" in claim_fn
+        and "isSameRun(active, identity, input.runId)" in reacquire_fn
+        and "return toSession(active)" in reacquire_fn
+    )
+    m18_adapters = (
+        "resume_work_session" in sess_mcp_src
+        and "reacquire_issue" in sess_mcp_src
+        and "resume_work_session" in tools_src
+        and "reacquire_issue" in tools_src
+        and "ResumeWorkSessionInput" in sess_contract
+    )
+    m18_http_problems = (
+        'path: "/api/issues/{issueId}/work-sessions/resume"' in sess_rest_src
+        and 'path: "/api/issues/{issueId}/work-sessions/reacquire"' in sess_rest_src
+        and sess_rest_src.count("400: problem(") >= 7
+    )
+    active_fn = slice_between(sess_src, "async function findActive(", "function requireAccessArgs")
+    m18_session_fence = (
+        "eq(workSessions.id, sessionId)" in live_fn
+        and "sessionId: SessionFence.optional()" in sess_contract
+        and "sessionFence(args)" in sess_mcp_src
+    )
+    m18_closed_refused = 'issue.status !== "open"' in reacquire_fn
+    m18_update_db_time = all(
+        "liveLease," in fn for fn in (renew_only_fn, progress_only_fn, stop_only_fn)
+    )
+    m18_find_active_db_time = "liveLease," in active_fn
     m17_tools = all(
         name in tools_src
         for name in (
@@ -1022,7 +1109,88 @@ def extract_code_facts() -> dict[str, Any]:
     )
     m17_problems = sess_rest_src.count("400: problem(") >= 5
 
-    # M18 (#41): the verified three-resolution question lifecycle. Every guard is read from
+    # M18 (#37): member removal / voluntary leave versus an in-flight claim renewal.
+    # Every decision is read from the live workspaces, work-sessions, agents, projects and
+    # REST sources plus the schema/migration, so deleting the release call, the membership
+    # recheck, the issue lock order, the last-owner guard or the distinct leave events
+    # flips the model to a shortest counterexample naming the exact request.
+    ws_rest_src = read_text("apps/server/src/features/workspaces/rest.ts")
+    ws_registry_src = read_text("apps/server/src/features/index.ts")
+    mig_0023 = read_text("db/migrations/0023_wealthy_silvermane.sql")
+    # The cleanup facts are read from the shared tail defined above, and the two call
+    # sites are checked separately.
+    remove_member_fn = slice_between(ws_src, "async removeMember(", "async leaveWorkspace(")
+    leave_fn = slice_between(ws_src, "async leaveWorkspace(", "  };\n}")
+    release_fn = slice_between(sess_src, "export async function releaseMemberWorkSessions(", "\n}\n")
+    require_access_fn = slice_between(sess_src, "function requireAccessArgs(", "export function createSessionsService(")
+    lock_access_fn = slice_between(sess_src, "async function lockAgentWorkspaceAccess(", "// Workspace removal/leave ends")
+    workspace_event_types = slice_between(schema_src, "export const workspaceEventTypes = [", "] as const;")
+
+    m18_release_in_remove = (
+        "endMembership(" in remove_member_fn
+        and "releaseMemberWorkSessions(tx, workspaceId, humanId)" in end_membership_fn
+    )
+    m18_release_in_leave = (
+        "endMembership(" in leave_fn
+        and "releaseMemberWorkSessions(tx, workspaceId, humanId)" in end_membership_fn
+    )
+    m18_active_only = "eq(workSessions.status, WorkSessionStatus.enum.active)" in release_fn
+    m18_release_status_guard = ordered(
+        release_fn,
+        ".update(workSessions)",
+        "eq(workSessions.status, WorkSessionStatus.enum.active)",
+    )
+    m18_membership_lock = (
+        '.for("key share")' in lock_access_fn
+        and 'throw new SessionsError("insufficient_access")' in lock_access_fn
+        and ordered(claim_fn, "lockAgentWorkspaceAccess(tx, identity)", "lockIssue(tx")
+        and ordered(live_fn, "lockAgentWorkspaceAccess(tx, identity)", "lockIssue(tx")
+    )
+    m18_issue_lock_order = (
+        ordered(
+            release_fn,
+            ".select({ id: workSessions.id, issueId: workSessions.issueId })",
+            '.for("update")',
+            ".update(workSessions)",
+        )
+        and ".orderBy(issues.id)" in release_fn
+        and "status: WorkSessionStatus.enum.released" in release_fn
+    )
+    m18_no_nested_tx = "db.transaction(" not in release_fn
+    m18_recheck_membership = "humanStillHasWorkspaceAccess(tx, project.workspaceId, humanId)" in require_access_fn
+    m18_personal_scope = "workspace.personalOwnerHumanId === humanId" in sess_src
+    m18_revoke_keys = (
+        "revokeMemberWorkspaceKeys(tx, workspaceId, humanId, actorHumanId)" in end_membership_fn
+        and "endMembership(" in remove_member_fn
+        and "endMembership(" in leave_fn
+    )
+    m18_revoke_grants = (
+        "revokeMemberProjectAccess(tx, workspaceId, humanId, actorHumanId)" in end_membership_fn
+        and "endMembership(" in remove_member_fn
+        and "endMembership(" in leave_fn
+    )
+    m18_last_owner_leave = 'throw new WorkspacesError("last_owner")' in leave_fn
+    m18_personal_not_leavable = "lockWorkspaceForMutation(tx, workspaceId)" in leave_fn
+    m18_distinct_events = (
+        '"member_left"' in workspace_event_types
+        and '"owner_left"' in workspace_event_types
+        and '"member_left"' in leave_fn
+        and '"owner_left"' in leave_fn
+        and "member_left" in mig_0023
+        and "owner_left" in mig_0023
+    )
+    m18_single_tx = "db.transaction(" in remove_member_fn and "db.transaction(" in leave_fn
+    m18_attribution_kept = (
+        "delete(workspaceMemberships)" in end_membership_fn
+        and end_membership_fn.count(".delete(") == 1
+    )
+    m18_leave_route = (
+        'path: "/api/workspaces/{workspaceId}/leave"' in ws_rest_src
+        and "leaveKinds" in ws_rest_src
+        and "400: problem(" in ws_rest_src
+        and "sessions.releaseMemberWorkSessions" in ws_registry_src
+    )
+    # M20 (#41): the verified three-resolution question lifecycle. Every guard is read from
     # the inbox service, its REST/MCP adapters, the contract/schema/migration and the work
     # session renewal path. Removing a row lock, the DB-time boundary, the pause transition,
     # the needs_input sync or the human-only answer gate flips the model to a shortest trace.
@@ -1030,82 +1198,82 @@ def extract_code_facts() -> dict[str, Any]:
     q_rest_src = read_text("apps/server/src/features/inbox/rest.ts")
     q_mcp_src = read_text("apps/server/src/features/inbox/mcp.ts")
     q_contract = read_text("packages/contract/src/questions.ts")
-    q_migration = read_text("db/migrations/0023_groovy_sue_storm.sql")
+    q_migration = read_text("db/migrations/0024_white_rage.sql")
     index_src = read_text("apps/server/src/features/index.ts")
     q_lock_fn = slice_between(q_src, "async function lockIssue(", "// Record the question")
     q_ask_fn = slice_between(q_src, "async ask(actorArg, input)", "async answer(actorArg")
     q_answer_fn = slice_between(q_src, "async answer(actorArg", "async list(actorArg")
     q_eval_fn = slice_between(q_src, "const evaluateDeadline", "const questionDeadline")
     q_deadline_fn = slice_between(q_src, "const questionDeadline", "export function createInboxService")
-    sess_claim_fn = slice_between(sess_src, "async claim(actor, input)", "async renew(actor, issueId)")
-    sess_renew_fn = slice_between(sess_src, "async renew(actor, issueId)", "async progress(actor, issueId, summary)")
+    sess_claim_fn = slice_between(sess_src, "async claim(actor, input)", "async renew(actor, issueId")
+    sess_renew_fn = slice_between(sess_src, "async renew(actor, issueId", "async progress(actor, issueId")
 
-    m18_statuses = (
+    m20_statuses = (
         all(s in q_contract for s in ("open", "answered", "paused", "fallback_used"))
         and "'open', 'answered', 'paused', 'fallback_used'" in q_migration
         and "timed_out" not in q_contract
         and "timed_out" not in q_src
     )
-    m18_issue_lock = (
+    m20_issue_lock = (
         '.for("update")' in q_lock_fn
         and "lockIssue(tx" in q_ask_fn
         and "lockIssue(tx" in q_answer_fn
         and ".for(" in q_answer_fn
     )
-    m18_db_time = (
+    m20_db_time = (
         "lte(questions.responseDeadlineAt, sql`statement_timestamp()`)" in q_eval_fn
         and "evaluateDeadline(tx, issue.id)" in q_answer_fn
         and "statement_timestamp()" in q_answer_fn
         and "interval '1 hour'" in q_ask_fn
     )
-    m18_exact_once = (
+    m20_exact_once = (
         "questions.status} in ('open', 'paused')" in q_answer_fn
         and 'throw new InboxError("question_resolved")' in q_answer_fn
     )
-    m18_release_pause = (
+    m20_release_pause = (
         'status: "paused"' in q_eval_fn
         and 'status: "released"' in q_eval_fn
         and "needsInput: true" in q_eval_fn
     )
-    m18_paused_unblock = (
+    m20_paused_unblock = (
         "needsInput: false" in q_answer_fn
         and "'open', 'paused'" in q_answer_fn
         and "throw new InboxError(\"question_resolved\")" in q_answer_fn
     )
-    m18_needs_sync = (
+    m20_needs_sync = (
         "needsInput: true" in q_ask_fn
         and "needsInput: true" in q_eval_fn
         and "needsInput: false" in q_answer_fn
         and "eq(issues.needsInput, false)" in ready_fn
     )
-    m18_no_nested = (
+    m20_no_nested = (
         "db.transaction(" not in q_eval_fn
         and "db.transaction(" not in q_deadline_fn
         and "db.transaction(" not in q_lock_fn
     )
-    m18_human_only = (
+    m20_human_only = (
         'throw new InboxError("agents_cannot_answer")' in q_answer_fn
         and "ProjectAccessLevel.enum.contribute" in q_answer_fn
         and "agents_cannot_answer" in q_rest_src
         and "await authenticate(c.req.raw)" in q_rest_src
         and "sessionReader(c)" in q_rest_src
     )
-    m18_email_after_commit = (
+    m20_email_after_commit = (
         "deps.deliver(" in q_ask_fn
         and q_ask_fn.index("deps.deliver(") > q_ask_fn.index("db.transaction(")
     )
-    m18_history = all(
+    m20_history = all(
         code in q_src
         for code in ("issue_question_asked", "issue_question_answered", "issue_question_paused")
     )
-    m18_claim_bounded = (
+    m20_claim_bounded = (
         "least(" in sess_renew_fn
         and "statement_timestamp()" in sess_renew_fn
         and "needsInput" in sess_claim_fn
         and "questionLeaseDeadline" in index_src
         and "evaluateQuestionDeadline" in index_src
     )
-    m18_adapters = (
+    m20_adapters = (
         "ask_for_input" in tools_src
         and "ask_for_input" in q_mcp_src
         and q_rest_src.count("400: problem(") >= 4
@@ -1118,32 +1286,32 @@ def extract_code_facts() -> dict[str, Any]:
     q_require_fn = slice_between(q_src, "async function requireAccess(", "function requireAgent")
     q_list_fn = slice_between(q_src, "async list(actorArg)", "async issueHistory(actorArg")
     q_history_fn = slice_between(q_src, "async issueHistory(actorArg", "    questionDeadline,")
-    m18_lock_order = (
+    m20_lock_order = (
         '.for("update")' in sess_deadline_fn
         and sess_deadline_fn.index('.for("update")') < sess_deadline_fn.index("checkDeadline(tx, issueId)")
     )
-    m18_non_enumeration = "if (effective === null) throw new InboxError(missing)" in q_require_fn
-    m18_scoped_list = (
+    m20_non_enumeration = "if (effective === null) throw new InboxError(missing)" in q_require_fn
+    m20_scoped_list = (
         "workspaceMemberships" in q_list_fn
         and "await Promise.all(" not in q_list_fn
         and "inArray(questions.projectId" in q_list_fn
         and ".slice(0, 200)" in q_list_fn
     )
-    m18_db_time_reads = (
+    m20_db_time_reads = (
         "effectiveStatus:" in q_columns_fn
         and "select(questionColumns)" in q_list_fn
         and "select(questionColumns)" in q_history_fn
     )
-    m18_ask_scope = (
+    m20_ask_scope = (
         "eq(workSessions.runId, input.runId)" in q_ask_fn
         and 'issue.status !== "open"' in q_ask_fn
     )
-    m18_boundary_guard = (
+    m20_boundary_guard = (
         "gt(questions.responseDeadlineAt, sql`statement_timestamp()`)" in q_answer_fn
         and "isNull(questions.followUp)" in q_answer_fn
     )
-    m18_read_tool = "list_issue_questions" in tools_src and "list_issue_questions" in q_mcp_src
-    m18_feature_seams = (
+    m20_read_tool = "list_issue_questions" in tools_src and "list_issue_questions" in q_mcp_src
+    m20_feature_seams = (
         "inbox.questionDeadline" in index_src
         and "inbox.evaluateDeadline" in index_src
         and "inbox.service." not in index_src
@@ -1292,27 +1460,60 @@ def extract_code_facts() -> dict[str, Any]:
         "m17_adapters": m17_adapters,
         "m17_tools": m17_tools,
         "m17_problems": m17_problems,
-        "m18_statuses": m18_statuses,
-        "m18_issue_lock": m18_issue_lock,
-        "m18_db_time": m18_db_time,
-        "m18_exact_once": m18_exact_once,
-        "m18_release_pause": m18_release_pause,
-        "m18_paused_unblock": m18_paused_unblock,
-        "m18_needs_sync": m18_needs_sync,
-        "m18_no_nested": m18_no_nested,
-        "m18_human_only": m18_human_only,
-        "m18_email_after_commit": m18_email_after_commit,
-        "m18_history": m18_history,
-        "m18_claim_bounded": m18_claim_bounded,
+        "m18_resume_read_only": m18_resume_read_only,
+        "m18_resume_db_time": m18_resume_db_time,
+        "m18_resume_keeps_progress": m18_resume_keeps_progress,
+        "m18_stale_rejected": m18_stale_rejected,
+        "m18_db_time_liveness": m18_db_time_liveness,
+        "m18_reacquire_available": m18_reacquire_available,
+        "m18_reacquire_expired_only": m18_reacquire_expired_only,
+        "m18_reacquire_carries_progress": m18_reacquire_carries_progress,
+        "m18_reacquire_fresh_session": m18_reacquire_fresh_session,
+        "m18_idempotent": m18_idempotent,
         "m18_adapters": m18_adapters,
-        "m18_lock_order": m18_lock_order,
-        "m18_non_enumeration": m18_non_enumeration,
-        "m18_scoped_list": m18_scoped_list,
-        "m18_db_time_reads": m18_db_time_reads,
-        "m18_ask_scope": m18_ask_scope,
-        "m18_boundary_guard": m18_boundary_guard,
-        "m18_read_tool": m18_read_tool,
-        "m18_feature_seams": m18_feature_seams,
+        "m18_http_problems": m18_http_problems,
+        "m18_session_fence": m18_session_fence,
+        "m18_closed_refused": m18_closed_refused,
+        "m18_update_db_time": m18_update_db_time,
+        "m18_find_active_db_time": m18_find_active_db_time,
+        "m19_release_in_remove": m18_release_in_remove,
+        "m19_release_in_leave": m18_release_in_leave,
+        "m19_active_only": m18_active_only,
+        "m19_release_status_guard": m18_release_status_guard,
+        "m19_membership_lock": m18_membership_lock,
+        "m19_issue_lock_order": m18_issue_lock_order,
+        "m19_no_nested_tx": m18_no_nested_tx,
+        "m19_recheck_membership": m18_recheck_membership,
+        "m19_personal_scope": m18_personal_scope,
+        "m19_revoke_keys": m18_revoke_keys,
+        "m19_revoke_grants": m18_revoke_grants,
+        "m19_last_owner_leave": m18_last_owner_leave,
+        "m19_personal_not_leavable": m18_personal_not_leavable,
+        "m19_distinct_events": m18_distinct_events,
+        "m19_single_tx": m18_single_tx,
+        "m19_attribution_kept": m18_attribution_kept,
+        "m19_leave_route": m18_leave_route,
+        "m20_statuses": m20_statuses,
+        "m20_issue_lock": m20_issue_lock,
+        "m20_db_time": m20_db_time,
+        "m20_exact_once": m20_exact_once,
+        "m20_release_pause": m20_release_pause,
+        "m20_paused_unblock": m20_paused_unblock,
+        "m20_needs_sync": m20_needs_sync,
+        "m20_no_nested": m20_no_nested,
+        "m20_human_only": m20_human_only,
+        "m20_email_after_commit": m20_email_after_commit,
+        "m20_history": m20_history,
+        "m20_claim_bounded": m20_claim_bounded,
+        "m20_adapters": m20_adapters,
+        "m20_lock_order": m20_lock_order,
+        "m20_non_enumeration": m20_non_enumeration,
+        "m20_scoped_list": m20_scoped_list,
+        "m20_db_time_reads": m20_db_time_reads,
+        "m20_ask_scope": m20_ask_scope,
+        "m20_boundary_guard": m20_boundary_guard,
+        "m20_read_tool": m20_read_tool,
+        "m20_feature_seams": m20_feature_seams,
     }
 
 
@@ -2916,8 +3117,427 @@ def check_m17(facts: dict[str, Any]) -> CheckResult:
     )
 
 
-
 def check_m18(facts: dict[str, Any]) -> CheckResult:
+    """#40: resume is a read that distinguishes a live claim from an expired one without
+    resurrecting it; progress survives interruption and is carried into reacquisition;
+    reacquisition needs an expired claim of the same run and an available issue; stale
+    renew/progress/write/completion never become a fresh claim; retries do not duplicate.
+    Every transition consults a guard extracted from the live service/adapters/contract,
+    so a deleted guard yields a shortest trace naming the exact operation."""
+    read_only = facts["m18_resume_read_only"]
+    resume_db_time = facts["m18_resume_db_time"]
+    keeps_progress = facts["m18_resume_keeps_progress"]
+    stale_rejected = facts["m18_stale_rejected"]
+    db_time = facts["m18_db_time_liveness"]
+    available = facts["m18_reacquire_available"]
+    expired_only = facts["m18_reacquire_expired_only"]
+    carry = facts["m18_reacquire_carries_progress"]
+    fresh = facts["m18_reacquire_fresh_session"]
+    idempotent = facts["m18_idempotent"]
+    adapters = facts["m18_adapters"]
+    problems = facts["m18_http_problems"]
+    fence_guard = facts["m18_session_fence"]
+    closed_guard = facts["m18_closed_refused"]
+    update_db_time = facts["m18_update_db_time"]
+    find_active_db_time = facts["m18_find_active_db_time"]
+
+    KEYS = ("owner", "gen", "status", "lease", "progress")
+    MAX_SESSIONS = 2
+
+    def rows(sessions):
+        return [dict(zip(KEYS, row)) for row in sessions]
+
+    def pack(row_list):
+        return tuple(tuple(row[k] for k in KEYS) for row in row_list)
+
+    def materialize(row_list):
+        """Lazy expiry in DB time: only lapsed active rows become expired."""
+        if not db_time:
+            return row_list
+        return [
+            dict(row, status="expired")
+            if row["status"] == "active" and row["lease"] == "lapsed"
+            else row
+            for row in row_list
+        ]
+
+    def next_gen(row_list):
+        return max([row["gen"] for row in row_list] or [0]) + 1
+
+    def run_idx(sessions, owner):
+        found = [i for i, row in enumerate(rows(sessions)) if row["owner"] == owner]
+        return max(found) if found else None
+
+    def claim(sessions, violations, owner):
+        rs = materialize(rows(sessions))
+        active = next((i for i, row in enumerate(rs) if row["status"] == "active"), None)
+        if active is not None:
+            if rs[active]["owner"] == owner:
+                if not idempotent and len(rs) < MAX_SESSIONS:
+                    rs.append(dict(owner=owner, gen=next_gen(rs), status="active", lease="fresh", progress=""))
+                    return pack(rs), violations | {"duplicate_claim_on_retry"}
+                return pack(rs), violations
+            return pack(rs), violations  # issue_claimed: another worker holds it
+        if len(rs) < MAX_SESSIONS:
+            rs.append(dict(owner=owner, gen=next_gen(rs), status="active", lease="fresh", progress=""))
+        return pack(rs), violations
+
+    def stale_write(sessions, violations, owner, action, fence=None):
+        """renew, progress, completion and fenced writes all need a live held session.
+        A `fence` names the session the delayed caller started with; it must still be the
+        live session, otherwise the write is refused even if this agent holds a newer one."""
+        rs = materialize(rows(sessions))
+        idx = next(
+            (i for i, row in enumerate(rs) if row["owner"] == owner and row["status"] == "active"),
+            None,
+        )
+        if fence is not None:
+            fenced = next((i for i, row in enumerate(rs) if row["gen"] == fence), None)
+            valid = (
+                fenced is not None
+                and rs[fenced]["owner"] == owner
+                and rs[fenced]["status"] == "active"
+                and rs[fenced]["lease"] == "fresh"
+            )
+            if not valid:
+                if not fence_guard and idx is not None:
+                    # Buggy: the fence is ignored and the write falls through to S2.
+                    violations = violations | {"stale_fence_bypassed"}
+                else:
+                    return pack(rs), violations
+            else:
+                idx = fenced
+        if idx is None:
+            if not stale_rejected and len(rs) < MAX_SESSIONS:
+                rs.append(dict(owner=owner, gen=next_gen(rs), status="active", lease="fresh", progress=""))
+                return pack(rs), violations | {f"stale_{action}_became_claim"}
+            return pack(rs), violations
+        if not db_time and rs[idx]["lease"] == "lapsed":
+            violations = violations | {f"expired_claim_{action}_accepted"}
+            if action == "renew":
+                rs[idx]["lease"] = "fresh"
+            return pack(rs), violations
+        if action == "renew":
+            rs[idx]["lease"] = "fresh"
+        elif action == "progress":
+            rs[idx]["progress"] = "p"
+        elif action == "stop":
+            rs[idx]["status"] = "ended"
+        return pack(rs), violations
+
+    def resume(sessions, violations, owner):
+        rs = rows(sessions)
+        idx = run_idx(pack(rs), owner)
+        disposition = "none"
+        if idx is not None:
+            row = rs[idx]
+            if row["status"] == "active" and row["lease"] == "fresh":
+                disposition = "active"
+            elif row["status"] == "active" and row["lease"] == "lapsed" and not resume_db_time:
+                disposition = "active"  # buggy: a lapsed lease is reported as live
+            elif (row["status"] == "active" and row["lease"] == "lapsed") or row["status"] == "expired":
+                disposition = "expired"
+            else:
+                disposition = "ended"
+        out = pack(rs)
+        if idx is not None and not read_only:
+            # A buggy resume re-arms the lease instead of just reporting it.
+            rs[idx]["status"] = "active"
+            rs[idx]["lease"] = "fresh"
+            out = pack(rs)
+            violations = violations | {"resume_resurrected_lease"}
+        if idx is not None and not resume_db_time and row["lease"] == "lapsed":
+            violations = violations | {"resume_missed_expiry"}
+        if idx is not None and not keeps_progress:
+            violations = violations | {"resume_dropped_progress"}
+        return out, violations
+
+    def reacquire(sessions, violations, owner, needs, closed):
+        rs = materialize(rows(sessions))
+        active = next((i for i, row in enumerate(rs) if row["status"] == "active"), None)
+        if active is not None:
+            if rs[active]["owner"] == owner:
+                if not idempotent and len(rs) < MAX_SESSIONS:
+                    rs.append(dict(owner=owner, gen=next_gen(rs), status="active", lease="fresh", progress=""))
+                    return pack(rs), violations | {"duplicate_reacquire_claim"}
+                return pack(rs), violations
+            if not available:
+                rs[active]["owner"] = owner
+                return pack(rs), violations | {"reacquire_stole_live_claim"}
+            return pack(rs), violations  # issue_claimed
+        idx = run_idx(pack(rs), owner)
+        prior = rs[idx] if idx is not None else None
+        if prior is None or prior["status"] != "expired":
+            if not expired_only and len(rs) < MAX_SESSIONS:
+                rs.append(dict(owner=owner, gen=next_gen(rs), status="active", lease="fresh", progress=""))
+                return pack(rs), violations | {"reacquire_without_expired_claim"}
+            return pack(rs), violations
+        if needs or closed:
+            if (not available or (closed and not closed_guard)) and len(rs) < MAX_SESSIONS:
+                rs.append(dict(owner=owner, gen=next_gen(rs), status="active", lease="fresh", progress=prior["progress"]))
+                reason = "reacquire_closed_issue" if closed else "reacquire_while_paused"
+                return pack(rs), violations | {reason}
+            return pack(rs), violations  # issue_blocked
+        if len(rs) >= MAX_SESSIONS:
+            return pack(rs), violations
+        gen = prior["gen"] if not fresh else next_gen(rs)
+        progress = prior["progress"] if carry else ""
+        violations = violations | (set() if carry else {"progress_lost_on_reacquire"})
+        if gen == prior["gen"]:
+            violations = violations | {"lease_resurrected"}
+        rs.append(dict(owner=owner, gen=gen, status="active", lease="fresh", progress=progress))
+        return pack(rs), violations
+
+    def step(fn):
+        """Adapt a (sessions, violations) -> (sessions, violations) step to full state."""
+        def action(s, c, n, v):
+            ns, nv = fn(s, v)
+            return (ns, c, n, nv)
+        return action
+
+    def step_flags(fn):
+        """Adapt a (sessions, violations, needs, closed) -> (sessions, violations) step."""
+        def action(s, c, n, v):
+            ns, nv = fn(s, v, n, c)
+            return (ns, c, n, nv)
+        return action
+
+    actions = [
+        ("the original run claims the issue", step(lambda s, v: claim(s, v, "R"))),
+        ("another worker claims the issue", step(lambda s, v: claim(s, v, "S"))),
+        ("five minutes pass in database time", lambda s, c, n, v: (pack([dict(row, lease="lapsed") if row["status"] == "active" else row for row in rows(s)]), c, n, v)),
+        ("the original run resumes its conversation", step(lambda s, v: resume(s, v, "R"))),
+        ("a stale renewal arrives on the expired session", step(lambda s, v: stale_write(s, v, "R", "renew"))),
+        ("a stale progress report arrives on the expired session", step(lambda s, v: stale_write(s, v, "R", "progress"))),
+        ("a stale completion arrives on the expired session", step(lambda s, v: stale_write(s, v, "R", "stop"))),
+        ("a stale fenced issue write arrives on the expired session", step(lambda s, v: stale_write(s, v, "R", "edit"))),
+        ("a delayed renewal fenced to session 1", step(lambda s, v: stale_write(s, v, "R", "renew", fence=1))),
+        ("a delayed progress report fenced to session 1", step(lambda s, v: stale_write(s, v, "R", "progress", fence=1))),
+        ("a delayed completion fenced to session 1", step(lambda s, v: stale_write(s, v, "R", "stop", fence=1))),
+        ("the other worker renews its live claim", step(lambda s, v: stale_write(s, v, "S", "renew"))),
+        ("the other worker completes its live claim", step(lambda s, v: stale_write(s, v, "S", "stop"))),
+        ("the original run reacquires its expired claim", step_flags(lambda s, v, n, c: reacquire(s, v, "R", n, c))),
+        ("the other worker reacquires its expired claim", step_flags(lambda s, v, n, c: reacquire(s, v, "S", n, c))),
+        ("the issue is paused for input", lambda s, c, n, v: (s, c, True, v)),
+        ("the input is answered", lambda s, c, n, v: (s, c, False, v)),
+        ("the issue is closed", lambda s, c, n, v: (s, True, n, v)),
+        ("the issue is reopened", lambda s, c, n, v: (s, False, n, v)),
+        ("renew/progress/stop recheck DB-time liveness on UPDATE and findActive", lambda s, c, n, v: (s, c, n, v if update_db_time and find_active_db_time else v | {"lapsed_row_updated"})),
+        ("resume/reacquire tools are exposed with validated problems", lambda s, c, n, v: (s, c, n, v if adapters and problems else v | {"tools_or_problems_missing"})),
+    ]
+
+    init = ((), False, False, frozenset())
+
+    def inv(state):
+        sessions, _, _, violations = state
+        if violations:
+            reason = sorted(violations)[0]
+            return False, f"resume/reacquire invariant broken: {reason}"
+        actives = [row for row in rows(sessions) if row["status"] == "active"]
+        if len(actives) > 1:
+            return False, "two active sessions hold the same issue"
+        return True, ""
+
+    return bfs_check(
+        "M18",
+        "Resume, Reacquisition and Stale Sessions (#40)",
+        "Resume is a DB-time read that distinguishes live from expired claims without resurrecting them; progress survives interruption and reacquisition; a run reacquires only its own expired claim on an available issue; stale renew/progress/fenced writes/completions never become fresh claims; retries do not duplicate a claim",
+        "safety",
+        init,
+        lambda state: [(label, action(*state)) for label, action in actions],
+        inv,
+        [
+            "apps/server/src/features/work-sessions/service.ts",
+            "apps/server/src/features/work-sessions/rest.ts",
+            "apps/server/src/features/work-sessions/mcp.ts",
+            "packages/contract/src/sessions.ts",
+            "packages/contract/src/mcp-tools.ts",
+        ],
+    )
+
+
+def check_m19(facts: dict[str, Any]) -> CheckResult:
+    """#37: removal / voluntary leave revoke keys and grants and release active claims in
+    one transaction, a renewal racing the departure cannot retain the claim, the last owner
+    and a personal workspace cannot be left, re-invitation starts with fresh grants but the
+    old key stays dead, and comments/attribution survive. Behavioral guards are explored by
+    BFS; structural guards (lock order, no nested transaction, the thin REST leave route)
+    are asserted from the extracted facts."""
+    files = [
+        "apps/server/src/features/workspaces/service.ts",
+        "apps/server/src/features/workspaces/rest.ts",
+        "apps/server/src/features/work-sessions/service.ts",
+        "apps/server/src/features/agents/service.ts",
+        "apps/server/src/features/projects/service.ts",
+        "apps/server/src/features/index.ts",
+        "apps/server/src/db/schema.ts",
+        "db/migrations/0023_wealthy_silvermane.sql",
+    ]
+    structural = (
+        "m19_issue_lock_order",
+        "m19_no_nested_tx",
+        "m19_active_only",
+        "m19_release_status_guard",
+        "m19_membership_lock",
+        "m19_personal_scope",
+        "m19_single_tx",
+        "m19_leave_route",
+    )
+    missing = [name for name in structural if not facts[name]]
+    if missing:
+        return CheckResult(
+            "M18",
+            "Member Removal, Leave & Claim Release (#37)",
+            "Departure revokes credentials and grants, releases claims, and a racing renewal cannot retain one",
+            "safety",
+            "violated",
+            0,
+            0,
+            "M18 structural guard missing: " + ", ".join(missing),
+            [f"remove the {name} guard from the #37 cleanup" for name in missing],
+            files,
+        )
+
+    release_remove = facts["m19_release_in_remove"]
+    release_leave = facts["m19_release_in_leave"]
+    recheck = facts["m19_recheck_membership"]
+    revoke_keys = facts["m19_revoke_keys"]
+    revoke_grants = facts["m19_revoke_grants"]
+    last_owner = facts["m19_last_owner_leave"]
+    personal_guard = facts["m19_personal_not_leavable"]
+    distinct = facts["m19_distinct_events"]
+    keep_comments = facts["m19_attribution_kept"]
+
+    def depart(state, event, guard):
+        member, kind, is_owner, owners, key, grant, session, comments, events, inflight = state
+        if revoke_keys:
+            key = "revoked"
+        if revoke_grants:
+            grant = "revoked"
+        if session == "active" and guard:
+            session = "released"
+        if not keep_comments:
+            comments = 0
+        if distinct:
+            events = events | {event}
+        return (False, kind, is_owner, owners, key, grant, session, comments, events, inflight)
+
+    def removal(state):
+        if not state[0] or state[1] != "shared":
+            return state
+        return depart(state, "member_removed", release_remove)
+
+    def leave(state):
+        member, kind, is_owner, owners, *_ = state
+        if not member or kind != "shared":
+            return state
+        if is_owner and owners <= 1 and last_owner:
+            return state
+        next_state = depart(state, "owner_left" if is_owner else "member_left", release_leave)
+        updated = list(next_state)
+        updated[3] = owners - 1 if is_owner else owners
+        return tuple(updated)
+
+    def single_owner_context(state):
+        # A shared workspace whose only owner is the caller: the last-owner safeguard is
+        # the only thing between this and an unadministrable workspace.
+        return (True, "shared", True, 1, "valid", "present", "active", 1, frozenset(), None)
+
+    def personal_context(state):
+        # A fresh personal-workspace scenario: one owner, no membership row and a live
+        # agent claim. It starts its own history so the shared-workspace timeline above
+        # cannot leak a "revived key" signal into this independent context.
+        return (True, "personal", True, 1, "valid", "present", "active", 1, frozenset(), None)
+
+    def leave_personal(state):
+        if state[1] != "personal" or not state[0] or personal_guard:
+            return state
+        return depart(state, "owner_left", release_leave)
+
+    def renew_start(state):
+        if state[0] and state[6] == "active":
+            updated = list(state)
+            updated[9] = "renew"
+            return tuple(updated)
+        return state
+
+    def renew_commit(state):
+        if state[9] is None:
+            return state
+        updated = list(state)
+        updated[9] = None
+        if not state[0] and not recheck:
+            # The in-flight renewal extends a claim whose human has already departed.
+            updated[6] = "active"
+        return tuple(updated)
+
+    def reinvite(state):
+        if state[0]:
+            return state
+        updated = list(state)
+        updated[0] = True
+        updated[2] = False
+        updated[4] = "revoked" if revoke_keys else state[4]
+        updated[5] = "fresh"
+        updated[8] = state[8] | {"member_joined"}
+        return tuple(updated)
+
+    def add_comment(state):
+        updated = list(state)
+        updated[7] = min(2, state[7] + 1)
+        return tuple(updated)
+
+    actions = [
+        ("an authorized owner removes the member", removal),
+        ("the member leaves voluntarily", leave),
+        ("a renewal starts before the departure", renew_start),
+        ("the in-flight renewal commits after removal", renew_commit),
+        ("the member is re-invited with fresh grants", reinvite),
+        ("a comment keeps the issue's agent attribution", add_comment),
+        ("context: a personal workspace with one owner and a live claim", personal_context),
+        ("the personal owner tries to leave", leave_personal),
+        ("context: a shared workspace with one owner and a live claim", single_owner_context),
+        ("the last owner tries to leave the shared workspace", leave),
+    ]
+    init = (True, "shared", False, 2, "valid", "present", "active", 1, frozenset(), None)
+
+    def next_states(state):
+        return [(label, action(state)) for label, action in actions]
+
+    def inv(state):
+        member, kind, is_owner, owners, key, grant, session, comments, events, _ = state
+        if kind == "shared" and owners < 1:
+            return False, "shared workspace ended with no owner (last-owner guard missing)"
+        if kind == "personal" and not member:
+            return False, "personal workspace lost its owner (leave was allowed)"
+        if not member:
+            if key == "valid":
+                return False, "removed member's agent key is still valid"
+            if grant == "present":
+                return False, "removed member still holds project access"
+            if session == "active":
+                return False, "removed member's agent retained an active claim"
+            if not events:
+                return False, "departure wrote no audit event"
+        if "member_removed" in events and "member_joined" in events and key == "valid":
+            return False, "pre-removal key revived on re-invitation"
+        if comments < 1:
+            return False, "departure erased the issue comment and its agent attribution"
+        return True, ""
+
+    return bfs_check(
+        "M19",
+        "Member Removal, Leave & Claim Release (#37)",
+        "Removal/leave revoke keys and grants, release active claims in one transaction, block a racing renewal, protect the last owner and personal work, and keep audit and comments",
+        "safety",
+        init,
+        next_states,
+        inv,
+        files,
+    )
+
+
+def check_m20(facts: dict[str, Any]) -> CheckResult:
     """#41: the three-resolution question lifecycle (open -> answered | paused |
     fallback_used, with paused -> answered). The fixed model is proven deadlock-free and
     exactly-once in database time; the same explorer run with the naive two-state timeout
@@ -2927,27 +3547,27 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
     Every transition below consults a guard extracted from the live service/contract.
     """
     guards = {
-        "statuses": facts["m18_statuses"],
-        "lock": facts["m18_issue_lock"],
-        "db_time": facts["m18_db_time"],
-        "once": facts["m18_exact_once"],
-        "release": facts["m18_release_pause"],
-        "unblock": facts["m18_paused_unblock"],
-        "needs": facts["m18_needs_sync"],
-        "no_nested": facts["m18_no_nested"],
-        "human": facts["m18_human_only"],
-        "email": facts["m18_email_after_commit"],
-        "history": facts["m18_history"],
-        "claim": facts["m18_claim_bounded"],
-        "adapters": facts["m18_adapters"],
-        "lock_order": facts["m18_lock_order"],
-        "non_enumeration": facts["m18_non_enumeration"],
-        "scoped_list": facts["m18_scoped_list"],
-        "db_time_reads": facts["m18_db_time_reads"],
-        "ask_scope": facts["m18_ask_scope"],
-        "boundary_guard": facts["m18_boundary_guard"],
-        "read_tool": facts["m18_read_tool"],
-        "feature_seams": facts["m18_feature_seams"],
+        "statuses": facts["m20_statuses"],
+        "lock": facts["m20_issue_lock"],
+        "db_time": facts["m20_db_time"],
+        "once": facts["m20_exact_once"],
+        "release": facts["m20_release_pause"],
+        "unblock": facts["m20_paused_unblock"],
+        "needs": facts["m20_needs_sync"],
+        "no_nested": facts["m20_no_nested"],
+        "human": facts["m20_human_only"],
+        "email": facts["m20_email_after_commit"],
+        "history": facts["m20_history"],
+        "claim": facts["m20_claim_bounded"],
+        "adapters": facts["m20_adapters"],
+        "lock_order": facts["m20_lock_order"],
+        "non_enumeration": facts["m20_non_enumeration"],
+        "scoped_list": facts["m20_scoped_list"],
+        "db_time_reads": facts["m20_db_time_reads"],
+        "ask_scope": facts["m20_ask_scope"],
+        "boundary_guard": facts["m20_boundary_guard"],
+        "read_tool": facts["m20_read_tool"],
+        "feature_seams": facts["m20_feature_seams"],
     }
 
     def explore(g: dict[str, bool], naive: bool) -> CheckResult:
@@ -3111,7 +3731,7 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
             return True, ""
 
         return bfs_check(
-            "M18-naive" if naive else "M18",
+            "M18-naive" if naive else "M20",
             "Three-Resolution Question Lifecycle (#41)",
             "Naive two-state timeout deadlocks paused issues" if naive else
             "One DB-time resolution; a paused issue is unblocked by a human answer, keeps Needs input until then, and only humans may answer",
@@ -3129,7 +3749,7 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
                 "packages/contract/src/questions.ts",
                 "packages/contract/src/mcp-tools.ts",
                 "apps/server/src/db/schema.ts",
-                "db/migrations/0023_groovy_sue_storm.sql",
+                "db/migrations/0024_white_rage.sql",
             ],
         )
 
@@ -3141,7 +3761,7 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
         return fixed
     if naive.status != "violated":
         return CheckResult(
-            "M18",
+            "M20",
             "Three-Resolution Question Lifecycle (#41)",
             "Sensitivity: the naive 2-state model must deadlock a paused issue",
             "safety",
@@ -3153,7 +3773,7 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
             files,
         )
     return CheckResult(
-        "M18",
+        "M20",
         "Three-Resolution Question Lifecycle (#41)",
         "One DB-time resolution; a paused issue is unblocked by a human answer, keeps Needs input until then, and only humans may answer",
         "safety",
@@ -3189,6 +3809,8 @@ def main() -> None:
         check_m16(facts),
         check_m17(facts),
         check_m18(facts),
+        check_m19(facts),
+        check_m20(facts),
     ]
 
     if "--json" in sys.argv:

@@ -1,5 +1,5 @@
 {
-  "id": "8c4bb6b8-1bbf-4cb1-9547-5bfb3f4fc95b",
+  "id": "76180a7f-8020-4070-b6c6-cb2f91c02d7c",
   "prevId": "538c8ced-8c08-4a93-99d9-d38d41b4cad1",
   "version": "7",
   "dialect": "postgresql",
@@ -1923,11 +1923,11 @@
         },
         "project_activity_type": {
           "name": "project_activity_type",
-          "value": "\"project_activity\".\"type\" in ('project_created', 'project_renamed', 'issue_created', 'issue_edited', 'issue_commented', 'issue_closed', 'issue_reopened', 'issue_question_asked', 'issue_question_answered', 'issue_question_paused', 'knowledge_created', 'knowledge_edited')"
+          "value": "\"project_activity\".\"type\" in ('project_created', 'project_renamed', 'issue_created', 'issue_edited', 'issue_commented', 'issue_closed', 'issue_reopened', 'knowledge_created', 'knowledge_edited')"
         },
         "project_activity_target_matches_type": {
           "name": "project_activity_target_matches_type",
-          "value": "(\n        (\"project_activity\".\"type\" in ('project_created', 'project_renamed') and \"project_activity\".\"issue_id\" is null and \"project_activity\".\"knowledge_entry_id\" is null)\n        or (\"project_activity\".\"type\" in ('issue_created', 'issue_edited', 'issue_commented', 'issue_closed', 'issue_reopened', 'issue_question_asked', 'issue_question_answered', 'issue_question_paused') and \"project_activity\".\"issue_id\" is not null and \"project_activity\".\"knowledge_entry_id\" is null)\n        or (\"project_activity\".\"type\" in ('knowledge_created', 'knowledge_edited') and \"project_activity\".\"issue_id\" is null and \"project_activity\".\"knowledge_entry_id\" is not null)\n      )"
+          "value": "(\n        (\"project_activity\".\"type\" in ('project_created', 'project_renamed') and \"project_activity\".\"issue_id\" is null and \"project_activity\".\"knowledge_entry_id\" is null)\n        or (\"project_activity\".\"type\" in ('issue_created', 'issue_edited', 'issue_commented', 'issue_closed', 'issue_reopened') and \"project_activity\".\"issue_id\" is not null and \"project_activity\".\"knowledge_entry_id\" is null)\n        or (\"project_activity\".\"type\" in ('knowledge_created', 'knowledge_edited') and \"project_activity\".\"issue_id\" is null and \"project_activity\".\"knowledge_entry_id\" is not null)\n      )"
         }
       },
       "isRLSEnabled": false
@@ -2025,280 +2025,6 @@
         "projects_next_issue_number_positive": {
           "name": "projects_next_issue_number_positive",
           "value": "\"projects\".\"next_issue_number\" > 0"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.questions": {
-      "name": "questions",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "issue_id": {
-          "name": "issue_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "project_id": {
-          "name": "project_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "agent_id": {
-          "name": "agent_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "run_id": {
-          "name": "run_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "session_id": {
-          "name": "session_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "question": {
-          "name": "question",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "proposed_fallback": {
-          "name": "proposed_fallback",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'open'"
-        },
-        "response_deadline_at": {
-          "name": "response_deadline_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "answer": {
-          "name": "answer",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "answered_by_human_id": {
-          "name": "answered_by_human_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "answered_at": {
-          "name": "answered_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "follow_up": {
-          "name": "follow_up",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "follow_up_by_human_id": {
-          "name": "follow_up_by_human_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "follow_up_at": {
-          "name": "follow_up_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "resolved_at": {
-          "name": "resolved_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "one_open_question_per_issue": {
-          "name": "one_open_question_per_issue",
-          "columns": [
-            {
-              "expression": "issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"questions\".\"status\" in ('open', 'paused')",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "questions_issue_created": {
-          "name": "questions_issue_created",
-          "columns": [
-            {
-              "expression": "issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "questions_workspace_created": {
-          "name": "questions_workspace_created",
-          "columns": [
-            {
-              "expression": "workspace_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "questions_issue_id_issues_id_fk": {
-          "name": "questions_issue_id_issues_id_fk",
-          "tableFrom": "questions",
-          "tableTo": "issues",
-          "columnsFrom": ["issue_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "questions_project_id_projects_id_fk": {
-          "name": "questions_project_id_projects_id_fk",
-          "tableFrom": "questions",
-          "tableTo": "projects",
-          "columnsFrom": ["project_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "questions_workspace_id_workspaces_id_fk": {
-          "name": "questions_workspace_id_workspaces_id_fk",
-          "tableFrom": "questions",
-          "tableTo": "workspaces",
-          "columnsFrom": ["workspace_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "questions_agent_id_agents_id_fk": {
-          "name": "questions_agent_id_agents_id_fk",
-          "tableFrom": "questions",
-          "tableTo": "agents",
-          "columnsFrom": ["agent_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "questions_run_id_runs_id_fk": {
-          "name": "questions_run_id_runs_id_fk",
-          "tableFrom": "questions",
-          "tableTo": "runs",
-          "columnsFrom": ["run_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "questions_session_id_work_sessions_id_fk": {
-          "name": "questions_session_id_work_sessions_id_fk",
-          "tableFrom": "questions",
-          "tableTo": "work_sessions",
-          "columnsFrom": ["session_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "questions_answered_by_human_id_humans_id_fk": {
-          "name": "questions_answered_by_human_id_humans_id_fk",
-          "tableFrom": "questions",
-          "tableTo": "humans",
-          "columnsFrom": ["answered_by_human_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "questions_follow_up_by_human_id_humans_id_fk": {
-          "name": "questions_follow_up_by_human_id_humans_id_fk",
-          "tableFrom": "questions",
-          "tableTo": "humans",
-          "columnsFrom": ["follow_up_by_human_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "questions_status": {
-          "name": "questions_status",
-          "value": "\"questions\".\"status\" in ('open', 'answered', 'paused', 'fallback_used')"
-        },
-        "questions_deadline_after_creation": {
-          "name": "questions_deadline_after_creation",
-          "value": "\"questions\".\"response_deadline_at\" > \"questions\".\"created_at\""
-        },
-        "questions_resolution_matches_status": {
-          "name": "questions_resolution_matches_status",
-          "value": "(\n        (\"questions\".\"status\" = 'open' and \"questions\".\"answer\" is null and \"questions\".\"answered_by_human_id\" is null\n          and \"questions\".\"answered_at\" is null and \"questions\".\"resolved_at\" is null\n          and \"questions\".\"follow_up\" is null and \"questions\".\"follow_up_by_human_id\" is null and \"questions\".\"follow_up_at\" is null)\n        or (\"questions\".\"status\" = 'answered' and \"questions\".\"answer\" is not null and \"questions\".\"answered_by_human_id\" is not null\n          and \"questions\".\"answered_at\" is not null and \"questions\".\"resolved_at\" is not null\n          and \"questions\".\"follow_up\" is null and \"questions\".\"follow_up_by_human_id\" is null and \"questions\".\"follow_up_at\" is null)\n        or (\"questions\".\"status\" in ('paused', 'fallback_used') and \"questions\".\"answer\" is null\n          and \"questions\".\"answered_by_human_id\" is null and \"questions\".\"answered_at\" is null and \"questions\".\"resolved_at\" is not null\n          and ((\"questions\".\"follow_up\" is null and \"questions\".\"follow_up_by_human_id\" is null and \"questions\".\"follow_up_at\" is null)\n            or (\"questions\".\"follow_up\" is not null and \"questions\".\"follow_up_by_human_id\" is not null and \"questions\".\"follow_up_at\" is not null)))\n      )"
         }
       },
       "isRLSEnabled": false
@@ -3034,7 +2760,7 @@
       "checkConstraints": {
         "workspace_event_type": {
           "name": "workspace_event_type",
-          "value": "\"workspace_events\".\"type\" in ('workspace_created', 'member_joined', 'owner_appointed', 'member_removed', 'owner_removed', 'create_projects_granted', 'create_projects_revoked', 'invite_members_granted', 'invite_members_revoked', 'remove_members_granted', 'remove_members_revoked', 'manage_member_permissions_granted', 'manage_member_permissions_revoked')"
+          "value": "\"workspace_events\".\"type\" in ('workspace_created', 'member_joined', 'owner_appointed', 'member_removed', 'owner_removed', 'member_left', 'owner_left', 'create_projects_granted', 'create_projects_revoked', 'invite_members_granted', 'invite_members_revoked', 'remove_members_granted', 'remove_members_revoked', 'manage_member_permissions_granted', 'manage_member_permissions_revoked')"
         }
       },
       "isRLSEnabled": false

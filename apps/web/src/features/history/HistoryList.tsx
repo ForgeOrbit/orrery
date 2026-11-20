@@ -9,6 +9,8 @@ const labels: Record<string, string> = {
   owner_appointed: "appointed an owner",
   member_removed: "removed a member",
   owner_removed: "removed an owner",
+  member_left: "left the workspace",
+  owner_left: "left the workspace as an owner",
   create_projects_granted: "granted Create projects",
   create_projects_revoked: "revoked Create projects",
   invite_members_granted: "granted Invite members",

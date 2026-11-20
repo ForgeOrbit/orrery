@@ -2331,6 +2331,48 @@
         ],
         "default": "completed"
       },
+      "ResumeWorkSessionResult": {
+        "type": "object",
+        "properties": {
+          "runId": {
+            "type": "string"
+          },
+          "issueId": {
+            "type": "string"
+          },
+          "disposition": {
+            "$ref": "#/components/schemas/ResumeDisposition"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/WorkSession"
+              },
+              {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              }
+            ]
+          }
+        },
+        "required": [
+          "runId",
+          "issueId",
+          "disposition",
+          "session"
+        ]
+      },
+      "ResumeDisposition": {
+        "type": "string",
+        "enum": [
+          "active",
+          "expired",
+          "ended",
+          "none"
+        ]
+      },
       "WorkSessionsResponse": {
         "type": "array",
         "items": {
@@ -4934,6 +4976,69 @@
         }
       }
     },
+    "/api/workspaces/{workspaceId}/leave": {
+      "post": {
+        "summary": "Leave a shared workspace voluntarily",
+        "description": "A member ends their own membership, with the same immediate key revocation, project-access cleanup, and active-claim release as a removal, but records a leave event. A personal workspace cannot be left, and the last owner of a shared workspace cannot leave: appoint another owner first. The caller's personal work and every other membership stay intact.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The membership was ended"
+          },
+          "400": {
+            "description": "The workspace id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No accessible shared workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The caller is the last owner of the workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/workspaces/{workspaceId}/projects": {
       "get": {
         "summary": "The projects the caller can access in a workspace",
@@ -6678,7 +6783,7 @@
     "/api/issues/{issueId}/work-sessions/renew": {
       "post": {
         "summary": "Check in and renew a claim",
-        "description": "Refresh the five-minute lease in database time for the live session this agent holds on the issue. An expired or released session is never renewed or silently reacquired.",
+        "description": "Refresh the five-minute lease in database time for the live session this agent holds on the issue. An expired or released session is never renewed or silently reacquired. An optional sessionId fences a delayed call from an interrupted session.",
         "parameters": [
           {
             "schema": {
@@ -6691,6 +6796,23 @@
             "in": "path"
           }
         ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "sessionId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  }
+                }
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "The renewed session",
@@ -6758,7 +6880,7 @@
     "/api/issues/{issueId}/work-sessions/progress": {
       "post": {
         "summary": "Record progress on a live session",
-        "description": "Store a progress summary on the live session this agent holds. Progress is held independently of the lease, so expiry never erases it. Requires a live session.",
+        "description": "Store a progress summary on the live session this agent holds. Progress is held independently of the lease, so expiry never erases it. Requires a live session; an optional sessionId fences a delayed report from an expired one.",
         "parameters": [
           {
             "schema": {
@@ -6782,6 +6904,11 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 20000
+                  },
+                  "sessionId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
                   }
                 },
                 "required": [
@@ -6858,7 +6985,7 @@
     "/api/issues/{issueId}/work-sessions/stop": {
       "post": {
         "summary": "Complete or release a live session",
-        "description": "End the live session this agent holds. Stopping is distinct from closing the issue; the outcome records whether the work completed or was released for another worker.",
+        "description": "End the live session this agent holds. Stopping is distinct from closing the issue; the outcome records whether the work completed or was released for another worker. An optional sessionId fences a delayed completion from an expired session.",
         "parameters": [
           {
             "schema": {
@@ -6880,6 +7007,11 @@
                 "properties": {
                   "outcome": {
                     "$ref": "#/components/schemas/WorkSessionOutcome"
+                  },
+                  "sessionId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
                   }
                 }
               }
@@ -6939,6 +7071,196 @@
           },
           "409": {
             "description": "This agent holds no live session for this issue",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/{issueId}/work-sessions/resume": {
+      "post": {
+        "summary": "Inspect the original run's claim after an interruption",
+        "description": "Report how the named run's claim on this issue stands: active, expired, ended or none, with the progress recorded before any interruption. Evaluated in database time as a read; it never renews or resurrects an expired lease.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "issueId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "runId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  }
+                },
+                "required": [
+                  "runId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The run's claim disposition and session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResumeWorkSessionResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The resume request is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "An agent key is required, or the key is invalid or revoked",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read access is required to inspect this issue",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such issue or run is in scope for this agent",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/{issueId}/work-sessions/reacquire": {
+      "post": {
+        "summary": "Reacquire this run's expired claim",
+        "description": "Re-arm the named run's expired claim on this issue as a new active session for the same agent, run, workspace and issue, carrying forward the recorded progress. Allowed only while no other worker holds a live claim and the issue is not paused for input. Retries with the same run return the same session; a stale call is never turned into a fresh claim.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "issueId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "runId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  }
+                },
+                "required": [
+                  "runId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The reacquired active session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkSession"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The reacquire request is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "An agent key is required, or the key is invalid or revoked",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Contribute access is required to reacquire this claim",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such issue or run is in scope for this agent",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The issue is claimed by another worker or paused for input, or the claim was never expired",
             "content": {
               "application/problem+json": {
                 "schema": {

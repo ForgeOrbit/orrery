@@ -152,6 +152,8 @@ export function createFeatures(database: Database, config: Config, log: Logger):
         projects.revokeMemberProjectAccess(tx, workspaceId, humanId, actorHumanId),
       revokeMemberWorkspaceKeys: (tx, workspaceId, humanId, actorHumanId) =>
         revokeMemberWorkspaceKeys(tx, workspaceId, humanId, actorHumanId),
+      releaseMemberWorkSessions: (tx, workspaceId, humanId) =>
+        sessions.releaseMemberWorkSessions(tx, workspaceId, humanId),
       applyInvitationGrants: (tx, workspaceId, humanId, grantedByHumanId, offered) =>
         projects.applyInvitationGrants(tx, workspaceId, humanId, grantedByHumanId, offered),
       log,
