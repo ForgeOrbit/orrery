@@ -162,6 +162,13 @@
       "when": 1795176568718,
       "tag": "0022_spooky_barracuda",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1795186726157,
+      "tag": "0023_equal_doctor_octopus",
+      "breakpoints": true
     }
   ]
 }
