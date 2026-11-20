@@ -85,6 +85,13 @@ def extract_code_facts() -> dict[str, Any]:
     m2b_ws_guarded = "eq(workspaceInvitations.status, InvitationStatus.enum.pending)" in ws_record_delivery
     m2b_inv_guarded = "eq(invitations.status, InvitationStatus.enum.pending)" in inv_record_delivery
 
+    # #33 (agent project work through MCP) reads its own transport, contract, and schema
+    # sources so removing a guard or registering an admin tool flips the model below.
+    mcp_src = read_text("apps/server/src/features/agents/mcp.ts")
+    tools_src = read_text("packages/contract/src/mcp-tools.ts")
+    proj_rest_src = read_text("apps/server/src/features/projects/rest.ts")
+    mig_0017 = read_text("db/migrations/0017_rapid_talon.sql")
+
     # M3: Installation invite checks emailRegistered inside TX under per-email lock shared with createInvitedHuman
     inv_install_fn = slice_between(inv_src, "async inviteInstallation(", "async registerInstallation(")
     inv_tx_body = slice_between(inv_install_fn, "await db.transaction(async (tx) =>", "} catch (error)")
@@ -452,6 +459,64 @@ def extract_code_facts() -> dict[str, Any]:
         and "secret:" not in events_table
     )
 
+    # M12 (#33): one policy path for REST and MCP, agent-attributed writes, and no
+    # membership or installation administration reachable by an agent key.
+    actor_level_fn = slice_between(proj_src, "function actorAccessLevel(", "function requireLevel(")
+    m12_agent_scope = (
+        "actor.identity.workspaceId" in actor_level_fn
+        and "facts.workspaceId !== actor.identity.workspaceId" in actor_level_fn
+        and "actor.identity.projects.find((grant) => grant.projectId === facts.projectId)" in actor_level_fn
+    )
+    m12_shared_gate = (
+        "function requireLevel(" in proj_src
+        and "actorAccessLevel(facts, actor)" in proj_src
+        and all(
+            f'requireLevel({arg}, actor, required, "{kind}")' in proj_src
+            for arg, kind in [
+                ("facts", "project_not_found"),
+                ("row", "issue_not_found"),
+                ("row", "knowledge_entry_not_found"),
+            ]
+        )
+    )
+    record_activity_fn = slice_between(proj_src, "async function recordActivity(", "// One project access-change event")
+    m12_agent_actor = (
+        "actorHumanId: humanIdOf(input.actor)" in record_activity_fn
+        and "actorAgentId: agentIdOf(input.actor)" in record_activity_fn
+        and "humanIdOf(actor)" in proj_src
+        and "agentIdOf(actor)" in proj_src
+    )
+    m12_actor_constraint = (
+        "issues_created_by_actor" in mig_0017
+        and "project_activity_actor" in mig_0017
+        and "created_by_agent_id" in mig_0017
+        and "actor_agent_id" in mig_0017
+        and "actorHumanId: text(\"actor_human_id\").references(() => humans.id)" in ag_schema
+        and "actorAgentId: text(\"actor_agent_id\").references(() => agents.id)" in ag_schema
+    )
+    m12_mcp_reauth = (
+        "service.authenticate(readBearer(request))" in mcp_src
+        and "kind: \"agent\"" in mcp_src
+        and "readBearer(request)" in mcp_src
+    )
+    tool_names = re.findall(r'name: "([a-z_]+)"', tools_src)
+    m12_tools_exist = all(
+        name in tool_names
+        for name in [
+            "list_projects", "list_issues", "create_issue", "update_issue", "create_comment",
+            "list_activity", "list_knowledge", "create_knowledge", "update_knowledge",
+        ]
+    )
+    m12_no_admin_tools = all(
+        not any(word in name for word in ["member", "invit", "workspace", "access", "setting", "key", "admin", "grant"])
+        for name in tool_names
+    )
+    m12_rest_no_bearer = (
+        "Authorization" not in proj_rest_src
+        and "humanActor" in proj_rest_src
+        and "{ kind: \"human\", account }" in proj_rest_src
+    )
+
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
         "m2a_supersedes_failed": m2a_supersedes_failed,
@@ -511,6 +576,14 @@ def extract_code_facts() -> dict[str, Any]:
         "m11_key_hash_only": m11_key_hash_only,
         "m11_events": m11_events,
         "m11_events_without_secret": m11_events_without_secret,
+        "m12_agent_scope": m12_agent_scope,
+        "m12_shared_gate": m12_shared_gate,
+        "m12_agent_actor": m12_agent_actor,
+        "m12_actor_constraint": m12_actor_constraint,
+        "m12_mcp_reauth": m12_mcp_reauth,
+        "m12_tools_exist": m12_tools_exist,
+        "m12_no_admin_tools": m12_no_admin_tools,
+        "m12_rest_no_bearer": m12_rest_no_bearer,
     }
 
 
@@ -1279,6 +1352,72 @@ def check_m11(facts: dict[str, Any]) -> CheckResult:
     )
 
 
+def check_m12(facts: dict[str, Any]) -> CheckResult:
+    # #33: the same service gate decides REST and MCP; an agent key authenticates on
+    # every tool call, so revocation/expiry/demotion apply immediately. Writes name the
+    # agent, and neither transport exposes membership or installation administration.
+    gate = facts["m12_shared_gate"]
+    scope = facts["m12_agent_scope"]
+    reauth = facts["m12_mcp_reauth"]
+    audit = facts["m12_agent_actor"] and facts["m12_actor_constraint"]
+
+    attempts: list[tuple[str, str, bool, str]] = [
+        ("MCP create_issue with a Contribute key", "committed", gate and facts["m12_tools_exist"], "refused"),
+        ("MCP update_issue/close with a Contribute key", "committed", gate, "refused"),
+        ("MCP create_comment with a Contribute key", "committed", gate, "refused"),
+        ("MCP create/update_knowledge with a Contribute key", "committed", gate, "refused"),
+        ("MCP list/get issue and knowledge with a Read key", "inspected", gate, "refused"),
+        ("MCP create_issue with a Read key", "refused", gate, "committed"),
+        ("MCP update_issue/close with a Read key", "refused", gate, "committed"),
+        ("MCP create_comment with a Read key", "refused", gate, "committed"),
+        ("MCP create/update_knowledge with a Read key", "refused", gate, "committed"),
+        ("REST and MCP Read denials share one stable code", "insufficient_project_access", gate, "divergent"),
+        ("MCP write on a project in another workspace", "refused", scope, "committed"),
+        ("MCP write on a project outside the key grants", "refused", scope, "committed"),
+        ("MCP call with a key revoked after the client connected", "refused", reauth, "committed"),
+        ("MCP call with a key whose human grant was lowered", "refused", reauth and gate, "committed"),
+        ("MCP write records the agent as actor, never its human owner", "actor=agent", audit, "actor=human"),
+        ("stored issue/activity row has exactly one actor identity", "one_actor", facts["m12_actor_constraint"], "two_actors"),
+        ("MCP tool list offers membership, invitation, or installation administration", "refused", facts["m12_no_admin_tools"], "exposed"),
+        ("bearer key accepted on a human REST membership/settings route", "refused", facts["m12_rest_no_bearer"], "accepted"),
+    ]
+    init = ("start",)
+
+    def next_states(state):
+        if state != ("start",):
+            return []
+        return [
+            (f"{label} -> {expected if guard else wrong}", ("probed", idx, expected if guard else wrong))
+            for idx, (label, expected, guard, wrong) in enumerate(attempts)
+        ]
+
+    def inv(state):
+        if state[0] != "probed":
+            return True, ""
+        label, expected, _, _ = attempts[state[1]]
+        if state[2] != expected:
+            return False, f"{label} returned {state[2]}, expected {expected}"
+        return True, ""
+
+    return bfs_check(
+        "M12",
+        "Agent Project Work Through MCP (#33)",
+        "One gate decides REST and MCP project work, agents are the recorded actors, and no key reaches membership or administration",
+        "safety",
+        init,
+        next_states,
+        inv,
+        [
+            "apps/server/src/features/projects/service.ts",
+            "apps/server/src/features/projects/rest.ts",
+            "apps/server/src/features/agents/mcp.ts",
+            "packages/contract/src/mcp-tools.ts",
+            "apps/server/src/db/schema.ts",
+            "db/migrations/0017_rapid_talon.sql",
+        ],
+    )
+
+
 def main() -> None:
     facts = extract_code_facts()
     results = [
@@ -1294,6 +1433,7 @@ def main() -> None:
         check_m9(facts),
         check_m10(facts),
         check_m11(facts),
+        check_m12(facts),
     ]
 
     if "--json" in sys.argv:

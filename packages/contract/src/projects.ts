@@ -33,9 +33,19 @@ export const ProjectActivityType = z
   .meta({ id: "ProjectActivityType" });
 export type ProjectActivityType = z.infer<typeof ProjectActivityType>;
 
-// Who did something: the stable human id is the identity, the email is what a project's
-// readers see, and both stay attached to the action after it happened.
-export const Actor = z.object({ humanId: z.string(), email: Email }).meta({ id: "Actor" });
+// Who did something. The stable identity is either a human or an agent: an agent's work
+// is attributed to the agent itself, never misattributed to the human who owns its key.
+// `displayName` is the stable label readers see (the human's email or the agent's name),
+// so a reader never has to guess which identity an event names.
+export const Actor = z
+  .object({
+    humanId: z.string().nullable().optional(),
+    email: Email.nullable().optional(),
+    agentId: z.string().nullable().optional(),
+    agentName: z.string().nullable().optional(),
+    displayName: z.string(),
+  })
+  .meta({ id: "Actor" });
 export type Actor = z.infer<typeof Actor>;
 
 export const Project = z

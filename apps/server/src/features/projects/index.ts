@@ -3,12 +3,13 @@ import type { ProjectAccessLevel } from "@orrery/contract";
 import type { Feature } from "../../platform/feature.ts";
 import type { DbTransaction } from "../../platform/db.ts";
 import type { SessionReader } from "../accounts/index.ts";
-import { type ProjectsDeps, createProjectsService } from "./service.ts";
+import { type ProjectsDeps, type ProjectsService, createProjectsService } from "./service.ts";
 import { createProjectsRest, routes } from "./rest.ts";
 
 export { routes as projectsRoutes };
 export { projectAccessAtLeast } from "./service.ts";
-export type { ProjectsService } from "./service.ts";
+export { ProjectsError } from "./service.ts";
+export type { ProjectsErrorKind, ProjectsService, WorkActor } from "./service.ts";
 
 export type ProjectsDepsWithAccounts = ProjectsDeps & { sessionReader: SessionReader };
 
@@ -16,6 +17,9 @@ export type ProjectsDepsWithAccounts = ProjectsDeps & { sessionReader: SessionRe
 // stays on the projects side because project grants and their events are its tables;
 // workspaces calls it inside its own transaction.
 export interface ProjectsFeature extends Feature {
+  // The service itself, borrowed by the agents feature so its MCP tools call the same
+  // project-work decisions as the REST adapters.
+  service: ProjectsService;
   revokeMemberProjectAccess(
     tx: DbTransaction,
     workspaceId: string,
@@ -44,6 +48,7 @@ export function createProjectsFeature(deps: ProjectsDepsWithAccounts): ProjectsF
   return {
     name: "projects",
     rest: createProjectsRest(service, deps.sessionReader),
+    service,
     revokeMemberProjectAccess: (tx, workspaceId, humanId, actorHumanId) =>
       service.revokeMemberProjectAccess(tx, workspaceId, humanId, actorHumanId),
     applyInvitationGrants: (tx, workspaceId, humanId, grantedByHumanId, offered) =>

@@ -1,10 +1,14 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { CreateAgentKeyResponse, Problem } from "@orrery/contract";
+import { AgentIdentity, CreateAgentKeyResponse, Problem, tools } from "@orrery/contract";
 import { and, eq, sql } from "drizzle-orm";
 import type { Hono } from "hono";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  issueComments,
+  issues,
+  knowledgeEntries,
+  projectActivity,
   agentApiKeyProjects,
   agentApiKeys,
   agentKeyEvents,
@@ -21,7 +25,12 @@ import { createLogger, type Logger } from "../../platform/log.ts";
 import { migrate } from "../../platform/migrate.ts";
 import { tokenHash } from "../../platform/tokens.ts";
 import { createAccountsFeature } from "../accounts/index.ts";
-import { createProjectsFeature } from "../projects/index.ts";
+import {
+  createProjectsFeature,
+  ProjectsError,
+  type ProjectsErrorKind,
+  type ProjectsService,
+} from "../projects/index.ts";
 import { createAgentsFeature } from "./index.ts";
 
 // Real Postgres (AGENTS.md): key scoping, revocation, expiry, the dynamic human-access
@@ -58,6 +67,13 @@ const getJson = (app: Hono, path: string, cookie?: string, bearer?: string) =>
         }
       : {},
   );
+
+const patchJson = (app: Hono, path: string, body: unknown, cookie?: string) =>
+  app.request(path, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}) },
+    body: JSON.stringify(body),
+  });
 
 const deleteRequest = (app: Hono, path: string, cookie?: string) =>
   app.request(path, { method: "DELETE", ...(cookie ? { headers: { cookie } } : {}) });
@@ -99,11 +115,78 @@ async function makeApp(): Promise<Hono> {
         sessionReader: accounts.sessionReader,
         projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
           projectsFeature.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
+        projects: projectsFeature.service,
       }),
     ],
     publicUrl: PUBLIC_URL,
     log: silentLogger,
   });
+}
+
+async function makeProjectWorkApp(): Promise<{ app: Hono; projects: ProjectsService }> {
+  const accounts = createAccountsFeature({
+    db: database.db,
+    setupSecret: SECRET,
+    publicUrl: PUBLIC_URL,
+  });
+  const projectsFeature = createProjectsFeature({
+    db: database.db,
+    sessionReader: accounts.sessionReader,
+  });
+  const app = createApp({
+    features: [
+      accounts,
+      projectsFeature,
+      createAgentsFeature({
+        db: database.db,
+        sessionReader: accounts.sessionReader,
+        projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
+          projectsFeature.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
+        projects: projectsFeature.service,
+      }),
+    ],
+    publicUrl: PUBLIC_URL,
+    log: silentLogger,
+  });
+  return { app, projects: projectsFeature.service };
+}
+
+async function adminId(): Promise<string> {
+  const [human] = await database.db.select().from(humans).where(eq(humans.email, ADMIN_EMAIL));
+  if (human === undefined) throw new Error("the administrator was not created");
+  return human.id;
+}
+
+async function identityFor(app: Hono, secret: string): Promise<AgentIdentity> {
+  const res = await getJson(app, "/api/agents/me", undefined, secret);
+  expect(res.status).toBe(200);
+  return AgentIdentity.parse(await res.json());
+}
+
+async function rejection(promise: Promise<unknown>): Promise<unknown> {
+  return promise.then(
+    () => {
+      throw new Error("expected the operation to be rejected");
+    },
+    (error: unknown) => error,
+  );
+}
+
+function humanActor(humanId: string, email: string) {
+  return {
+    kind: "human" as const,
+    account: {
+      humanId,
+      email,
+      isSystemAdministrator: false,
+      emailVerifiedAt: new Date(),
+    },
+  };
+}
+
+function expectProjectsError(error: unknown, kind: ProjectsErrorKind) {
+  expect(error).toBeInstanceOf(ProjectsError);
+  expect(error).toMatchObject({ kind });
 }
 
 async function bootstrapAdmin(app: Hono) {
@@ -291,13 +374,14 @@ afterEach(async () => {
     await tx.execute(sql`delete from agent_key_events`);
     await tx.execute(sql`delete from agent_api_key_projects`);
     await tx.execute(sql`delete from agent_api_keys`);
-    await tx.execute(sql`delete from agents`);
     await tx.execute(sql`delete from project_access_events`);
     await tx.execute(sql`delete from project_access_grants`);
+    // Content that now carries an agent actor must go before the agent rows it names.
     await tx.execute(sql`delete from project_activity`);
     await tx.execute(sql`delete from knowledge_entries`);
     await tx.execute(sql`delete from issue_comments`);
     await tx.execute(sql`delete from issues`);
+    await tx.execute(sql`delete from agents`);
     await tx.execute(sql`delete from workspace_events`);
     await tx.execute(sql`delete from workspace_invitation_grants`);
     await tx.execute(sql`delete from workspace_invitations`);
@@ -613,5 +697,318 @@ describe("workspace-scoped agent API keys", () => {
       workspaceId: team.id,
     });
     for (const event of events) expect(JSON.stringify(event)).not.toContain(teamKey.secret);
+  });
+
+  describe("agent project work (issue #33)", () => {
+    it("registers only project-work tools, never membership or administration", () => {
+      const names = tools.map((tool) => tool.name);
+      expect(names).toEqual(
+        expect.arrayContaining([
+          "list_projects",
+          "get_project",
+          "list_issues",
+          "get_issue",
+          "create_issue",
+          "update_issue",
+          "list_comments",
+          "create_comment",
+          "list_activity",
+          "list_knowledge",
+          "get_knowledge",
+          "create_knowledge",
+          "update_knowledge",
+        ]),
+      );
+      for (const name of names) {
+        expect(name).not.toMatch(/member|invit|workspace|setting|access|key|admin|grant/);
+      }
+    });
+
+    it("attributes a Contribute agent's writes to the agent, not its human owner", async () => {
+      const { app, projects: projectsService } = await makeProjectWorkApp();
+      await bootstrapAdmin(app);
+      const admin = await adminId();
+      const cookie = await cookieFor(app, ADMIN_EMAIL, ADMIN_PASSWORD);
+      const workspace = await personalWorkspaceOf(admin);
+      const created = await postJson(
+        app,
+        `/api/workspaces/${workspace.id}/projects`,
+        { name: "Agent work" },
+        cookie,
+      );
+      expect(created.status).toBe(201);
+      const projectId = idOf(await created.json(), "project");
+      const agentId = await makeAgent(app, cookie, "writer-bot");
+      const key = await issueKey(app, cookie, {
+        agentId,
+        workspaceId: workspace.id,
+        projects: [{ projectId, level: "contribute" }],
+      });
+      const identity = await identityFor(app, key.secret);
+      const actor = { kind: "agent" as const, identity };
+
+      const issue = await projectsService.createIssue(actor, projectId, {
+        title: "Agent issue",
+        body: "body",
+      });
+      expect(issue.createdBy).toMatchObject({
+        agentId,
+        agentName: identity.name,
+        displayName: identity.name,
+      });
+      expect(issue.createdBy.humanId).toBeFalsy();
+      const closed = await projectsService.updateIssue(actor, issue.id, { status: "closed" });
+      expect(closed.updatedBy).toMatchObject({ agentId });
+      const comment = await projectsService.createComment(actor, issue.id, {
+        body: "Agent comment",
+      });
+      expect(comment.author).toMatchObject({ agentId });
+      const entry = await projectsService.createKnowledge(actor, projectId, {
+        title: "Agent note",
+      });
+      expect(entry.createdBy).toMatchObject({ agentId });
+      const edited = await projectsService.updateKnowledge(actor, entry.id, { body: "more" });
+      expect(edited.updatedBy).toMatchObject({ agentId });
+
+      const [issueRow] = await database.db.select().from(issues).where(eq(issues.id, issue.id));
+      expect(issueRow).toMatchObject({
+        createdByAgentId: agentId,
+        updatedByAgentId: agentId,
+        createdByHumanId: null,
+        updatedByHumanId: null,
+      });
+      const [commentRow] = await database.db
+        .select()
+        .from(issueComments)
+        .where(eq(issueComments.id, comment.id));
+      expect(commentRow).toMatchObject({ createdByAgentId: agentId, createdByHumanId: null });
+      const [entryRow] = await database.db
+        .select()
+        .from(knowledgeEntries)
+        .where(eq(knowledgeEntries.id, entry.id));
+      expect(entryRow).toMatchObject({
+        createdByAgentId: agentId,
+        updatedByAgentId: agentId,
+        createdByHumanId: null,
+        updatedByHumanId: null,
+      });
+
+      const activities = await database.db.select().from(projectActivity);
+      expect(activities.map((event) => event.type)).toEqual(
+        expect.arrayContaining([
+          "issue_created",
+          "issue_closed",
+          "issue_commented",
+          "knowledge_created",
+          "knowledge_edited",
+        ]),
+      );
+      const agentEvents = activities.filter((event) => event.type !== "project_created");
+      expect(agentEvents).not.toHaveLength(0);
+      for (const event of agentEvents) {
+        expect(event).toMatchObject({ actorAgentId: agentId, actorHumanId: null });
+      }
+      const feed = await projectsService.listActivity(actor, projectId);
+      const agentFeed = feed.filter((event) => event.type !== "project_created");
+      expect(agentFeed).not.toHaveLength(0);
+      for (const event of agentFeed) expect(event.actor).toMatchObject({ agentId });
+    });
+
+    it("lets a Read key inspect but not change work, matching REST human Read denials", async () => {
+      const { app, projects: projectsService } = await makeProjectWorkApp();
+      await bootstrapAdmin(app);
+      const admin = await adminId();
+      const cookie = await cookieFor(app, ADMIN_EMAIL, ADMIN_PASSWORD);
+      const workspace = await sharedWorkspace("Read team", admin);
+      const created = await postJson(
+        app,
+        `/api/workspaces/${workspace.id}/projects`,
+        { name: "Read only" },
+        cookie,
+      );
+      expect(created.status).toBe(201);
+      const projectId = idOf(await created.json(), "project");
+      const humanIssue = await projectsService.createIssue(
+        humanActor(admin, ADMIN_EMAIL),
+        projectId,
+        { title: "Existing issue" },
+      );
+
+      const agentId = await makeAgent(app, cookie, "reader-bot");
+      const key = await issueKey(app, cookie, {
+        agentId,
+        workspaceId: workspace.id,
+        projects: [{ projectId, level: "read" }],
+      });
+      const identity = await identityFor(app, key.secret);
+      const actor = { kind: "agent" as const, identity };
+
+      // Inspection through the same service the MCP tools call succeeds.
+      expect(await projectsService.listProjects(actor, workspace.id)).toHaveLength(1);
+      expect((await projectsService.getProject(actor, projectId)).id).toBe(projectId);
+      expect(await projectsService.listIssues(actor, projectId)).toHaveLength(1);
+      expect((await projectsService.getIssue(actor, humanIssue.id)).id).toBe(humanIssue.id);
+      expect(await projectsService.listComments(actor, humanIssue.id)).toEqual([]);
+      expect(await projectsService.listActivity(actor, projectId)).not.toHaveLength(0);
+      expect(await projectsService.listKnowledge(actor, projectId)).toEqual([]);
+
+      const denials = await Promise.all([
+        rejection(projectsService.createIssue(actor, projectId, { title: "No" })),
+        rejection(projectsService.updateIssue(actor, humanIssue.id, { status: "closed" })),
+        rejection(projectsService.createComment(actor, humanIssue.id, { body: "No" })),
+        rejection(projectsService.createKnowledge(actor, projectId, { title: "No" })),
+      ]);
+      for (const error of denials) expectProjectsError(error, "insufficient_project_access");
+
+      // The equivalent human Read denial over REST has the same stable code. A bearer
+      // key is never accepted by the human REST routes at all.
+      const other = await insertHuman("rest-reader@example.com");
+      const memberCookie = await createSession(other.id);
+      await membership(workspace.id, other.id);
+      await grant(projectId, other.id, "read");
+      const restDenied = await patchJson(
+        app,
+        `/api/issues/${humanIssue.id}`,
+        { status: "closed" },
+        memberCookie,
+      );
+      await expectProblem(restDenied, 403, "insufficient_project_access");
+      const bearerOnly = await patchJson(app, `/api/issues/${humanIssue.id}`, { status: "closed" });
+      expect(bearerOnly.status).toBe(401);
+    });
+
+    it("refuses cross-workspace and out-of-scope project work", async () => {
+      const { app, projects: projectsService } = await makeProjectWorkApp();
+      await bootstrapAdmin(app);
+      const admin = await adminId();
+      const cookie = await cookieFor(app, ADMIN_EMAIL, ADMIN_PASSWORD);
+      const workspace = await personalWorkspaceOf(admin);
+      const scoped = await postJson(
+        app,
+        `/api/workspaces/${workspace.id}/projects`,
+        { name: "Scoped" },
+        cookie,
+      );
+      const scopedId = idOf(await scoped.json(), "project");
+      expect(scopedId).toBeTruthy();
+      const otherWorkspace = await sharedWorkspace("Other", admin);
+      const otherProject = await project(otherWorkspace.id, "Other project", admin);
+      const otherIssue = await projectsService.createIssue(
+        humanActor(admin, ADMIN_EMAIL),
+        otherProject.id,
+        { title: "Other issue" },
+      );
+
+      const agentId = await makeAgent(app, cookie, "scoped-bot");
+      const key = await issueKey(app, cookie, {
+        agentId,
+        workspaceId: workspace.id,
+        projects: [{ projectId: scopedId, level: "contribute" }],
+      });
+      const namedOther = await getJson(
+        app,
+        `/api/agents/me?projectId=${otherProject.id}`,
+        undefined,
+        key.secret,
+      );
+      await expectProblem(namedOther, 403, "insufficient_agent_access");
+      const namedOtherWorkspace = await getJson(
+        app,
+        `/api/agents/me?workspaceId=${otherWorkspace.id}`,
+        undefined,
+        key.secret,
+      );
+      await expectProblem(namedOtherWorkspace, 403, "key_out_of_scope");
+
+      const identity = await identityFor(app, key.secret);
+      const actor = { kind: "agent" as const, identity };
+      expectProjectsError(
+        await rejection(projectsService.getIssue(actor, otherIssue.id)),
+        "issue_not_found",
+      );
+      expectProjectsError(
+        await rejection(projectsService.createIssue(actor, otherProject.id, { title: "No" })),
+        "project_not_found",
+      );
+    });
+
+    it("caps an agent by its owner's current human access and ends access on removal", async () => {
+      const { app, projects: projectsService } = await makeProjectWorkApp();
+      await bootstrapAdmin(app);
+      const admin = await adminId();
+      const adminCookie = await cookieFor(app, ADMIN_EMAIL, ADMIN_PASSWORD);
+      const team = await sharedWorkspace("Team", admin);
+      const created = await postJson(
+        app,
+        `/api/workspaces/${team.id}/projects`,
+        { name: "Shared work" },
+        adminCookie,
+      );
+      expect(created.status).toBe(201);
+      const projectId = idOf(await created.json(), "project");
+
+      const member = await insertHuman(MEMBER_EMAIL);
+      const memberCookie = await createSession(member.id);
+      await membership(team.id, member.id);
+      await grant(projectId, member.id, "contribute");
+      const agentId = await makeAgent(app, memberCookie, "team-bot");
+      const key = await issueKey(app, memberCookie, {
+        agentId,
+        workspaceId: team.id,
+        projects: [{ projectId, level: "contribute" }],
+      });
+
+      let identity = await identityFor(app, key.secret);
+      expect(identity.projects).toMatchObject([{ projectId, level: "contribute" }]);
+      let actor = { kind: "agent" as const, identity };
+      const issue = await projectsService.createIssue(actor, projectId, {
+        title: "Before demotion",
+      });
+      expect(issue.id).toBeTruthy();
+
+      // A dynamic human-access demotion caps the key on its very next request.
+      await setGrant(projectId, member.id, "read");
+      identity = await identityFor(app, key.secret);
+      expect(identity.projects).toMatchObject([{ projectId, level: "read" }]);
+      actor = { kind: "agent" as const, identity };
+      expectProjectsError(
+        await rejection(projectsService.updateIssue(actor, issue.id, { title: "After demotion" })),
+        "insufficient_project_access",
+      );
+      expect((await projectsService.listIssues(actor, projectId)).length).toBe(1);
+
+      // Removing the workspace member ends every key they own immediately. The real
+      // removal endpoint also revokes their project grants in the same transaction; this
+      // test deletes the membership directly, so mirror that cleanup here.
+      await removeMembership(team.id, member.id);
+      await removeGrant(projectId, member.id);
+      await expectProblem(
+        await getJson(app, "/api/agents/me", undefined, key.secret),
+        401,
+        "key_workspace_inaccessible",
+      );
+
+      // Rejoining starts fresh: the old grant does not silently return.
+      await membership(team.id, member.id);
+      const rejoined = await identityFor(app, key.secret);
+      expect(rejoined.projects).toEqual([]);
+      expectProjectsError(
+        await rejection(
+          projectsService.createIssue({ kind: "agent", identity: rejoined }, projectId, {
+            title: "No",
+          }),
+        ),
+        "project_not_found",
+      );
+
+      // Revocation is independent of membership and takes effect on the next call.
+      const revoked = await deleteRequest(app, `/api/agents/keys/${key.key.id}`, memberCookie);
+      expect(revoked.status).toBe(204);
+      await expectProblem(
+        await getJson(app, "/api/agents/me", undefined, key.secret),
+        401,
+        "key_revoked",
+      );
+    });
   });
 });

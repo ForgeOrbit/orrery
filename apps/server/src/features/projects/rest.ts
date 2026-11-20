@@ -27,6 +27,7 @@ import {
   validationHook,
 } from "../../platform/problem.ts";
 import type { SessionReader } from "../accounts/index.ts";
+import type { WorkActor } from "./service.ts";
 import { ProjectsError, type ProjectsErrorKind, type ProjectsService } from "./service.ts";
 
 const workspaceParams = z.object({ workspaceId: z.string().min(1).max(200) });
@@ -474,11 +475,17 @@ function failure<K extends readonly ProjectsErrorKind[]>(c: Context, error: unkn
 
 export function createProjectsRest(service: ProjectsService, sessionReader: SessionReader) {
   const app = new OpenAPIHono({ defaultHook: validationHook });
+  // A browser session is one kind of work actor. Authentication stays in the service: a
+  // missing session is passed through as null so it answers not_signed_in there.
+  const humanActor = async (c: Context): Promise<WorkActor | null> => {
+    const account = await sessionReader(c);
+    return account === null ? null : { kind: "human", account };
+  };
 
   app.openapi(listProjects, async (c) => {
     try {
       const { workspaceId } = c.req.valid("param");
-      return c.json(await service.listProjects(await sessionReader(c), workspaceId), 200);
+      return c.json(await service.listProjects(await humanActor(c), workspaceId), 200);
     } catch (error) {
       return failure(c, error, workspaceListKinds);
     }
@@ -499,7 +506,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
   app.openapi(getProject, async (c) => {
     try {
       const { projectId } = c.req.valid("param");
-      return c.json(await service.getProject(await sessionReader(c), projectId), 200);
+      return c.json(await service.getProject(await humanActor(c), projectId), 200);
     } catch (error) {
       return failure(c, error, projectReadKinds);
     }
@@ -551,7 +558,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
   app.openapi(listIssues, async (c) => {
     try {
       const { projectId } = c.req.valid("param");
-      return c.json(await service.listIssues(await sessionReader(c), projectId), 200);
+      return c.json(await service.listIssues(await humanActor(c), projectId), 200);
     } catch (error) {
       return failure(c, error, projectReadKinds);
     }
@@ -561,7 +568,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
     try {
       const { projectId } = c.req.valid("param");
       return c.json(
-        await service.createIssue(await sessionReader(c), projectId, c.req.valid("json")),
+        await service.createIssue(await humanActor(c), projectId, c.req.valid("json")),
         201,
       );
     } catch (error) {
@@ -572,7 +579,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
   app.openapi(getIssue, async (c) => {
     try {
       const { issueId } = c.req.valid("param");
-      return c.json(await service.getIssue(await sessionReader(c), issueId), 200);
+      return c.json(await service.getIssue(await humanActor(c), issueId), 200);
     } catch (error) {
       return failure(c, error, issueReadKinds);
     }
@@ -582,7 +589,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
     try {
       const { issueId } = c.req.valid("param");
       return c.json(
-        await service.updateIssue(await sessionReader(c), issueId, c.req.valid("json")),
+        await service.updateIssue(await humanActor(c), issueId, c.req.valid("json")),
         200,
       );
     } catch (error) {
@@ -593,7 +600,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
   app.openapi(listComments, async (c) => {
     try {
       const { issueId } = c.req.valid("param");
-      return c.json(await service.listComments(await sessionReader(c), issueId), 200);
+      return c.json(await service.listComments(await humanActor(c), issueId), 200);
     } catch (error) {
       return failure(c, error, issueReadKinds);
     }
@@ -603,7 +610,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
     try {
       const { issueId } = c.req.valid("param");
       return c.json(
-        await service.createComment(await sessionReader(c), issueId, c.req.valid("json")),
+        await service.createComment(await humanActor(c), issueId, c.req.valid("json")),
         201,
       );
     } catch (error) {
@@ -614,7 +621,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
   app.openapi(listActivity, async (c) => {
     try {
       const { projectId } = c.req.valid("param");
-      return c.json(await service.listActivity(await sessionReader(c), projectId), 200);
+      return c.json(await service.listActivity(await humanActor(c), projectId), 200);
     } catch (error) {
       return failure(c, error, projectReadKinds);
     }
@@ -623,7 +630,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
   app.openapi(listKnowledge, async (c) => {
     try {
       const { projectId } = c.req.valid("param");
-      return c.json(await service.listKnowledge(await sessionReader(c), projectId), 200);
+      return c.json(await service.listKnowledge(await humanActor(c), projectId), 200);
     } catch (error) {
       return failure(c, error, projectReadKinds);
     }
@@ -633,7 +640,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
     try {
       const { projectId } = c.req.valid("param");
       return c.json(
-        await service.createKnowledge(await sessionReader(c), projectId, c.req.valid("json")),
+        await service.createKnowledge(await humanActor(c), projectId, c.req.valid("json")),
         201,
       );
     } catch (error) {
@@ -644,7 +651,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
   app.openapi(getKnowledge, async (c) => {
     try {
       const { entryId } = c.req.valid("param");
-      return c.json(await service.getKnowledge(await sessionReader(c), entryId), 200);
+      return c.json(await service.getKnowledge(await humanActor(c), entryId), 200);
     } catch (error) {
       return failure(c, error, knowledgeReadKinds);
     }
@@ -654,7 +661,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
     try {
       const { entryId } = c.req.valid("param");
       return c.json(
-        await service.updateKnowledge(await sessionReader(c), entryId, c.req.valid("json")),
+        await service.updateKnowledge(await humanActor(c), entryId, c.req.valid("json")),
         200,
       );
     } catch (error) {

@@ -74,6 +74,9 @@ export function createFeatures(database: Database, config: Config, log: Logger):
       sessionReader: accounts.sessionReader,
       projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
         projects.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
+      // The agent's MCP tools call the same projects service as REST, so one policy
+      // decides every project-work operation for both humans and agents.
+      projects: projects.service,
     }),
   ];
 }

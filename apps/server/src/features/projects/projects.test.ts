@@ -383,7 +383,7 @@ describe("projects", () => {
       "issue_reopened",
     ]);
     for (const event of activity) {
-      expect(event.actor).toEqual({ humanId: admin.id, email: EMAIL });
+      expect(event.actor).toMatchObject({ humanId: admin.id, email: EMAIL });
       expect(event.projectId).toBe(project.id);
     }
     expect(activity[0]?.summary).toBe("Personal Project");

@@ -1206,15 +1206,42 @@
         "type": "object",
         "properties": {
           "humanId": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "email": {
-            "$ref": "#/components/schemas/Email"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Email"
+              },
+              {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            ]
+          },
+          "agentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "agentName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "displayName": {
+            "type": "string"
           }
         },
         "required": [
-          "humanId",
-          "email"
+          "displayName"
         ]
       },
       "CreateProjectRequest": {
