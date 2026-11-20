@@ -42,6 +42,7 @@ export type TransfersErrorKind =
   | "project_not_found"
   | "workspace_not_found"
   | "destination_authority_required"
+  | "same_workspace"
   | "transfer_invalid"
   | "transfer_stale"
   | "source_authority_lost"
@@ -53,6 +54,7 @@ const messages: Record<TransfersErrorKind, string> = {
   workspace_not_found: "No shared workspace with this id is accessible to the caller",
   destination_authority_required:
     "The receiver must be a destination owner or have Create projects in the destination",
+  same_workspace: "The destination must be a different workspace from the source",
   transfer_invalid: "The transfer authorization is invalid, expired or already used",
   transfer_stale: "The project's workspace changed since the transfer was authorized",
   source_authority_lost: "The authorizing owner no longer controls the source workspace",
@@ -153,6 +155,54 @@ async function readPersonalProject(
   return row;
 }
 
+// A shared workspace's project is source-authorized only by one of its owners (#46).
+// Membership and ownership are both checked here, so a non-member or a plain member gets
+// the same `project_not_found` as a stranger probing an id: no workspace or project is
+// enumerated, and no owner identity is implied by the answer.
+async function readSharedSourceProject(
+  tx: DbTransaction,
+  projectId: string,
+  humanId: string,
+): Promise<Authority> {
+  const [row] = await tx
+    .select({ project: projects, source: workspaces })
+    .from(projects)
+    .innerJoin(workspaces, eq(projects.workspaceId, workspaces.id))
+    .innerJoin(
+      workspaceMemberships,
+      and(
+        eq(workspaceMemberships.workspaceId, workspaces.id),
+        eq(workspaceMemberships.humanId, humanId),
+        eq(workspaceMemberships.isOwner, true),
+        isNull(workspaceMemberships.suspendedAt),
+      ),
+    )
+    .where(and(eq(projects.id, projectId), eq(workspaces.kind, WorkspaceKind.enum.shared)))
+    .limit(1);
+  if (row === undefined) throw new TransfersError("project_not_found");
+  return row;
+}
+
+// The source owner is the personal workspace's single owner or a shared workspace's
+// owner. The two kinds are never confused, and an inaccessible project answers as
+// missing in both cases.
+async function readSourceProject(
+  tx: DbTransaction,
+  projectId: string,
+  humanId: string,
+): Promise<Authority> {
+  const [row] = await tx
+    .select({ kind: workspaces.kind })
+    .from(projects)
+    .innerJoin(workspaces, eq(projects.workspaceId, workspaces.id))
+    .where(eq(projects.id, projectId))
+    .limit(1);
+  if (row?.kind === WorkspaceKind.enum.shared) {
+    return readSharedSourceProject(tx, projectId, humanId);
+  }
+  return readPersonalProject(tx, projectId, humanId);
+}
+
 async function readSharedDestination(
   tx: DbTransaction,
   workspaceId: string,
@@ -164,6 +214,10 @@ async function readSharedDestination(
     .limit(1);
   if (row === undefined) throw new TransfersError("workspace_not_found");
   return row;
+}
+
+function rejectSameWorkspace(sourceId: string, destinationId: string): void {
+  if (sourceId === destinationId) throw new TransfersError("same_workspace");
 }
 
 // A shared workspace's name and membership are not public. Routes that reveal them must
@@ -316,7 +370,10 @@ async function buildPreview(
     projectName: authority.project.name,
     source: toParty(authority.source),
     destination: toParty(destination),
-    visibilityChange: "personal_to_shared",
+    visibilityChange:
+      authority.source.kind === WorkspaceKind.enum.personal
+        ? "personal_to_shared"
+        : "shared_to_shared",
     accessChanges: await manageRecipients(tx, destination.id, receiverHumanId),
     revokedSourceGrants: grants?.count ?? 0,
     activeWork: { count: active.length, issues: active },
@@ -489,18 +546,14 @@ async function acceptInTransaction(
     .limit(1);
   if (live === undefined) throw new TransfersError("transfer_invalid");
 
+  // The source row is needed below for the guard bump, but its authority is deliberately
+  // rechecked *after* the destination gate. A leaked token in a stranger's hands must
+  // answer as a missing authorization, never reveal that the source owner was demoted.
   const [source] = await tx
     .select()
     .from(workspaces)
     .where(eq(workspaces.id, auth.sourceWorkspaceId))
     .limit(1);
-  if (
-    source === undefined ||
-    source.kind !== WorkspaceKind.enum.personal ||
-    source.personalOwnerHumanId !== auth.authorizedByHumanId
-  ) {
-    throw new TransfersError("source_authority_lost");
-  }
 
   // The acceptor must hold a live membership in the destination. A valid token in the
   // hands of a stranger answers as a missing authorization, not as a workspace probe.
@@ -510,6 +563,35 @@ async function acceptInTransaction(
   const destination = await readSharedDestination(tx, auth.destinationWorkspaceId);
   if (!(await hasCreateProjectsAuthority(tx, destination.id, acceptorHumanId))) {
     throw new TransfersError("destination_authority_required");
+  }
+
+  // Only a destination member with Create projects learns whether the source owner's
+  // authority was lost (409); everyone else gets the two answers above first.
+  if (source === undefined) throw new TransfersError("source_authority_lost");
+  if (source.kind === WorkspaceKind.enum.personal) {
+    // #39: the personal workspace's single owner must still own it.
+    if (source.personalOwnerHumanId !== auth.authorizedByHumanId) {
+      throw new TransfersError("source_authority_lost");
+    }
+  } else if (source.kind === WorkspaceKind.enum.shared) {
+    // #46: the authorizer must still be an owner of the shared source. Being demoted or
+    // removed between authorization and acceptance loses the authority to move the
+    // project, so no stale token can complete the transfer.
+    const [ownerMembership] = await tx
+      .select({ id: workspaceMemberships.id })
+      .from(workspaceMemberships)
+      .where(
+        and(
+          eq(workspaceMemberships.workspaceId, source.id),
+          eq(workspaceMemberships.humanId, auth.authorizedByHumanId),
+          eq(workspaceMemberships.isOwner, true),
+          isNull(workspaceMemberships.suspendedAt),
+        ),
+      )
+      .limit(1);
+    if (ownerMembership === undefined) throw new TransfersError("source_authority_lost");
+  } else {
+    throw new TransfersError("source_authority_lost");
   }
 
   // Workspace guards before the project row, then issues: one deterministic order.
@@ -619,6 +701,9 @@ async function acceptInTransaction(
     await tx.insert(projectAccessEvents).values({
       id: randomUUID(),
       projectId: auth.projectId,
+      // The grant belongs to the destination from this point on. The source's earlier
+      // access events keep their own workspace_id and never surface here (#46).
+      workspaceId: destination.id,
       actorHumanId: acceptorHumanId,
       subjectHumanId: recipient.humanId,
       type: ProjectAccessEventType.enum.project_access_granted,
@@ -688,7 +773,8 @@ export function createTransfersService({ db }: TransfersDeps): TransfersService 
       if (account === null) throw new TransfersError("not_signed_in");
       return db.transaction(
         async (tx) => {
-          const authority = await readPersonalProject(tx, projectId, account.humanId);
+          const authority = await readSourceProject(tx, projectId, account.humanId);
+          rejectSameWorkspace(authority.source.id, destinationWorkspaceId);
           // Membership first: a destination's name and owners are not public data.
           await requireDestinationMember(tx, destinationWorkspaceId, account.humanId);
           const destination = await readSharedDestination(tx, destinationWorkspaceId);
@@ -705,7 +791,8 @@ export function createTransfersService({ db }: TransfersDeps): TransfersService 
       if (account === null) throw new TransfersError("not_signed_in");
       return db.transaction(async (tx) => {
         await lockOwnershipWrites(tx);
-        const authority = await readPersonalProject(tx, projectId, account.humanId);
+        const authority = await readSourceProject(tx, projectId, account.humanId);
+        rejectSameWorkspace(authority.source.id, destinationWorkspaceId);
         const destination = await readSharedDestination(tx, destinationWorkspaceId);
         // The authorizer may not belong to the destination at all. Only a member may see
         // its name and owners; a non-member gets a token and no destination detail.
@@ -801,7 +888,8 @@ export function createTransfersService({ db }: TransfersDeps): TransfersService 
       if (account === null) throw new TransfersError("not_signed_in");
       return db.transaction(async (tx) => {
         await lockOwnershipWrites(tx);
-        const authority = await readPersonalProject(tx, projectId, account.humanId);
+        const authority = await readSourceProject(tx, projectId, account.humanId);
+        rejectSameWorkspace(authority.source.id, destinationWorkspaceId);
         // Membership before capability: a non-member cannot enumerate the destination
         // through a 403 that would confirm the workspace exists.
         await requireDestinationMember(tx, destinationWorkspaceId, account.humanId);

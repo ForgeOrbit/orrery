@@ -24,9 +24,9 @@ const projectParams = z.object({ projectId: z.string().min(1).max(200) });
 const previewTransfer = createRoute({
   method: "post",
   path: "/api/projects/{projectId}/transfer/preview",
-  summary: "Preview a personal-to-shared transfer",
+  summary: "Preview a project transfer",
   description:
-    "The personal owner sees where the project would go, the visibility and access changes, and any live work that must finish first. Nothing is written.",
+    "The source owner sees where the project would go, the visibility and access changes, and any live work that must finish first. Both personal-to-shared (#39) and shared-to-shared (#46) moves are supported. Nothing is written.",
   request: {
     params: projectParams,
     body: {
@@ -41,16 +41,16 @@ const previewTransfer = createRoute({
     },
     400: problem("The request is invalid"),
     401: problem("Not signed in"),
-    404: problem("No personal project or shared workspace with these ids is accessible"),
+    404: problem("No project owned by the caller or shared workspace with these ids is accessible"),
   },
 });
 
 const authorizeTransfer = createRoute({
   method: "post",
   path: "/api/projects/{projectId}/transfer",
-  summary: "Authorize a personal-to-shared transfer",
+  summary: "Authorize a project transfer",
   description:
-    "The personal workspace owner authorizes moving the project into a shared workspace and receives a one-time token. A destination owner or a member with Create projects then accepts. The authorization is recorded in the source workspace's history.",
+    "The source owner (a personal workspace's owner, or a shared workspace's owner) authorizes moving the project into a different shared workspace and receives a one-time token. A destination owner or a member with Create projects then accepts. The authorization is recorded in the source workspace's history.",
   request: {
     params: projectParams,
     body: {
@@ -65,7 +65,7 @@ const authorizeTransfer = createRoute({
     },
     400: problem("The request is invalid"),
     401: problem("Not signed in"),
-    404: problem("No personal project or shared workspace with these ids is accessible"),
+    404: problem("No project owned by the caller or shared workspace with these ids is accessible"),
   },
 });
 
@@ -93,9 +93,9 @@ const receiverPreviewTransfer = createRoute({
 const completeTransfer = createRoute({
   method: "post",
   path: "/api/projects/{projectId}/transfer/complete",
-  summary: "Transfer a personal project directly",
+  summary: "Transfer a project directly",
   description:
-    "One person who owns the personal project and also holds Create projects in the shared destination completes both authorization and acceptance in a single transaction.",
+    "One person who owns the source project (personally or in a shared workspace) and also holds Create projects in the destination completes both authorization and acceptance in a single transaction.",
   request: {
     params: projectParams,
     body: {
@@ -111,7 +111,7 @@ const completeTransfer = createRoute({
     400: problem("The request is invalid"),
     401: problem("Not signed in"),
     403: problem("The caller lacks Create projects in the destination"),
-    404: problem("No personal project or shared workspace with these ids is accessible"),
+    404: problem("No project owned by the caller or shared workspace with these ids is accessible"),
     409: problem("Active work remains, or the project changed since authorization"),
   },
 });
@@ -119,9 +119,9 @@ const completeTransfer = createRoute({
 const acceptTransfer = createRoute({
   method: "post",
   path: "/api/transfers/accept",
-  summary: "Accept an authorized personal-to-shared transfer",
+  summary: "Accept an authorized project transfer",
   description:
-    "A destination owner or a member with Create projects accepts a pending authorization. Every authority, the project's current ownership and the absence of live work are rechecked in one transaction before access is rebuilt under the destination.",
+    "A destination owner or a member with Create projects accepts a pending authorization. Every authority (including the source owner's, who may have since lost ownership), the project's current ownership and the absence of live work are rechecked in one transaction before access is rebuilt under the destination.",
   request: {
     body: { required: true, content: { "application/json": { schema: AcceptTransferRequest } } },
   },
@@ -151,6 +151,7 @@ const statusFor = {
   project_not_found: 404,
   workspace_not_found: 404,
   destination_authority_required: 403,
+  same_workspace: 400,
   // A bad, expired or spent token must not confirm that an authorization ever existed.
   transfer_invalid: 404,
   transfer_stale: 409,
@@ -165,7 +166,12 @@ function isKind<K extends readonly TransfersErrorKind[]>(
   return kinds.some((kind) => kind === error.kind);
 }
 
-const ownerKinds = ["not_signed_in", "project_not_found", "workspace_not_found"] as const;
+const ownerKinds = [
+  "not_signed_in",
+  "project_not_found",
+  "workspace_not_found",
+  "same_workspace",
+] as const;
 const receiverKinds = [
   "not_signed_in",
   "destination_authority_required",

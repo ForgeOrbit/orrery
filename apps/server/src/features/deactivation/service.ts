@@ -20,6 +20,7 @@ import {
   issues,
   projectAccessEvents,
   projectAccessGrants,
+  projects,
   workSessions,
   workspaceMemberships,
   workspaceOwnershipGuards,
@@ -236,9 +237,11 @@ export function createDeactivationService({ db }: DeactivationDeps): Deactivatio
           .select({
             id: projectAccessGrants.id,
             projectId: projectAccessGrants.projectId,
+            workspaceId: projects.workspaceId,
             level: projectAccessGrants.level,
           })
           .from(projectAccessGrants)
+          .innerJoin(projects, eq(projects.id, projectAccessGrants.projectId))
           .where(eq(projectAccessGrants.humanId, humanId));
         if (grants.length > 0) {
           await tx.delete(projectAccessGrants).where(
@@ -251,6 +254,7 @@ export function createDeactivationService({ db }: DeactivationDeps): Deactivatio
             await tx.insert(projectAccessEvents).values({
               id: randomUUID(),
               projectId: grant.projectId,
+              workspaceId: grant.workspaceId,
               actorHumanId: actor.humanId,
               subjectHumanId: humanId,
               type: ProjectAccessEventType.enum.project_access_revoked,

@@ -205,11 +205,21 @@ async function loadKeyEvents(db: Db, workspaceId: string, workspaceName: string)
 
 async function loadProjectAccessEvents(
   db: Db,
-  targets: readonly { id: string; name: string }[],
+  // #46: only the events this workspace owned are readable here. A project transferred
+  // in from another workspace keeps that workspace's grant/revoke history strictly there,
+  // and a project that left still leaves its old events in the source's workspace history.
+  workspaceId: string,
+  // Project history narrows to one project; workspace history passes no ids so it reads
+  // every event the workspace ever owned, including projects that have since moved out.
+  projectIds?: readonly string[],
 ): Promise<HistoryEvent[]> {
-  if (targets.length === 0) return [];
+  if (projectIds !== undefined && projectIds.length === 0) return [];
   const actorHuman = alias(humans, "history_access_actor");
   const subjectHuman = alias(humans, "history_access_subject");
+  const conditions = [eq(projectAccessEvents.workspaceId, workspaceId)];
+  if (projectIds !== undefined) {
+    conditions.push(inArray(projectAccessEvents.projectId, [...projectIds]));
+  }
   const rows = await db
     .select({
       id: projectAccessEvents.id,
@@ -228,14 +238,15 @@ async function loadProjectAccessEvents(
     .from(projectAccessEvents)
     .leftJoin(actorHuman, eq(actorHuman.id, projectAccessEvents.actorHumanId))
     .leftJoin(subjectHuman, eq(subjectHuman.id, projectAccessEvents.subjectHumanId))
-    .where(
-      inArray(
-        projectAccessEvents.projectId,
-        targets.map((target) => target.id),
-      ),
-    )
+    .where(and(...conditions))
     .orderBy(desc(projectAccessEvents.createdAt), desc(projectAccessEvents.id));
-  const names = new Map(targets.map((target) => [target.id, target.name]));
+  if (rows.length === 0) return [];
+  const projectIdList = [...new Set(rows.map((row) => row.projectId))];
+  const projectRows = await db
+    .select({ id: projects.id, name: projects.name })
+    .from(projects)
+    .where(inArray(projects.id, projectIdList));
+  const names = new Map(projectRows.map((project) => [project.id, project.name]));
   return rows.map((row): HistoryEvent => ({
     id: row.id,
     kind: "project_access",
@@ -475,14 +486,12 @@ export function createHistoryService({ db, projectAccessCeiling }: HistoryDeps):
           ];
           if (isOwner) {
             events.push(...(await loadKeyEvents(tx, workspaceId, row.name)));
-            const targets = await tx
-              .select({ id: projects.id, name: projects.name })
-              .from(projects)
-              .where(eq(projects.workspaceId, workspaceId));
-            events.push(...(await loadProjectAccessEvents(tx, targets)));
+            // Every access change this workspace ever owned, including projects that
+            // have since moved away (#46).
+            events.push(...(await loadProjectAccessEvents(tx, workspaceId)));
           } else {
             const managed = await tx
-              .select({ id: projects.id, name: projects.name })
+              .select({ id: projects.id })
               .from(projects)
               .innerJoin(
                 projectAccessGrants,
@@ -493,7 +502,13 @@ export function createHistoryService({ db, projectAccessCeiling }: HistoryDeps):
                 ),
               )
               .where(eq(projects.workspaceId, workspaceId));
-            events.push(...(await loadProjectAccessEvents(tx, managed)));
+            events.push(
+              ...(await loadProjectAccessEvents(
+                tx,
+                workspaceId,
+                managed.map((project) => project.id),
+              )),
+            );
           }
           return sortNewestFirst(events);
         },
@@ -527,9 +542,7 @@ export function createHistoryService({ db, projectAccessCeiling }: HistoryDeps):
       // owner holds implicitly) additionally sees who changed the project's access.
       const events = await loadProjectActivity(db, projectId, project.name);
       if (projectAccessAtLeast(level, ProjectAccessLevel.enum.manage)) {
-        events.push(
-          ...(await loadProjectAccessEvents(db, [{ id: projectId, name: project.name }])),
-        );
+        events.push(...(await loadProjectAccessEvents(db, project.workspaceId, [projectId])));
       }
       return sortNewestFirst(events);
     },

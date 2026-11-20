@@ -857,6 +857,9 @@ async function recordAccessEvent(
   tx: DbTransaction,
   input: {
     projectId: string;
+    // #46: the workspace that owned the project when the change happened. Every event
+    // carries its own scope so a later transfer cannot make old grants readable elsewhere.
+    workspaceId: string;
     actorHumanId: string;
     subjectHumanId: string;
     type: ProjectAccessEventType;
@@ -867,6 +870,7 @@ async function recordAccessEvent(
   await tx.insert(projectAccessEvents).values({
     id: randomUUID(),
     projectId: input.projectId,
+    workspaceId: input.workspaceId,
     actorHumanId: input.actorHumanId,
     subjectHumanId: input.subjectHumanId,
     type: input.type,
@@ -906,6 +910,7 @@ async function revokeMemberProjectAccessInTransaction(
   for (const grant of grants) {
     await recordAccessEvent(tx, {
       projectId: grant.projectId,
+      workspaceId,
       actorHumanId,
       subjectHumanId: humanId,
       type: ProjectAccessEventType.enum.project_access_revoked,
@@ -984,6 +989,7 @@ async function applyInvitationGrantsInTransaction(
       });
     await recordAccessEvent(tx, {
       projectId: offer.projectId,
+      workspaceId,
       actorHumanId: grantedByHumanId,
       subjectHumanId: humanId,
       type:
@@ -1291,6 +1297,7 @@ export function createProjectsService({
           });
           await recordAccessEvent(tx, {
             projectId: id,
+            workspaceId,
             actorHumanId: actor.humanId,
             subjectHumanId: actor.humanId,
             type: ProjectAccessEventType.enum.project_access_granted,
@@ -1572,6 +1579,7 @@ export function createProjectsService({
 
         await recordAccessEvent(tx, {
           projectId,
+          workspaceId: project.workspaceId,
           actorHumanId: actor.humanId,
           subjectHumanId: target.humanId,
           type:
@@ -1646,6 +1654,7 @@ export function createProjectsService({
           );
         await recordAccessEvent(tx, {
           projectId,
+          workspaceId: project.workspaceId,
           actorHumanId: actor.humanId,
           subjectHumanId: humanId,
           type: ProjectAccessEventType.enum.project_access_revoked,
