@@ -273,6 +273,7 @@ describe("shared project access", () => {
       db: database.db,
       sessionReader: accounts.sessionReader,
       agentAuthenticator: async () => null,
+      sessionGate: async () => true,
     });
     const workspacesFeature = createWorkspacesFeature({
       db: database.db,

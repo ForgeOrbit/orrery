@@ -193,6 +193,7 @@ describe("projects", () => {
       db: database.db,
       sessionReader: accounts.sessionReader,
       agentAuthenticator: async () => null,
+      sessionGate: async () => true,
     });
     const app = createApp({
       features: [accounts, projectsFeature],

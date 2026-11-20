@@ -16,6 +16,18 @@ import {
   UpdateKnowledgeEntryRequest,
 } from "./projects.ts";
 import { RunReportInput, RunReportResponse } from "./runs.ts";
+import {
+  ClaimWorkSessionInput,
+  GetWorkSessionInput,
+  ReadyWorkInput,
+  ReadyWorkResponse,
+  RenewWorkSessionInput,
+  ReportProgressInput,
+  StopWorkSessionInput,
+  WorkSessionResponse,
+  WorkSessionsListInput,
+  WorkSessionsResponse,
+} from "./sessions.ts";
 
 // Every MCP tool an agent can call, as a contract. The server registers a handler for each one,
 // and `pnpm gen` writes their JSON Schemas to /contract/mcp-tools.json.
@@ -139,6 +151,66 @@ const runCheckin = {
   output: RunReportResponse,
 };
 
+// Work sessions and renewable claims (issue #36). Claiming is idempotent for helpers that
+// pass the same (agent, run, issue): they join one coordinated session. Renew, progress,
+// stop, and every fenced issue write require a live session the agent holds; reads, issue
+// creation, comments, and knowledge edits need none. A stale write is never a fresh claim.
+const claimIssue = {
+  name: "claim_issue",
+  description:
+    "Claim an open issue for this agent and run. One active session per issue: a second worker is refused. Helpers on the same issue pass the same runId and join the existing session. The claim is a five-minute lease in database time; renew it while working.",
+  input: ClaimWorkSessionInput,
+  output: WorkSessionResponse,
+};
+
+const renewClaim = {
+  name: "renew_claim",
+  description:
+    "Check in on an issue this agent currently holds and refresh its five-minute lease in database time. Requires a live session; an expired or released session is never renewed or silently reacquired.",
+  input: RenewWorkSessionInput,
+  output: WorkSessionResponse,
+};
+
+const reportProgress = {
+  name: "report_progress",
+  description:
+    "Record progress on the live session this agent holds for an issue. Progress is stored independently of the lease, so an interruption never erases it. Requires a live session.",
+  input: ReportProgressInput,
+  output: WorkSessionResponse,
+};
+
+const stopSession = {
+  name: "stop_session",
+  description:
+    "Complete or release the live session this agent holds for an issue. Requires a live session; stopping is distinct from closing the issue.",
+  input: StopWorkSessionInput,
+  output: WorkSessionResponse,
+};
+
+const getWorkSession = {
+  name: "get_work_session",
+  description:
+    "Read the work session this agent last held for an issue, including its recorded progress. This is a read: it needs no live claim and never renews one.",
+  input: GetWorkSessionInput,
+  output: WorkSessionResponse,
+};
+
+const readyWork = {
+  name: "ready_work",
+  description:
+    "List minimal ready work in a project: open issues that are not Needs input and have no live active session, evaluated in database time. Needs no claim.",
+  input: ReadyWorkInput,
+  output: ReadyWorkResponse,
+};
+
+const allSessionsForIssue = {
+  name: "list_work_sessions",
+  description:
+    "List the work sessions recorded for an issue, including completed, released and expired ones. This is a read and needs no claim.",
+  input: WorkSessionsListInput,
+  output: z.object({ sessions: WorkSessionsResponse }),
+};
+
 // Each feature registers only its own tools; `tools` is the complete list used by
 // `pnpm gen` to write contract/mcp-tools.json.
 export const projectTools: readonly ToolContract[] = [
@@ -159,4 +231,14 @@ export const projectTools: readonly ToolContract[] = [
 
 export const runTools: readonly ToolContract[] = [runCheckin];
 
-export const tools: readonly ToolContract[] = [...projectTools, ...runTools];
+export const sessionTools: readonly ToolContract[] = [
+  claimIssue,
+  renewClaim,
+  reportProgress,
+  stopSession,
+  getWorkSession,
+  readyWork,
+  allSessionsForIssue,
+];
+
+export const tools: readonly ToolContract[] = [...projectTools, ...runTools, ...sessionTools];

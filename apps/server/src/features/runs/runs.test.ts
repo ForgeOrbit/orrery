@@ -115,6 +115,7 @@ beforeAll(async () => {
     db: database.db,
     sessionReader: accounts.sessionReader,
     agentAuthenticator: lateAuth,
+    sessionGate: async () => true,
   });
   const agentsFeature = createAgentsFeature({
     db: database.db,

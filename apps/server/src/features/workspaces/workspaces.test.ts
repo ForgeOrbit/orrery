@@ -367,6 +367,7 @@ describe("workspaces", () => {
       db: database.db,
       sessionReader: accounts.sessionReader,
       agentAuthenticator: async () => null,
+      sessionGate: async () => true,
     });
     const workspacesFeature = createWorkspacesFeature({
       db: database.db,
@@ -448,6 +449,7 @@ describe("workspaces", () => {
       db: database.db,
       sessionReader: accounts.sessionReader,
       agentAuthenticator: async () => null,
+      sessionGate: async () => true,
     });
     const agentsFeature = createAgentsFeature({
       db: database.db,

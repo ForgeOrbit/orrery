@@ -148,6 +148,13 @@
       "when": 1795169703572,
       "tag": "0020_flippant_iceman",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1795172531399,
+      "tag": "0021_wild_scarlet_witch",
+      "breakpoints": true
     }
   ]
 }
