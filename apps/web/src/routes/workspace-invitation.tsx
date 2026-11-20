@@ -262,7 +262,15 @@ function NewAccountForm({ token }: { token: string }) {
         setCreatedEmail(account.email);
         return;
       }
-      const session: Session = { signedIn: true, email: account.email };
+      // Registration already returns the verified account. Set it infallibly: a
+      // transient session-endpoint failure must not strand a consumed token in the
+      // generic error path. Clear first so no pre-registration null cache survives.
+      queryClient.clear();
+      const session: Session = {
+        signedIn: true,
+        email: account.email,
+        emailVerified: account.emailVerified,
+      };
       queryClient.setQueryData(sessionQuery.queryKey, session);
       await queryClient.invalidateQueries({ queryKey: workspacesQuery.queryKey });
       await navigate({ to: "/" });
