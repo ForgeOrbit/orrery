@@ -326,6 +326,8 @@ beforeAll(async () => {
     revokeMemberProjectAccess: (tx, workspaceId, humanId, actorHumanId) =>
       projectsFeature.revokeMemberProjectAccess(tx, workspaceId, humanId, actorHumanId),
     revokeMemberWorkspaceKeys: async () => {},
+    releaseMemberWorkSessions: (tx, workspaceId, humanId) =>
+      sessionsFeature.releaseMemberWorkSessions(tx, workspaceId, humanId),
     applyInvitationGrants: (tx, workspaceId, humanId, grantedByHumanId, offered) =>
       projectsFeature.applyInvitationGrants(tx, workspaceId, humanId, grantedByHumanId, offered),
   });

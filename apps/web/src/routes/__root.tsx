@@ -14,7 +14,7 @@ function RootLayout() {
   return (
     <div style={{ fontFamily: "system-ui", padding: "2rem" }}>
       <nav>
-        <Link to="/">Orrery</Link>
+        <Link to="/">Orrery</Link> <Link to="/inbox">Inbox</Link>
       </nav>
       <Outlet />
     </div>

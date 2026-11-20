@@ -4,13 +4,26 @@ import {
   WorkSessionStatus,
   type AgentIdentity,
   type Issue,
+  type ReacquireWorkSessionInput,
+  type ResumeDisposition,
+  type ResumeWorkSessionInput,
+  type ResumeWorkSessionResult,
   type WorkSession,
   type WorkSessionOutcome,
 } from "@orrery/contract";
-import { and, desc, eq, gt, isNull, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, lte, sql } from "drizzle-orm";
+import type { PgInsertValue } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
-import { issues, projects, runs, workSessions } from "../../db/schema.ts";
+import {
+  agents,
+  issues,
+  projects,
+  runs,
+  workSessions,
+  workspaceMemberships,
+  workspaces,
+} from "../../db/schema.ts";
 import type { WorkActor } from "../projects/index.ts";
 
 // The service is the only file that decides anything for work sessions (#36). REST and MCP
@@ -25,6 +38,8 @@ export type SessionsErrorKind =
   | "run_not_found"
   | "insufficient_access"
   | "issue_claimed"
+  | "issue_needs_input"
+  | "issue_blocked"
   | "session_required";
 
 const messages: Record<SessionsErrorKind, string> = {
@@ -34,6 +49,8 @@ const messages: Record<SessionsErrorKind, string> = {
   run_not_found: "No such run belongs to this agent in this workspace.",
   insufficient_access: "Contribute access is required to work on this issue.",
   issue_claimed: "Another worker holds the active session for this issue.",
+  issue_needs_input: "This issue needs human input and cannot be claimed yet.",
+  issue_blocked: "This issue is closed or paused for input and cannot be reacquired yet.",
   session_required: "This agent holds no live session for this issue.",
 };
 
@@ -69,6 +86,14 @@ export interface SessionsDeps {
   // Projects' public listing, borrowed so ready work returns the same Issue shape every
   // other issue listing uses. Called outside this feature's transaction, never nested.
   listIssues: (actor: WorkActor, projectId: string) => Promise<Issue[]>;
+  // The deadline of an open question on this issue, evaluated on the caller's locked tx.
+  // A check-in may never renew a claim past it. A due question is paused (releasing the
+  // claim) by evaluateQuestionDeadline before any renewal decision is made.
+  // Optional for standalone service construction (tests); createFeatures wires both.
+  questionLeaseDeadline?:
+    | ((tx: DbTransaction, issueId: string) => Promise<Date | null>)
+    | undefined;
+  evaluateQuestionDeadline?: ((tx: DbTransaction, issueId: string) => Promise<void>) | undefined;
 }
 
 // The adapter always resolves an agent key before claiming, renewing or stopping: a work
@@ -77,13 +102,26 @@ export type AgentActor = { kind: "agent"; identity: AgentIdentity };
 
 export interface SessionsService {
   claim(actor: AgentActor | null, input: { issueId: string; runId: string }): Promise<WorkSession>;
-  renew(actor: AgentActor | null, issueId: string): Promise<WorkSession>;
-  progress(actor: AgentActor | null, issueId: string, summary: string): Promise<WorkSession>;
+  // The optional sessionId is a fence: a delayed call from a session that has since
+  // expired is refused even if the same agent now holds a newer live session on the issue.
+  renew(actor: AgentActor | null, issueId: string, sessionId?: string): Promise<WorkSession>;
+  progress(
+    actor: AgentActor | null,
+    issueId: string,
+    summary: string,
+    sessionId?: string,
+  ): Promise<WorkSession>;
   stop(
     actor: AgentActor | null,
     issueId: string,
     outcome: WorkSessionOutcome,
+    sessionId?: string,
   ): Promise<WorkSession>;
+  // #40: a pure, database-time read of the original run's claim, and the only way to
+  // re-arm an expired claim. Resume never mutates; reacquire creates a fresh active
+  // session (carrying the recorded progress) only when the issue is actually available.
+  resume(actor: AgentActor | null, input: ResumeWorkSessionInput): Promise<ResumeWorkSessionResult>;
+  reacquire(actor: AgentActor | null, input: ReacquireWorkSessionInput): Promise<WorkSession>;
   getSession(actor: WorkActor | null, issueId: string): Promise<WorkSession>;
   listSessions(actor: WorkActor | null, issueId: string): Promise<WorkSession[]>;
   readyWork(actor: WorkActor | null, projectId: string): Promise<Issue[]>;
@@ -143,12 +181,131 @@ function requireAgent(actor: AgentActor | null) {
   return actor.identity;
 }
 
+// A claim is only as live as its agent's human's access to the workspace. Key
+// authentication already refuses a removed member's key, but a request that authenticated
+// just before removal still carries a valid identity. Re-reading access inside the claim's
+// own transaction closes that window: a removal that committed first (or concurrently) is
+// visible here, so a renewal can never extend a claim the removed human no longer owns.
+// Personal workspaces have no membership row, so their single owner stays in scope.
+async function humanStillHasWorkspaceAccess(
+  tx: DbTransaction,
+  workspaceId: string,
+  humanId: string,
+): Promise<boolean> {
+  const [workspace] = await tx
+    .select({ personalOwnerHumanId: workspaces.personalOwnerHumanId })
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId))
+    .limit(1);
+  if (workspace === undefined) return false;
+  if (workspace.personalOwnerHumanId === humanId) return true;
+  const [membership] = await tx
+    .select({ id: workspaceMemberships.id })
+    .from(workspaceMemberships)
+    .where(
+      and(
+        eq(workspaceMemberships.workspaceId, workspaceId),
+        eq(workspaceMemberships.humanId, humanId),
+      ),
+    )
+    .limit(1);
+  return membership !== undefined;
+}
+
+// Take the agent's human's membership lock BEFORE any issue lock. Removal deletes the
+// membership before it locks issues to release claims, so one shared lock order
+// (workspace_memberships -> issues) makes the two write paths serialize in either order
+// instead of writing skewed: if the DELETE wins, this key-share read sees no row; if this
+// lock wins, the DELETE waits until the claim/renewal commits and removal's release pass
+// then sees the newly committed claim. Personal workspaces have no membership row; their
+// single owner is checked directly and cannot be removed.
+async function lockAgentWorkspaceAccess(tx: DbTransaction, identity: AgentIdentity): Promise<void> {
+  const [workspace] = await tx
+    .select({ personalOwnerHumanId: workspaces.personalOwnerHumanId })
+    .from(workspaces)
+    .where(eq(workspaces.id, identity.workspaceId))
+    .limit(1);
+  if (workspace === undefined) throw new SessionsError("insufficient_access");
+  if (workspace.personalOwnerHumanId === identity.humanId) return;
+  const [membership] = await tx
+    .select({ id: workspaceMemberships.id })
+    .from(workspaceMemberships)
+    .where(
+      and(
+        eq(workspaceMemberships.workspaceId, identity.workspaceId),
+        eq(workspaceMemberships.humanId, identity.humanId),
+      ),
+    )
+    .for("key share");
+  if (membership === undefined) throw new SessionsError("insufficient_access");
+}
+
+// Workspace removal/leave ends every active claim held by the departing human's agents in
+// that workspace, in the *removing* transaction. It never touches their personal work,
+// their other memberships, or the issue comments and agent attribution already recorded.
+// Active issues are locked FOR UPDATE in id order before the sessions are ended: claims,
+// renewals and fenced writes all lock the same issue first, so this ordering serializes
+// with a renewal racing removal without deadlocking. No nested transaction is opened —
+// the caller already holds the ownership lock and one DbTransaction.
+export async function releaseMemberWorkSessions(
+  tx: DbTransaction,
+  workspaceId: string,
+  humanId: string,
+): Promise<void> {
+  const ownedAgents = tx.select({ id: agents.id }).from(agents).where(eq(agents.humanId, humanId));
+  const claims = await tx
+    .select({ id: workSessions.id, issueId: workSessions.issueId })
+    .from(workSessions)
+    .where(
+      and(
+        eq(workSessions.workspaceId, workspaceId),
+        eq(workSessions.status, WorkSessionStatus.enum.active),
+        inArray(workSessions.agentId, ownedAgents),
+      ),
+    );
+  if (claims.length === 0) return;
+
+  const issueIds = [...new Set(claims.map((claim) => claim.issueId))].toSorted();
+  await tx
+    .select({ id: issues.id })
+    .from(issues)
+    .where(inArray(issues.id, issueIds))
+    .orderBy(issues.id)
+    .for("update");
+
+  await tx
+    .update(workSessions)
+    .set({
+      // "released" ends the claim without marking it failed or completed: the human left,
+      // the work itself is untouched and stays open for another worker to claim.
+      status: WorkSessionStatus.enum.released,
+      endedAt: sql`statement_timestamp()`,
+      updatedAt: sql`statement_timestamp()`,
+    })
+    .where(
+      and(
+        // A claim that legitimately completed or expired after the read above must not be
+        // overwritten to "released"; only the still-active ones are ended by a departure.
+        eq(workSessions.status, WorkSessionStatus.enum.active),
+        inArray(
+          workSessions.id,
+          claims.map((claim) => claim.id),
+        ),
+      ),
+    );
+}
+
 // Lock the target issue first. Every claim, renewal, fenced write, progress update and
 // completion runs inside this lock, so the lazy expiry and the subsequent decision see one
 // consistent state and two writers to the same issue serialize.
 async function lockIssue(tx: DbTransaction, issueId: string) {
   const [row] = await tx
-    .select({ id: issues.id, projectId: issues.projectId })
+    .select({
+      id: issues.id,
+      projectId: issues.projectId,
+      status: issues.status,
+      needsInput: issues.needsInput,
+    })
     .from(issues)
     .where(eq(issues.id, issueId))
     .limit(1)
@@ -179,6 +336,12 @@ async function expireStale(tx: DbTransaction, issueId: string): Promise<void> {
 
 const fiveMinutes = sql`statement_timestamp() + interval '5 minutes'`;
 
+// The database-time liveness predicate is repeated on every read and write that treats a
+// session as live. `statement_timestamp()` advances between statements in a transaction, so
+// a lease can lapse after expireStale ran; without this predicate a later statement could
+// still return or update that row as active.
+const liveLease = gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`);
+
 async function findActive(tx: DbTransaction, issueId: string) {
   const [row] = await tx
     .select(sessionColumns)
@@ -187,10 +350,87 @@ async function findActive(tx: DbTransaction, issueId: string) {
       and(
         eq(workSessions.issueId, issueId),
         eq(workSessions.status, WorkSessionStatus.enum.active),
+        liveLease,
       ),
     )
     .limit(1);
   return row;
+}
+
+// Shared by claim, resume and reacquire: a run belongs to this agent in this workspace.
+async function requireRun(tx: DbTransaction, identity: AgentIdentity, runId: string) {
+  const [run] = await tx
+    .select({ id: runs.id })
+    .from(runs)
+    .where(
+      and(
+        eq(runs.id, runId),
+        eq(runs.agentId, identity.agentId),
+        eq(runs.workspaceId, identity.workspaceId),
+      ),
+    )
+    .limit(1);
+  if (run === undefined) throw new SessionsError("run_not_found");
+  return run;
+}
+
+// The most recent session this run recorded on the issue: the one resume reports and the
+// one reacquire may extend. The id tie-breaker keeps "most recent" deterministic when two
+// rows share a timestamp.
+async function findLatestForRun(
+  tx: DbTransaction,
+  issueId: string,
+  identity: AgentIdentity,
+  runId: string,
+) {
+  const [row] = await tx
+    .select(sessionColumns)
+    .from(workSessions)
+    .where(
+      and(
+        eq(workSessions.issueId, issueId),
+        eq(workSessions.agentId, identity.agentId),
+        eq(workSessions.workspaceId, identity.workspaceId),
+        eq(workSessions.runId, runId),
+      ),
+    )
+    .orderBy(desc(workSessions.createdAt), desc(workSessions.id))
+    .limit(1);
+  return row;
+}
+
+function isSameRun(
+  session: SessionView | undefined,
+  identity: AgentIdentity,
+  runId: string,
+): boolean {
+  return (
+    session !== undefined &&
+    session.agentId === identity.agentId &&
+    session.workspaceId === identity.workspaceId &&
+    session.runId === runId
+  );
+}
+
+// Insert a fresh active row under the issue lock. If a lease lapsed in the tiny window
+// between expireStale and this INSERT, the partial unique index refuses the first attempt;
+// expiring again in this same transaction frees the slot and the retry wins. A second
+// failure means a genuinely different live claimant holds the issue.
+async function insertFreshSession(
+  tx: DbTransaction,
+  issueId: string,
+  values: PgInsertValue<typeof workSessions>,
+): Promise<SessionView | undefined> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const [created] = await tx
+      .insert(workSessions)
+      .values(values)
+      .onConflictDoNothing()
+      .returning(sessionColumns);
+    if (created !== undefined) return created;
+    await expireStale(tx, issueId);
+  }
+  return undefined;
 }
 
 function requireAccessArgs(
@@ -217,6 +457,12 @@ function requireAccessArgs(
     }
 
     const humanId = actor.kind === "human" ? actor.account.humanId : actor.identity.humanId;
+    // Re-read the human's workspace access on the caller's transaction. A removed human's
+    // in-flight renewal cannot pass here even if the project grant read below is stale,
+    // so the claim cannot be retained or extended after removal.
+    if (!(await humanStillHasWorkspaceAccess(tx, project.workspaceId, humanId))) {
+      throw new SessionsError("insufficient_access");
+    }
     const ceiling = await projectAccessCeiling(tx, project.workspaceId, humanId, [projectId]);
     const humanLevel = ceiling.get(projectId) ?? null;
     let effective = humanLevel;
@@ -244,12 +490,41 @@ export function createSessionsService({
   projectAccessCeiling,
   projectAccessAtLeast,
   listIssues,
+  questionLeaseDeadline,
+  evaluateQuestionDeadline,
 }: SessionsDeps): SessionsService {
+  // Standalone construction (unit tests) has no inbox wired; production provides both.
+  const leaseDeadline = questionLeaseDeadline ?? (async () => null);
+  const checkDeadline = evaluateQuestionDeadline ?? (async () => {});
   // The in-transaction expiry below decides the claim. A lapsed lease must also be
   // released when the operation is refused — the rejected transaction rolls back — so a
   // committed expiry runs first, *before* any transaction is opened by this feature. It is
   // idempotent: the second, locked expiry inside the operation serializes with the claim.
   const expireCommitted = (issueId: string) => db.transaction((tx) => expireStale(tx, issueId));
+  // A due one-hour question must commit its pause even when the check-in or claim that
+  // triggered it is refused, otherwise the deadline would be re-evaluated forever. Like
+  // lease expiry, it runs in its own committed transaction before the operation's tx.
+  // Skip the row lock entirely when no open question exists on the issue (the common case).
+  const deadlineCommitted = async (issueId: string) => {
+    if (evaluateQuestionDeadline === undefined) return;
+    const deadline = await db.transaction((tx) => leaseDeadline(tx, issueId), {
+      accessMode: "read only",
+    });
+    if (deadline === null) return;
+    await db.transaction(async (tx) => {
+      // Lock in the same order as every other writer (issues -> questions -> work_sessions).
+      // Without this, a due question could lock questions first and deadlock (40P01) against
+      // an answer or check-in already holding the issue row.
+      const [row] = await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .limit(1)
+        .for("update");
+      if (row === undefined) return;
+      await checkDeadline(tx, issueId);
+    });
+  };
 
   // Renew, progress and stop share one live-session decision: lock the issue, expire a
   // stale lease, re-check the agent's current project level, find the live session the
@@ -257,14 +532,25 @@ export function createSessionsService({
   const withLiveSession = async (
     actor: AgentActor | null,
     issueId: string,
-    update: (tx: DbTransaction, sessionId: string) => Promise<SessionView | undefined>,
+    sessionId: string | undefined,
+    update: (
+      tx: DbTransaction,
+      sessionId: string,
+      issueId: string,
+    ) => Promise<SessionView | undefined>,
   ): Promise<WorkSession> => {
     const identity = requireAgent(actor);
+    await deadlineCommitted(issueId);
     await expireCommitted(issueId);
     return db.transaction(async (tx) => {
+      // Membership first, issue second: see lockAgentWorkspaceAccess for the lock order.
+      await lockAgentWorkspaceAccess(tx, identity);
       const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
       const issue = await lockIssue(tx, issueId);
       await expireStale(tx, issue.id);
+      // A due question pauses the issue and releases the claim before any check-in. The
+      // evaluation runs on this locked transaction, never in a nested one.
+      await checkDeadline(tx, issue.id);
       await requireAccess(
         { kind: "agent", identity },
         issue.projectId,
@@ -280,12 +566,16 @@ export function createSessionsService({
             eq(workSessions.agentId, identity.agentId),
             eq(workSessions.workspaceId, identity.workspaceId),
             eq(workSessions.status, WorkSessionStatus.enum.active),
+            liveLease,
+            // A named fence must resolve to this exact session. A delayed call from S1
+            // cannot fall through to the newer S2 the same agent now holds.
+            ...(sessionId === undefined ? [] : [eq(workSessions.id, sessionId)]),
           ),
         )
         .limit(1);
       // An inactive session is never revived and a stale write never becomes a new claim.
       if (session === undefined) throw new SessionsError("session_required");
-      const updated = await update(tx, session.id);
+      const updated = await update(tx, session.id, issue.id);
       if (updated === undefined) throw new SessionsError("session_required");
       return toSession(updated);
     });
@@ -294,8 +584,187 @@ export function createSessionsService({
   return {
     async claim(actor, input) {
       const identity = requireAgent(actor);
+      await deadlineCommitted(input.issueId);
       await expireCommitted(input.issueId);
       return db.transaction(async (tx) => {
+        // Membership first, issue second: a removal deleting this membership waits for
+        // the claim to commit, then releases it instead of missing the uncommitted row.
+        await lockAgentWorkspaceAccess(tx, identity);
+        const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
+        const issue = await lockIssue(tx, input.issueId);
+        await expireStale(tx, issue.id);
+        await checkDeadline(tx, issue.id);
+        // The locked evaluation may have just set Needs input; re-read it on this same
+        // snapshot so a deadline that lands between the committed check and this lock
+        // cannot let a new claim start while the issue is paused.
+        const [fresh] = await tx
+          .select({ needsInput: issues.needsInput })
+          .from(issues)
+          .where(eq(issues.id, issue.id))
+          .limit(1);
+        await requireAccess(
+          { kind: "agent", identity },
+          issue.projectId,
+          ProjectAccessLevel.enum.contribute,
+          "issue_not_found",
+        );
+        // A session follows the agent and run, not the key. An explicit run id must be a
+        // run of this agent in this workspace; helpers on one issue pass the same id.
+        await requireRun(tx, identity, input.runId);
+
+        const existing = await findActive(tx, issue.id);
+        if (existing !== undefined) {
+          if (isSameRun(existing, identity, input.runId)) return toSession(existing);
+          throw new SessionsError("issue_claimed");
+        }
+        // A paused or open question owns Needs input: nobody may start new work on the
+        // issue until a human answers and clears the flag.
+        if (fresh?.needsInput ?? false) throw new SessionsError("issue_needs_input");
+
+        const created = await insertFreshSession(tx, issue.id, {
+          id: randomUUID(),
+          agentId: identity.agentId,
+          runId: input.runId,
+          workspaceId: identity.workspaceId,
+          issueId: issue.id,
+          status: WorkSessionStatus.enum.active,
+          leaseExpiresAt: fiveMinutes,
+          createdAt: sql`statement_timestamp()`,
+          updatedAt: sql`statement_timestamp()`,
+        });
+        if (created !== undefined) return toSession(created);
+
+        // A different live claimant won the partial unique index; it is never joined.
+        throw new SessionsError("issue_claimed");
+      });
+    },
+
+    async renew(actor, issueId, sessionId) {
+      return withLiveSession(actor, issueId, sessionId, async (tx, id, issue) => {
+        // While a question is open, checking in keeps the claim but never past the one-hour
+        // deadline. After the deadline the question has been paused by the evaluation above,
+        // so there is no live session left to renew.
+        const deadline = await leaseDeadline(tx, issue);
+        const lease =
+          deadline === null
+            ? fiveMinutes
+            : sql`least(statement_timestamp() + interval '5 minutes', ${deadline.toISOString()}::timestamptz)`;
+        const [updated] = await tx
+          .update(workSessions)
+          .set({ leaseExpiresAt: lease, updatedAt: sql`statement_timestamp()` })
+          .where(
+            and(
+              eq(workSessions.id, id),
+              eq(workSessions.status, WorkSessionStatus.enum.active),
+              liveLease,
+            ),
+          )
+          .returning(sessionColumns);
+        return updated;
+      });
+    },
+
+    async progress(actor, issueId, summary, sessionId) {
+      return withLiveSession(actor, issueId, sessionId, async (tx, id) => {
+        const [updated] = await tx
+          .update(workSessions)
+          .set({
+            progress: summary,
+            progressUpdatedAt: sql`statement_timestamp()`,
+            updatedAt: sql`statement_timestamp()`,
+          })
+          .where(
+            and(
+              eq(workSessions.id, id),
+              eq(workSessions.status, WorkSessionStatus.enum.active),
+              liveLease,
+            ),
+          )
+          .returning(sessionColumns);
+        return updated;
+      });
+    },
+
+    async stop(actor, issueId, outcome, sessionId) {
+      return withLiveSession(actor, issueId, sessionId, async (tx, id) => {
+        const [updated] = await tx
+          .update(workSessions)
+          .set({
+            status: outcome,
+            endedAt: sql`statement_timestamp()`,
+            updatedAt: sql`statement_timestamp()`,
+          })
+          .where(
+            and(
+              eq(workSessions.id, id),
+              eq(workSessions.status, WorkSessionStatus.enum.active),
+              liveLease,
+            ),
+          )
+          .returning(sessionColumns);
+        return updated;
+      });
+    },
+
+    async resume(actor, input) {
+      const identity = requireAgent(actor);
+      // Resume is a read. It deliberately does NOT call expireCommitted or expireStale:
+      // the effectiveStatus projection below reports a lapsed lease as expired in
+      // database time without ever resurrecting or re-arming it.
+      return db.transaction(
+        async (tx) => {
+          const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
+          const [issue] = await tx
+            .select({ projectId: issues.projectId })
+            .from(issues)
+            .where(eq(issues.id, input.issueId))
+            .limit(1);
+          if (issue === undefined) throw new SessionsError("issue_not_found");
+          await requireAccess(
+            { kind: "agent", identity },
+            issue.projectId,
+            ProjectAccessLevel.enum.read,
+            "issue_not_found",
+          );
+          await requireRun(tx, identity, input.runId);
+
+          const row = await findLatestForRun(tx, input.issueId, identity, input.runId);
+          if (row === undefined) {
+            return {
+              runId: input.runId,
+              issueId: input.issueId,
+              disposition: "none" as const satisfies ResumeDisposition,
+              session: null,
+            };
+          }
+          // The DB-time projection distinguishes a live claim from an expired one without
+          // mutating the row: progress stays intact and the old lease stays expired.
+          const effective = row.effectiveStatus ?? row.status;
+          const disposition: ResumeDisposition =
+            effective === WorkSessionStatus.enum.active
+              ? "active"
+              : effective === WorkSessionStatus.enum.expired
+                ? "expired"
+                : "ended";
+          return {
+            runId: input.runId,
+            issueId: input.issueId,
+            disposition,
+            session: toSession(row),
+          };
+        },
+        { accessMode: "read only" },
+      );
+    },
+
+    async reacquire(actor, input) {
+      const identity = requireAgent(actor);
+      // As with claim, materialize any lapsed lease in a committed transaction first so a
+      // refused reacquisition still releases it. The locked check below is the decision.
+      await expireCommitted(input.issueId);
+      return db.transaction(async (tx) => {
+        // Membership first, issue second: serialize with member removal just like claim.
+        await lockAgentWorkspaceAccess(tx, identity);
         const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
         const issue = await lockIssue(tx, input.issueId);
         await expireStale(tx, issue.id);
@@ -305,103 +774,45 @@ export function createSessionsService({
           ProjectAccessLevel.enum.contribute,
           "issue_not_found",
         );
-        // A session follows the agent and run, not the key. An explicit run id must be a
-        // run of this agent in this workspace; helpers on one issue pass the same id.
-        const [run] = await tx
-          .select({ id: runs.id })
-          .from(runs)
-          .where(
-            and(
-              eq(runs.id, input.runId),
-              eq(runs.agentId, identity.agentId),
-              eq(runs.workspaceId, identity.workspaceId),
-            ),
-          )
-          .limit(1);
-        if (run === undefined) throw new SessionsError("run_not_found");
+        await requireRun(tx, identity, input.runId);
 
-        const existing = await findActive(tx, issue.id);
-        if (existing !== undefined) {
-          if (
-            existing.agentId === identity.agentId &&
-            existing.workspaceId === identity.workspaceId &&
-            existing.runId === input.runId
-          ) {
-            return toSession(existing);
-          }
+        // An idempotent retry after reconnect: the same run re-acquiring an issue it
+        // already holds live returns that one session instead of registering a second.
+        const active = await findActive(tx, issue.id);
+        if (active !== undefined) {
+          if (isSameRun(active, identity, input.runId)) return toSession(active);
           throw new SessionsError("issue_claimed");
         }
 
-        const [created] = await tx
-          .insert(workSessions)
-          .values({
-            id: randomUUID(),
-            agentId: identity.agentId,
-            runId: input.runId,
-            workspaceId: identity.workspaceId,
-            issueId: issue.id,
-            status: WorkSessionStatus.enum.active,
-            leaseExpiresAt: fiveMinutes,
-            createdAt: sql`statement_timestamp()`,
-            updatedAt: sql`statement_timestamp()`,
-          })
-          .onConflictDoNothing()
-          .returning(sessionColumns);
+        // Reacquisition belongs to the run that owned the expired claim. A run that never
+        // claimed, or one whose session already ended, has nothing to reacquire; it must
+        // use claim instead. A stale write can never become this fresh claim.
+        const prior = await findLatestForRun(tx, issue.id, identity, input.runId);
+        if (prior === undefined || prior.status !== WorkSessionStatus.enum.expired) {
+          throw new SessionsError("session_required");
+        }
+        // A closed or paused issue is not available, even with no competing claimant.
+        if (issue.status !== "open" || issue.needsInput) throw new SessionsError("issue_blocked");
+
+        // A fresh active row for the same identity, carrying forward the recorded progress
+        // so an interruption does not erase work already reported.
+        const created = await insertFreshSession(tx, issue.id, {
+          id: randomUUID(),
+          agentId: identity.agentId,
+          runId: input.runId,
+          workspaceId: identity.workspaceId,
+          issueId: issue.id,
+          status: WorkSessionStatus.enum.active,
+          leaseExpiresAt: fiveMinutes,
+          progress: prior.progress,
+          progressUpdatedAt: prior.progressUpdatedAt,
+          createdAt: sql`statement_timestamp()`,
+          updatedAt: sql`statement_timestamp()`,
+        });
         if (created !== undefined) return toSession(created);
 
-        // The partial unique index won a concurrent race: a helper on the same issue may
-        // join only if it is the same agent and run; everyone else is refused.
-        const winner = await findActive(tx, issue.id);
-        if (
-          winner !== undefined &&
-          winner.agentId === identity.agentId &&
-          winner.workspaceId === identity.workspaceId &&
-          winner.runId === input.runId
-        ) {
-          return toSession(winner);
-        }
+        // A different live claimant won the partial unique index; it is never joined.
         throw new SessionsError("issue_claimed");
-      });
-    },
-
-    async renew(actor, issueId) {
-      return withLiveSession(actor, issueId, async (tx, sessionId) => {
-        const [updated] = await tx
-          .update(workSessions)
-          .set({ leaseExpiresAt: fiveMinutes, updatedAt: sql`statement_timestamp()` })
-          .where(eq(workSessions.id, sessionId))
-          .returning(sessionColumns);
-        return updated;
-      });
-    },
-
-    async progress(actor, issueId, summary) {
-      return withLiveSession(actor, issueId, async (tx, sessionId) => {
-        const [updated] = await tx
-          .update(workSessions)
-          .set({
-            progress: summary,
-            progressUpdatedAt: sql`statement_timestamp()`,
-            updatedAt: sql`statement_timestamp()`,
-          })
-          .where(eq(workSessions.id, sessionId))
-          .returning(sessionColumns);
-        return updated;
-      });
-    },
-
-    async stop(actor, issueId, outcome) {
-      return withLiveSession(actor, issueId, async (tx, sessionId) => {
-        const [updated] = await tx
-          .update(workSessions)
-          .set({
-            status: outcome,
-            endedAt: sql`statement_timestamp()`,
-            updatedAt: sql`statement_timestamp()`,
-          })
-          .where(eq(workSessions.id, sessionId))
-          .returning(sessionColumns);
-        return updated;
       });
     },
 

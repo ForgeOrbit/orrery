@@ -3,7 +3,11 @@ import type { Context } from "hono";
 import {
   ClaimWorkSessionInput,
   IssuesResponse,
+  ReacquireWorkSessionInput,
+  RenewWorkSessionInput,
   ReportProgressInput,
+  ResumeWorkSessionInput,
+  ResumeWorkSessionResult,
   StopWorkSessionInput,
   WorkSession,
   WorkSessionsResponse,
@@ -25,8 +29,11 @@ import { SessionsError, type SessionsErrorKind, type SessionsService } from "./s
 const issueParams = z.object({ issueId: z.string().min(1).max(200) });
 const projectParams = z.object({ projectId: z.string().min(1).max(200) });
 const claimBody = ClaimWorkSessionInput.omit({ issueId: true });
+const renewBody = RenewWorkSessionInput.omit({ issueId: true });
 const progressBody = ReportProgressInput.omit({ issueId: true });
 const stopBody = StopWorkSessionInput.omit({ issueId: true });
+const resumeBody = ResumeWorkSessionInput.omit({ issueId: true });
+const reacquireBody = ReacquireWorkSessionInput.omit({ issueId: true });
 
 const claim = createRoute({
   method: "post",
@@ -56,8 +63,11 @@ const renew = createRoute({
   path: "/api/issues/{issueId}/work-sessions/renew",
   summary: "Check in and renew a claim",
   description:
-    "Refresh the five-minute lease in database time for the live session this agent holds on the issue. An expired or released session is never renewed or silently reacquired.",
-  request: { params: issueParams },
+    "Refresh the five-minute lease in database time for the live session this agent holds on the issue. An expired or released session is never renewed or silently reacquired. An optional sessionId fences a delayed call from an interrupted session.",
+  request: {
+    params: issueParams,
+    body: { required: false, content: { "application/json": { schema: renewBody } } },
+  },
   responses: {
     200: {
       description: "The renewed session",
@@ -76,7 +86,7 @@ const progress = createRoute({
   path: "/api/issues/{issueId}/work-sessions/progress",
   summary: "Record progress on a live session",
   description:
-    "Store a progress summary on the live session this agent holds. Progress is held independently of the lease, so expiry never erases it. Requires a live session.",
+    "Store a progress summary on the live session this agent holds. Progress is held independently of the lease, so expiry never erases it. Requires a live session; an optional sessionId fences a delayed report from an expired one.",
   request: {
     params: issueParams,
     body: { required: true, content: { "application/json": { schema: progressBody } } },
@@ -99,7 +109,7 @@ const stop = createRoute({
   path: "/api/issues/{issueId}/work-sessions/stop",
   summary: "Complete or release a live session",
   description:
-    "End the live session this agent holds. Stopping is distinct from closing the issue; the outcome records whether the work completed or was released for another worker.",
+    "End the live session this agent holds. Stopping is distinct from closing the issue; the outcome records whether the work completed or was released for another worker. An optional sessionId fences a delayed completion from an expired session.",
   request: {
     params: issueParams,
     body: { required: true, content: { "application/json": { schema: stopBody } } },
@@ -114,6 +124,53 @@ const stop = createRoute({
     403: problem("Contribute access is required to work on this issue"),
     404: problem("No such issue is in scope for this agent"),
     409: problem("This agent holds no live session for this issue"),
+  },
+});
+
+const resume = createRoute({
+  method: "post",
+  path: "/api/issues/{issueId}/work-sessions/resume",
+  summary: "Inspect the original run's claim after an interruption",
+  description:
+    "Report how the named run's claim on this issue stands: active, expired, ended or none, with the progress recorded before any interruption. Evaluated in database time as a read; it never renews or resurrects an expired lease.",
+  request: {
+    params: issueParams,
+    body: { required: true, content: { "application/json": { schema: resumeBody } } },
+  },
+  responses: {
+    200: {
+      description: "The run's claim disposition and session",
+      content: { "application/json": { schema: ResumeWorkSessionResult } },
+    },
+    400: problem("The resume request is invalid"),
+    401: problem("An agent key is required, or the key is invalid or revoked"),
+    403: problem("Read access is required to inspect this issue"),
+    404: problem("No such issue or run is in scope for this agent"),
+  },
+});
+
+const reacquire = createRoute({
+  method: "post",
+  path: "/api/issues/{issueId}/work-sessions/reacquire",
+  summary: "Reacquire this run's expired claim",
+  description:
+    "Re-arm the named run's expired claim on this issue as a new active session for the same agent, run, workspace and issue, carrying forward the recorded progress. Allowed only while no other worker holds a live claim and the issue is not paused for input. Retries with the same run return the same session; a stale call is never turned into a fresh claim.",
+  request: {
+    params: issueParams,
+    body: { required: true, content: { "application/json": { schema: reacquireBody } } },
+  },
+  responses: {
+    201: {
+      description: "The reacquired active session",
+      content: { "application/json": { schema: WorkSession } },
+    },
+    400: problem("The reacquire request is invalid"),
+    401: problem("An agent key is required, or the key is invalid or revoked"),
+    403: problem("Contribute access is required to reacquire this claim"),
+    404: problem("No such issue or run is in scope for this agent"),
+    409: problem(
+      "The issue is claimed by another worker or paused for input, or the claim was never expired",
+    ),
   },
 });
 
@@ -175,7 +232,7 @@ const readyWork = createRoute({
   },
 });
 
-export const routes = [claim, renew, progress, stop, current, all, readyWork];
+export const routes = [claim, renew, progress, stop, resume, reacquire, current, all, readyWork];
 
 const statusFor = {
   not_signed_in: 401,
@@ -184,6 +241,8 @@ const statusFor = {
   run_not_found: 404,
   insufficient_access: 403,
   issue_claimed: 409,
+  issue_needs_input: 409,
+  issue_blocked: 409,
   session_required: 409,
 } as const satisfies Record<SessionsErrorKind, number>;
 
@@ -216,11 +275,27 @@ const claimKinds = [
   "run_not_found",
   "insufficient_access",
   "issue_claimed",
+  "issue_needs_input",
 ] as const;
 const writeKinds = [
   "not_signed_in",
   "issue_not_found",
   "insufficient_access",
+  "session_required",
+] as const;
+const resumeKinds = [
+  "not_signed_in",
+  "issue_not_found",
+  "run_not_found",
+  "insufficient_access",
+] as const;
+const reacquireKinds = [
+  "not_signed_in",
+  "issue_not_found",
+  "run_not_found",
+  "insufficient_access",
+  "issue_claimed",
+  "issue_blocked",
   "session_required",
 ] as const;
 const currentKinds = writeKinds;
@@ -264,7 +339,14 @@ export function createSessionsRest(
 
   app.openapi(renew, async (c) => {
     try {
-      return c.json(await service.renew(await agentActor(c), c.req.valid("param").issueId), 200);
+      return c.json(
+        await service.renew(
+          await agentActor(c),
+          c.req.valid("param").issueId,
+          c.req.valid("json")?.sessionId,
+        ),
+        200,
+      );
     } catch (error) {
       return failure(c, error, writeKinds);
     }
@@ -277,6 +359,7 @@ export function createSessionsRest(
           await agentActor(c),
           c.req.valid("param").issueId,
           c.req.valid("json").summary,
+          c.req.valid("json").sessionId,
         ),
         200,
       );
@@ -292,11 +375,40 @@ export function createSessionsRest(
           await agentActor(c),
           c.req.valid("param").issueId,
           c.req.valid("json").outcome,
+          c.req.valid("json").sessionId,
         ),
         200,
       );
     } catch (error) {
       return failure(c, error, writeKinds);
+    }
+  });
+
+  app.openapi(resume, async (c) => {
+    try {
+      return c.json(
+        await service.resume(await agentActor(c), {
+          issueId: c.req.valid("param").issueId,
+          runId: c.req.valid("json").runId,
+        }),
+        200,
+      );
+    } catch (error) {
+      return failure(c, error, resumeKinds);
+    }
+  });
+
+  app.openapi(reacquire, async (c) => {
+    try {
+      return c.json(
+        await service.reacquire(await agentActor(c), {
+          issueId: c.req.valid("param").issueId,
+          runId: c.req.valid("json").runId,
+        }),
+        201,
+      );
+    } catch (error) {
+      return failure(c, error, reacquireKinds);
     }
   });
 

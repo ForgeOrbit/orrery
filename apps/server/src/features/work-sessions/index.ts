@@ -3,7 +3,12 @@ import type { Feature } from "../../platform/feature.ts";
 import type { DbTransaction } from "../../platform/db.ts";
 import type { SessionReader } from "../accounts/index.ts";
 import type { AgentAuthenticator } from "../agents/index.ts";
-import { type SessionsDeps, type SessionsService, createSessionsService } from "./service.ts";
+import {
+  type SessionsDeps,
+  type SessionsService,
+  createSessionsService,
+  releaseMemberWorkSessions,
+} from "./service.ts";
 import { createSessionsMcp } from "./mcp.ts";
 import { createSessionsRest, routes } from "./rest.ts";
 
@@ -25,6 +30,9 @@ export interface SessionsFeature extends Feature {
     workspaceId: string,
     issueId: string,
   ): Promise<boolean>;
+  // Workspaces borrows this to end a departing member's agents' claims inside the same
+  // removal transaction, under the same issue locks renewals use.
+  releaseMemberWorkSessions(tx: DbTransaction, workspaceId: string, humanId: string): Promise<void>;
 }
 
 export function createSessionsFeature(deps: SessionsFeatureDeps): SessionsFeature {
@@ -33,6 +41,8 @@ export function createSessionsFeature(deps: SessionsFeatureDeps): SessionsFeatur
     projectAccessCeiling: deps.projectAccessCeiling,
     projectAccessAtLeast: deps.projectAccessAtLeast,
     listIssues: deps.listIssues,
+    questionLeaseDeadline: deps.questionLeaseDeadline,
+    evaluateQuestionDeadline: deps.evaluateQuestionDeadline,
   });
   return {
     name: "work-sessions",
@@ -41,5 +51,6 @@ export function createSessionsFeature(deps: SessionsFeatureDeps): SessionsFeatur
     service,
     agentHoldsSession: (tx, agentId, workspaceId, issueId) =>
       service.agentHoldsSession(tx, agentId, workspaceId, issueId),
+    releaseMemberWorkSessions,
   };
 }

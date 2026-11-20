@@ -62,8 +62,17 @@ export const ClaimWorkSessionInput = z
   .meta({ id: "ClaimWorkSessionInput" });
 export type ClaimWorkSessionInput = z.infer<typeof ClaimWorkSessionInput>;
 
+// `sessionId` is an optional fence. When a client that was interrupted sends a delayed
+// renew/progress/stop, naming the session it started with makes the call fail rather than
+// silently mutating a newer session the same agent has since acquired on the issue.
+// Omitting it keeps #36 callers (helpers, older clients) working unchanged.
+const SessionFence = z.string().trim().min(1).max(200);
+
 export const RenewWorkSessionInput = z
-  .object({ issueId: z.string().trim().min(1).max(200) })
+  .object({
+    issueId: z.string().trim().min(1).max(200),
+    sessionId: SessionFence.optional(),
+  })
   .meta({ id: "RenewWorkSessionInput" });
 export type RenewWorkSessionInput = z.infer<typeof RenewWorkSessionInput>;
 
@@ -71,6 +80,7 @@ export const ReportProgressInput = z
   .object({
     issueId: z.string().trim().min(1).max(200),
     summary: z.string().trim().min(1).max(20_000),
+    sessionId: SessionFence.optional(),
   })
   .meta({ id: "ReportProgressInput" });
 export type ReportProgressInput = z.infer<typeof ReportProgressInput>;
@@ -79,6 +89,7 @@ export const StopWorkSessionInput = z
   .object({
     issueId: z.string().trim().min(1).max(200),
     outcome: WorkSessionOutcome.default("completed"),
+    sessionId: SessionFence.optional(),
   })
   .meta({ id: "StopWorkSessionInput" });
 export type StopWorkSessionInput = z.infer<typeof StopWorkSessionInput>;
@@ -87,6 +98,47 @@ export const GetWorkSessionInput = z
   .object({ issueId: z.string().trim().min(1).max(200) })
   .meta({ id: "GetWorkSessionInput" });
 export type GetWorkSessionInput = z.infer<typeof GetWorkSessionInput>;
+
+// Resuming an interrupted conversation (#40, stories 55 and 56). The run is the identity
+// of the harness conversation, so resume names both the run and the issue it was working.
+// Reacquire uses the same shape: it only ever re-arms the run's own expired claim and can
+// never turn a stale write into a fresh claim for a different run.
+export const ResumeWorkSessionInput = z
+  .object({
+    issueId: z.string().trim().min(1).max(200),
+    runId: z.string().trim().min(1).max(200),
+  })
+  .meta({ id: "ResumeWorkSessionInput" });
+export type ResumeWorkSessionInput = z.infer<typeof ResumeWorkSessionInput>;
+
+export const ReacquireWorkSessionInput = ResumeWorkSessionInput;
+export type ReacquireWorkSessionInput = z.infer<typeof ReacquireWorkSessionInput>;
+
+// How the original run's claim stands when it resumes. "active" is a live claim;
+// "expired" is the same run's lapsed lease, reported without resurrecting it; "ended" is
+// a session the run already completed or released; "none" means the run never claimed.
+export const ResumeDisposition = z
+  .enum(["active", "expired", "ended", "none"])
+  .meta({ id: "ResumeDisposition" });
+export type ResumeDisposition = z.infer<typeof ResumeDisposition>;
+
+export const ResumeWorkSessionResult = z
+  .object({
+    runId: z.string(),
+    issueId: z.string(),
+    disposition: ResumeDisposition,
+    // Present for every disposition but "none". For "expired" it still carries the
+    // progress recorded before the interruption: expiry never erases progress.
+    session: WorkSession.nullable(),
+  })
+  .meta({ id: "ResumeWorkSessionResult" });
+export type ResumeWorkSessionResult = z.infer<typeof ResumeWorkSessionResult>;
+
+// MCP wraps results in a named object; REST returns the bare result/resource.
+export const ResumeWorkSessionResponse = z
+  .object({ resume: ResumeWorkSessionResult })
+  .meta({ id: "ResumeWorkSessionResponse" });
+export type ResumeWorkSessionResponse = z.infer<typeof ResumeWorkSessionResponse>;
 
 // Minimal ready work: the eligible open issues in a project, not a full board. An issue
 // is ready while open, not marked Needs input, and without a live (unevaluated-expired)

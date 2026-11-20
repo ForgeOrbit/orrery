@@ -1,5 +1,5 @@
 {
-  "id": "c9d9cc1f-dd8d-42e5-8474-3fb5aa1f2869",
+  "id": "76180a7f-8020-4070-b6c6-cb2f91c02d7c",
   "prevId": "538c8ced-8c08-4a93-99d9-d38d41b4cad1",
   "version": "7",
   "dialect": "postgresql",
@@ -1932,154 +1932,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.project_transfer_authorizations": {
-      "name": "project_transfer_authorizations",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "project_id": {
-          "name": "project_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_workspace_id": {
-          "name": "source_workspace_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "destination_workspace_id": {
-          "name": "destination_workspace_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "authorized_by_human_id": {
-          "name": "authorized_by_human_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "token_hash": {
-          "name": "token_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "accepted_at": {
-          "name": "accepted_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "revoked_at": {
-          "name": "revoked_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "project_transfer_authorizations_project": {
-          "name": "project_transfer_authorizations_project",
-          "columns": [
-            {
-              "expression": "project_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "project_transfer_authorizations_project_id_projects_id_fk": {
-          "name": "project_transfer_authorizations_project_id_projects_id_fk",
-          "tableFrom": "project_transfer_authorizations",
-          "tableTo": "projects",
-          "columnsFrom": ["project_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "project_transfer_authorizations_source_workspace_id_workspaces_id_fk": {
-          "name": "project_transfer_authorizations_source_workspace_id_workspaces_id_fk",
-          "tableFrom": "project_transfer_authorizations",
-          "tableTo": "workspaces",
-          "columnsFrom": ["source_workspace_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "project_transfer_authorizations_destination_workspace_id_workspaces_id_fk": {
-          "name": "project_transfer_authorizations_destination_workspace_id_workspaces_id_fk",
-          "tableFrom": "project_transfer_authorizations",
-          "tableTo": "workspaces",
-          "columnsFrom": ["destination_workspace_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "project_transfer_authorizations_authorized_by_human_id_humans_id_fk": {
-          "name": "project_transfer_authorizations_authorized_by_human_id_humans_id_fk",
-          "tableFrom": "project_transfer_authorizations",
-          "tableTo": "humans",
-          "columnsFrom": ["authorized_by_human_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "project_transfer_authorizations_token_hash_unique": {
-          "name": "project_transfer_authorizations_token_hash_unique",
-          "nullsNotDistinct": false,
-          "columns": ["token_hash"]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "project_transfer_authorizations_status": {
-          "name": "project_transfer_authorizations_status",
-          "value": "\"project_transfer_authorizations\".\"status\" in ('pending', 'accepted', 'revoked', 'expired')"
-        },
-        "project_transfer_authorizations_sides_differ": {
-          "name": "project_transfer_authorizations_sides_differ",
-          "value": "\"project_transfer_authorizations\".\"source_workspace_id\" <> \"project_transfer_authorizations\".\"destination_workspace_id\""
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.projects": {
       "name": "projects",
       "schema": "",
@@ -2908,7 +2760,7 @@
       "checkConstraints": {
         "workspace_event_type": {
           "name": "workspace_event_type",
-          "value": "\"workspace_events\".\"type\" in ('workspace_created', 'member_joined', 'owner_appointed', 'member_removed', 'owner_removed', 'create_projects_granted', 'create_projects_revoked', 'invite_members_granted', 'invite_members_revoked', 'remove_members_granted', 'remove_members_revoked', 'manage_member_permissions_granted', 'manage_member_permissions_revoked', 'project_transfer_authorized', 'project_transfer_received', 'project_transferred_out')"
+          "value": "\"workspace_events\".\"type\" in ('workspace_created', 'member_joined', 'owner_appointed', 'member_removed', 'owner_removed', 'member_left', 'owner_left', 'create_projects_granted', 'create_projects_revoked', 'invite_members_granted', 'invite_members_revoked', 'remove_members_granted', 'remove_members_revoked', 'manage_member_permissions_granted', 'manage_member_permissions_revoked')"
         }
       },
       "isRLSEnabled": false

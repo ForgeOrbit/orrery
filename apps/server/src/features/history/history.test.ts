@@ -154,6 +154,7 @@ describe("history visibility against real Postgres", () => {
       revokeMemberProjectAccess: (tx, workspaceId, humanId, actorHumanId) =>
         projectsFeature.revokeMemberProjectAccess(tx, workspaceId, humanId, actorHumanId),
       revokeMemberWorkspaceKeys,
+      releaseMemberWorkSessions: async () => {},
       applyInvitationGrants: (tx, workspaceId, humanId, grantedByHumanId, offered) =>
         projectsFeature.applyInvitationGrants(tx, workspaceId, humanId, grantedByHumanId, offered),
     });

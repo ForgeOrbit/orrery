@@ -166,8 +166,22 @@
     {
       "idx": 23,
       "version": "7",
-      "when": 1795186726157,
-      "tag": "0023_equal_doctor_octopus",
+      "when": 1795186935572,
+      "tag": "0023_wealthy_silvermane",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1795194534139,
+      "tag": "0024_white_rage",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1795195127601,
+      "tag": "0025_thick_valeria_richards",
       "breakpoints": true
     }
   ]
