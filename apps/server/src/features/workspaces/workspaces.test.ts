@@ -381,6 +381,7 @@ describe("workspaces", () => {
       // projects/access.test.ts.
       revokeMemberProjectAccess: async () => {},
       revokeMemberWorkspaceKeys: async () => {},
+      releaseMemberWorkSessions: async () => {},
       applyInvitationGrants: (tx, workspaceId, humanId, grantedByHumanId, offered) =>
         projectsFeature.applyInvitationGrants(tx, workspaceId, humanId, grantedByHumanId, offered),
       log: silentLogger,
@@ -471,6 +472,7 @@ describe("workspaces", () => {
         projectsFeature.revokeMemberProjectAccess(tx, workspaceId, humanId, actorHumanId),
       revokeMemberWorkspaceKeys: (tx, workspaceId, humanId, actorHumanId) =>
         revokeMemberWorkspaceKeys(tx, workspaceId, humanId, actorHumanId),
+      releaseMemberWorkSessions: async () => {},
       applyInvitationGrants: (tx, workspaceId, humanId, grantedByHumanId, offered) =>
         projectsFeature.applyInvitationGrants(tx, workspaceId, humanId, grantedByHumanId, offered),
       log: silentLogger,

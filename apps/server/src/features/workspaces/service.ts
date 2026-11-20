@@ -630,6 +630,13 @@ export interface WorkspacesDeps {
     humanId: string,
     actorHumanId: string,
   ) => Promise<void>;
+  // Work sessions owns claims: removing a member ends every active claim their agents hold
+  // in this workspace, in this same transaction and after the issue rows are locked.
+  releaseMemberWorkSessions: (
+    tx: DbTransaction,
+    workspaceId: string,
+    humanId: string,
+  ) => Promise<void>;
   // Projects validates and writes the project grants an invitation offers, inside the
   // same redemption transaction. It returns offered project ids that are no longer in
   // the workspace.
@@ -683,6 +690,10 @@ export interface WorkspacesService {
     input: UpdateWorkspaceMemberRequest,
   ): Promise<WorkspaceMember>;
   removeMember(account: SessionAccount | null, workspaceId: string, humanId: string): Promise<void>;
+  // A member leaves a shared workspace of their own accord. The last owner cannot leave,
+  // and a personal workspace cannot be left at all. The cleanup is identical to a removal
+  // but the audit event names the act as voluntary.
+  leaveWorkspace(account: SessionAccount | null, workspaceId: string): Promise<void>;
 }
 
 // The delivery attempt, recorded separately from the lifecycle: pending never implies
@@ -825,6 +836,7 @@ export function createWorkspacesService({
   deliver,
   revokeMemberProjectAccess,
   revokeMemberWorkspaceKeys,
+  releaseMemberWorkSessions,
   applyInvitationGrants,
   log,
 }: WorkspacesDeps): WorkspacesService {
@@ -1695,12 +1707,68 @@ export function createWorkspacesService({
         // moment a re-invitation restored the membership.
         await revokeMemberProjectAccess(tx, workspaceId, humanId, actor.humanId);
         await revokeMemberWorkspaceKeys(tx, workspaceId, humanId, actor.humanId);
+        // End the departing human's active claims in this workspace inside the same
+        // transaction, after the ownership guard and project-grant writes above. The
+        // release helper locks the affected issues in id order before touching sessions,
+        // so a renewal racing this removal cannot keep the claim or deadlock with it.
+        await releaseMemberWorkSessions(tx, workspaceId, humanId);
         await recordEvent(
           tx,
           target.isOwner ? "owner_removed" : "member_removed",
           workspaceId,
           actor.humanId,
           humanId,
+        );
+      });
+    },
+
+    // Voluntary leave is the same cleanup as a removal with the actor as the subject, but
+    // the audit event says the person left of their own accord. A personal workspace is
+    // not a membership and cannot be left; a shared workspace must keep one owner, so the
+    // last owner is refused. The workspace lock serializes this with appointments and
+    // removals, and the database trigger remains the second line of defence.
+    async leaveWorkspace(account, workspaceId) {
+      const actor = requireAccount(account);
+      await db.transaction(async (tx) => {
+        // A personal or missing workspace fails here as workspace_not_found, so "leave"
+        // can never detach the owner from their personal workspace.
+        await lockWorkspaceForMutation(tx, workspaceId);
+        const membership = await readMembership(
+          tx,
+          workspaceId,
+          actor.humanId,
+          "workspace_not_found",
+        );
+        if (membership.isOwner) {
+          const [owners] = await tx
+            .select({ count: sql<number>`count(*)::int` })
+            .from(workspaceMemberships)
+            .where(
+              and(
+                eq(workspaceMemberships.workspaceId, workspaceId),
+                eq(workspaceMemberships.isOwner, true),
+              ),
+            );
+          if ((owners?.count ?? 0) <= 1) throw new WorkspacesError("last_owner");
+        }
+
+        await tx
+          .delete(workspaceMemberships)
+          .where(
+            and(
+              eq(workspaceMemberships.workspaceId, workspaceId),
+              eq(workspaceMemberships.humanId, actor.humanId),
+            ),
+          );
+        await revokeMemberProjectAccess(tx, workspaceId, actor.humanId, actor.humanId);
+        await revokeMemberWorkspaceKeys(tx, workspaceId, actor.humanId, actor.humanId);
+        await releaseMemberWorkSessions(tx, workspaceId, actor.humanId);
+        await recordEvent(
+          tx,
+          membership.isOwner ? "owner_left" : "member_left",
+          workspaceId,
+          actor.humanId,
+          actor.humanId,
         );
       });
     },
