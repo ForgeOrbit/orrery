@@ -387,7 +387,9 @@ type Fixture = {
   issueId: string;
 };
 
-async function fixtureWithClaim(workspaceName = "Removal Team"): Promise<Fixture> {
+// Everything the departure tests need except the claim itself, so a claim can be raced
+// against removal from a precisely controlled starting point.
+async function fixtureSetup(workspaceName = "Removal Team"): Promise<Fixture> {
   const setup = await postJson("/api/setup/admin", {
     secret: SECRET,
     email: EMAIL,
@@ -440,12 +442,6 @@ async function fixtureWithClaim(workspaceName = "Removal Team"): Promise<Fixture
     projectId,
     { title: "Issue the departing agent claimed" },
   );
-  const runId = await newRun(identity);
-  const claim = await sessionsService.claim(
-    { kind: "agent", identity },
-    { issueId: issue.id, runId },
-  );
-  expect(claim.status).toBe("active");
   return {
     adminCookie,
     memberCookie,
@@ -459,12 +455,64 @@ async function fixtureWithClaim(workspaceName = "Removal Team"): Promise<Fixture
   };
 }
 
+async function fixtureWithClaim(workspaceName = "Removal Team"): Promise<Fixture> {
+  const f = await fixtureSetup(workspaceName);
+  const runId = await newRun(f.identity);
+  const claim = await sessionsService.claim(
+    { kind: "agent", identity: f.identity },
+    { issueId: f.issueId, runId },
+  );
+  expect(claim.status).toBe("active");
+  return f;
+}
+
 async function sessionRow(issueId: string) {
   const [row] = await database.db
     .select()
     .from(workSessions)
     .where(eq(workSessions.issueId, issueId));
   return row;
+}
+
+// Poll pg_stat_activity for a transaction already blocked on an issue row lock, so the
+// claim-vs-removal race below is a deterministic interleaving rather than a timing guess.
+async function waitForIssueLockWait(minimum = 1) {
+  await expect
+    .poll(
+      async () => {
+        const [row] = await database.sql<{ count: number }[]>`
+          select count(*)::int as count
+          from pg_stat_activity
+          where wait_event_type = 'Lock'
+            and query ilike '%issues%for update%'
+            and pid <> pg_backend_pid()
+        `;
+        return row?.count ?? 0;
+      },
+      { timeout: 5_000, interval: 25 },
+    )
+    .toBeGreaterThanOrEqual(minimum);
+}
+
+// Distinguish the two possible serializations: a removal blocked on the claim's membership
+// key-share lock (fixed) or a removal that already committed (buggy, when the claim never
+// locked the membership).
+async function waitForMembershipDeleteLockWait() {
+  await expect
+    .poll(
+      async () => {
+        const [row] = await database.sql<{ count: number }[]>`
+          select count(*)::int as count
+          from pg_stat_activity
+          where wait_event_type = 'Lock'
+            and query ilike '%delete from "workspace_memberships"%'
+            and pid <> pg_backend_pid()
+        `;
+        return row?.count ?? 0;
+      },
+      { timeout: 5_000, interval: 25 },
+    )
+    .toBeGreaterThan(0);
 }
 
 async function adminHumanId() {
@@ -556,6 +604,102 @@ describe("member removal and voluntary leave against real Postgres (#37)", () =>
       expect(ended?.status).toBe("released");
       expect(ended?.endedAt).toBeInstanceOf(Date);
     }
+  });
+
+  it("a claim racing removal cannot leave an active claim behind", async () => {
+    const f = await fixtureSetup("Claim Race Team");
+    const runId = await newRun(f.identity);
+
+    // Hold the issue row lock so the claim is parked at lockIssue before removal starts.
+    // With membership locked first, removal's DELETE waits for the claim to commit and its
+    // release pass then sees the committed session; without that lock it would miss it.
+    let releaseHolder!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseHolder = resolve;
+    });
+    let holderLocked!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      holderLocked = resolve;
+    });
+    const holding = database.db.transaction(async (tx) => {
+      await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, f.issueId)).for("update");
+      holderLocked();
+      await release;
+    });
+
+    try {
+      await locked;
+      const claim = sessionsService
+        .claim({ kind: "agent", identity: f.identity }, { issueId: f.issueId, runId })
+        .then(
+          () => "claimed",
+          (error: unknown) => (error instanceof SessionsError ? error.kind : "unexpected_error"),
+        );
+      await waitForIssueLockWait();
+      const removal = deletePath(
+        `/api/workspaces/${f.workspaceId}/members/${f.memberHumanId}`,
+        f.adminCookie,
+      );
+      // Two distinct serializations to wait for before releasing the holder:
+      // - fixed: removal is blocked at the membership DELETE by the claim's key-share lock;
+      // - buggy: removal has passed its (empty) release read and now also waits on the
+      //   issue lock, so two transactions are queued behind the held issue row.
+      // Releasing earlier lets removal see the committed claim in both variants and hides
+      // the write-skew this test must catch.
+      await Promise.race([
+        waitForIssueLockWait(2).then(() => "both-on-issue"),
+        waitForMembershipDeleteLockWait().then(() => "blocked-at-membership"),
+      ]);
+      releaseHolder();
+      const [claimResult, removalResult] = await Promise.all([claim, removal, holding]);
+      expect(removalResult.status).toBe(204);
+      expect(["claimed", "insufficient_access"]).toContain(claimResult);
+      const [row] = await database.db
+        .select()
+        .from(workSessions)
+        .where(eq(workSessions.issueId, f.issueId));
+      expect(row?.status).toBe("released");
+    } finally {
+      releaseHolder();
+      await holding.catch(() => {});
+    }
+  });
+
+  it("answers workspace_not_found when a non-member tries to leave", async () => {
+    const f = await fixtureWithClaim("Nonmember Leave Team");
+    const stranger = await createVerifiedHuman("stranger-removal@example.com");
+    const strangerCookie = await sessionFor(stranger.id);
+    const left = await postEmpty(`/api/workspaces/${f.workspaceId}/leave`, strangerCookie);
+    expect(left.status).toBe(404);
+    expect(await left.json()).toMatchObject({ status: 404, code: "workspace_not_found" });
+  });
+
+  it("records owner_left when a co-owner leaves voluntarily", async () => {
+    const f = await fixtureWithClaim("Co-owner Leave Team");
+    const appointed = await postJson(
+      `/api/workspaces/${f.workspaceId}/owners`,
+      { humanId: f.memberHumanId },
+      f.adminCookie,
+    );
+    expect(appointed.status).toBe(200);
+    expect((await postEmpty(`/api/workspaces/${f.workspaceId}/leave`, f.memberCookie)).status).toBe(
+      204,
+    );
+    const events = await database.db
+      .select()
+      .from(workspaceEvents)
+      .where(eq(workspaceEvents.workspaceId, f.workspaceId));
+    expect(events.map((event) => event.type)).toContain("owner_left");
+    const owners = await database.db
+      .select()
+      .from(workspaceMemberships)
+      .where(
+        and(
+          eq(workspaceMemberships.workspaceId, f.workspaceId),
+          eq(workspaceMemberships.isOwner, true),
+        ),
+      );
+    expect(owners).toHaveLength(1);
   });
 
   it("lets a member leave voluntarily, but blocks the last owner and a personal workspace", async () => {

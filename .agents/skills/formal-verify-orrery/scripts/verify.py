@@ -1030,15 +1030,36 @@ def extract_code_facts() -> dict[str, Any]:
     ws_rest_src = read_text("apps/server/src/features/workspaces/rest.ts")
     ws_registry_src = read_text("apps/server/src/features/index.ts")
     mig_0023 = read_text("db/migrations/0023_wealthy_silvermane.sql")
+    # Both departure paths call one private tail, so the cleanup facts are read from that
+    # helper and the two call sites are checked separately.
+    end_membership_fn = slice_between(ws_src, "async function endMembership(", "\n  }\n\n  return {")
     remove_member_fn = slice_between(ws_src, "async removeMember(", "async leaveWorkspace(")
     leave_fn = slice_between(ws_src, "async leaveWorkspace(", "  };\n}")
     release_fn = slice_between(sess_src, "export async function releaseMemberWorkSessions(", "\n}\n")
     require_access_fn = slice_between(sess_src, "function requireAccessArgs(", "export function createSessionsService(")
+    lock_access_fn = slice_between(sess_src, "async function lockAgentWorkspaceAccess(", "// Workspace removal/leave ends")
     workspace_event_types = slice_between(schema_src, "export const workspaceEventTypes = [", "] as const;")
 
-    m18_release_in_remove = "releaseMemberWorkSessions(tx, workspaceId, humanId)" in remove_member_fn
-    m18_release_in_leave = "releaseMemberWorkSessions(tx, workspaceId, actor.humanId)" in leave_fn
+    m18_release_in_remove = (
+        "endMembership(" in remove_member_fn
+        and "releaseMemberWorkSessions(tx, workspaceId, humanId)" in end_membership_fn
+    )
+    m18_release_in_leave = (
+        "endMembership(" in leave_fn
+        and "releaseMemberWorkSessions(tx, workspaceId, humanId)" in end_membership_fn
+    )
     m18_active_only = "eq(workSessions.status, WorkSessionStatus.enum.active)" in release_fn
+    m18_release_status_guard = ordered(
+        release_fn,
+        ".update(workSessions)",
+        "eq(workSessions.status, WorkSessionStatus.enum.active)",
+    )
+    m18_membership_lock = (
+        '.for("key share")' in lock_access_fn
+        and 'throw new SessionsError("insufficient_access")' in lock_access_fn
+        and ordered(claim_fn, "lockAgentWorkspaceAccess(tx, identity)", "lockIssue(tx")
+        and ordered(live_fn, "lockAgentWorkspaceAccess(tx, identity)", "lockIssue(tx")
+    )
     m18_issue_lock_order = (
         ordered(
             release_fn,
@@ -1053,12 +1074,14 @@ def extract_code_facts() -> dict[str, Any]:
     m18_recheck_membership = "humanStillHasWorkspaceAccess(tx, project.workspaceId, humanId)" in require_access_fn
     m18_personal_scope = "workspace.personalOwnerHumanId === humanId" in sess_src
     m18_revoke_keys = (
-        "revokeMemberWorkspaceKeys(tx, workspaceId, humanId, actor.humanId)" in remove_member_fn
-        and "revokeMemberWorkspaceKeys(tx, workspaceId, actor.humanId, actor.humanId)" in leave_fn
+        "revokeMemberWorkspaceKeys(tx, workspaceId, humanId, actorHumanId)" in end_membership_fn
+        and "endMembership(" in remove_member_fn
+        and "endMembership(" in leave_fn
     )
     m18_revoke_grants = (
-        "revokeMemberProjectAccess(tx, workspaceId, humanId, actor.humanId)" in remove_member_fn
-        and "revokeMemberProjectAccess(tx, workspaceId, actor.humanId, actor.humanId)" in leave_fn
+        "revokeMemberProjectAccess(tx, workspaceId, humanId, actorHumanId)" in end_membership_fn
+        and "endMembership(" in remove_member_fn
+        and "endMembership(" in leave_fn
     )
     m18_last_owner_leave = 'throw new WorkspacesError("last_owner")' in leave_fn
     m18_personal_not_leavable = "lockWorkspaceForMutation(tx, workspaceId)" in leave_fn
@@ -1072,8 +1095,8 @@ def extract_code_facts() -> dict[str, Any]:
     )
     m18_single_tx = "db.transaction(" in remove_member_fn and "db.transaction(" in leave_fn
     m18_attribution_kept = (
-        "delete(workspaceMemberships)" in leave_fn
-        and leave_fn.count(".delete(") == 1
+        "delete(workspaceMemberships)" in end_membership_fn
+        and end_membership_fn.count(".delete(") == 1
     )
     m18_leave_route = (
         'path: "/api/workspaces/{workspaceId}/leave"' in ws_rest_src
@@ -1228,6 +1251,8 @@ def extract_code_facts() -> dict[str, Any]:
         "m18_release_in_remove": m18_release_in_remove,
         "m18_release_in_leave": m18_release_in_leave,
         "m18_active_only": m18_active_only,
+        "m18_release_status_guard": m18_release_status_guard,
+        "m18_membership_lock": m18_membership_lock,
         "m18_issue_lock_order": m18_issue_lock_order,
         "m18_no_nested_tx": m18_no_nested_tx,
         "m18_recheck_membership": m18_recheck_membership,
@@ -2864,6 +2889,8 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
         "m18_issue_lock_order",
         "m18_no_nested_tx",
         "m18_active_only",
+        "m18_release_status_guard",
+        "m18_membership_lock",
         "m18_personal_scope",
         "m18_single_tx",
         "m18_leave_route",

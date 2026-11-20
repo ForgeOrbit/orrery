@@ -182,6 +182,34 @@ async function humanStillHasWorkspaceAccess(
   return membership !== undefined;
 }
 
+// Take the agent's human's membership lock BEFORE any issue lock. Removal deletes the
+// membership before it locks issues to release claims, so one shared lock order
+// (workspace_memberships -> issues) makes the two write paths serialize in either order
+// instead of writing skewed: if the DELETE wins, this key-share read sees no row; if this
+// lock wins, the DELETE waits until the claim/renewal commits and removal's release pass
+// then sees the newly committed claim. Personal workspaces have no membership row; their
+// single owner is checked directly and cannot be removed.
+async function lockAgentWorkspaceAccess(tx: DbTransaction, identity: AgentIdentity): Promise<void> {
+  const [workspace] = await tx
+    .select({ personalOwnerHumanId: workspaces.personalOwnerHumanId })
+    .from(workspaces)
+    .where(eq(workspaces.id, identity.workspaceId))
+    .limit(1);
+  if (workspace === undefined) throw new SessionsError("insufficient_access");
+  if (workspace.personalOwnerHumanId === identity.humanId) return;
+  const [membership] = await tx
+    .select({ id: workspaceMemberships.id })
+    .from(workspaceMemberships)
+    .where(
+      and(
+        eq(workspaceMemberships.workspaceId, identity.workspaceId),
+        eq(workspaceMemberships.humanId, identity.humanId),
+      ),
+    )
+    .for("key share");
+  if (membership === undefined) throw new SessionsError("insufficient_access");
+}
+
 // Workspace removal/leave ends every active claim held by the departing human's agents in
 // that workspace, in the *removing* transaction. It never touches their personal work,
 // their other memberships, or the issue comments and agent attribution already recorded.
@@ -225,9 +253,14 @@ export async function releaseMemberWorkSessions(
       updatedAt: sql`statement_timestamp()`,
     })
     .where(
-      inArray(
-        workSessions.id,
-        claims.map((claim) => claim.id),
+      and(
+        // A claim that legitimately completed or expired after the read above must not be
+        // overwritten to "released"; only the still-active ones are ended by a departure.
+        eq(workSessions.status, WorkSessionStatus.enum.active),
+        inArray(
+          workSessions.id,
+          claims.map((claim) => claim.id),
+        ),
       ),
     );
 }
@@ -357,6 +390,8 @@ export function createSessionsService({
     const identity = requireAgent(actor);
     await expireCommitted(issueId);
     return db.transaction(async (tx) => {
+      // Membership first, issue second: see lockAgentWorkspaceAccess for the lock order.
+      await lockAgentWorkspaceAccess(tx, identity);
       const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
       const issue = await lockIssue(tx, issueId);
       await expireStale(tx, issue.id);
@@ -391,6 +426,9 @@ export function createSessionsService({
       const identity = requireAgent(actor);
       await expireCommitted(input.issueId);
       return db.transaction(async (tx) => {
+        // Membership first, issue second: a removal deleting this membership waits for
+        // the claim to commit, then releases it instead of missing the uncommitted row.
+        await lockAgentWorkspaceAccess(tx, identity);
         const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
         const issue = await lockIssue(tx, input.issueId);
         await expireStale(tx, issue.id);

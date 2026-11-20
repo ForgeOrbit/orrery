@@ -840,6 +840,36 @@ export function createWorkspacesService({
   applyInvitationGrants,
   log,
 }: WorkspacesDeps): WorkspacesService {
+  // The one departure tail shared by a removal and a voluntary leave. Both delete the
+  // membership first (the row a claim's key-share lock waits on), then revoke in this same
+  // transaction and release claims under the issue locks. Only the actor and the audit
+  // event differ, so the two paths cannot drift apart.
+  async function endMembership(
+    tx: DbTransaction,
+    workspaceId: string,
+    humanId: string,
+    actorHumanId: string,
+    event: WorkspaceEventType,
+  ) {
+    await tx
+      .delete(workspaceMemberships)
+      .where(
+        and(
+          eq(workspaceMemberships.workspaceId, workspaceId),
+          eq(workspaceMemberships.humanId, humanId),
+        ),
+      );
+    // Project grants die with the membership, in this transaction, so a rejoin starts
+    // fresh and cannot revive an old level. So do the human's API keys in this workspace:
+    // without this, a pre-removal key would authenticate again the moment a re-invitation
+    // restored the membership. The release helper locks affected issues in id order before
+    // touching sessions, so a racing claim or renewal cannot keep a claim.
+    await revokeMemberProjectAccess(tx, workspaceId, humanId, actorHumanId);
+    await revokeMemberWorkspaceKeys(tx, workspaceId, humanId, actorHumanId);
+    await releaseMemberWorkSessions(tx, workspaceId, humanId);
+    await recordEvent(tx, event, workspaceId, actorHumanId, humanId);
+  }
+
   return {
     // Access is what the caller holds, not what exists: their personal workspace plus the
     // shared workspaces they belong to. Another person's workspace never appears.
@@ -1693,31 +1723,12 @@ export function createWorkspacesService({
           if ((owners?.count ?? 0) <= 1) throw new WorkspacesError("last_owner");
         }
 
-        await tx
-          .delete(workspaceMemberships)
-          .where(
-            and(
-              eq(workspaceMemberships.workspaceId, workspaceId),
-              eq(workspaceMemberships.humanId, humanId),
-            ),
-          );
-        // Project grants die with the membership, in this transaction, so a rejoin
-        // starts fresh and cannot revive an old level. So do the human's API keys in
-        // this workspace: without this, a pre-removal key would authenticate again the
-        // moment a re-invitation restored the membership.
-        await revokeMemberProjectAccess(tx, workspaceId, humanId, actor.humanId);
-        await revokeMemberWorkspaceKeys(tx, workspaceId, humanId, actor.humanId);
-        // End the departing human's active claims in this workspace inside the same
-        // transaction, after the ownership guard and project-grant writes above. The
-        // release helper locks the affected issues in id order before touching sessions,
-        // so a renewal racing this removal cannot keep the claim or deadlock with it.
-        await releaseMemberWorkSessions(tx, workspaceId, humanId);
-        await recordEvent(
+        await endMembership(
           tx,
-          target.isOwner ? "owner_removed" : "member_removed",
           workspaceId,
-          actor.humanId,
           humanId,
+          actor.humanId,
+          target.isOwner ? "owner_removed" : "member_removed",
         );
       });
     },
@@ -1752,23 +1763,12 @@ export function createWorkspacesService({
           if ((owners?.count ?? 0) <= 1) throw new WorkspacesError("last_owner");
         }
 
-        await tx
-          .delete(workspaceMemberships)
-          .where(
-            and(
-              eq(workspaceMemberships.workspaceId, workspaceId),
-              eq(workspaceMemberships.humanId, actor.humanId),
-            ),
-          );
-        await revokeMemberProjectAccess(tx, workspaceId, actor.humanId, actor.humanId);
-        await revokeMemberWorkspaceKeys(tx, workspaceId, actor.humanId, actor.humanId);
-        await releaseMemberWorkSessions(tx, workspaceId, actor.humanId);
-        await recordEvent(
+        await endMembership(
           tx,
-          membership.isOwner ? "owner_left" : "member_left",
           workspaceId,
           actor.humanId,
           actor.humanId,
+          membership.isOwner ? "owner_left" : "member_left",
         );
       });
     },
