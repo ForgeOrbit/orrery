@@ -1476,6 +1476,117 @@
         "type": "string",
         "maxLength": 100000
       },
+      "IssueDetail": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/IssueStatus"
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "closedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "createdBy": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "updatedBy": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "links": {
+            "$ref": "#/components/schemas/IssueLinksResponse"
+          }
+        },
+        "required": [
+          "id",
+          "projectId",
+          "number",
+          "title",
+          "body",
+          "status",
+          "createdAt",
+          "updatedAt",
+          "closedAt",
+          "createdBy",
+          "updatedBy",
+          "links"
+        ]
+      },
+      "IssueLinksResponse": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/IssueLink"
+        }
+      },
+      "IssueLink": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "issueId": {
+            "type": "string"
+          },
+          "url": {
+            "$ref": "#/components/schemas/IssueLinkUrl"
+          },
+          "title": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/IssueLinkKind"
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "createdBy": {
+            "$ref": "#/components/schemas/Actor"
+          }
+        },
+        "required": [
+          "id",
+          "issueId",
+          "url",
+          "title",
+          "kind",
+          "createdAt",
+          "createdBy"
+        ]
+      },
+      "IssueLinkUrl": {
+        "type": "string",
+        "maxLength": 2048,
+        "format": "uri"
+      },
+      "IssueLinkKind": {
+        "type": "string",
+        "enum": [
+          "pr",
+          "commit",
+          "doc",
+          "link"
+        ]
+      },
       "UpdateIssueRequest": {
         "type": "object",
         "properties": {
@@ -1536,6 +1647,27 @@
         },
         "required": [
           "body"
+        ]
+      },
+      "CreateIssueLinkRequest": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "$ref": "#/components/schemas/IssueLinkUrl"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "kind": {
+            "$ref": "#/components/schemas/IssueLinkKind"
+          }
+        },
+        "required": [
+          "url",
+          "title",
+          "kind"
         ]
       },
       "ProjectActivityResponse": {
@@ -1599,6 +1731,8 @@
           "issue_commented",
           "issue_closed",
           "issue_reopened",
+          "issue_link_added",
+          "issue_link_removed",
           "issue_question_asked",
           "issue_question_answered",
           "issue_question_paused",
@@ -6011,7 +6145,7 @@
     "/api/issues/{issueId}": {
       "get": {
         "summary": "One issue the caller can access",
-        "description": "The issue's title, Markdown body, status, and authorship.A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
+        "description": "The issue's title, Markdown body, status, authorship, and structured links (each with its kind). A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
         "parameters": [
           {
             "schema": {
@@ -6026,11 +6160,11 @@
         ],
         "responses": {
           "200": {
-            "description": "The issue",
+            "description": "The issue with its links",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Issue"
+                  "$ref": "#/components/schemas/IssueDetail"
                 }
               }
             }
@@ -6283,6 +6417,169 @@
           },
           "404": {
             "description": "No issue with this id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/{issueId}/links": {
+      "post": {
+        "summary": "Attach a structured link to an issue",
+        "description": "Contribute or Manage. Attaches an http or https URL classified as a PR, commit, doc, or general link. The same URL cannot be attached twice to one issue. Like a comment, a link needs no work session, and it is recorded in the project's activity. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "issueId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateIssueLinkRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The link, attached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueLink"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid, or the URL scheme is not http or https",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read access cannot attach a link",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No issue with this id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This URL is already attached to the issue",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/{issueId}/links/{linkId}": {
+      "delete": {
+        "summary": "Remove a structured link from an issue",
+        "description": "Contribute or Manage. Removes one link by id from an issue and records the removal in the project's activity. Removing a link that is not attached is a 404, not a silent no-op. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "issueId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "linkId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The link was removed"
+          },
+          "400": {
+            "description": "The issue or link id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read access cannot remove a link",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No issue or link with this id is accessible to the caller",
             "content": {
               "application/problem+json": {
                 "schema": {

@@ -1,10 +1,13 @@
 import { z } from "zod";
 import {
   CreateIssueCommentRequest,
+  CreateIssueLinkRequest,
   CreateIssueRequest,
   CreateKnowledgeEntryRequest,
   Issue,
   IssueComment,
+  IssueDetail,
+  IssueLink,
   IssuesResponse,
   IssueCommentsResponse,
   KnowledgeEntriesResponse,
@@ -73,9 +76,10 @@ const listIssues = {
 
 const getIssue = {
   name: "get_issue",
-  description: "Read one issue in an in-scope project.",
+  description:
+    "Read one issue in an in-scope project. The issue includes its structured links (PRs, commits, docs and other web URLs) with each link's kind.",
   input: z.object({ issueId: id("The issue id") }),
-  output: z.object({ issue: Issue }),
+  output: z.object({ issue: IssueDetail }),
 };
 
 const createIssue = {
@@ -106,6 +110,24 @@ const createComment = {
   description: "Comment on an in-scope issue. Requires Contribute access.",
   input: CreateIssueCommentRequest.extend({ issueId: id("The issue id") }),
   output: z.object({ comment: IssueComment }),
+};
+
+// Structured issue links (#87). Adding or removing one requires Contribute access; reading
+// them is part of get_issue and needs only Read. Like comments, a link needs no work session.
+const addIssueLink = {
+  name: "add_issue_link",
+  description:
+    "Attach a PR, commit, external doc, or other web URL to an in-scope issue. Requires Contribute access. Only http and https URLs are accepted, and the same URL cannot be attached twice to one issue. The actor recorded is the agent, not its human owner.",
+  input: CreateIssueLinkRequest.extend({ issueId: id("The issue id") }),
+  output: z.object({ link: IssueLink }),
+};
+
+const removeIssueLink = {
+  name: "remove_issue_link",
+  description:
+    "Remove a previously attached link from an in-scope issue. Requires Contribute access. Removing a link that is not attached is an error, not a silent no-op.",
+  input: z.object({ issueId: id("The issue id"), linkId: id("The link id") }),
+  output: z.object({ removed: z.boolean() }),
 };
 
 const listActivity = {
@@ -267,6 +289,8 @@ export const projectTools: readonly ToolContract[] = [
   updateIssue,
   listComments,
   createComment,
+  addIssueLink,
+  removeIssueLink,
   listActivity,
   listKnowledge,
   getKnowledge,

@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import { projectTools } from "@orrery/contract";
+import { IssueLinkKind, projectTools } from "@orrery/contract";
 import { isAgentError, type AgentAuthenticator } from "../agents/index.ts";
 import { ProjectsError, type ProjectsService, type WorkActor } from "./service.ts";
 
@@ -52,6 +52,21 @@ export function createProjectsMcp(service: ProjectsService, authenticate: AgentA
         body: str(args.body, "body"),
       }),
     }),
+    add_issue_link: async (actor, args) => ({
+      link: await service.addIssueLink(actor, str(args.issueId, "issueId"), {
+        url: str(args.url, "url"),
+        title: str(args.title, "title"),
+        kind: IssueLinkKind.parse(args.kind),
+      }),
+    }),
+    remove_issue_link: async (actor, args) => {
+      await service.removeIssueLink(
+        actor,
+        str(args.issueId, "issueId"),
+        str(args.linkId, "linkId"),
+      );
+      return { removed: true };
+    },
     list_activity: async (actor, args) => ({
       activity: await service.listActivity(actor, str(args.projectId, "projectId")),
     }),

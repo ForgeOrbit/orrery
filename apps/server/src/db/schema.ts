@@ -3,6 +3,7 @@ import {
   AgentKeyValidity,
   InvitationDelivery,
   InvitationStatus,
+  IssueLinkKind,
   IssueStatus,
   ProjectAccessEventType,
   ProjectAccessLevel,
@@ -873,6 +874,38 @@ export const issueComments = pgTable(
       sql`(${t.createdByHumanId} is not null) <> (${t.createdByAgentId} is not null)`,
     ),
     index("issue_comments_issue_created").on(t.issueId, t.createdAt),
+  ],
+);
+
+// A structured external link attached to an issue (#87). The kind classifies the artifact
+// so agents and humans can attach PRs and commits without burying URLs in Markdown. The
+// author is one identity, human or agent, kept after either leaves. Like every data rule,
+// the URL scheme and the (issue, url) uniqueness are enforced here too, not only in the
+// contract, so no writer can store an unsafe or duplicated link.
+export const issueLinks = pgTable(
+  "issue_links",
+  {
+    id: text("id").primaryKey(),
+    issueId: text("issue_id")
+      .notNull()
+      .references(() => issues.id),
+    url: text("url").notNull(),
+    title: text("title").notNull(),
+    kind: text("kind").$type<IssueLinkKind>().notNull(),
+    createdByHumanId: text("created_by_human_id").references(() => humans.id),
+    createdByAgentId: text("created_by_agent_id").references(() => agents.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "issue_links_created_by_actor",
+      sql`(${t.createdByHumanId} is not null) <> (${t.createdByAgentId} is not null)`,
+    ),
+    check("issue_links_kind", sql`${t.kind} in (${sql.raw(sqlLiteralList(IssueLinkKind))})`),
+    // DDL binds no parameters; the pattern is a fixed literal, never input.
+    check("issue_links_url_http_s", sql`${t.url} ~* '^https?://'`),
+    uniqueIndex("one_link_per_issue_and_url").on(t.issueId, t.url),
+    index("issue_links_issue_created").on(t.issueId, t.createdAt),
   ],
 );
 

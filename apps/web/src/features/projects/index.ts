@@ -1,10 +1,12 @@
 // Public interface of the projects feature in the web app. Routes and other features
 // import only this file.
 export {
+  addIssueLink,
   createIssue,
   createIssueComment,
   createKnowledgeEntry,
   createProject,
+  removeIssueLink,
   removeProjectAccess,
   setProjectAccess,
   updateIssue,

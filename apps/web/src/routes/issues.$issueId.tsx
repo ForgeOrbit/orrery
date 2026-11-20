@@ -1,15 +1,17 @@
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import type { Issue } from "@orrery/contract";
+import { type Issue, type IssueDetail, IssueLinkKind } from "@orrery/contract";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import {
+  addIssueLink,
   createIssueComment,
   issueCommentsQuery,
   issueQuery,
   issuesQuery,
   projectActivityQuery,
   projectQuery,
+  removeIssueLink,
   ResourceLoadError,
   TitleBodyForm,
   updateIssue,
@@ -64,6 +66,33 @@ function IssuePage() {
       )}
 
       <section>
+        <h2>Links</h2>
+        {issue.links.length === 0 ? (
+          <p>No links attached.</p>
+        ) : (
+          <ul>
+            {issue.links.map((link) => (
+              <li key={link.id} data-link-id={link.id}>
+                <span data-link-kind={link.kind}>{link.kind}</span>{" "}
+                <a href={link.url} target="_blank" rel="noopener noreferrer">
+                  {link.title}
+                </a>{" "}
+                — added by {link.createdBy.displayName}
+                {canContribute && (
+                  <LinkRemoveButton
+                    issueId={issue.id}
+                    projectId={issue.projectId}
+                    linkId={link.id}
+                  />
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+        {canContribute && <LinkForm issueId={issue.id} projectId={issue.projectId} />}
+      </section>
+
+      <section>
         <h2>Comments</h2>
         {comments.length === 0 ? (
           <p>No comments yet.</p>
@@ -99,7 +128,10 @@ function IssueStatusButton({ issue }: { issue: Issue }) {
     setError(undefined);
     try {
       const updated = await updateIssue(issue.id, { status: next });
-      queryClient.setQueryData(issueQuery(issue.id).queryKey, updated);
+      // The detail also carries links, which this response does not touch: merge into it.
+      queryClient.setQueryData<IssueDetail>(issueQuery(issue.id).queryKey, (old) =>
+        old === undefined ? old : { ...old, ...updated },
+      );
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: issuesQuery(issue.projectId).queryKey }),
         queryClient.invalidateQueries({ queryKey: projectActivityQuery(issue.projectId).queryKey }),
@@ -140,7 +172,9 @@ function EditIssueForm({ issue }: { issue: Issue }) {
         initialBody={issue.body}
         onSubmit={async ({ title, body }) => {
           const updated = await updateIssue(issue.id, { title, body });
-          queryClient.setQueryData(issueQuery(issue.id).queryKey, updated);
+          queryClient.setQueryData<IssueDetail>(issueQuery(issue.id).queryKey, (old) =>
+            old === undefined ? old : { ...old, ...updated },
+          );
           await Promise.all([
             queryClient.invalidateQueries({ queryKey: issuesQuery(issue.projectId).queryKey }),
             queryClient.invalidateQueries({
@@ -193,5 +227,114 @@ function CommentForm({ issueId, projectId }: { issueId: string; projectId: strin
         Add comment
       </button>
     </form>
+  );
+}
+
+// Links are part of the issue detail, so a change refreshes that query and the activity
+// feed rather than a separate links cache.
+function LinkForm({ issueId, projectId }: { issueId: string; projectId: string }) {
+  const queryClient = useQueryClient();
+  const [url, setUrl] = useState("");
+  const [title, setTitle] = useState("");
+  const [kind, setKind] = useState<IssueLinkKind>("link");
+  const [error, setError] = useState<string>();
+  const [submitting, setSubmitting] = useState(false);
+
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSubmitting(true);
+    setError(undefined);
+    try {
+      await addIssueLink(issueId, { url, title, kind });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: issueQuery(issueId).queryKey }),
+        queryClient.invalidateQueries({ queryKey: projectActivityQuery(projectId).queryKey }),
+      ]);
+      setUrl("");
+      setTitle("");
+      setKind("link");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not add the link.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <form onSubmit={(event) => void onSubmit(event)}>
+      <label htmlFor="issue-link-url">URL</label>
+      <input
+        id="issue-link-url"
+        name="url"
+        type="url"
+        value={url}
+        onChange={(event) => setUrl(event.target.value)}
+        placeholder="https://…"
+        required
+      />
+      <label htmlFor="issue-link-title">Title</label>
+      <input
+        id="issue-link-title"
+        name="title"
+        value={title}
+        onChange={(event) => setTitle(event.target.value)}
+        required
+      />
+      <label htmlFor="issue-link-kind">Kind</label>
+      <select
+        id="issue-link-kind"
+        name="kind"
+        value={kind}
+        onChange={(event) => setKind(IssueLinkKind.parse(event.target.value))}
+      >
+        <option value="pr">PR</option>
+        <option value="commit">Commit</option>
+        <option value="doc">Doc</option>
+        <option value="link">Link</option>
+      </select>
+      {error !== undefined && <p role="alert">{error}</p>}
+      <button type="submit" disabled={submitting}>
+        Add link
+      </button>
+    </form>
+  );
+}
+
+function LinkRemoveButton({
+  issueId,
+  projectId,
+  linkId,
+}: {
+  issueId: string;
+  projectId: string;
+  linkId: string;
+}) {
+  const queryClient = useQueryClient();
+  const [error, setError] = useState<string>();
+  const [submitting, setSubmitting] = useState(false);
+
+  async function onRemove() {
+    setSubmitting(true);
+    setError(undefined);
+    try {
+      await removeIssueLink(issueId, linkId);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: issueQuery(issueId).queryKey }),
+        queryClient.invalidateQueries({ queryKey: projectActivityQuery(projectId).queryKey }),
+      ]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not remove the link.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <>
+      <button type="button" onClick={() => void onRemove()} disabled={submitting}>
+        Remove
+      </button>
+      {error !== undefined && <span role="alert">{error}</span>}
+    </>
   );
 }

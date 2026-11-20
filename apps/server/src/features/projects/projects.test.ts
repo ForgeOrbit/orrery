@@ -4,6 +4,8 @@ import {
   Issue,
   IssueComment,
   IssueCommentsResponse,
+  IssueDetail,
+  IssueLink,
   IssuesResponse,
   KnowledgeEntriesResponse,
   KnowledgeEntry,
@@ -61,7 +63,16 @@ const patchJson = async (app: Hono, path: string, body: unknown, cookie?: string
 const getJson = async (app: Hono, path: string, cookie?: string) =>
   app.request(path, cookie ? { headers: { cookie } } : undefined);
 
+const deleteRequest = (app: Hono, path: string, cookie?: string) =>
+  app.request(path, { method: "DELETE", ...(cookie ? { headers: { cookie } } : {}) });
+
 const problemBody = async (res: Response) => Problem.parse(await res.json());
+
+async function expectProblem(res: Response, status: number, code: string) {
+  expect(res.status).toBe(status);
+  expect(res.headers.get("content-type")).toBe("application/problem+json");
+  expect(await problemBody(res)).toMatchObject({ status, code });
+}
 
 async function bootstrapAdmin(app: Hono) {
   const res = await postJson(app, "/api/setup/admin", {
@@ -164,6 +175,7 @@ describe("projects", () => {
   afterEach(async () => {
     await database.db.transaction(async (tx) => {
       await tx.execute(sql`delete from project_activity`);
+      await tx.execute(sql`delete from issue_links`);
       await tx.execute(sql`delete from issue_comments`);
       await tx.execute(sql`delete from knowledge_entries`);
       await tx.execute(sql`delete from issues`);
@@ -728,5 +740,86 @@ describe("projects", () => {
     const activity = await activityFor(app, adminCookie, project.id);
     expect(activity.filter((entry) => entry.type === "issue_closed")).toHaveLength(1);
     expect(activity.filter((entry) => entry.type === "issue_edited")).toHaveLength(1);
+  });
+
+  it("persists structured links with web-only validation, uniqueness, and activity", async () => {
+    const { app, admin, adminCookie, workspaceId } = await readyApp();
+    const project = await createProject(app, adminCookie, workspaceId, "Linked");
+    const issue = await createIssue(app, adminCookie, project.id, { title: "With links" });
+
+    const detail = async () => {
+      const res = await getJson(app, `/api/issues/${issue.id}`, adminCookie);
+      expect(res.status).toBe(200);
+      return IssueDetail.parse(await res.json());
+    };
+    expect((await detail()).links).toEqual([]);
+
+    const prUrl = "https://github.com/forge-orbit/orrery/pull/87";
+    const added = await postJson(
+      app,
+      `/api/issues/${issue.id}/links`,
+      { url: prUrl, title: "Structured links PR", kind: "pr" },
+      adminCookie,
+    );
+    expect(added.status).toBe(201);
+    const link = IssueLink.parse(await added.json());
+    expect(link).toMatchObject({
+      issueId: issue.id,
+      url: prUrl,
+      title: "Structured links PR",
+      kind: "pr",
+      createdBy: { humanId: admin.id, email: EMAIL },
+    });
+
+    const doc = await postJson(
+      app,
+      `/api/issues/${issue.id}/links`,
+      { url: "http://docs.example.com/design", title: "Design note", kind: "doc" },
+      adminCookie,
+    );
+    expect(doc.status).toBe(201);
+    expect((await detail()).links.map((entry) => entry.kind)).toEqual(["pr", "doc"]);
+
+    // The same URL twice on one issue is a clean conflict from the unique index.
+    const duplicate = await postJson(
+      app,
+      `/api/issues/${issue.id}/links`,
+      { url: prUrl, title: "Again", kind: "link" },
+      adminCookie,
+    );
+    await expectProblem(duplicate, 409, "issue_link_exists");
+
+    // Non-web schemes are refused by the shared contract before any write.
+    for (const scheme of ["javascript:alert(1)", "file:///etc/passwd"]) {
+      const rejected = await postJson(
+        app,
+        `/api/issues/${issue.id}/links`,
+        { url: scheme, title: "Unsafe", kind: "link" },
+        adminCookie,
+      );
+      await expectProblem(rejected, 400, "validation_failed");
+    }
+    expect((await detail()).links).toHaveLength(2);
+
+    const activity = await activityFor(app, adminCookie, project.id);
+    expect(activity.filter((entry) => entry.type === "issue_link_added")).toHaveLength(2);
+
+    const removed = await deleteRequest(
+      app,
+      `/api/issues/${issue.id}/links/${link.id}`,
+      adminCookie,
+    );
+    expect(removed.status).toBe(204);
+    expect((await detail()).links).toHaveLength(1);
+
+    const removedAgain = await deleteRequest(
+      app,
+      `/api/issues/${issue.id}/links/${link.id}`,
+      adminCookie,
+    );
+    await expectProblem(removedAgain, 404, "issue_link_not_found");
+
+    const afterRemoval = await activityFor(app, adminCookie, project.id);
+    expect(afterRemoval.filter((entry) => entry.type === "issue_link_removed")).toHaveLength(1);
   });
 });

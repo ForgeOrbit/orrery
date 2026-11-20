@@ -7,11 +7,15 @@ import {
   type Actor,
   type AgentIdentity,
   type CreateIssueCommentRequest,
+  type CreateIssueLinkRequest,
   type CreateIssueRequest,
   type CreateKnowledgeEntryRequest,
   type CreateProjectRequest,
   type Issue,
   type IssueComment,
+  type IssueDetail,
+  type IssueLink,
+  IssueLinkKind,
   type KnowledgeEntry,
   type Project,
   type ProjectAccessGrant,
@@ -26,10 +30,12 @@ import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
+import { uniqueConstraintName } from "../../platform/errors.ts";
 import {
   agents,
   humans,
   issueComments,
+  issueLinks,
   issues,
   knowledgeEntries,
   projectAccessEvents,
@@ -53,6 +59,8 @@ export type ProjectsErrorKind =
   | "workspace_not_found"
   | "project_not_found"
   | "issue_not_found"
+  | "issue_link_not_found"
+  | "issue_link_exists"
   | "knowledge_entry_not_found"
   | "project_creation_not_allowed"
   | "insufficient_project_access"
@@ -66,6 +74,8 @@ const messages = {
   workspace_not_found: "This workspace does not exist.",
   project_not_found: "This project does not exist.",
   issue_not_found: "This issue does not exist.",
+  issue_link_not_found: "This link does not exist on the issue.",
+  issue_link_exists: "This URL is already attached to the issue.",
   knowledge_entry_not_found: "This knowledge entry does not exist.",
   project_creation_not_allowed: "You do not have Create projects in this workspace.",
   insufficient_project_access: "This project access level cannot do that.",
@@ -308,6 +318,7 @@ const projectCreator = alias(humans, "project_creator");
 const issueCreator = alias(humans, "issue_creator");
 const issueEditor = alias(humans, "issue_editor");
 const commentAuthor = alias(humans, "comment_author");
+const linkCreator = alias(humans, "link_creator");
 const knowledgeCreator = alias(humans, "knowledge_creator");
 const knowledgeEditor = alias(humans, "knowledge_editor");
 const activityActor = alias(humans, "activity_actor");
@@ -317,6 +328,7 @@ const accessGrantor = alias(humans, "access_grantor");
 const issueAgentCreator = alias(agents, "issue_agent_creator");
 const issueAgentEditor = alias(agents, "issue_agent_editor");
 const commentAgentAuthor = alias(agents, "comment_agent_author");
+const linkAgentCreator = alias(agents, "link_agent_creator");
 const knowledgeAgentCreator = alias(agents, "knowledge_agent_creator");
 const knowledgeAgentEditor = alias(agents, "knowledge_agent_editor");
 const activityAgentActor = alias(agents, "activity_agent_actor");
@@ -363,6 +375,20 @@ const commentColumns = {
   authorDeactivatedAt: commentAuthor.deactivatedAt,
   authorAgentId: issueComments.createdByAgentId,
   authorAgentName: commentAgentAuthor.name,
+};
+
+const linkColumns = {
+  id: issueLinks.id,
+  issueId: issueLinks.issueId,
+  url: issueLinks.url,
+  title: issueLinks.title,
+  kind: issueLinks.kind,
+  createdAt: issueLinks.createdAt,
+  createdByHumanId: issueLinks.createdByHumanId,
+  createdByEmail: linkCreator.email,
+  createdByDeactivatedAt: linkCreator.deactivatedAt,
+  createdByAgentId: issueLinks.createdByAgentId,
+  createdByAgentName: linkAgentCreator.name,
 };
 
 const knowledgeColumns = {
@@ -454,6 +480,20 @@ type CommentRow = {
   authorDeactivatedAt: Date | null;
   authorAgentId: string | null;
   authorAgentName: string | null;
+};
+
+type LinkRow = {
+  id: string;
+  issueId: string;
+  url: string;
+  title: string;
+  kind: IssueLinkKind;
+  createdAt: Date;
+  createdByHumanId: string | null;
+  createdByEmail: string | null;
+  createdByDeactivatedAt: Date | null;
+  createdByAgentId: string | null;
+  createdByAgentName: string | null;
 };
 
 type KnowledgeRow = {
@@ -567,6 +607,37 @@ function toComment(row: CommentRow): IssueComment {
       row.authorDeactivatedAt,
     ),
   };
+}
+
+function toLink(row: LinkRow): IssueLink {
+  return {
+    id: row.id,
+    issueId: row.issueId,
+    url: row.url,
+    title: row.title,
+    kind: IssueLinkKind.parse(row.kind),
+    createdAt: row.createdAt.toISOString(),
+    createdBy: actorFromRow(
+      row.createdByHumanId,
+      row.createdByEmail,
+      row.createdByAgentId,
+      row.createdByAgentName,
+      row.createdByDeactivatedAt,
+    ),
+  };
+}
+
+// The links on an issue, newest last. The detail read is the one place that loads them,
+// so order and author display come from a single query.
+async function loadIssueLinks(tx: DbTransaction, issueId: string): Promise<IssueLink[]> {
+  const rows = await tx
+    .select(linkColumns)
+    .from(issueLinks)
+    .leftJoin(linkCreator, eq(linkCreator.id, issueLinks.createdByHumanId))
+    .leftJoin(linkAgentCreator, eq(linkAgentCreator.id, issueLinks.createdByAgentId))
+    .where(eq(issueLinks.issueId, issueId))
+    .orderBy(issueLinks.createdAt, issueLinks.id);
+  return rows.map(toLink);
 }
 
 function toKnowledge(row: KnowledgeRow): KnowledgeEntry {
@@ -806,7 +877,9 @@ type RecordActivityInput =
         | "issue_edited"
         | "issue_commented"
         | "issue_closed"
-        | "issue_reopened";
+        | "issue_reopened"
+        | "issue_link_added"
+        | "issue_link_removed";
       actor: WorkActor;
       summary: string;
       issueId: string;
@@ -1085,7 +1158,7 @@ export interface ProjectsService {
     projectIds: readonly string[],
   ): Promise<Map<string, ProjectAccessLevel | null>>;
   listIssues(actor: WorkActor | null, projectId: string): Promise<Issue[]>;
-  getIssue(actor: WorkActor | null, issueId: string): Promise<Issue>;
+  getIssue(actor: WorkActor | null, issueId: string): Promise<IssueDetail>;
   createIssue(
     actor: WorkActor | null,
     projectId: string,
@@ -1098,6 +1171,12 @@ export interface ProjectsService {
     issueId: string,
     input: CreateIssueCommentRequest,
   ): Promise<IssueComment>;
+  addIssueLink(
+    actor: WorkActor | null,
+    issueId: string,
+    input: CreateIssueLinkRequest,
+  ): Promise<IssueLink>;
+  removeIssueLink(actor: WorkActor | null, issueId: string, linkId: string): Promise<void>;
   listActivity(actor: WorkActor | null, projectId: string): Promise<ProjectActivity[]>;
   listKnowledge(actor: WorkActor | null, projectId: string): Promise<KnowledgeEntry[]>;
   getKnowledge(actor: WorkActor | null, entryId: string): Promise<KnowledgeEntry>;
@@ -1540,7 +1619,10 @@ export function createProjectsService({ db, sessionGate }: ProjectsDeps): Projec
     async getIssue(actorArg, issueId) {
       const actor = requireActor(actorArg);
       return db.transaction(
-        async (tx) => toIssue(await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.read)),
+        async (tx) => {
+          const issue = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.read);
+          return { ...toIssue(issue), links: await loadIssueLinks(tx, issueId) };
+        },
         { accessMode: "read only" },
       );
     },
@@ -1758,6 +1840,88 @@ export function createProjectsService({ db, sessionGate }: ProjectsDeps): Projec
           createdAt: created.createdAt.toISOString(),
           author: actorForWrite(actor),
         };
+      });
+    },
+
+    // Links need no work session, just like comments (#20). Contribute is enough; the
+    // unique index makes a repeated (issue, url) a clean 409 instead of a second row.
+    async addIssueLink(actorArg, issueId, input) {
+      const actor = requireActor(actorArg);
+      return db.transaction(async (tx) => {
+        const issue = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
+        let created:
+          | {
+              id: string;
+              issueId: string;
+              url: string;
+              title: string;
+              kind: IssueLinkKind;
+              createdAt: Date;
+            }
+          | undefined;
+        try {
+          [created] = await tx
+            .insert(issueLinks)
+            .values({
+              id: randomUUID(),
+              issueId,
+              url: input.url,
+              title: input.title,
+              kind: input.kind,
+              createdByHumanId: humanIdOf(actor),
+              createdByAgentId: agentIdOf(actor),
+              createdAt: sql`statement_timestamp()`,
+            })
+            .returning({
+              id: issueLinks.id,
+              issueId: issueLinks.issueId,
+              url: issueLinks.url,
+              title: issueLinks.title,
+              kind: issueLinks.kind,
+              createdAt: issueLinks.createdAt,
+            });
+        } catch (error) {
+          if (uniqueConstraintName(error) === "one_link_per_issue_and_url") {
+            throw new ProjectsError("issue_link_exists");
+          }
+          throw error;
+        }
+        if (created === undefined) throw new Error("the link was not created");
+        await recordActivity(tx, {
+          projectId: issue.projectId,
+          type: "issue_link_added",
+          actor,
+          issueId,
+          summary: `${issue.title} — ${input.title}`,
+        });
+        return {
+          id: created.id,
+          issueId: created.issueId,
+          url: created.url,
+          title: created.title,
+          kind: IssueLinkKind.parse(created.kind),
+          createdAt: created.createdAt.toISOString(),
+          createdBy: actorForWrite(actor),
+        };
+      });
+    },
+
+    async removeIssueLink(actorArg, issueId, linkId) {
+      const actor = requireActor(actorArg);
+      await db.transaction(async (tx) => {
+        const issue = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
+        const [removed] = await tx
+          .delete(issueLinks)
+          .where(and(eq(issueLinks.id, linkId), eq(issueLinks.issueId, issueId)))
+          .returning({ title: issueLinks.title });
+        if (removed === undefined) throw new ProjectsError("issue_link_not_found");
+        await recordActivity(tx, {
+          projectId: issue.projectId,
+          type: "issue_link_removed",
+          actor,
+          issueId,
+          summary: `${issue.title} — ${removed.title}`,
+        });
       });
     },
 

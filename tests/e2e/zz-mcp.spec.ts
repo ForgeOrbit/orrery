@@ -45,6 +45,11 @@ const bearerRequest = (secret: string) => ({
       headers: { "content-type": "application/json", Authorization: `Bearer ${secret}` },
       body: JSON.stringify(body),
     }),
+  delete: (path: string) =>
+    fetch(new URL(path, baseUrl), {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${secret}` },
+    }),
 });
 
 async function personalWorkspaceOf(client: APIRequestContext): Promise<string> {
@@ -176,6 +181,8 @@ test("offers project work only: no membership, access, or administration tools",
         "update_issue",
         "list_comments",
         "create_comment",
+        "add_issue_link",
+        "remove_issue_link",
         "list_activity",
         "list_knowledge",
         "get_knowledge",
@@ -313,6 +320,88 @@ test("a Contribute key runs the full issue and knowledge cycle over MCP and REST
   }
 });
 
+test("an agent attaches a PR link over MCP and REST issue detail shows it", async () => {
+  const workspaceId = await personalWorkspaceOf(api);
+  const created = await api.post(`/api/workspaces/${workspaceId}/projects`, {
+    data: { name: `MCP links ${randomUUID()}` },
+  });
+  expect(created.status()).toBe(201);
+  const projectId = idOf(await created.json(), "project");
+  const agentId = await createAgent(api, `mcp-links-${randomUUID()}`);
+  const key = await issueKey(api, agentId, workspaceId, [{ projectId, level: "contribute" }]);
+  const client = await connect(key.secret);
+  const rest = bearerRequest(key.secret);
+  try {
+    const createdIssue = await call(client, "create_issue", {
+      projectId,
+      title: "Issue with a PR",
+    });
+    expect(createdIssue.isError).toBe(false);
+    const issueId = requiredText(field(createdIssue.data.issue, "id"), "the issue id");
+
+    const prUrl = "https://github.com/forge-orbit/orrery/pull/87";
+    const added = await call(client, "add_issue_link", {
+      issueId,
+      url: prUrl,
+      title: "Structured links PR",
+      kind: "pr",
+    });
+    expect(added.isError).toBe(false);
+    const link = asRecord(added.data.link);
+    const linkId = requiredText(field(link, "id"), "the link id");
+    expect(field(link, "kind")).toBe("pr");
+    expect(field(field(link, "createdBy"), "agentId")).toBe(agentId);
+
+    const duplicate = await call(client, "add_issue_link", {
+      issueId,
+      url: prUrl,
+      title: "Again",
+      kind: "pr",
+    });
+    expect(duplicate.isError).toBe(true);
+    expect(field(duplicate.data, "code")).toBe("issue_link_exists");
+
+    const unsafe = await call(client, "add_issue_link", {
+      issueId,
+      url: "javascript:alert(1)",
+      title: "Unsafe",
+      kind: "link",
+    });
+    expect(unsafe.isError).toBe(true);
+
+    // The link is part of issue detail on both transports, attributed to the agent.
+    const mcpDetail = await call(client, "get_issue", { issueId });
+    const mcpLinks = asArray(field(mcpDetail.data.issue, "links"));
+    expect(mcpLinks).toHaveLength(1);
+    expect(field(mcpLinks[0], "url")).toBe(prUrl);
+
+    const restDetail = await rest.get(`/api/issues/${issueId}`);
+    expect(restDetail.status).toBe(200);
+    const restLinks = asArray(field(asRecord(await restDetail.json()), "links"));
+    expect(restLinks).toHaveLength(1);
+    expect(field(restLinks[0], "kind")).toBe("pr");
+    expect(field(field(restLinks[0], "createdBy"), "agentId")).toBe(agentId);
+
+    const activity = await call(client, "list_activity", { projectId });
+    const types = asArray(field(activity.data, "activity")).map((event) => field(event, "type"));
+    expect(types).toEqual(expect.arrayContaining(["issue_link_added"]));
+
+    const removed = await call(client, "remove_issue_link", { issueId, linkId });
+    expect(removed.isError).toBe(false);
+    expect(field(removed.data, "removed")).toBe(true);
+    const after = await rest.get(`/api/issues/${issueId}`);
+    expect(asArray(field(asRecord(await after.json()), "links"))).toHaveLength(0);
+
+    const activityAfter = await call(client, "list_activity", { projectId });
+    const typesAfter = asArray(field(activityAfter.data, "activity")).map((event) =>
+      field(event, "type"),
+    );
+    expect(typesAfter).toEqual(expect.arrayContaining(["issue_link_removed"]));
+  } finally {
+    await client.close();
+  }
+});
+
 test("a Read key inspects over MCP and REST but cannot change work on either", async () => {
   const workspaceName = `MCP read team ${randomUUID()}`;
   const workspaceRes = await api.post("/api/workspaces", { data: { name: workspaceName } });
@@ -358,6 +447,13 @@ test("a Read key inspects over MCP and REST but cannot change work on either", a
       call(client, "create_issue", { projectId, title: "No" }),
       call(client, "update_issue", { issueId, status: "closed" }),
       call(client, "create_comment", { issueId, body: "No" }),
+      call(client, "add_issue_link", {
+        issueId,
+        url: "https://example.com/no",
+        title: "No",
+        kind: "link",
+      }),
+      call(client, "remove_issue_link", { issueId, linkId: "no" }),
       call(client, "create_knowledge", { projectId, title: "No" }),
       call(client, "update_knowledge", { entryId, body: "No" }),
     ]);
@@ -369,6 +465,12 @@ test("a Read key inspects over MCP and REST but cannot change work on either", a
       rest.post(`/api/projects/${projectId}/issues`, { title: "No" }),
       rest.patch(`/api/issues/${issueId}`, { status: "closed" }),
       rest.post(`/api/issues/${issueId}/comments`, { body: "No" }),
+      rest.post(`/api/issues/${issueId}/links`, {
+        url: "https://example.com/no",
+        title: "No",
+        kind: "link",
+      }),
+      rest.delete(`/api/issues/${issueId}/links/no`),
       rest.post(`/api/projects/${projectId}/knowledge`, { title: "No" }),
       rest.patch(`/api/knowledge/${entryId}`, { body: "No" }),
     ]);

@@ -1,6 +1,6 @@
 import {
-  Issue,
   IssueCommentsResponse,
+  IssueDetail,
   IssuesResponse,
   KnowledgeEntriesResponse,
   KnowledgeEntry,
@@ -54,7 +54,7 @@ export const issueQuery = (issueId: string) =>
   queryOptions({
     queryKey: ["issues", issueId],
     queryFn: () =>
-      getJson(`/api/issues/${encodeURIComponent(issueId)}`, (value) => Issue.parse(value)),
+      getJson(`/api/issues/${encodeURIComponent(issueId)}`, (value) => IssueDetail.parse(value)),
   });
 
 export const issueCommentsQuery = (issueId: string) =>

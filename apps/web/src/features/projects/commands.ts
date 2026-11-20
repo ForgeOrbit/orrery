@@ -1,10 +1,12 @@
 import {
   Issue,
   IssueComment,
+  IssueLink,
   KnowledgeEntry,
   Project,
   ProjectAccessGrant,
   type CreateIssueCommentRequest,
+  type CreateIssueLinkRequest,
   type CreateIssueRequest,
   type CreateKnowledgeEntryRequest,
   type CreateProjectRequest,
@@ -69,6 +71,18 @@ export function createIssueComment(
 ): Promise<IssueComment> {
   return postJson(`/api/issues/${encodeURIComponent(issueId)}/comments`, input, (value) =>
     IssueComment.parse(value),
+  );
+}
+
+export function addIssueLink(issueId: string, input: CreateIssueLinkRequest): Promise<IssueLink> {
+  return postJson(`/api/issues/${encodeURIComponent(issueId)}/links`, input, (value) =>
+    IssueLink.parse(value),
+  );
+}
+
+export function removeIssueLink(issueId: string, linkId: string): Promise<void> {
+  return deleteRequest(
+    `/api/issues/${encodeURIComponent(issueId)}/links/${encodeURIComponent(linkId)}`,
   );
 }
 

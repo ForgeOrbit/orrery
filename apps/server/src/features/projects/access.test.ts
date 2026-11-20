@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import {
+  IssueDetail,
   Problem,
   Project,
   ProjectAccessGrant,
@@ -246,6 +247,7 @@ describe("shared project access", () => {
       await tx.execute(sql`delete from project_access_events`);
       await tx.execute(sql`delete from project_access_grants`);
       await tx.execute(sql`delete from project_activity`);
+      await tx.execute(sql`delete from issue_links`);
       await tx.execute(sql`delete from issue_comments`);
       await tx.execute(sql`delete from knowledge_entries`);
       await tx.execute(sql`delete from issues`);
@@ -1005,5 +1007,73 @@ describe("shared project access", () => {
       canCreateProjects: true,
     });
     expect(await database.db.select().from(workspaceEvents)).toHaveLength(wsEventsBefore.length);
+  });
+
+  it("lets Read inspect issue links but only Contribute add or remove them", async () => {
+    const { app, adminCookie } = await readyApp();
+    const workspace = await createSharedWorkspace(app, adminCookie, "Linked Team");
+    const project = await createProject(app, adminCookie, workspace.id, "Links");
+    const issue = await createIssue(app, adminCookie, project.id, "Link permissions");
+    const reader = await secondHuman(MEMBER_EMAIL, workspace.id);
+    await grantAccess(app, adminCookie, project.id, MEMBER_EMAIL, "read");
+
+    const added = await postJson(
+      app,
+      `/api/issues/${issue.id}/links`,
+      { url: "https://github.com/forge-orbit/orrery/pull/87", title: "PR", kind: "pr" },
+      adminCookie,
+    );
+    expect(added.status).toBe(201);
+    const linkId = idOf(await added.json(), "the link");
+
+    // Read sees the links in the issue detail.
+    const asReader = await getJson(app, `/api/issues/${issue.id}`, reader.cookie);
+    expect(asReader.status).toBe(200);
+    expect(IssueDetail.parse(await asReader.json()).links).toHaveLength(1);
+
+    // Read cannot add or remove; both are Problems, not silent successes.
+    await expectProblem(
+      await postJson(
+        app,
+        `/api/issues/${issue.id}/links`,
+        { url: "https://example.com/a", title: "Nope", kind: "link" },
+        reader.cookie,
+      ),
+      403,
+      "insufficient_project_access",
+    );
+    await expectProblem(
+      await deleteRequest(app, `/api/issues/${issue.id}/links/${linkId}`, reader.cookie),
+      403,
+      "insufficient_project_access",
+    );
+
+    // An authenticated outsider cannot even inspect the issue, so no link leaks through detail.
+    const outsider = await secondHuman(OUTSIDER_EMAIL);
+    await expectProblem(
+      await getJson(app, `/api/issues/${issue.id}`, outsider.cookie),
+      404,
+      "issue_not_found",
+    );
+
+    // Contribute can add and remove; the level is checked at write time.
+    await grantAccess(app, adminCookie, project.id, MEMBER_EMAIL, "contribute");
+    const contributed = await postJson(
+      app,
+      `/api/issues/${issue.id}/links`,
+      { url: "https://example.com/docs", title: "Doc", kind: "doc" },
+      reader.cookie,
+    );
+    expect(contributed.status).toBe(201);
+    const removed = await deleteRequest(
+      app,
+      `/api/issues/${issue.id}/links/${linkId}`,
+      reader.cookie,
+    );
+    expect(removed.status).toBe(204);
+    expect(
+      IssueDetail.parse(await (await getJson(app, `/api/issues/${issue.id}`, reader.cookie)).json())
+        .links,
+    ).toHaveLength(1);
   });
 });
