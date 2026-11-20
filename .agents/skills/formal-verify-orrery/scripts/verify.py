@@ -1974,6 +1974,98 @@ def extract_code_facts() -> dict[str, Any]:
     m24_http_problems = tr_rest.count("400: problem(") >= 4
     m24_human_only = "sessionReader" in tr_rest and "agentAuthenticator" not in tr_rest
 
+    # --- M25 (#82): Human stop requests on active work sessions ---
+    ws_sess_src = read_text("apps/server/src/features/work-sessions/service.ts")
+    proj_src = read_text("apps/server/src/features/projects/service.ts")
+    sessions_contract_src = read_text("packages/contract/src/sessions.ts")
+    stop_access_fn = slice_between(
+        ws_sess_src, "async function requireHumanStopAccess(", "async function requireActivityReadAccess("
+    )
+    request_stop_fn = slice_between(ws_sess_src, "async requestStop(", "async activeSessions(")
+    m25_human_only = (
+        'throw new SessionsError("human_sign_in_required")' in request_stop_fn
+        and 'throw new SessionsError("agents_cannot_request_stop")' in request_stop_fn
+    )
+    m25_lock_order = ordered(
+        stop_access_fn,
+        "isNull(humans.deactivatedAt)",
+        '.for("key share")',
+        "isNull(workspaceMemberships.suspendedAt)",
+        "lockIssue(tx, issueId)",
+    )
+    m25_non_enum = (
+        'if (caller === undefined) throw new SessionsError("issue_not_found")' in stop_access_fn
+        and 'if (membership === undefined) throw new SessionsError("issue_not_found")' in stop_access_fn
+    )
+    m25_idempotent = "if (session.stopRequestedAt !== null) return { session: toSession(session) }" in request_stop_fn
+    m25_db_time_write = (
+        ".update(workSessions)" in request_stop_fn
+        and "liveLease" in request_stop_fn.split(".update(workSessions)", 1)[1]
+    )
+    m25_activity_atomic = (
+        "ProjectActivityType.enum.issue_stop_requested" in request_stop_fn
+        and request_stop_fn.count("db.transaction(") == 1
+    )
+    m25_schema_check = "work_sessions_stop_request" in schema_src
+
+    # --- M26 (#86): Acyclic issue dependencies & ready-work exclusion ---
+    add_dep_fn = slice_between(proj_src, "async addBlockedBy(", "async removeBlockedBy(")
+    ready_work_fn = slice_between(ws_sess_src, "async readyWork(", "async agentHoldsSession(")
+    m26_no_self_link = (
+        'if (issueId === blockedByIssueId) throw new ProjectsError("self_dependency")' in add_dep_fn
+        and "issue_dependencies_no_self_link" in schema_src
+    )
+    m26_same_project = (
+        'throw new ProjectsError("cross_project_dependency")' in add_dep_fn
+        and "blocker.projectId !== current.projectId" in add_dep_fn
+    )
+    m26_project_lock = (
+        ".from(projects)" in add_dep_fn
+        and '.for("update")' in add_dep_fn.split(".from(projects)", 1)[1]
+    )
+    # Global lock order (shared with transfers M21/M24): projects FOR UPDATE must not come
+    # after an issues FOR UPDATE lock in the same transaction, or concurrent transfer + addBlockedBy can AB-BA deadlock.
+    m26_lock_order = (
+        ".from(projects)" in add_dep_fn
+        and (
+            ".from(issues)" not in add_dep_fn
+            or add_dep_fn.index(".from(projects)") < add_dep_fn.index(".from(issues)")
+        )
+    )
+    m26_cycle_bfs = (
+        'throw new ProjectsError("dependency_cycle")' in add_dep_fn
+        and "visited" in add_dep_fn
+    )
+    m26_idempotent = "if (existing !== undefined) return toIssueDependency(existing)" in add_dep_fn
+    m26_ready_excludes = (
+        "notExists(" in ready_work_fn
+        and "issueDependencies" in ready_work_fn
+        and 'ne(blockerIssue.status, "closed")' in ready_work_fn
+    )
+
+    # --- M27 (#83): Ephemeral session activities & deactivation-safe reads ---
+    act_read_fn = slice_between(
+        ws_sess_src, "async function requireActivityReadAccess(", "export function createSessionsService("
+    )
+    log_act_fn = slice_between(ws_sess_src, "async logActivity(", "async requestStop(")
+    list_act_fn = slice_between(ws_sess_src, "async listActivities(", "async readyWork(")
+    m27_live_gate = "withLiveSession(actor, input.issueId, input.sessionId," in log_act_fn
+    m27_no_lease_mutation = (
+        ".insert(workSessionActivities)" in log_act_fn
+        and ".update(workSessions)" not in log_act_fn
+        and "issueComments" not in log_act_fn
+    )
+    m27_read_deactivation = (
+        "isNull(humans.deactivatedAt)" in act_read_fn
+        and 'if (caller === undefined) throw new SessionsError("issue_not_found")' in act_read_fn
+    )
+    m27_read_non_enum = (
+        'throw new SessionsError("insufficient_access")' not in act_read_fn
+        and 'accessMode: "read only"' in list_act_fn
+    )
+    m27_detail_bound = "64_000" in sessions_contract_src and "JSON.stringify" in sessions_contract_src
+    m27_schema_check = "work_session_activities_kind" in schema_src
+
 
 
     return {
@@ -2286,6 +2378,26 @@ def extract_code_facts() -> dict[str, Any]:
         "m24_expire_lapsed": m24_expire_lapsed,
         "m24_http_problems": m24_http_problems,
         "m24_human_only": m24_human_only,
+        "m25_human_only": m25_human_only,
+        "m25_lock_order": m25_lock_order,
+        "m25_non_enum": m25_non_enum,
+        "m25_idempotent": m25_idempotent,
+        "m25_db_time_write": m25_db_time_write,
+        "m25_activity_atomic": m25_activity_atomic,
+        "m25_schema_check": m25_schema_check,
+        "m26_no_self_link": m26_no_self_link,
+        "m26_same_project": m26_same_project,
+        "m26_project_lock": m26_project_lock,
+        "m26_lock_order": m26_lock_order,
+        "m26_cycle_bfs": m26_cycle_bfs,
+        "m26_idempotent": m26_idempotent,
+        "m26_ready_excludes": m26_ready_excludes,
+        "m27_live_gate": m27_live_gate,
+        "m27_no_lease_mutation": m27_no_lease_mutation,
+        "m27_read_deactivation": m27_read_deactivation,
+        "m27_read_non_enum": m27_read_non_enum,
+        "m27_detail_bound": m27_detail_bound,
+        "m27_schema_check": m27_schema_check,
     }
 
 
@@ -5771,6 +5883,238 @@ def check_m24(facts: dict[str, Any]) -> CheckResult:
     )
 
 
+def check_m25(facts: dict[str, Any]) -> CheckResult:
+    """#82: human stop requests on active work sessions.
+    State: (lease_live, stop_requested, activity_count, caller_deactivated, violations).
+    """
+    g = {k: facts[k] for k in facts if k.startswith("m25_")}
+
+    def bad(v, reason: str):
+        return v | {reason}
+
+    def human_stop(state):
+        live, stopped, acts, deact, v = state
+        if deact:
+            if not (g["m25_lock_order"] and g["m25_non_enum"]):
+                v = bad(v, "deactivated_human_requested_stop")
+            return (live, stopped, acts, deact, v)
+        if not live:
+            if not g["m25_db_time_write"]:
+                return (live, True, acts + 1, deact, bad(v, "stopped_expired_session"))
+            return state
+        if stopped:
+            if not g["m25_idempotent"]:
+                return (live, True, acts + 1, deact, bad(v, "duplicate_stop_activity"))
+            return state
+        if not g["m25_activity_atomic"] or not g["m25_schema_check"]:
+            v = bad(v, "non_atomic_stop_signal")
+        return (live, True, acts + 1, deact, v)
+
+    def agent_stop(state):
+        live, stopped, acts, deact, v = state
+        if not g["m25_human_only"]:
+            v = bad(v, "agent_requested_stop")
+        return (live, stopped, acts, deact, v)
+
+    def lease_expires(state):
+        live, stopped, acts, deact, v = state
+        return (False, stopped, acts, deact, v)
+
+    def deactivate_caller(state):
+        live, stopped, acts, deact, v = state
+        return (live, stopped, acts, True, v)
+
+    actions = [
+        ("human requests stop on active session", human_stop),
+        ("agent key tries to request stop", agent_stop),
+        ("five-minute lease expires in DB time", lease_expires),
+        ("human caller is deactivated", deactivate_caller),
+    ]
+    init = (True, False, 0, False, frozenset())
+
+    def inv(state):
+        live, stopped, acts, deact, v = state
+        if v:
+            return False, f"human stop invariant broken: {sorted(v)[0]}"
+        if acts > 1:
+            return False, "repeated stop request wrote duplicate activity"
+        if stopped and acts == 0:
+            return False, "stop signal set without activity record"
+        return True, ""
+
+    return bfs_check(
+        "M25",
+        "Human Stop Requests on Active Work Sessions (#82)",
+        "Only active Contribute/Manage humans may request a stop; M22 lock order and 404 non-enumeration protect deactivated/non-member callers; repeated stops are idempotent with one atomic activity event; DB-time expiry rejects stale stops",
+        "safety",
+        init,
+        lambda s: [(lbl, fn(s)) for lbl, fn in actions],
+        inv,
+        [
+            "apps/server/src/features/work-sessions/service.ts",
+            "apps/server/src/features/work-sessions/rest.ts",
+            "apps/server/src/db/schema.ts",
+            "db/migrations/0030_handy_bill_hollister.sql",
+        ],
+    )
+
+
+def check_m26(facts: dict[str, Any]) -> CheckResult:
+    """#86: acyclic issue dependencies and ready-work exclusion.
+    State: (edges_frozenset, blocker_closed, violations) over 4 issues {A, B, C, D}.
+    """
+    g = {k: facts[k] for k in facts if k.startswith("m26_")}
+
+    def bad(v, reason: str):
+        return v | {reason}
+
+    def has_cycle(edges):
+        for start in ("A", "B", "C", "D"):
+            seen = set()
+            stack = [b for a, b in edges if a == start]
+            while stack:
+                node = stack.pop()
+                if node == start:
+                    return True
+                if node not in seen:
+                    seen.add(node)
+                    stack.extend(b for a, b in edges if a == node)
+        return False
+
+    def add_edge(src, dst):
+        def fn(state):
+            edges, closed, v = state
+            if src == dst:
+                if not g["m26_no_self_link"]:
+                    v = bad(v, "self_dependency_allowed")
+                return (edges, closed, v)
+            if (src, dst) in edges:
+                if not g["m26_idempotent"]:
+                    v = bad(v, "duplicate_edge_activity")
+                return (edges, closed, v)
+            if not g["m26_lock_order"]:
+                v = bad(v, "abba_deadlock_issues_before_projects")
+            if not g["m26_same_project"]:
+                v = bad(v, "cross_project_edge_allowed")
+            cand = edges | {(src, dst)}
+            if has_cycle(cand):
+                if not (g["m26_cycle_bfs"] and g["m26_project_lock"]):
+                    return (cand, closed, bad(v, "cycle_committed"))
+                return (edges, closed, v)
+            return (cand, closed, v)
+
+        return fn
+
+    def check_ready(state):
+        edges, closed, v = state
+        if ("A", "B") in edges and not closed and not g["m26_ready_excludes"]:
+            v = bad(v, "blocked_issue_offered_as_ready")
+        return (edges, closed, v)
+
+    def close_b(state):
+        edges, closed, v = state
+        return (edges, True, v)
+
+    actions = [
+        ("add A blocked_by A (self-link)", add_edge("A", "A")),
+        ("add A blocked_by B", add_edge("A", "B")),
+        ("add B blocked_by C", add_edge("B", "C")),
+        ("add C blocked_by D", add_edge("C", "D")),
+        ("add D blocked_by A (4-node cycle)", add_edge("D", "A")),
+        ("close blocker B", close_b),
+        ("poll list_ready_work", check_ready),
+    ]
+    init = (frozenset(), False, frozenset())
+
+    def inv(state):
+        edges, closed, v = state
+        if v:
+            return False, f"issue dependency invariant broken: {sorted(v)[0]}"
+        if has_cycle(edges):
+            return False, "dependency graph contains a cycle"
+        return True, ""
+
+    return bfs_check(
+        "M26",
+        "Acyclic Issue Dependencies & Ready-Work Exclusion (#86)",
+        "Self-links, cross-project links, and cycles (including concurrent 4-node races under project-level FOR UPDATE in global projects->issues lock order) are rejected; list_ready_work omits issues with any open blocker",
+        "safety",
+        init,
+        lambda s: [(lbl, fn(s)) for lbl, fn in actions],
+        inv,
+        [
+            "apps/server/src/features/projects/service.ts",
+            "apps/server/src/features/work-sessions/service.ts",
+            "apps/server/src/db/schema.ts",
+            "db/migrations/0030_handy_bill_hollister.sql",
+        ],
+    )
+
+
+def check_m27(facts: dict[str, Any]) -> CheckResult:
+    """#83: ephemeral session activities and deactivation-safe reads.
+    State: (lease_live, activities_count, caller_deactivated, violations).
+    """
+    g = {k: facts[k] for k in facts if k.startswith("m27_")}
+
+    def bad(v, reason: str):
+        return v | {reason}
+
+    def append_activity(state):
+        live, count, deact, v = state
+        if not live:
+            if not g["m27_live_gate"]:
+                return (live, min(2, count + 1), deact, bad(v, "appended_to_expired_session"))
+            return state
+        if not (g["m27_no_lease_mutation"] and g["m27_detail_bound"] and g["m27_schema_check"]):
+            v = bad(v, "activity_write_guard_missing")
+        return (live, min(2, count + 1), deact, v)
+
+    def read_activities(state):
+        live, count, deact, v = state
+        if deact and not (g["m27_read_deactivation"] and g["m27_read_non_enum"]):
+            v = bad(v, "deactivated_caller_read_activities")
+        return (live, count, deact, v)
+
+    def expire_lease(state):
+        live, count, deact, v = state
+        return (False, count, deact, v)
+
+    def deactivate(state):
+        live, count, deact, v = state
+        return (live, count, True, v)
+
+    actions = [
+        ("agent appends session activity", append_activity),
+        ("caller lists session activities", read_activities),
+        ("lease expires in DB time (trail preserved)", expire_lease),
+        ("caller is deactivated", deactivate),
+    ]
+    init = (True, 0, False, frozenset())
+
+    def inv(state):
+        live, count, deact, v = state
+        if v:
+            return False, f"session activity invariant broken: {sorted(v)[0]}"
+        return True, ""
+
+    return bfs_check(
+        "M27",
+        "Ephemeral Session Activities & Deactivation-Safe Reads (#83)",
+        "Only the live session holder appends bounded activities without mutating leases or comments; trails survive expiry; deactivated or unrelated callers get 404 on read-only listing",
+        "safety",
+        init,
+        lambda s: [(lbl, fn(s)) for lbl, fn in actions],
+        inv,
+        [
+            "apps/server/src/features/work-sessions/service.ts",
+            "packages/contract/src/sessions.ts",
+            "apps/server/src/db/schema.ts",
+            "db/migrations/0031_medical_freak.sql",
+        ],
+    )
+
+
 def main() -> None:
     facts = extract_code_facts()
     results = [
@@ -5799,6 +6143,9 @@ def main() -> None:
         check_m22(facts),
         check_m23(facts),
         check_m24(facts),
+        check_m25(facts),
+        check_m26(facts),
+        check_m27(facts),
     ]
 
     if "--json" in sys.argv:
