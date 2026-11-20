@@ -8,6 +8,7 @@ import {
   ProjectAccessLevel,
   ProjectActivityType,
   RunStatus,
+  WorkSessionStatus,
   WorkspaceKind,
   SmtpSecurity,
 } from "@orrery/contract";
@@ -755,6 +756,9 @@ export const issues = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     closedAt: timestamp("closed_at", { withTimezone: true }),
+    // Needs input is an issue state owned by the later human-input slice (#37). The flag
+    // exists now so ready-work can exclude paused issues; no other writer sets it yet.
+    needsInput: boolean("needs_input").notNull().default(false),
   },
   (t) => [
     // Exactly one author/editor identity: a human or an agent.
@@ -799,6 +803,56 @@ export const issueComments = pgTable(
       sql`(${t.createdByHumanId} is not null) <> (${t.createdByAgentId} is not null)`,
     ),
     index("issue_comments_issue_created").on(t.issueId, t.createdAt),
+  ],
+);
+
+// A work session: one attempt to work on one issue, coordinated within a run (#36). Its
+// identity is (agent, run, workspace, issue) — never the API key used to reach it — so a
+// replacement key during rotation renews the same session. The lease is a five-minute
+// reservation evaluated in database time. `progress` is deliberately a separate column
+// from the lease status: lazy expiry only flips `status`, so an interruption never erases
+// what the worker recorded. The partial unique index is the database guarantee that two
+// concurrent claims cannot both hold one issue, even if two transactions race past the
+// row lock path.
+export const workSessions = pgTable(
+  "work_sessions",
+  {
+    id: text("id").primaryKey(),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id),
+    runId: text("run_id")
+      .notNull()
+      .references(() => runs.id),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id),
+    issueId: text("issue_id")
+      .notNull()
+      .references(() => issues.id),
+    status: text("status")
+      .$type<WorkSessionStatus>()
+      .notNull()
+      .default(WorkSessionStatus.enum.active),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }).notNull(),
+    progress: text("progress").notNull().default(""),
+    progressUpdatedAt: timestamp("progress_updated_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    endedAt: timestamp("ended_at", { withTimezone: true }),
+  },
+  (t) => [
+    check(
+      "work_sessions_status",
+      sql`${t.status} in (${sql.raw(sqlLiteralList(WorkSessionStatus))})`,
+    ),
+    // At most one active session per issue, enforced by Postgres under a concurrent race.
+    uniqueIndex("one_active_work_session_per_issue")
+      .on(t.issueId)
+      .where(sql`${t.status} = ${sql.raw(`'${WorkSessionStatus.enum.active}'`)}`),
+    index("work_sessions_agent_created").on(t.agentId, t.createdAt),
+    index("work_sessions_run_created").on(t.runId, t.createdAt),
+    index("work_sessions_issue_created").on(t.issueId, t.createdAt),
   ],
 );
 

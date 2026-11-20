@@ -99,6 +99,19 @@ async function call(
   return { isError: result.isError === true, data: asRecord(result.structuredContent) };
 }
 
+// #36: a run and a claim precede any agent issue edit, close or reopen. The MCP check-in
+// tool creates the run; the claim is then held by this agent for that issue.
+async function claimIssue(client: Client, issueId: string): Promise<void> {
+  const checkin = await call(client, "orrery_run_checkin", {
+    event: "run_started",
+    runKey: { harness: "codex", nativeSessionId: randomUUID() },
+  });
+  expect(checkin.isError).toBe(false);
+  const runId = requiredText(field(checkin.data, "runId"), "the run id");
+  const claim = await call(client, "claim_issue", { issueId, runId });
+  expect(claim.isError).toBe(false);
+}
+
 async function caughtWorkspaceToken(workspaceName: string): Promise<string | undefined> {
   const list = await api.get(`${mailpit}/api/v1/messages`);
   const body: unknown = await list.json();
@@ -202,6 +215,12 @@ test("a Contribute key runs the full issue and knowledge cycle over MCP and REST
     expect(field(issue, "createdBy")).toMatchObject({ agentId, displayName: agentName });
     const issueId = requiredText(field(issue, "id"), "the issue id");
 
+    // Fenced: an issue edit without a live session is refused, not silently accepted.
+    const unfenced = await call(client, "update_issue", { issueId, title: "No session" });
+    expect(unfenced.isError).toBe(true);
+    expect(unfenced.data).toMatchObject({ code: "session_required" });
+    await claimIssue(client, issueId);
+
     const edited = await call(client, "update_issue", {
       issueId,
       title: "Edited over MCP",
@@ -256,6 +275,7 @@ test("a Contribute key runs the full issue and knowledge cycle over MCP and REST
     const restIssue = asRecord(await restCreated.json());
     const restIssueId = idOf(restIssue, "issue");
     expect(field(restIssue, "createdBy")).toMatchObject({ agentId });
+    await claimIssue(client, restIssueId);
 
     const restEdited = await rest.patch(`/api/issues/${restIssueId}`, {
       title: "Edited over REST",

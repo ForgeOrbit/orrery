@@ -9,6 +9,7 @@ import {
   issues,
   knowledgeEntries,
   projectActivity,
+  runs as runRows,
   agentApiKeyProjects,
   agentApiKeys,
   agentKeyEvents,
@@ -32,9 +33,15 @@ import {
   setAccountPassword,
 } from "../accounts/index.ts";
 import { createHistoryFeature } from "../history/index.ts";
-import { createProjectsFeature, ProjectsError, type ProjectsErrorKind } from "../projects/index.ts";
+import {
+  createProjectsFeature,
+  ProjectsError,
+  type ProjectsErrorKind,
+  type WorkSessionGate,
+} from "../projects/index.ts";
 import { createRecoveryFeature } from "../recovery/index.ts";
 import type { OutgoingMail } from "../settings/index.ts";
+import { createSessionsFeature, type SessionsService } from "../work-sessions/index.ts";
 import { createAgentsFeature, type AgentAuthenticator } from "./index.ts";
 
 // Real Postgres (AGENTS.md): key scoping, revocation, expiry, the dynamic human-access
@@ -110,6 +117,7 @@ async function makeApp(): Promise<Hono> {
     db: database.db,
     sessionReader: accounts.sessionReader,
     agentAuthenticator: async () => null,
+    sessionGate: async () => true,
   });
   return createApp({
     features: [
@@ -130,21 +138,43 @@ async function makeApp(): Promise<Hono> {
   });
 }
 
+// #36 fences an agent's issue edits on a live session. The project-work test app wires the
+// real gate through the same late-bound seam as production, so a test must claim a run
+// before an agent can edit, close or reopen an issue.
 async function makeProjectWorkApp() {
   const accounts = createAccountsFeature({
     db: database.db,
     setupSecret: SECRET,
     publicUrl: PUBLIC_URL,
   });
+  let gate: WorkSessionGate | undefined;
   const projectsFeature = createProjectsFeature({
     db: database.db,
     sessionReader: accounts.sessionReader,
     agentAuthenticator: async () => null,
+    sessionGate: (tx, agentId, workspaceId, issueId) => {
+      if (gate === undefined) throw new Error("session gate not wired");
+      return gate(tx, agentId, workspaceId, issueId);
+    },
   });
+  const sessionsFeature = createSessionsFeature({
+    db: database.db,
+    sessionReader: accounts.sessionReader,
+    authenticate: async () => null,
+    projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
+      projectsFeature.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
+    projectAccessAtLeast: (actual, required) =>
+      ["read", "contribute", "manage"].indexOf(actual) >=
+      ["read", "contribute", "manage"].indexOf(required),
+    listIssues: (actor, projectId) => projectsFeature.service.listIssues(actor, projectId),
+  });
+  gate = (tx, agentId, workspaceId, issueId) =>
+    sessionsFeature.agentHoldsSession(tx, agentId, workspaceId, issueId);
   const app = createApp({
     features: [
       accounts,
       projectsFeature,
+      sessionsFeature,
       createAgentsFeature({
         db: database.db,
         sessionReader: accounts.sessionReader,
@@ -158,7 +188,28 @@ async function makeProjectWorkApp() {
     publicUrl: PUBLIC_URL,
     log: silentLogger,
   });
-  return { app, projects: projectsFeature.service };
+  return { app, projects: projectsFeature.service, sessions: sessionsFeature.service };
+}
+
+// A run row plus a claim: the fixture an #33 test needs before an agent may edit an issue.
+async function claimIssue(
+  sessions: SessionsService,
+  identity: AgentIdentity,
+  issueId: string,
+): Promise<void> {
+  const [run] = await database.db
+    .insert(runRows)
+    .values({
+      id: randomUUID(),
+      agentId: identity.agentId,
+      workspaceId: identity.workspaceId,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .returning({ id: runRows.id });
+  if (run === undefined) throw new Error("the run was not created");
+  await sessions.claim({ kind: "agent", identity }, { issueId, runId: run.id });
 }
 
 // The real feature wiring for bearer-backed project REST routes: projects borrows the
@@ -177,6 +228,7 @@ async function makeBearerApp() {
       if (authenticator === undefined) throw new Error("authenticator not wired");
       return authenticator(request);
     },
+    sessionGate: async () => true,
   });
   const agentsFeature = createAgentsFeature({
     db: database.db,
@@ -210,6 +262,7 @@ async function makeRotationApp() {
     db: database.db,
     sessionReader: accounts.sessionReader,
     agentAuthenticator: async () => null,
+    sessionGate: async () => true,
   });
   const agentsFeature = createAgentsFeature({
     db: database.db,
@@ -508,6 +561,9 @@ afterEach(async () => {
   // Deletes in FK-safe order, matching the other feature tests: workspace_memberships
   // is protected by a trigger and cannot be truncated.
   await database.db.transaction(async (tx) => {
+    // Work sessions reference issues and runs; #36's fixture claims one before an agent
+    // may edit an issue, so they go before both.
+    await tx.execute(sql`delete from work_sessions`);
     await tx.execute(sql`delete from agent_key_events`);
     await tx.execute(sql`delete from account_recovery_events`);
     await tx.execute(sql`delete from password_reset_tokens`);
@@ -520,6 +576,10 @@ afterEach(async () => {
     await tx.execute(sql`delete from knowledge_entries`);
     await tx.execute(sql`delete from issue_comments`);
     await tx.execute(sql`delete from issues`);
+    // The claim fixture inserts a run; it names the agent, so it goes first.
+    await tx.execute(sql`delete from run_children`);
+    await tx.execute(sql`delete from run_model_changes`);
+    await tx.execute(sql`delete from runs`);
     await tx.execute(sql`delete from agents`);
     await tx.execute(sql`delete from workspace_events`);
     await tx.execute(sql`delete from workspace_invitation_grants`);
@@ -900,7 +960,7 @@ describe("workspace-scoped agent API keys", () => {
     });
 
     it("attributes a Contribute agent's writes to the agent, not its human owner", async () => {
-      const { app, projects: projectsService } = await makeProjectWorkApp();
+      const { app, projects: projectsService, sessions } = await makeProjectWorkApp();
       await bootstrapAdmin(app);
       const admin = await adminId();
       const cookie = await cookieFor(app, ADMIN_EMAIL, ADMIN_PASSWORD);
@@ -932,6 +992,8 @@ describe("workspace-scoped agent API keys", () => {
         displayName: identity.name,
       });
       expect(issue.createdBy.humanId).toBeFalsy();
+      // An agent's issue edit, close and reopen require a live session it holds (#36).
+      await claimIssue(sessions, identity, issue.id);
       const editedIssue = await projectsService.updateIssue(actor, issue.id, {
         title: "Edited by the agent",
         body: "New **body** by the agent.",

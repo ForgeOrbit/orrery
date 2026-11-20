@@ -269,6 +269,7 @@ const updateIssue = createRoute({
     ),
     403: problem("Read access cannot change the issue"),
     404: problem("No issue with this id is accessible to the caller"),
+    409: problem("The agent holds no live work session for this issue"),
   },
 });
 
@@ -467,6 +468,7 @@ const statusFor = {
   member_not_found: 404,
   personal_project_access: 403,
   workspace_owner_access: 409,
+  session_required: 409,
 } as const satisfies Record<ProjectsErrorKind, number>;
 
 function isKind<K extends readonly ProjectsErrorKind[]>(
@@ -487,7 +489,14 @@ const accessKinds = [
   "workspace_owner_access",
 ] as const;
 const issueReadKinds = ["not_signed_in", "issue_not_found"] as const;
-const issueWriteKinds = [...issueReadKinds, "insufficient_project_access"] as const;
+const issueWriteKinds = [
+  ...issueReadKinds,
+  "insufficient_project_access",
+  "session_required",
+] as const;
+// Comments, creation and knowledge stay unfenced (#20), so their failure set has no
+// session_required and their routes need no 409 response.
+const commentWriteKinds = [...issueReadKinds, "insufficient_project_access"] as const;
 const knowledgeReadKinds = ["not_signed_in", "knowledge_entry_not_found"] as const;
 const knowledgeWriteKinds = [...knowledgeReadKinds, "insufficient_project_access"] as const;
 
@@ -661,7 +670,7 @@ export function createProjectsRest(
         201,
       );
     } catch (error) {
-      return failure(c, error, issueWriteKinds);
+      return failure(c, error, commentWriteKinds);
     }
   });
 

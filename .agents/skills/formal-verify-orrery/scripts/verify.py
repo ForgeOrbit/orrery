@@ -917,6 +917,110 @@ def extract_code_facts() -> dict[str, Any]:
         and "409: problem(" in rotate_route
         and "201:" in rotate_route
     )
+    # M17 (#36): work sessions, claims and five-minute leases. Every guard is read from
+    # the service, the fenced projects write, the schema/migration and the adapters, so
+    # removing a row lock, the unique index, the lazy expiry or the session gate flips the
+    # model to a shortest counterexample naming the exact TS function.
+    sess_src = read_text("apps/server/src/features/work-sessions/service.ts")
+    sess_rest_src = read_text("apps/server/src/features/work-sessions/rest.ts")
+    sess_mcp_src = read_text("apps/server/src/features/work-sessions/mcp.ts")
+    sess_index_src = read_text("apps/server/src/features/work-sessions/index.ts")
+    mig_0021 = read_text("db/migrations/0022_spooky_barracuda.sql")
+    lock_issue_fn = slice_between(sess_src, "async function lockIssue(", "// Lazy expiry")
+    expire_fn = slice_between(sess_src, "async function expireStale(", "const fiveMinutes")
+    claim_fn = slice_between(sess_src, "async claim(actor, input)", "async renew(actor, issueId)")
+    renew_fn = slice_between(sess_src, "async renew(actor, issueId)", "async progress(actor, issueId, summary)")
+    live_fn = slice_between(sess_src, "const withLiveSession = async (", "return {")
+    ready_fn = slice_between(sess_src, "async readyWork(actorArg, projectId)", "async agentHoldsSession(")
+    gate_fn = slice_between(sess_src, "async agentHoldsSession(", "};\n}")
+    update_issue_fn = slice_between(proj_src, "async updateIssue(actorArg, issueId, input)", "async listComments(")
+    work_sessions_table = slice_between(schema_src, "export const workSessions = pgTable(", "// A basic Markdown knowledge entry")
+
+    m17_unique_index = (
+        "one_active_work_session_per_issue" in mig_0021
+        and "one_active_work_session_per_issue" in work_sessions_table
+    )
+    m17_issue_lock = (
+        '.for("update")' in lock_issue_fn
+        and "lockIssue(tx" in claim_fn
+        and "lockIssue(tx" in live_fn
+        and '.for("update")' in update_issue_fn
+    )
+    m17_lazy_expiry = (
+        "lte(workSessions.leaseExpiresAt, sql`statement_timestamp()`)" in expire_fn
+        and "status: WorkSessionStatus.enum.expired" in expire_fn
+        and "expireStale(tx" in claim_fn
+        and "expireStale(tx" in live_fn
+    )
+    m17_db_time_lease = "statement_timestamp() + interval '5 minutes'" in sess_src
+    m17_progress_independent = (
+        '"progress"' in work_sessions_table
+        and "progress:" not in expire_fn
+        and "progressUpdatedAt:" not in expire_fn
+    )
+    m17_fenced_write = (
+        "sessionGate(tx, actor.identity.agentId" in update_issue_fn
+        and 'throw new ProjectsError("session_required")' in update_issue_fn
+        and "agentHoldsSession:" in sess_index_src
+    )
+    m17_gate_no_claim = (
+        "gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`)" in gate_fn
+        and "eq(workSessions.status, WorkSessionStatus.enum.active)" in gate_fn
+        and ".insert(workSessions)" not in gate_fn
+        and "claim(" not in gate_fn
+    )
+    # The gate runs inside projects' already issue-locked transaction; a second
+    # db.transaction there would take another pool connection and can starve/deadlock.
+    m17_no_nested_tx = (
+        "expireCommitted(" not in gate_fn
+        and "db.transaction(" not in gate_fn
+    )
+    m17_renew_active = (
+        "eq(workSessions.status, WorkSessionStatus.enum.active)" in live_fn
+        and 'throw new SessionsError("session_required")' in live_fn
+    )
+    m17_recheck_access = (
+        "requireAccess(" in live_fn
+        and "projectAccessCeiling" in sess_src
+        and '"insufficient_access"' in sess_src
+    )
+    m17_session_identity = (
+        "agentId: identity.agentId" in claim_fn
+        and "runId: input.runId" in claim_fn
+        and "workspaceId: identity.workspaceId" in claim_fn
+        and "keyId" not in claim_fn
+    )
+    m17_helper_shares = (
+        "return toSession(existing)" in claim_fn
+        and "existing.runId === input.runId" in claim_fn
+    )
+    m17_ready_db_time = (
+        "gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`)" in ready_fn
+        and "eq(issues.needsInput, false)" in ready_fn
+        and "isNull(workSessions.id)" in ready_fn
+    )
+    m17_unfenced = (
+        "sessionGate(tx" in update_issue_fn
+        and proj_src.count("sessionGate(") == 1
+    )
+    m17_adapters = (
+        "await authenticate(request)" in sess_mcp_src
+        and "isAgentError(error)" in sess_rest_src
+        and "SessionsError" in sess_rest_src
+    )
+    m17_tools = all(
+        name in tools_src
+        for name in (
+            "claim_issue",
+            "renew_claim",
+            "report_progress",
+            "stop_session",
+            "get_work_session",
+            "ready_work",
+            "list_work_sessions",
+        )
+    )
+    m17_problems = sess_rest_src.count("400: problem(") >= 5
 
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
@@ -1044,6 +1148,23 @@ def extract_code_facts() -> dict[str, Any]:
         "m16_event": m16_event,
         "m16_history_surface": m16_history_surface,
         "m16_http_problems": m16_http_problems,
+        "m17_unique_index": m17_unique_index,
+        "m17_issue_lock": m17_issue_lock,
+        "m17_lazy_expiry": m17_lazy_expiry,
+        "m17_db_time_lease": m17_db_time_lease,
+        "m17_progress_independent": m17_progress_independent,
+        "m17_fenced_write": m17_fenced_write,
+        "m17_gate_no_claim": m17_gate_no_claim,
+        "m17_no_nested_tx": m17_no_nested_tx,
+        "m17_renew_active": m17_renew_active,
+        "m17_recheck_access": m17_recheck_access,
+        "m17_session_identity": m17_session_identity,
+        "m17_helper_shares": m17_helper_shares,
+        "m17_ready_db_time": m17_ready_db_time,
+        "m17_unfenced": m17_unfenced,
+        "m17_adapters": m17_adapters,
+        "m17_tools": m17_tools,
+        "m17_problems": m17_problems,
     }
 
 
@@ -2441,6 +2562,212 @@ def check_m14(facts: dict[str, Any]) -> CheckResult:
     )
 
 
+def check_m17(facts: dict[str, Any]) -> CheckResult:
+    """#36: one active claim per issue, DB-time five-minute expiry, progress kept, and
+    fenced agent writes. Two agents (A, B) and two issues keep the state space small;
+    every transition consults a guard extracted from the live service, projects fence and
+    schema, so a deleted guard produces a shortest trace naming the exact operation."""
+    unique = facts["m17_unique_index"]
+    lock = facts["m17_issue_lock"]
+    lazy = facts["m17_lazy_expiry"]
+    db_time = facts["m17_db_time_lease"]
+    keep_progress = facts["m17_progress_independent"]
+    fenced = facts["m17_fenced_write"]
+    no_claim = facts["m17_gate_no_claim"]
+    no_nested = facts["m17_no_nested_tx"]
+    renew_active = facts["m17_renew_active"]
+    recheck = facts["m17_recheck_access"]
+    identity = facts["m17_session_identity"]
+    shared = facts["m17_helper_shares"]
+    ready_db = facts["m17_ready_db_time"]
+    unfenced = facts["m17_unfenced"]
+    adapters = facts["m17_adapters"]
+    tools_ok = facts["m17_tools"] and facts["m17_problems"]
+
+    KEYS = ("owner", "status", "lease", "progress", "needs")
+
+    def upd(sessions, i, **changes):
+        rows = [dict(zip(KEYS, s)) for s in sessions]
+        rows[i].update(changes)
+        return tuple(tuple(row[k] for k in KEYS) for row in rows)
+
+    def bad(violations, reason):
+        return violations | {reason}
+
+    def claim(sessions, levels, violations, who, i):
+        owner, status, _, _, _ = sessions[i]
+        if not lock:
+            violations = bad(violations, "unserialized_claim")
+        if levels[0 if who == "A" else 1] != "contribute":
+            return sessions, violations
+        if status == "active":
+            if owner == who:
+                return sessions, (violations if shared else bad(violations, "helper_duplicate_session"))
+            return sessions, (violations if unique and lock else bad(violations, "two_active_sessions"))
+        return upd(sessions, i, owner=who, status="active", lease="fresh"), violations
+
+    def touch_lease(sessions, violations, state):
+        """Expire a lapsed active session lazily; progress is a separate column."""
+        s0, s1 = sessions
+        v = violations
+        for i, s in enumerate((s0, s1)):
+            if s[1] == "active" and s[2] == "lapsed" and state == "expire":
+                sessions = upd(sessions, i, status="expired", owner=None, lease="lapsed")
+                if not keep_progress:
+                    sessions = upd(sessions, i, progress="")
+                    v = bad(v, "progress_erased")
+        return sessions, v
+
+    def renew(sessions, levels, violations, who, i, replacement=False):
+        owner, status, lease, _, _ = sessions[i]
+        v = violations
+        level = levels[0 if who == "A" else 1]
+        if level == "read":
+            if recheck:
+                return sessions, v
+            # A stale identity could still renew after a downgrade: access survived.
+            if status == "active" and owner == who and lease == "fresh":
+                return sessions, bad(v, "renewed_after_downgrade")
+            return sessions, v
+        if not recheck:
+            return sessions, bad(v, "renew_without_recheck")
+        if status != "active" or owner != who:
+            if not renew_active:
+                return upd(sessions, i, owner=who, status="active", lease="fresh"), bad(v, "stale_write_became_claim")
+            return sessions, v
+        if lease == "lapsed":
+            if not db_time or not renew_active:
+                return upd(sessions, i, lease="fresh"), bad(v, "renewed_expired_claim")
+            return touch_lease(sessions, v, "expire")[0], v
+        if replacement and not identity:
+            return sessions, bad(v, "replacement_key_refused")
+        return upd(sessions, i, lease="fresh"), v
+
+    def fenced_write(sessions, levels, violations, who, i, action):
+        owner, status, lease, _, _ = sessions[i]
+        v = violations
+        if levels[0 if who == "A" else 1] == "read":
+            return sessions, v
+        if status == "active" and owner == who and lease == "fresh":
+            return sessions, v
+        if lease == "lapsed" and status == "active":
+            if db_time and lazy and renew_active:
+                sessions, v = touch_lease(sessions, v, "expire")
+                return sessions, v
+            return sessions, bad(v, "stale_write_accepted")
+        if not fenced or not no_claim:
+            return sessions, bad(v, f"{action}_without_session")
+        return sessions, v
+
+    def tick(sessions, violations):
+        if not db_time:
+            return sessions, violations
+        rows = [dict(zip(KEYS, row)) for row in sessions]
+        for row in rows:
+            if row["status"] == "active":
+                row["lease"] = "lapsed"
+        return tuple(tuple(row[k] for k in KEYS) for row in rows), violations
+
+    def progress(sessions, levels, violations):
+        owner, status, lease, _, _ = sessions[0]
+        if levels[0] == "read":
+            return sessions, violations
+        if status == "active" and owner == "A" and lease == "fresh":
+            return upd(sessions, 0, progress="p"), violations
+        if lease == "lapsed" and status == "active":
+            if db_time and lazy and renew_active:
+                return touch_lease(sessions, violations, "expire")
+            return sessions, bad(violations, "stale_progress_accepted")
+        if not fenced or not no_claim:
+            return sessions, bad(violations, "progress_without_session")
+        return sessions, violations
+
+    def downgrade(sessions, levels, violations):
+        return sessions, ("read", levels[1]), violations
+
+    actions = [
+        ("A claims issue 1", lambda s, l, v: claim(s, l, v, "A", 0)),
+        ("B races A by claiming issue 1", lambda s, l, v: claim(s, l, v, "B", 0)),
+        ("B claims issue 2 in its own run", lambda s, l, v: claim(s, l, v, "B", 1)),
+        ("five minutes pass in database time", lambda s, l, v: tick(s, v)),
+        ("A renews its live claim", lambda s, l, v: renew(s, l, v, "A", 0)),
+        ("B renews issue 1 while A holds it", lambda s, l, v: renew(s, l, v, "B", 0)),
+        ("a replacement key for A renews the same session", lambda s, l, v: renew(s, l, v, "A", 0, replacement=True)),
+        ("A reports progress on issue 1", lambda s, l, v: progress(s, l, v)),
+        ("A edits issue 1", lambda s, l, v: fenced_write(s, l, v, "A", 0, "edit")),
+        ("A stops issue 1", lambda s, l, v: fenced_write(upd(s, 0, status="completed", owner=None) if s[0][1] == "active" and s[0][0] == "A" and s[0][2] == "fresh" else s, l, v, "A", 0, "stop")),
+        ("A's grant is downgraded to Read", lambda s, l, v: downgrade(s, l, v)),
+        ("A creates an issue, comment and knowledge without a session", lambda s, l, v: (s, v if unfenced else bad(v, "unfenced_refused"))),
+        ("issue 1 is paused for input", lambda s, l, v: (upd(s, 0, needs=True), v)),
+        ("the ready-work listing is read", lambda s, l, v: (s, v if _ready_ok(s, ready_db) else bad(v, "ready_listing_wrong"))),
+        ("the five-minute lease deadline is computed in database time", lambda s, l, v: (s, v if db_time else bad(v, "lease_not_db_time"))),
+        ("the fenced gate evaluates liveness on the caller's transaction", lambda s, l, v: (s, v if no_nested else bad(v, "nested_transaction_pool_starvation"))),
+        ("both adapters authenticate the bearer key", lambda s, l, v: (s, v if adapters else bad(v, "unauthenticated_adapter"))),
+        ("session tools are exposed with validated problems", lambda s, l, v: (s, v if tools_ok else bad(v, "session_tools_missing"))),
+    ]
+
+    def _ready_ok(sessions, guard):
+        for _, status, lease, _, needs in sessions:
+            claimed = status == "active" and (lease == "fresh" or not guard)
+            # A paused issue is never ready; a lapsed lease is not a live claim in DB time.
+            if needs and guard:
+                continue
+            if claimed and guard:
+                continue
+            if not guard and (needs or claimed):
+                return False
+        return True
+
+    init = (
+        ((None, "none", "fresh", "", False), (None, "none", "fresh", "", False)),
+        ("contribute", "contribute"),
+        frozenset(),
+    )
+
+    def next_states(state):
+        sessions, levels, violations = state
+        result = []
+        for idx, (label, action) in enumerate(actions):
+            if idx == 10:  # downgrade action returns a 3-tuple of its own
+                nsessions, nlevels, nviolations = action(sessions, levels, violations)
+                result.append((label, (nsessions, nlevels, nviolations)))
+                continue
+            nsessions, nviolations = action(sessions, levels, violations)
+            result.append((label, (nsessions, levels, nviolations)))
+        return result
+
+    def inv(state):
+        if state[2]:
+            reason = sorted(state[2])[0]
+            return False, f"work-session invariant broken: {reason}"
+        for owner, status, _, _, _ in state[0]:
+            if status == "active" and owner is None:
+                return False, "an active session has no owning agent"
+        return True, ""
+
+    return bfs_check(
+        "M17",
+        "Work Sessions and Claims (#36)",
+        "At most one active session per issue; five-minute DB-time expiry releases only that claim and keeps progress; fenced agent writes and renewal need a live session held by the agent; a downgrade stops both; ready work omits claimed and Needs input issues",
+        "safety",
+        init,
+        next_states,
+        inv,
+        [
+            "apps/server/src/features/work-sessions/service.ts",
+            "apps/server/src/features/work-sessions/rest.ts",
+            "apps/server/src/features/work-sessions/mcp.ts",
+            "apps/server/src/features/work-sessions/index.ts",
+            "apps/server/src/features/projects/service.ts",
+            "apps/server/src/features/projects/rest.ts",
+            "packages/contract/src/sessions.ts",
+            "packages/contract/src/mcp-tools.ts",
+            "apps/server/src/db/schema.ts",
+            "db/migrations/0022_spooky_barracuda.sql",
+        ],
+    )
+
+
 def main() -> None:
     facts = extract_code_facts()
     results = [
@@ -2461,6 +2788,7 @@ def main() -> None:
         check_m14(facts),
         check_m15(facts),
         check_m16(facts),
+        check_m17(facts),
     ]
 
     if "--json" in sys.argv:

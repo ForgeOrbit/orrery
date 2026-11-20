@@ -58,7 +58,8 @@ export type ProjectsErrorKind =
   | "insufficient_project_access"
   | "member_not_found"
   | "personal_project_access"
-  | "workspace_owner_access";
+  | "workspace_owner_access"
+  | "session_required";
 
 const messages = {
   not_signed_in: "Not signed in.",
@@ -71,6 +72,7 @@ const messages = {
   member_not_found: "This person is not a member of the workspace.",
   personal_project_access: "Personal projects have no direct collaborators.",
   workspace_owner_access: "Workspace owners already have Manage access to every project.",
+  session_required: "This agent holds no live work session for this issue.",
 } as const satisfies Record<ProjectsErrorKind, string>;
 
 const ACCESS_RANK: Record<ProjectAccessLevel, number> = {
@@ -968,8 +970,20 @@ async function readProjectGrant(tx: DbTransaction, projectId: string, humanId: s
   return row;
 }
 
+// The work-sessions feature's narrow seam for fenced agent writes. It lazily expires a
+// stale lease inside the caller's already issue-locked transaction and answers whether the
+// agent holds a live session. Project edits never claim on the agent's behalf: a stale
+// write is refused, not turned into a fresh claim.
+export type WorkSessionGate = (
+  tx: DbTransaction,
+  agentId: string,
+  workspaceId: string,
+  issueId: string,
+) => Promise<boolean>;
+
 export interface ProjectsDeps {
   db: PostgresJsDatabase;
+  sessionGate: WorkSessionGate;
 }
 
 export interface ProjectsService {
@@ -1051,7 +1065,7 @@ export interface ProjectsService {
   ): Promise<KnowledgeEntry>;
 }
 
-export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
+export function createProjectsService({ db, sessionGate }: ProjectsDeps): ProjectsService {
   return {
     // The listing is the caller's accessible projects in the workspace: all of a personal
     // workspace's own projects, all of a shared workspace's projects for an owner, and
@@ -1554,6 +1568,16 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
         // each other's changes or diverge the activity feed from the issue's status.
         await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issueId)).for("update");
         const current = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
+        // #20 fences an agent's issue state/body edits (including close and reopen) on a
+        // live session it holds. Humans, comments, creation and knowledge stay unfenced.
+        // The gate runs after access and under the same issue row lock, so a downgrade to
+        // Read and an expired lease both refuse the write in this one transaction.
+        if (
+          actor.kind === "agent" &&
+          !(await sessionGate(tx, actor.identity.agentId, actor.identity.workspaceId, issueId))
+        ) {
+          throw new ProjectsError("session_required");
+        }
         const title = input.title ?? current.title;
         const body = input.body ?? current.body;
         const status = input.status ?? current.status;

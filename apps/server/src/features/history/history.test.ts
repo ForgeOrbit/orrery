@@ -134,6 +134,7 @@ describe("history visibility against real Postgres", () => {
       db: database.db,
       sessionReader: accounts.sessionReader,
       agentAuthenticator: async () => null,
+      sessionGate: async () => true,
     });
     const agentsFeature = createAgentsFeature({
       db: database.db,

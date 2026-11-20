@@ -4,20 +4,28 @@ import type { Feature } from "../../platform/feature.ts";
 import type { DbTransaction } from "../../platform/db.ts";
 import type { SessionReader } from "../accounts/index.ts";
 import type { AgentAuthenticator } from "../agents/index.ts";
-import { type ProjectsDeps, type ProjectsService, createProjectsService } from "./service.ts";
+import {
+  type ProjectsDeps,
+  type ProjectsService,
+  type WorkSessionGate,
+  createProjectsService,
+} from "./service.ts";
 import { createProjectsMcp } from "./mcp.ts";
 import { createProjectsRest, routes } from "./rest.ts";
 
 export { routes as projectsRoutes };
 export { projectAccessAtLeast } from "./service.ts";
 export { ProjectsError } from "./service.ts";
-export type { ProjectsErrorKind, WorkActor } from "./service.ts";
+export type { ProjectsErrorKind, WorkActor, WorkSessionGate } from "./service.ts";
 
 export type ProjectsDepsWithAccounts = ProjectsDeps & {
   sessionReader: SessionReader;
   // A narrow seam from the agents feature: both project adapters turn a request into
   // one WorkActor, so REST and MCP share the same authorization decisions.
   agentAuthenticator: AgentAuthenticator;
+  // The work-sessions feature fences agent issue edits on a live session. Late-bound in
+  // features/index.ts so the two features need not import each other.
+  sessionGate: WorkSessionGate;
 };
 
 // The feature also exposes the access cleanup a workspace membership removal needs. It

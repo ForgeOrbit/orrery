@@ -1,0 +1,337 @@
+import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import type { Context } from "hono";
+import {
+  ClaimWorkSessionInput,
+  IssuesResponse,
+  ReportProgressInput,
+  StopWorkSessionInput,
+  WorkSession,
+  WorkSessionsResponse,
+} from "@orrery/contract";
+import {
+  problemContent as problem,
+  problemResponse,
+  validationHook,
+} from "../../platform/problem.ts";
+import type { SessionReader } from "../accounts/index.ts";
+import { isAgentError, type AgentAuthenticator } from "../agents/index.ts";
+import type { WorkActor } from "../projects/index.ts";
+import { SessionsError, type SessionsErrorKind, type SessionsService } from "./service.ts";
+
+// Thin REST adapter for work sessions (#36). Every decision is in service.ts: the bearer
+// key resolves to an agent identity, the session's identity comes from the service, and
+// every error is an RFC 9457 Problem built through platform/problem.ts.
+
+const issueParams = z.object({ issueId: z.string().min(1).max(200) });
+const projectParams = z.object({ projectId: z.string().min(1).max(200) });
+const claimBody = ClaimWorkSessionInput.omit({ issueId: true });
+const progressBody = ReportProgressInput.omit({ issueId: true });
+const stopBody = StopWorkSessionInput.omit({ issueId: true });
+
+const claim = createRoute({
+  method: "post",
+  path: "/api/issues/{issueId}/work-sessions",
+  summary: "Claim an issue for an agent and run",
+  description:
+    "Start a work session. The session belongs to the authenticated agent, the named run, the key's workspace and the issue — not to the key itself. At most one active session can hold an issue; helpers passing the same (agent, run, issue) join it. The claim is a five-minute lease evaluated in database time.",
+  request: {
+    params: issueParams,
+    body: { required: true, content: { "application/json": { schema: claimBody } } },
+  },
+  responses: {
+    201: {
+      description: "The active work session",
+      content: { "application/json": { schema: WorkSession } },
+    },
+    400: problem("The claim is invalid"),
+    401: problem("An agent key is required, or the key is invalid or revoked"),
+    403: problem("Contribute access is required to claim this issue"),
+    404: problem("No such issue or run is in scope for this agent"),
+    409: problem("Another worker holds the active session for this issue"),
+  },
+});
+
+const renew = createRoute({
+  method: "post",
+  path: "/api/issues/{issueId}/work-sessions/renew",
+  summary: "Check in and renew a claim",
+  description:
+    "Refresh the five-minute lease in database time for the live session this agent holds on the issue. An expired or released session is never renewed or silently reacquired.",
+  request: { params: issueParams },
+  responses: {
+    200: {
+      description: "The renewed session",
+      content: { "application/json": { schema: WorkSession } },
+    },
+    400: problem("The issue id is invalid"),
+    401: problem("An agent key is required, or the key is invalid or revoked"),
+    403: problem("Contribute access is required to renew this claim"),
+    404: problem("No such issue is in scope for this agent"),
+    409: problem("This agent holds no live session for this issue"),
+  },
+});
+
+const progress = createRoute({
+  method: "post",
+  path: "/api/issues/{issueId}/work-sessions/progress",
+  summary: "Record progress on a live session",
+  description:
+    "Store a progress summary on the live session this agent holds. Progress is held independently of the lease, so expiry never erases it. Requires a live session.",
+  request: {
+    params: issueParams,
+    body: { required: true, content: { "application/json": { schema: progressBody } } },
+  },
+  responses: {
+    200: {
+      description: "The session with its updated progress",
+      content: { "application/json": { schema: WorkSession } },
+    },
+    400: problem("The progress report is invalid"),
+    401: problem("An agent key is required, or the key is invalid or revoked"),
+    403: problem("Contribute access is required to work on this issue"),
+    404: problem("No such issue is in scope for this agent"),
+    409: problem("This agent holds no live session for this issue"),
+  },
+});
+
+const stop = createRoute({
+  method: "post",
+  path: "/api/issues/{issueId}/work-sessions/stop",
+  summary: "Complete or release a live session",
+  description:
+    "End the live session this agent holds. Stopping is distinct from closing the issue; the outcome records whether the work completed or was released for another worker.",
+  request: {
+    params: issueParams,
+    body: { required: true, content: { "application/json": { schema: stopBody } } },
+  },
+  responses: {
+    200: {
+      description: "The ended session",
+      content: { "application/json": { schema: WorkSession } },
+    },
+    400: problem("The stop request is invalid"),
+    401: problem("An agent key is required, or the key is invalid or revoked"),
+    403: problem("Contribute access is required to work on this issue"),
+    404: problem("No such issue is in scope for this agent"),
+    409: problem("This agent holds no live session for this issue"),
+  },
+});
+
+const current = createRoute({
+  method: "get",
+  path: "/api/issues/{issueId}/work-sessions",
+  summary: "The most recent work session for an issue",
+  description:
+    "Read the last session recorded for an issue, including its progress and the lease deadline. A stale active lease is reported as expired in database time. This read needs no claim and never renews one.",
+  request: { params: issueParams },
+  responses: {
+    200: {
+      description: "The most recent session",
+      content: { "application/json": { schema: WorkSession } },
+    },
+    400: problem("The issue id is invalid"),
+    401: problem("Not signed in, or the agent key is invalid or revoked"),
+    403: problem("Read access is required to inspect this issue"),
+    404: problem("No such issue or session is in scope for the caller"),
+    409: problem("No session was recorded for this issue"),
+  },
+});
+
+const all = createRoute({
+  method: "get",
+  path: "/api/issues/{issueId}/work-sessions/all",
+  summary: "Every work session recorded for an issue",
+  description:
+    "Read the full history of sessions for an issue, newest first: active, completed, released and expired. This read needs no claim.",
+  request: { params: issueParams },
+  responses: {
+    200: {
+      description: "The issue's sessions",
+      content: { "application/json": { schema: WorkSessionsResponse } },
+    },
+    400: problem("The issue id is invalid"),
+    401: problem("Not signed in, or the agent key is invalid or revoked"),
+    403: problem("Read access is required to inspect this issue"),
+    404: problem("No such issue is in scope for the caller"),
+  },
+});
+
+const readyWork = createRoute({
+  method: "get",
+  path: "/api/projects/{projectId}/ready-work",
+  summary: "Minimal ready-work listing for a project",
+  description:
+    "Open issues that are not Needs input and have no live active session, evaluated in database time. Needs no claim; a full board is out of scope.",
+  request: { params: projectParams },
+  responses: {
+    200: {
+      description: "The ready issues",
+      content: { "application/json": { schema: IssuesResponse } },
+    },
+    400: problem("The project id is invalid"),
+    401: problem("Not signed in, or the agent key is invalid or revoked"),
+    403: problem("Read access is required to list ready work"),
+    404: problem("No such project is in scope for the caller"),
+  },
+});
+
+export const routes = [claim, renew, progress, stop, current, all, readyWork];
+
+const statusFor = {
+  not_signed_in: 401,
+  issue_not_found: 404,
+  project_not_found: 404,
+  run_not_found: 404,
+  insufficient_access: 403,
+  issue_claimed: 409,
+  session_required: 409,
+} as const satisfies Record<SessionsErrorKind, number>;
+
+function isKind<K extends readonly SessionsErrorKind[]>(
+  error: SessionsError,
+  kinds: K,
+): error is SessionsError & { kind: K[number] } {
+  return kinds.some((kind) => kind === error.kind);
+}
+
+// The kinds array narrows the problem status for each route, so a route declares exactly
+// the failures it can produce (the same pattern as projects/rest.ts).
+function failure<K extends readonly SessionsErrorKind[]>(c: Context, error: unknown, kinds: K) {
+  if (isAgentError(error)) {
+    return problemResponse(c, { status: 401, code: error.kind, title: error.message });
+  }
+  if (error instanceof SessionsError && isKind(error, kinds)) {
+    return problemResponse(c, {
+      status: statusFor[error.kind],
+      code: error.kind,
+      title: error.message,
+    });
+  }
+  throw error;
+}
+
+const claimKinds = [
+  "not_signed_in",
+  "issue_not_found",
+  "run_not_found",
+  "insufficient_access",
+  "issue_claimed",
+] as const;
+const writeKinds = [
+  "not_signed_in",
+  "issue_not_found",
+  "insufficient_access",
+  "session_required",
+] as const;
+const currentKinds = writeKinds;
+const listKinds = ["not_signed_in", "issue_not_found", "insufficient_access"] as const;
+const readyKinds = ["not_signed_in", "project_not_found", "insufficient_access"] as const;
+
+export function createSessionsRest(
+  service: SessionsService,
+  sessionReader: SessionReader,
+  authenticate: AgentAuthenticator,
+) {
+  const app = new OpenAPIHono({ defaultHook: validationHook });
+
+  // One actor path for reads: a bearer key acts as an agent, otherwise a browser session
+  // acts as a human. Mutations pass the agent identity directly; a missing key becomes a
+  // SessionsError in the service rather than silently falling back to a cookie.
+  const workActor = async (c: Context): Promise<WorkActor | null> => {
+    const identity = await authenticate(c.req.raw);
+    if (identity !== null) return { kind: "agent", identity };
+    const account = await sessionReader(c);
+    return account === null ? null : { kind: "human", account };
+  };
+  const agentActor = async (c: Context) => {
+    const identity = await authenticate(c.req.raw);
+    return identity === null ? null : { kind: "agent" as const, identity };
+  };
+
+  app.openapi(claim, async (c) => {
+    try {
+      return c.json(
+        await service.claim(await agentActor(c), {
+          issueId: c.req.valid("param").issueId,
+          runId: c.req.valid("json").runId,
+        }),
+        201,
+      );
+    } catch (error) {
+      return failure(c, error, claimKinds);
+    }
+  });
+
+  app.openapi(renew, async (c) => {
+    try {
+      return c.json(await service.renew(await agentActor(c), c.req.valid("param").issueId), 200);
+    } catch (error) {
+      return failure(c, error, writeKinds);
+    }
+  });
+
+  app.openapi(progress, async (c) => {
+    try {
+      return c.json(
+        await service.progress(
+          await agentActor(c),
+          c.req.valid("param").issueId,
+          c.req.valid("json").summary,
+        ),
+        200,
+      );
+    } catch (error) {
+      return failure(c, error, writeKinds);
+    }
+  });
+
+  app.openapi(stop, async (c) => {
+    try {
+      return c.json(
+        await service.stop(
+          await agentActor(c),
+          c.req.valid("param").issueId,
+          c.req.valid("json").outcome,
+        ),
+        200,
+      );
+    } catch (error) {
+      return failure(c, error, writeKinds);
+    }
+  });
+
+  app.openapi(current, async (c) => {
+    try {
+      return c.json(
+        await service.getSession(await workActor(c), c.req.valid("param").issueId),
+        200,
+      );
+    } catch (error) {
+      return failure(c, error, currentKinds);
+    }
+  });
+
+  app.openapi(all, async (c) => {
+    try {
+      return c.json(
+        await service.listSessions(await workActor(c), c.req.valid("param").issueId),
+        200,
+      );
+    } catch (error) {
+      return failure(c, error, listKinds);
+    }
+  });
+
+  app.openapi(readyWork, async (c) => {
+    try {
+      return c.json(
+        await service.readyWork(await workActor(c), c.req.valid("param").projectId),
+        200,
+      );
+    } catch (error) {
+      return failure(c, error, readyKinds);
+    }
+  });
+
+  return app;
+}

@@ -7,6 +7,7 @@ import type { Logger } from "../platform/log.ts";
 import { createAccountsFeature, accountsRoutes } from "./accounts/index.ts";
 import { createAgentsFeature, agentsRoutes, revokeMemberWorkspaceKeys } from "./agents/index.ts";
 import type { AgentAuthenticator } from "./agents/index.ts";
+import type { WorkSessionGate } from "./projects/index.ts";
 import { createHistoryFeature, historyRoutes } from "./history/index.ts";
 import { createInvitationsFeature, invitationsRoutes } from "./invitations/index.ts";
 import { createProjectsFeature, projectAccessAtLeast, projectsRoutes } from "./projects/index.ts";
@@ -14,6 +15,7 @@ import { createRecoveryFeature, recoveryRoutes } from "./recovery/index.ts";
 import { createRunsFeature, runsRoutes } from "./runs/index.ts";
 import { createSettingsFeature, settingsRoutes } from "./settings/index.ts";
 import { createSystemFeature, systemRoutes } from "./system/index.ts";
+import { createSessionsFeature, sessionsRoutes } from "./work-sessions/index.ts";
 import { createWorkspacesFeature, workspacesRoutes } from "./workspaces/index.ts";
 
 export function createFeatures(database: Database, config: Config, log: Logger): Feature[] {
@@ -43,10 +45,18 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     if (authenticateAgent === undefined) throw new Error("agent authenticator is not wired");
     return authenticateAgent(request);
   };
+  // Projects fences agent issue edits through a late-bound seam; work sessions borrows
+  // projects' one access resolver. Neither feature imports the other's service.
+  let sessionGate: WorkSessionGate | undefined;
+  const workSessionGate: WorkSessionGate = (tx, agentId, workspaceId, issueId) => {
+    if (sessionGate === undefined) throw new Error("work session gate is not wired");
+    return sessionGate(tx, agentId, workspaceId, issueId);
+  };
   const projects = createProjectsFeature({
     db: database.db,
     sessionReader: accounts.sessionReader,
     agentAuthenticator,
+    sessionGate: workSessionGate,
   });
   const agents = createAgentsFeature({
     db: database.db,
@@ -56,6 +66,19 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     projectAccessAtLeast,
   });
   authenticateAgent = agents.authenticator;
+  // Work sessions shares the agents authenticator and projects' access resolver; it is
+  // built after both so its gate is live before any request can reach a fenced write.
+  const sessions = createSessionsFeature({
+    db: database.db,
+    sessionReader: accounts.sessionReader,
+    authenticate: agentAuthenticator,
+    projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
+      projects.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
+    projectAccessAtLeast,
+    listIssues: (actor, projectId) => projects.service.listIssues(actor, projectId),
+  });
+  sessionGate = (tx, agentId, workspaceId, issueId) =>
+    sessions.agentHoldsSession(tx, agentId, workspaceId, issueId);
   return [
     createSystemFeature({ ping: database.ping }),
     accounts,
@@ -118,6 +141,7 @@ export function createFeatures(database: Database, config: Config, log: Logger):
       sessionReader: accounts.sessionReader,
       authenticate: agentAuthenticator,
     }),
+    sessions,
   ];
 }
 
@@ -133,4 +157,5 @@ export const routes = [
   ...projectsRoutes,
   ...historyRoutes,
   ...runsRoutes,
+  ...sessionsRoutes,
 ];
