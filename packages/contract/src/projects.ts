@@ -188,9 +188,6 @@ export const IssueLink = z
   .meta({ id: "IssueLink" });
 export type IssueLink = z.infer<typeof IssueLink>;
 
-export const IssueLinksResponse = z.array(IssueLink).meta({ id: "IssueLinksResponse" });
-export type IssueLinksResponse = z.infer<typeof IssueLinksResponse>;
-
 export const CreateIssueLinkRequest = z
   .object({
     url: IssueLinkUrl,
@@ -202,7 +199,7 @@ export type CreateIssueLinkRequest = z.infer<typeof CreateIssueLinkRequest>;
 
 // The issue detail is the issue plus its structured links. The list and mutation responses
 // stay plain Issues so a project-wide listing does not pay for every issue's link rows.
-export const IssueDetail = Issue.extend({ links: IssueLinksResponse }).meta({ id: "IssueDetail" });
+export const IssueDetail = Issue.extend({ links: z.array(IssueLink) }).meta({ id: "IssueDetail" });
 export type IssueDetail = z.infer<typeof IssueDetail>;
 
 // The issue body is Markdown, stored as written. The cap bounds the work of parsing and

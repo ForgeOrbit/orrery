@@ -1514,7 +1514,10 @@
             "$ref": "#/components/schemas/Actor"
           },
           "links": {
-            "$ref": "#/components/schemas/IssueLinksResponse"
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IssueLink"
+            }
           }
         },
         "required": [
@@ -1531,12 +1534,6 @@
           "updatedBy",
           "links"
         ]
-      },
-      "IssueLinksResponse": {
-        "type": "array",
-        "items": {
-          "$ref": "#/components/schemas/IssueLink"
-        }
       },
       "IssueLink": {
         "type": "object",

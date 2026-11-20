@@ -519,7 +519,10 @@
               "$ref": "#/$defs/Actor"
             },
             "links": {
-              "$ref": "#/$defs/IssueLinksResponse"
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/IssueLink"
+              }
             }
           },
           "required": [
@@ -597,12 +600,6 @@
           "type": "string",
           "format": "email",
           "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
-        },
-        "IssueLinksResponse": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/IssueLink"
-          }
         },
         "IssueLink": {
           "type": "object",

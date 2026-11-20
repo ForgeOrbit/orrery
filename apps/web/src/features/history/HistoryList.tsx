@@ -35,6 +35,8 @@ const labels: Record<string, string> = {
   issue_commented: "commented on issue",
   issue_closed: "closed issue",
   issue_reopened: "reopened issue",
+  issue_link_added: "linked on issue",
+  issue_link_removed: "unlinked from issue",
   knowledge_created: "created knowledge",
   knowledge_edited: "edited knowledge",
   installation_bootstrap: "bootstrapped the installation",
