@@ -572,6 +572,11 @@ export const agentApiKeys = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     revokedByHumanId: text("revoked_by_human_id").references(() => humans.id),
+    // Rotation lineage (#35): a replacement names the key it replaces. Ids only, never a
+    // secret. SET NULL keeps a historical replacement valid if a source key is deleted.
+    replacesKeyId: text("replaces_key_id").references((): AnyPgColumn => agentApiKeys.id, {
+      onDelete: "set null",
+    }),
   },
   (t) => [
     // DDL cannot bind parameters; the values come from the contract enum.

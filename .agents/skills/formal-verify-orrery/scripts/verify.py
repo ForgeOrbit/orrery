@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Orrery Formal Verification Model Checker (M1-M13).
+Orrery Formal Verification Model Checker (M1-M16).
 
 Extracts critical concurrency, locking, and state-transition guards directly from
 Orrery's server source and SQL migrations, then runs an exhaustive BFS finite-state
@@ -843,6 +843,81 @@ def extract_code_facts() -> dict[str, Any]:
         and 'throw new RecoveryError("not_system_administrator")' in rec_local_fn
     )
 
+    # M16 (#35): rotation. Each guard is read from the decision that owns it — the
+    # service method, its thin REST route, the key tables, the migration, and the shared
+    # contract — so deleting one flips the corresponding bounded attempt below.
+    ag_rest = read_text("apps/server/src/features/agents/rest.ts")
+    ag_contract = read_text("packages/contract/src/agents.ts")
+    mig_0021 = read_text("db/migrations/0021_demonic_warstar.sql")
+    rotate_fn = slice_between(ag_src, "async rotateKey(", "async listKeys(")
+    rotate_prelude = rotate_fn.split("const [source]", 1)[0]
+    source_select = slice_between(rotate_fn, "const [source] = await tx", ".limit(1)")
+    rotate_insert = slice_between(rotate_fn, ".insert(agentApiKeys)", ".returning(")
+    rotate_route = slice_between(ag_rest, "const rotateKey = createRoute(", "const listKeys = createRoute(")
+    keys_table = slice_between(ag_schema, "export const agentApiKeys = pgTable(", "// The selected projects a key may act on")
+
+    m16_serialized = "await lockWorkspaceOwnershipWrites(tx)" in rotate_prelude
+    m16_source_ownership = (
+        "eq(agents.humanId, actor.humanId)" in source_select
+        and 'throw new AgentsError("key_not_found")' in rotate_fn
+    )
+    m16_revoked_refused = (
+        "source.key.revokedAt !== null" in rotate_fn
+        and 'throw new AgentsError("source_key_revoked")' in rotate_fn
+    )
+    m16_expired_refused = (
+        "gt(agentApiKeys.expiresAt, sql`now()`)" in rotate_fn
+        and 'throw new AgentsError("source_key_expired")' in rotate_fn
+    )
+    m16_workspace_access = (
+        "humanCanUseWorkspace(tx, source.key.workspaceId, actor.humanId)" in rotate_fn
+        and 'throw new AgentsError("workspace_not_found")' in rotate_fn
+    )
+    m16_same_agent_workspace = (
+        "agentId: source.key.agentId" in rotate_insert
+        and "workspaceId: source.key.workspaceId" in rotate_insert
+        and "replacesKeyId: keyId" in rotate_insert
+    )
+    m16_independent_secret = (
+        "const secret = newSecret()" in rotate_fn
+        and "tokenHash: tokenHash(secret)" in rotate_insert
+        and "tokenHash" not in source_select
+        and "secret:" not in rotate_insert
+    )
+    m16_independent_expiry = (
+        "expiresAt: expiryFor(validity)" in rotate_insert
+        and "now() + make_interval(days =>" in ag_src
+        and "expiresAt: source" not in rotate_insert
+    )
+    m16_grants_capped = (
+        "projectAccessCeiling(" in rotate_fn
+        and "projectAccessAtLeast(humanLevel, grant.level)" in rotate_fn
+        and "level: humanLevel" in rotate_fn
+        and 'throw new AgentsError("invalid_key_grant")' in rotate_fn
+    )
+    m16_no_cascade = (
+        '"replaces_key_id"' in keys_table
+        and 'onDelete: "set null"' in keys_table
+        and "ON DELETE set null" in mig_0021
+        and "ON DELETE CASCADE" not in mig_0021
+    )
+    m16_event = (
+        "AgentKeyEventType.enum.agent_key_rotated" in rotate_fn
+        and '"agent_key_rotated"' in ag_contract
+        and "insert(agentKeyEvents)" in record_fn
+        and m11_events_without_secret
+    )
+    m16_history_surface = (
+        "type: row.type" in hist_key_fn
+        and "loadKeyEvents(" in hist_ws_fn
+        and '"agent_key_rotated"' in ag_contract
+    )
+    m16_http_problems = (
+        "400: problem(" in rotate_route
+        and "409: problem(" in rotate_route
+        and "201:" in rotate_route
+    )
+
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
         "m2a_supersedes_failed": m2a_supersedes_failed,
@@ -956,6 +1031,19 @@ def extract_code_facts() -> dict[str, Any]:
         "m15_http_problems": m15_http_problems,
         "m15_revokes_pending_tokens": m15_revokes_pending_tokens,
         "m15_admin_only_local": m15_admin_only_local,
+        "m16_serialized": m16_serialized,
+        "m16_source_ownership": m16_source_ownership,
+        "m16_revoked_refused": m16_revoked_refused,
+        "m16_expired_refused": m16_expired_refused,
+        "m16_workspace_access": m16_workspace_access,
+        "m16_same_agent_workspace": m16_same_agent_workspace,
+        "m16_independent_secret": m16_independent_secret,
+        "m16_independent_expiry": m16_independent_expiry,
+        "m16_grants_capped": m16_grants_capped,
+        "m16_no_cascade": m16_no_cascade,
+        "m16_event": m16_event,
+        "m16_history_surface": m16_history_surface,
+        "m16_http_problems": m16_http_problems,
     }
 
 
@@ -2124,6 +2212,155 @@ def check_m15(facts: dict[str, Any]) -> CheckResult:
     )
 
 
+def check_m16(facts: dict[str, Any]) -> CheckResult:
+    # #35 rotation. Bounded attempts over the replacement's lifecycle: every attempt is
+    # a direct probe of one extracted guard, with the outcome when that guard is missing.
+    # Overlap, independent expiry, old-revoke isolation, password-reset independence, and
+    # the secret-free replacement event are each named in the code's own API/TS words.
+    overlap = facts["m16_same_agent_workspace"] and facts["m16_independent_secret"]
+    attempts: list[tuple[str, str, bool, str]] = [
+        (
+            "POST /api/agents/keys/<live key>/rotate creates a replacement for the same agent and workspace",
+            "same_target",
+            overlap and facts["m16_serialized"],
+            "other_target",
+        ),
+        (
+            "POST rotate mints a new secret and never repeats the source secret",
+            "new_secret_only",
+            facts["m16_independent_secret"],
+            "old_secret_reused",
+        ),
+        (
+            "Both keys authenticate during the overlap",
+            "both_live",
+            overlap,
+            "only_source_live",
+        ),
+        (
+            "DELETE the source key leaves the replacement authenticating",
+            "new_live",
+            facts["m16_no_cascade"],
+            "new_revoked",
+        ),
+        (
+            "DELETE the replacement leaves the source authenticating",
+            "old_live",
+            facts["m16_no_cascade"],
+            "old_revoked",
+        ),
+        (
+            "Letting the source key expire does not expire the replacement",
+            "new_live",
+            facts["m16_independent_expiry"],
+            "new_expired",
+        ),
+        (
+            "Letting the replacement expire does not expire the source",
+            "old_live",
+            facts["m16_independent_expiry"],
+            "old_expired",
+        ),
+        (
+            "The replacement expiry is computed from now, not copied from the source",
+            "fresh_expiry",
+            facts["m16_independent_expiry"],
+            "copied_expiry",
+        ),
+        (
+            "A password reset leaves both the source and replacement keys authenticating",
+            "both_live",
+            facts["m15_agent_keys_untouched"],
+            "keys_swept",
+        ),
+        ("POST rotate on a revoked key is refused", "refused", facts["m16_revoked_refused"], "rotated"),
+        (
+            "POST rotate on an expired key is refused in database time",
+            "refused",
+            facts["m16_expired_refused"],
+            "rotated",
+        ),
+        (
+            "POST rotate on another human's key is refused",
+            "refused",
+            facts["m16_source_ownership"],
+            "rotated",
+        ),
+        (
+            "POST rotate on a key whose workspace the human lost is refused",
+            "refused",
+            facts["m16_workspace_access"],
+            "rotated",
+        ),
+        (
+            "POST rotate racing removeMember leaves no unrevoked replacement for a removed member",
+            "no_orphan",
+            facts["m16_serialized"],
+            "orphan_key",
+        ),
+        (
+            "Preserved grants above current human access are capped and explicit grants validated",
+            "capped",
+            facts["m16_grants_capped"],
+            "stale_authority",
+        ),
+        (
+            "Rotation writes one secret-free agent_key_rotated event on the replacement",
+            "event_no_secret",
+            facts["m16_event"],
+            "no_event",
+        ),
+        (
+            "The #32 history view surfaces agent_key_rotated without a secret",
+            "surfaced",
+            facts["m16_history_surface"],
+            "hidden",
+        ),
+        (
+            "The validated rotation route declares a 400 Problem",
+            "problem",
+            facts["m16_http_problems"],
+            "no_problem",
+        ),
+    ]
+    init = ("start",)
+
+    def next_states(state):
+        if state != ("start",):
+            return []
+        return [
+            (f"{label} -> {expected if guard else wrong}", ("probed", idx, expected if guard else wrong))
+            for idx, (label, expected, guard, wrong) in enumerate(attempts)
+        ]
+
+    def inv(state):
+        if state[0] != "probed":
+            return True, ""
+        label, expected, _, _ = attempts[state[1]]
+        if state[2] != expected:
+            return False, f"{label} returned {state[2]}, expected {expected}"
+        return True, ""
+
+    return bfs_check(
+        "M16",
+        "Agent Key Rotation (#35)",
+        "Rotation overlaps the old and new keys with independent expiry and revocation, survives a password reset, caps grants by current access, and records a secret-free event that history surfaces",
+        "safety",
+        init,
+        next_states,
+        inv,
+        [
+            "apps/server/src/features/agents/service.ts",
+            "apps/server/src/features/agents/rest.ts",
+            "apps/server/src/features/history/service.ts",
+            "apps/server/src/features/recovery/service.ts",
+            "packages/contract/src/agents.ts",
+            "apps/server/src/db/schema.ts",
+            "db/migrations/0021_demonic_warstar.sql",
+        ],
+    )
+
+
 def check_m14(facts: dict[str, Any]) -> CheckResult:
     # #34: run identity is isolated per agent/workspace/harness/session, a resume reuses
     # the run, children link to their parent, model changes are events, and missing
@@ -2223,6 +2460,7 @@ def main() -> None:
         check_m13(facts),
         check_m14(facts),
         check_m15(facts),
+        check_m16(facts),
     ]
 
     if "--json" in sys.argv:
