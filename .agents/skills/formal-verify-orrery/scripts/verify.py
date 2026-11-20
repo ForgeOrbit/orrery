@@ -370,6 +370,88 @@ def extract_code_facts() -> dict[str, Any]:
     )
     m10_self_revoke = "if (row.invitedByHumanId !== actor.humanId)" in revoke_fn
 
+    # M11 (#30): workspace-scoped agent API keys. Each guard is extracted from the
+    # function that owns the decision, so removing one produces a short counterexample
+    # naming the exact API path and TS function instead of a generic model failure.
+    ag_src = read_text("apps/server/src/features/agents/service.ts")
+    ag_schema = read_text("apps/server/src/db/schema.ts")
+    resolve_fn = slice_between(
+        ag_src, "async function resolveKeyInTransaction(", "export function createAgentsService"
+    )
+    issue_fn = slice_between(ag_src, "async issueKey(", "async listKeys(")
+    revoke_own_fn = slice_between(ag_src, "async function revokeInTransaction(", "async function resolveKeyInTransaction(")
+    record_fn = slice_between(ag_src, "async function recordEvent(", "type KeyRow")
+    owner_fn = slice_between(ag_src, "async ownerRevokeKey(", "async authenticate(")
+    events_table = slice_between(ag_schema, "export const agentKeyEvents = pgTable(", "// An issue in a project.")
+
+    m11_revocation = (
+        "row.key.revokedAt !== null" in resolve_fn
+        and 'throw new AgentsError("key_revoked")' in resolve_fn
+        and "revokedAt: sql`now()`" in revoke_own_fn
+    )
+    m11_membership = (
+        "humanCanUseWorkspace(tx, row.key.workspaceId, row.humanId)" in resolve_fn
+        and 'throw new AgentsError("key_workspace_inaccessible")' in resolve_fn
+    )
+    m11_expiry = (
+        "gt(agentApiKeys.expiresAt, sql`now()`)" in resolve_fn
+        and 'throw new AgentsError("key_expired")' in resolve_fn
+    )
+    expiry_block = slice_between(
+        resolve_fn,
+        "if (AgentKeyValidity.parse(row.key.validity) !== AgentKeyValidity.enum.never)",
+        "// A key is scoped",
+    )
+    m11_never_skips_expiry_only = (
+        "gt(agentApiKeys.expiresAt" in expiry_block
+        and "row.key.revokedAt" not in expiry_block
+        and "humanCanUseWorkspace" not in expiry_block
+        and "projectAccessCeiling(" not in expiry_block
+    )
+    m11_scope = (
+        "target.workspaceId !== row.key.workspaceId" in resolve_fn
+        and 'throw new AgentsError("key_out_of_scope")' in resolve_fn
+    )
+    m11_project_scope = (
+        "effective.some((grant) => grant.projectId === target.projectId)" in resolve_fn
+        and 'throw new AgentsError("insufficient_agent_access")' in resolve_fn
+    )
+    m11_ceiling = bool(
+        re.search(r"projectAccessCeiling\(", resolve_fn)
+        and re.search(
+            r"projectAccessAtLeast\(humanLevel,\s*grant\.level\)\s*\?\s*grant\.level\s*:\s*humanLevel",
+            resolve_fn,
+        )
+    )
+    m11_issue_ceiling = bool(
+        re.search(r"!projectAccessAtLeast\(humanLevel,\s*grant\.level\)", issue_fn)
+        and 'throw new AgentsError("invalid_key_grant")' in issue_fn
+    )
+    m11_single_event = (
+        ".returning({ id: agentApiKeys.id })" in revoke_own_fn
+        and "if (updated.length > 0)" in revoke_own_fn
+        and "recordEvent(" in revoke_own_fn
+    )
+    m11_owner_isolation = (
+        "requireWorkspaceOwner(tx, workspaceId, actor.humanId)" in owner_fn
+        and "eq(agentApiKeys.workspaceId, workspaceId)" in owner_fn
+    )
+    m11_key_hash_only = (
+        "tokenHash: tokenHash(secret)" in issue_fn
+        and "secret:" not in slice_between(issue_fn, ".insert(agentApiKeys)", ".returning(")
+    )
+    m11_events = (
+        "insert(agentKeyEvents)" in record_fn
+        and "AgentKeyEventType.enum.agent_key_created" in issue_fn
+        and "AgentKeyEventType.enum.agent_key_revoked" in revoke_own_fn
+        and "recordEvent(" in revoke_own_fn
+    )
+    m11_events_without_secret = (
+        "token_hash" not in events_table
+        and "tokenHash:" not in events_table
+        and "secret:" not in events_table
+    )
+
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
         "m2a_supersedes_failed": m2a_supersedes_failed,
@@ -416,6 +498,19 @@ def extract_code_facts() -> dict[str, Any]:
         "m10_list_scoping": m10_list_scoping,
         "m10_dead_offer_supersedes": m10_dead_offer_supersedes,
         "m10_self_revoke": m10_self_revoke,
+        "m11_revocation": m11_revocation,
+        "m11_membership": m11_membership,
+        "m11_issue_ceiling": m11_issue_ceiling,
+        "m11_single_event": m11_single_event,
+        "m11_expiry": m11_expiry,
+        "m11_never_skips_expiry_only": m11_never_skips_expiry_only,
+        "m11_scope": m11_scope,
+        "m11_project_scope": m11_project_scope,
+        "m11_ceiling": m11_ceiling,
+        "m11_owner_isolation": m11_owner_isolation,
+        "m11_key_hash_only": m11_key_hash_only,
+        "m11_events": m11_events,
+        "m11_events_without_secret": m11_events_without_secret,
     }
 
 
@@ -1117,6 +1212,73 @@ def check_m10(facts: dict[str, Any]) -> CheckResult:
     )
 
 
+def check_m11(facts: dict[str, Any]) -> CheckResult:
+    # #30 agent-key stateful invariants. Every attempt is a direct call against one of
+    # the service's decision points; each guard is extracted from that decision's own
+    # function. BFS depth is one because the decisions are independent and each has a
+    # single commit/refuse outcome, exactly like M10.
+    never = facts["m11_never_skips_expiry_only"]
+    ceiling = facts["m11_ceiling"]
+    isolation = facts["m11_owner_isolation"]
+    audit = facts["m11_events"] and facts["m11_events_without_secret"]
+
+    # (API call in the code's own words, expected outcome, guard that produces it,
+    #  outcome when the guard is missing)
+    attempts: list[tuple[str, str, bool, str]] = [
+        ("GET /api/agents/me with a live key in its own workspace", "authenticated", True, "rejected"),
+        ("GET /api/agents/me one second before the deadline", "authenticated", facts["m11_expiry"], "rejected"),
+        ("GET /api/agents/me with a Never key whose owner still has access", "authenticated", never and ceiling, "rejected"),
+        ("GET /api/agents/me?workspaceId=<another workspace>", "rejected", facts["m11_scope"], "authenticated"),
+        ("GET /api/agents/me?projectId=<a project outside the key>", "rejected", facts["m11_project_scope"], "authenticated"),
+        ("GET /api/agents/me with a revoked key (including Never)", "rejected", facts["m11_revocation"] and never, "authenticated"),
+        ("GET /api/agents/me with a 7-day key just after expiry", "rejected", facts["m11_expiry"], "authenticated"),
+        ("GET /api/agents/me after the human owner left the key's workspace (Never)", "rejected", facts["m11_membership"] and never, "authenticated"),
+        ("GET /api/agents/me?projectId=... after the human's level was lowered", "effective=contribute", ceiling, "effective=manage"),
+        ("GET /api/agents/me?projectId=... after the human's grant was removed", "rejected", ceiling, "effective=manage"),
+        ("POST /api/agents/keys with a level above the human's current access", "rejected", facts["m11_issue_ceiling"], "committed"),
+        ("POST /api/agents/keys persists only the hash, never the secret", "hash_only", facts["m11_key_hash_only"], "secret_stored"),
+        ("DELETE /api/workspaces/A/agent-keys/<key in A> (owner revokes another human's key)", "revoked", isolation, "rejected"),
+        ("DELETE /api/workspaces/A/agent-keys/<key in B> (owner reaches across workspaces)", "rejected", isolation, "revoked"),
+        ("repeating a revocation writes no second event", "events=1_no_duplicate", facts["m11_single_event"], "events=2_duplicate"),
+        ("the owner's revocation in A leaves a key in B live", "live", isolation, "revoked"),
+        ("creation and revocation each write one event, without a secret", "events=2_no_secret", audit, "events=0"),
+    ]
+    init = ("start",)
+
+    def next_states(state):
+        if state != ("start",):
+            return []
+        out = []
+        for idx, (label, expected, guard, wrong) in enumerate(attempts):
+            result = expected if guard else wrong
+            out.append((f"{label} -> {result}", ("probed", idx, result)))
+        return out
+
+    def inv(state):
+        if state[0] != "probed":
+            return True, ""
+        label, expected, _, _ = attempts[state[1]]
+        if state[2] != expected:
+            return False, f"{label} returned {state[2]}, expected {expected}"
+        return True, ""
+
+    return bfs_check(
+        "M11",
+        "Workspace-Scoped Agent API Keys (#30)",
+        "Keys are scoped and revocable in one workspace, never outlive their human's access, and audit events carry no secrets",
+        "safety",
+        init,
+        next_states,
+        inv,
+        [
+            "apps/server/src/features/agents/service.ts",
+            "apps/server/src/features/projects/service.ts",
+            "apps/server/src/db/schema.ts",
+            "db/migrations/0016_clumsy_masked_marvel.sql",
+        ],
+    )
+
+
 def main() -> None:
     facts = extract_code_facts()
     results = [
@@ -1131,6 +1293,7 @@ def main() -> None:
         check_m8(facts),
         check_m9(facts),
         check_m10(facts),
+        check_m11(facts),
     ]
 
     if "--json" in sys.argv:

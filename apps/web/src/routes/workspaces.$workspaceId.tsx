@@ -11,6 +11,7 @@ import {
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { sessionQuery } from "../features/accounts/index.ts";
+import { AgentsSection, agentKeysQuery, agentsQuery } from "../features/agents/index.ts";
 import { InvitationList } from "../features/invitations/index.ts";
 import { createProject, projectQuery, projectsQuery } from "../features/projects/index.ts";
 import {
@@ -80,6 +81,8 @@ export const Route = createFileRoute("/workspaces/$workspaceId")({
     const loads = [
       context.queryClient.ensureQueryData(projectsQuery(params.workspaceId)),
       context.queryClient.ensureQueryData(sessionQuery),
+      context.queryClient.ensureQueryData(agentsQuery),
+      context.queryClient.ensureQueryData(agentKeysQuery(params.workspaceId)),
       ...(mayManageMembers(workspace)
         ? [context.queryClient.ensureQueryData(workspaceMembersQuery(params.workspaceId))]
         : []),
@@ -111,6 +114,7 @@ function WorkspacePage() {
         workspaceId={workspace.id}
         canCreate={workspace.isOwner || workspace.canCreateProjects}
       />
+      <AgentsSection workspaceId={workspace.id} isOwner={workspace.isOwner} />
       {mayManageMembers(workspace) && (
         <WorkspaceMembers workspaceId={workspace.id} workspace={workspace} />
       )}

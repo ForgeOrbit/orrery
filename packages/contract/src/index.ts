@@ -1,5 +1,6 @@
 // The shared contract: zod schemas used by REST, MCP and the web app.
 // Generated, language-neutral copies live in /contract (run `pnpm gen`).
+export * from "./agents.ts";
 export * from "./auth.ts";
 export * from "./common.ts";
 export * from "./health.ts";

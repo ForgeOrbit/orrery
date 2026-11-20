@@ -7,6 +7,7 @@ import { type ProjectsDeps, createProjectsService } from "./service.ts";
 import { createProjectsRest, routes } from "./rest.ts";
 
 export { routes as projectsRoutes };
+export { projectAccessAtLeast } from "./service.ts";
 export type { ProjectsService } from "./service.ts";
 
 export type ProjectsDepsWithAccounts = ProjectsDeps & { sessionReader: SessionReader };
@@ -28,6 +29,14 @@ export interface ProjectsFeature extends Feature {
     grantedByHumanId: string,
     offered: readonly { projectId: string; level: ProjectAccessLevel }[],
   ): Promise<string[]>;
+  // The agent-key ceiling: the human's current access to named projects. Agents borrow
+  // this so project levels are decided by one resolver for humans and agents alike.
+  projectAccessCeiling(
+    tx: DbTransaction,
+    workspaceId: string,
+    humanId: string,
+    projectIds: readonly string[],
+  ): Promise<Map<string, ProjectAccessLevel | null>>;
 }
 
 export function createProjectsFeature(deps: ProjectsDepsWithAccounts): ProjectsFeature {
@@ -39,5 +48,7 @@ export function createProjectsFeature(deps: ProjectsDepsWithAccounts): ProjectsF
       service.revokeMemberProjectAccess(tx, workspaceId, humanId, actorHumanId),
     applyInvitationGrants: (tx, workspaceId, humanId, grantedByHumanId, offered) =>
       service.applyInvitationGrants(tx, workspaceId, humanId, grantedByHumanId, offered),
+    projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
+      service.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
   };
 }

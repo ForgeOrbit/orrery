@@ -1,4 +1,6 @@
 import {
+  AgentKeyEventType,
+  AgentKeyValidity,
   InvitationDelivery,
   InvitationStatus,
   IssueStatus,
@@ -476,6 +478,116 @@ export const projectAccessEvents = pgTable(
       )`,
     ),
     index("project_access_events_project_created").on(t.projectId, t.createdAt),
+  ],
+);
+
+// An agent is a worker identity owned by one human (issue #30). Its actions are
+// attributed to this identity, not to a model or a run; several keys and clients can
+// act as the same agent. Only the owner may register an agent under their identity.
+export const agents = pgTable(
+  "agents",
+  {
+    id: text("id").primaryKey(),
+    humanId: text("human_id")
+      .notNull()
+      .references(() => humans.id),
+    name: text("name").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // An owner cannot create two agents under the same display name.
+    uniqueIndex("one_agent_name_per_human").on(t.humanId, t.name),
+    index("agents_human_created").on(t.humanId, t.createdAt),
+  ],
+);
+
+// A bearer key for one agent, scoped to exactly one workspace (issue #30). The secret
+// is shown once at issue time; only its SHA-256 hash is stored. A null `expires_at` is
+// "Never" — it skips the time check, never the access checks. Revocation is a timestamp
+// rather than a delete, so creation and revocation stay auditable.
+export const agentApiKeys = pgTable(
+  "agent_api_keys",
+  {
+    id: text("id").primaryKey(),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id),
+    createdByHumanId: text("created_by_human_id")
+      .notNull()
+      .references(() => humans.id),
+    validity: text("validity").$type<AgentKeyValidity>().notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revokedByHumanId: text("revoked_by_human_id").references(() => humans.id),
+  },
+  (t) => [
+    // DDL cannot bind parameters; the values come from the contract enum.
+    check(
+      "agent_api_keys_validity",
+      sql`${t.validity} in (${sql.raw(sqlLiteralList(AgentKeyValidity))})`,
+    ),
+    index("agent_api_keys_workspace_created").on(t.workspaceId, t.createdAt),
+    index("agent_api_keys_agent_created").on(t.agentId, t.createdAt),
+  ],
+);
+
+// The selected projects a key may act on, with the requested level. A key can hold
+// several projects in its one workspace; no row means the key has no project access.
+export const agentApiKeyProjects = pgTable(
+  "agent_api_key_projects",
+  {
+    id: text("id").primaryKey(),
+    keyId: text("key_id")
+      .notNull()
+      .references(() => agentApiKeys.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    level: text("level").$type<ProjectAccessLevel>().notNull(),
+  },
+  (t) => [
+    uniqueIndex("one_agent_key_project_per_project").on(t.keyId, t.projectId),
+    check(
+      "agent_api_key_projects_level",
+      sql`${t.level} in (${sql.raw(sqlLiteralList(ProjectAccessLevel))})`,
+    ),
+  ],
+);
+
+// Credential audit events (#20 history): creation and revocation of a key, with the
+// actor and the workspace it happened in. There is deliberately no secret column — nor
+// even a hash — so an audit read can never expose a credential. A workspace owner's
+// revocation of someone else's key is recorded with that owner as the actor.
+export const agentKeyEvents = pgTable(
+  "agent_key_events",
+  {
+    id: text("id").primaryKey(),
+    keyId: text("key_id")
+      .notNull()
+      .references(() => agentApiKeys.id),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id),
+    type: text("type").$type<AgentKeyEventType>().notNull(),
+    actorHumanId: text("actor_human_id")
+      .notNull()
+      .references(() => humans.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "agent_key_events_type",
+      sql`${t.type} in (${sql.raw(sqlLiteralList(AgentKeyEventType))})`,
+    ),
+    index("agent_key_events_workspace_created").on(t.workspaceId, t.createdAt),
   ],
 );
 

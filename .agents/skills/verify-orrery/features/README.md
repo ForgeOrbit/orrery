@@ -44,6 +44,9 @@ The maintained source for verifying Orrery's user-facing behavior. Read this ind
 - [Workspaces](./workspaces.md): the signed-in home lists the caller's personal and
   shared workspaces, owners manage members and the Create projects capability, and each
   person sees only their own.
+- [Workspace-scoped agent API keys](./agents.md): registering an agent, issuing a
+  one-workspace bearer key with the human-access ceiling, resolving the agent over REST,
+  refusing cross-workspace/expired/revoked keys, and secret-free owner revocation.
 - [Projects, issues, knowledge, and project access](./projects.md): a project's full issue
   cycle (create, edit, comment, close, reopen), basic Markdown knowledge, the attributed
   activity feed, shared-project Read/Contribute/Manage levels, access grants, and the
