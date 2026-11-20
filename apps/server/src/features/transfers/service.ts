@@ -46,7 +46,8 @@ export type TransfersErrorKind =
   | "transfer_invalid"
   | "transfer_stale"
   | "source_authority_lost"
-  | "active_work";
+  | "active_work"
+  | "project_key_conflict";
 
 const messages: Record<TransfersErrorKind, string> = {
   not_signed_in: "Not signed in",
@@ -59,6 +60,7 @@ const messages: Record<TransfersErrorKind, string> = {
   transfer_stale: "The project's workspace changed since the transfer was authorized",
   source_authority_lost: "The authorizing owner no longer controls the source workspace",
   active_work: "Finish or stop every active work session before transferring the project",
+  project_key_conflict: "The destination workspace already uses this project key",
 };
 
 export class TransfersError extends Error {
@@ -90,11 +92,13 @@ export interface TransfersService {
     destinationWorkspaceId: string,
   ): Promise<TransferAuthorization>;
   receiverPreview(account: SessionAccount | null, token: string): Promise<TransferPreview>;
-  accept(account: SessionAccount | null, token: string): Promise<Project>;
+  // #95: `key` is the optional collision-resolving rename for the destination workspace.
+  accept(account: SessionAccount | null, token: string, key?: string): Promise<Project>;
   complete(
     account: SessionAccount | null,
     projectId: string,
     destinationWorkspaceId: string,
+    key?: string,
   ): Promise<Project>;
 }
 
@@ -386,6 +390,7 @@ function toProject(
     id: string;
     workspaceId: string;
     name: string;
+    key: string;
     createdAt: Date;
     creatorId: string;
     creatorEmail: string;
@@ -398,6 +403,7 @@ function toProject(
     id: row.id,
     workspaceId: row.workspaceId,
     name: row.name,
+    key: row.key,
     createdAt: row.createdAt.toISOString(),
     createdBy: {
       humanId: row.creatorId,
@@ -420,6 +426,7 @@ async function readProjectView(
       id: projects.id,
       workspaceId: projects.workspaceId,
       name: projects.name,
+      key: projects.key,
       createdAt: projects.createdAt,
       creatorId: humans.id,
       creatorEmail: humans.email,
@@ -524,6 +531,7 @@ async function acceptInTransaction(
   tx: DbTransaction,
   auth: AuthorizationLike,
   acceptorHumanId: string,
+  newKey?: string,
 ): Promise<Project> {
   const [row] = await tx
     .select()
@@ -607,6 +615,24 @@ async function acceptInTransaction(
     throw new TransfersError("transfer_stale");
   }
 
+  // #95: a project key is unique inside its workspace. Keep the moved project's key
+  // unless a destination collision needs the caller's explicit, unused replacement.
+  // This check runs under the ownership lock and the project row lock, so the rename
+  // and the move commit together or not at all.
+  const effectiveKey = newKey ?? project.key;
+  const [keyCollision] = await tx
+    .select({ id: projects.id })
+    .from(projects)
+    .where(
+      and(
+        eq(projects.workspaceId, destination.id),
+        eq(projects.key, effectiveKey),
+        ne(projects.id, auth.projectId),
+      ),
+    )
+    .limit(1);
+  if (keyCollision !== undefined) throw new TransfersError("project_key_conflict");
+
   const issueIds = await tx
     .select({ id: issues.id })
     .from(issues)
@@ -675,6 +701,12 @@ async function acceptInTransaction(
     );
   }
 
+  // #95: rename before the move. Applying the new key first avoids a transient
+  // (workspace_id, key) collision with the destination project still holding the old key.
+  // Both writes are in the same transaction, so the rename and the move commit together.
+  if (effectiveKey !== project.key) {
+    await tx.update(projects).set({ key: effectiveKey }).where(eq(projects.id, auth.projectId));
+  }
   // Move the identity. Issues, comments, knowledge, activity and runs all key on the
   // project id, so the whole history travels with this one row change. Questions also
   // denormalize workspace_id for inbox scoping, so keep them synchronized with the move.
@@ -875,16 +907,16 @@ export function createTransfersService({ db }: TransfersDeps): TransfersService 
       );
     },
 
-    async accept(account, token) {
+    async accept(account, token, key) {
       if (account === null) throw new TransfersError("not_signed_in");
       return db.transaction(async (tx) => {
         await lockOwnershipWrites(tx);
         const row = await pendingAuthorizationByToken(tx, token);
-        return acceptInTransaction(tx, row, account.humanId);
+        return acceptInTransaction(tx, row, account.humanId, key);
       });
     },
 
-    async complete(account, projectId, destinationWorkspaceId) {
+    async complete(account, projectId, destinationWorkspaceId, key) {
       if (account === null) throw new TransfersError("not_signed_in");
       return db.transaction(async (tx) => {
         await lockOwnershipWrites(tx);
@@ -915,6 +947,7 @@ export function createTransfersService({ db }: TransfersDeps): TransfersService 
             authorizedByHumanId: account.humanId,
           },
           account.humanId,
+          key,
         );
       });
     },

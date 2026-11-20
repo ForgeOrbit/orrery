@@ -48,6 +48,9 @@
             "name": {
               "type": "string"
             },
+            "key": {
+              "$ref": "#/$defs/ProjectKey"
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -68,6 +71,7 @@
             "id",
             "workspaceId",
             "name",
+            "key",
             "createdAt",
             "createdBy",
             "workspaceKind",
@@ -75,6 +79,10 @@
             "fallbackPolicy"
           ],
           "additionalProperties": false
+        },
+        "ProjectKey": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9]{1,9}$"
         },
         "Timestamp": {
           "type": "string",
@@ -197,6 +205,9 @@
             "name": {
               "type": "string"
             },
+            "key": {
+              "$ref": "#/$defs/ProjectKey"
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -217,6 +228,7 @@
             "id",
             "workspaceId",
             "name",
+            "key",
             "createdAt",
             "createdBy",
             "workspaceKind",
@@ -224,6 +236,10 @@
             "fallbackPolicy"
           ],
           "additionalProperties": false
+        },
+        "ProjectKey": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9]{1,9}$"
         },
         "Timestamp": {
           "type": "string",
@@ -354,6 +370,9 @@
               "exclusiveMinimum": 0,
               "maximum": 9007199254740991
             },
+            "identifier": {
+              "type": "string"
+            },
             "title": {
               "type": "string"
             },
@@ -408,6 +427,7 @@
             "id",
             "projectId",
             "number",
+            "identifier",
             "title",
             "body",
             "status",
@@ -573,6 +593,9 @@
               "exclusiveMinimum": 0,
               "maximum": 9007199254740991
             },
+            "identifier": {
+              "type": "string"
+            },
             "title": {
               "type": "string"
             },
@@ -633,6 +656,7 @@
             "id",
             "projectId",
             "number",
+            "identifier",
             "title",
             "body",
             "status",
@@ -883,6 +907,9 @@
               "exclusiveMinimum": 0,
               "maximum": 9007199254740991
             },
+            "identifier": {
+              "type": "string"
+            },
             "title": {
               "type": "string"
             },
@@ -937,6 +964,7 @@
             "id",
             "projectId",
             "number",
+            "identifier",
             "title",
             "body",
             "status",
@@ -1180,6 +1208,9 @@
               "exclusiveMinimum": 0,
               "maximum": 9007199254740991
             },
+            "identifier": {
+              "type": "string"
+            },
             "title": {
               "type": "string"
             },
@@ -1234,6 +1265,7 @@
             "id",
             "projectId",
             "number",
+            "identifier",
             "title",
             "body",
             "status",
@@ -1561,6 +1593,9 @@
               "exclusiveMinimum": 0,
               "maximum": 9007199254740991
             },
+            "identifier": {
+              "type": "string"
+            },
             "title": {
               "type": "string"
             },
@@ -1615,6 +1650,7 @@
             "id",
             "projectId",
             "number",
+            "identifier",
             "title",
             "body",
             "status",
@@ -1786,6 +1822,9 @@
               "exclusiveMinimum": 0,
               "maximum": 9007199254740991
             },
+            "identifier": {
+              "type": "string"
+            },
             "title": {
               "type": "string"
             },
@@ -1840,6 +1879,7 @@
             "id",
             "projectId",
             "number",
+            "identifier",
             "title",
             "body",
             "status",
@@ -4592,6 +4632,9 @@
               "exclusiveMinimum": 0,
               "maximum": 9007199254740991
             },
+            "identifier": {
+              "type": "string"
+            },
             "title": {
               "type": "string"
             },
@@ -4646,6 +4689,7 @@
             "id",
             "projectId",
             "number",
+            "identifier",
             "title",
             "body",
             "status",

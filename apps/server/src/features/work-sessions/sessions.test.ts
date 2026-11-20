@@ -1514,6 +1514,7 @@ describe("human stop requests on active work sessions (#82)", () => {
           id: randomUUID(),
           workspaceId: sharedId,
           name: "Shared stop project",
+          key: `P${randomUUID().replaceAll("-", "").slice(0, 9).toUpperCase()}`,
           createdByHumanId: f.humanId,
         })
         .returning({ id: projects.id });

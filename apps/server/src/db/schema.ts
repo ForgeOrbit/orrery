@@ -448,6 +448,9 @@ export const projects = pgTable(
       .notNull()
       .references(() => workspaces.id),
     name: text("name").notNull(),
+    // #95: an immutable, workspace-unique uppercase key. The CHECK enforces the shared
+    // contract's format even for a writer that bypasses the service.
+    key: text("key").notNull(),
     createdByHumanId: text("created_by_human_id")
       .notNull()
       .references(() => humans.id),
@@ -461,11 +464,14 @@ export const projects = pgTable(
       .default("require_human"),
   },
   (t) => [
+    check("projects_key_format", sql`${t.key} ~ '^[A-Z][A-Z0-9]{1,9}$'`),
     check("projects_next_issue_number_positive", sql`${t.nextIssueNumber} > 0`),
     check(
       "projects_fallback_policy",
       sql`${t.fallbackPolicy} in (${sql.raw(sqlLiteralList(FallbackPolicy))})`,
     ),
+    // #95: keys are unique inside one workspace, not across the installation.
+    uniqueIndex("one_project_key_per_workspace").on(t.workspaceId, t.key),
     index("projects_workspace_created").on(t.workspaceId, t.createdAt),
   ],
 );

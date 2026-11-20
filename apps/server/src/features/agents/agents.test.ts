@@ -469,7 +469,13 @@ async function removeMembership(workspaceId: string, humanId: string) {
 async function project(workspaceId: string, name: string, createdByHumanId: string) {
   const [row] = await database.db
     .insert(projects)
-    .values({ id: randomUUID(), workspaceId, name, createdByHumanId })
+    .values({
+      id: randomUUID(),
+      workspaceId,
+      name,
+      key: `P${randomUUID().replaceAll("-", "").slice(0, 9).toUpperCase()}`,
+      createdByHumanId,
+    })
     .returning();
   if (row === undefined) throw new Error("the project was not created");
   return row;

@@ -73,7 +73,7 @@ const createProject = createRoute({
   path: "/api/workspaces/{workspaceId}/projects",
   summary: "Create a project in a workspace",
   description:
-    "A personal workspace's owner or a shared workspace's owner can always create a project. A shared member needs the Create projects capability; the member who creates a project receives Manage on it. The project belongs to the workspace, its creator is recorded as authorship, and the creation is recorded in the project's activity.",
+    "A personal workspace's owner or a shared workspace's owner can always create a project. A shared member needs the Create projects capability; the member who creates a project receives Manage on it. The project belongs to the workspace, its creator is recorded as authorship, and the creation is recorded in the project's activity. Supply a workspace-unique uppercase key or let the server derive one from the name.",
   request: {
     params: workspaceParams,
     body: { required: true, content: { "application/json": { schema: CreateProjectRequest } } },
@@ -87,6 +87,7 @@ const createProject = createRoute({
     401: problem("Not signed in"),
     403: problem("The caller does not have Create projects in this workspace"),
     404: problem("No workspace with this id is accessible to the caller"),
+    409: problem("Another project in this workspace already uses that key"),
   },
 });
 
@@ -95,7 +96,7 @@ const updateProject = createRoute({
   path: "/api/projects/{projectId}",
   summary: "Configure a project",
   description:
-    "Manage access may rename the project. A request that does not change the name returns the project unchanged and records no event.",
+    "Manage access may rename the project. A request that does not change the name returns the project unchanged and records no event. A project's key is immutable and cannot be changed here.",
   request: {
     params: projectParams,
     body: { required: true, content: { "application/json": { schema: UpdateProjectRequest } } },
@@ -109,6 +110,7 @@ const updateProject = createRoute({
     401: problem("Not signed in"),
     403: problem("Read or Contribute access cannot configure the project"),
     404: problem("No project with this id is accessible to the caller"),
+    409: problem("A project's key cannot be changed after it is created"),
   },
 });
 
@@ -677,6 +679,8 @@ const statusFor = {
   cross_project_dependency: 400,
   dependency_cycle: 409,
   assignee_not_found: 404,
+  project_key_taken: 409,
+  project_key_immutable: 409,
 } as const satisfies Record<ProjectsErrorKind, number>;
 
 function isKind<K extends readonly ProjectsErrorKind[]>(
@@ -687,9 +691,16 @@ function isKind<K extends readonly ProjectsErrorKind[]>(
 }
 
 const workspaceListKinds = ["not_signed_in", "workspace_not_found"] as const;
-const workspaceCreateKinds = [...workspaceListKinds, "project_creation_not_allowed"] as const;
+const workspaceCreateKinds = [
+  ...workspaceListKinds,
+  "project_creation_not_allowed",
+  "project_key_taken",
+] as const;
 const projectReadKinds = ["not_signed_in", "project_not_found"] as const;
 const projectWriteKinds = [...projectReadKinds, "insufficient_project_access"] as const;
+// Only PATCH /api/projects/{id} can answer with an immutable-key conflict; other
+// project routes do not declare a 409 response.
+const projectUpdateKinds = [...projectWriteKinds, "project_key_immutable"] as const;
 const accessKinds = [
   ...projectWriteKinds,
   "member_not_found",
@@ -796,7 +807,7 @@ export function createProjectsRest(
         200,
       );
     } catch (error) {
-      return failure(c, error, projectWriteKinds);
+      return failure(c, error, projectUpdateKinds);
     }
   });
 

@@ -138,7 +138,13 @@ async function insertProject(workspaceId: string, createdByHumanId: string) {
   return one(
     await database.db
       .insert(projects)
-      .values({ id: randomUUID(), workspaceId, name: "Work", createdByHumanId })
+      .values({
+        id: randomUUID(),
+        workspaceId,
+        name: "Work",
+        key: `P${randomUUID().replaceAll("-", "").slice(0, 9).toUpperCase()}`,
+        createdByHumanId,
+      })
       .returning(),
   );
 }

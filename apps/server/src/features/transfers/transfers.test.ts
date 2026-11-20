@@ -92,6 +92,10 @@ function idOf(value: unknown, what: string): string {
   return id;
 }
 
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
 function stringsOf(value: unknown, key: string): string[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item): string[] => {
@@ -178,6 +182,17 @@ async function createPersonalProject(cookie: string, workspaceId: string, name: 
   return Project.parse(await res.json());
 }
 
+async function createProjectWithKey(
+  cookie: string,
+  workspaceId: string,
+  name: string,
+  key: string,
+) {
+  const res = await postJson(`/api/workspaces/${workspaceId}/projects`, { name, key }, cookie);
+  expect(res.status).toBe(201);
+  return Project.parse(await res.json());
+}
+
 async function createIssue(cookie: string, projectId: string, title: string) {
   const res = await postJson(`/api/projects/${projectId}/issues`, { title }, cookie);
   expect(res.status).toBe(201);
@@ -259,6 +274,23 @@ async function complete(cookie: string, projectId: string, destinationWorkspaceI
   return postJson(
     `/api/projects/${projectId}/transfer/complete`,
     { destinationWorkspaceId },
+    cookie,
+  );
+}
+
+async function acceptWithKey(cookie: string, token: string, key: string) {
+  return postJson("/api/transfers/accept", { token, key }, cookie);
+}
+
+async function completeWithKey(
+  cookie: string,
+  projectId: string,
+  destinationWorkspaceId: string,
+  key: string,
+) {
+  return postJson(
+    `/api/projects/${projectId}/transfer/complete`,
+    { destinationWorkspaceId, key },
     cookie,
   );
 }
@@ -1297,6 +1329,89 @@ describe("shared-to-shared project transfer against real Postgres", () => {
         .every((row) => row.workspaceId === sourceW1.workspaceId),
     ).toBe(true);
     expect(stored.some((row) => row.workspaceId === destW2.workspaceId)).toBe(true);
+  });
+
+  it("rejects a direct transfer when the destination already uses the project key", async () => {
+    const cookie = await cookieFor(ADMIN_EMAIL, ADMIN_PASSWORD);
+    const [admin] = await database.db
+      .select({ id: humans.id })
+      .from(humans)
+      .where(eq(humans.email, ADMIN_EMAIL));
+    if (admin === undefined) throw new Error("no admin");
+    const personal = await personalWorkspaceId(admin.id);
+    const sourceProject = await createProjectWithKey(
+      cookie,
+      personal,
+      "Personal colliding",
+      "COLL",
+    );
+    const dest = await createSharedWorkspace(cookie, "Collision Team", ADMIN_EMAIL);
+    await createProjectWithKey(cookie, dest.workspaceId, "Destination colliding", "COLL");
+    const issue = await createIssue(cookie, sourceProject.id, "Identifier after collision");
+
+    await expectProblem(
+      await complete(cookie, sourceProject.id, dest.workspaceId),
+      409,
+      "project_key_conflict",
+    );
+    // Nothing committed: the direct-flow authorization rolls back with the conflict,
+    // the project stays put and keeps its key, and its issue identifier is unchanged.
+    const pending = await database.db
+      .select({ id: projectTransferAuthorizations.id })
+      .from(projectTransferAuthorizations)
+      .where(eq(projectTransferAuthorizations.projectId, sourceProject.id));
+    expect(pending).toHaveLength(0);
+    expect(await getProject(cookie, sourceProject.id)).toMatchObject({
+      workspaceId: personal,
+      key: "COLL",
+    });
+    const issues = await getJson(`/api/projects/${sourceProject.id}/issues`, cookie);
+    expect(issues.status).toBe(200);
+    expect(asArray(await issues.json())[0]).toMatchObject({ id: issue, identifier: "COLL-1" });
+
+    const resolved = await completeWithKey(cookie, sourceProject.id, dest.workspaceId, "NEWK");
+    expect(resolved.status).toBe(200);
+    expect(await getProject(cookie, sourceProject.id)).toMatchObject({
+      workspaceId: dest.workspaceId,
+      key: "NEWK",
+    });
+    const after = await getJson(`/api/projects/${sourceProject.id}/issues`, cookie);
+    expect(asArray(await after.json())[0]).toMatchObject({ id: issue, identifier: "NEWK-1" });
+  });
+
+  it("resolves a destination key collision on two-party acceptance atomically", async () => {
+    const s = await source();
+    await database.db.update(projects).set({ key: "SHAR" }).where(eq(projects.id, s.project.id));
+    const dest = await createSharedWorkspace(s.cookie, "Two Party Collision", ADMIN_EMAIL);
+    await createProjectWithKey(s.cookie, dest.workspaceId, "Destination project", "SHAR");
+    const receiver = await insertHuman("key-receiver@example.com");
+    await addMembership(dest.workspaceId, receiver.id, true);
+    const receiverCookie = await sessionFor(receiver.id);
+    const authorization = await authorize(s.cookie, s.project.id, dest.workspaceId);
+
+    await expectProblem(
+      await accept(receiverCookie, authorization.token),
+      409,
+      "project_key_conflict",
+    );
+    const stillPending = await database.db
+      .select({ status: projectTransferAuthorizations.status })
+      .from(projectTransferAuthorizations)
+      .where(eq(projectTransferAuthorizations.id, authorization.authorizationId));
+    expect(stillPending[0]?.status).toBe("pending");
+    expect(await getProject(s.cookie, s.project.id)).toMatchObject({
+      workspaceId: s.workspaceId,
+      key: "SHAR",
+    });
+
+    const resolved = await acceptWithKey(receiverCookie, authorization.token, "FRESH");
+    expect(resolved.status).toBe(200);
+    expect(await getProject(receiverCookie, s.project.id)).toMatchObject({
+      workspaceId: dest.workspaceId,
+      key: "FRESH",
+    });
+    const reused = await acceptWithKey(receiverCookie, authorization.token, "FRESH");
+    await expectProblem(reused, 404, "transfer_invalid");
   });
 
   it("blocks a shared-to-shared transfer while a claim is live in database time", async () => {

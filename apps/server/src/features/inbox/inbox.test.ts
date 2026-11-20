@@ -199,6 +199,7 @@ async function bootstrap(email = ADMIN_EMAIL): Promise<Fixture> {
       id: randomUUID(),
       workspaceId: workspace.id,
       name: "Inbox project",
+      key: `P${randomUUID().replaceAll("-", "").slice(0, 9).toUpperCase()}`,
       createdByHumanId: human.id,
     })
     .returning();
@@ -673,6 +674,7 @@ async function sharedFixture() {
       id: randomUUID(),
       workspaceId,
       name: "Shared fallback project",
+      key: `P${randomUUID().replaceAll("-", "").slice(0, 9).toUpperCase()}`,
       createdByHumanId: owner.humanId,
     })
     .returning();

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { Email, Timestamp, WorkspaceKind } from "./common.ts";
-import { ProjectAccessLevel } from "./projects.ts";
+import { ProjectAccessLevel, ProjectKey } from "./projects.ts";
 
 // Project transfer between workspaces: personal-to-shared (#39) and shared-to-shared
 // (#46). The schemas here are the shared language for the transfer preview, the source
@@ -72,11 +72,20 @@ export const AuthorizeTransferRequest = z
   .meta({ id: "AuthorizeTransferRequest" });
 export type AuthorizeTransferRequest = z.infer<typeof AuthorizeTransferRequest>;
 
-export const CompleteTransferRequest = AuthorizeTransferRequest;
-export type CompleteTransferRequest = AuthorizeTransferRequest;
+// #95: completion can carry a replacement key too, for the same collision case as a
+// two-party acceptance.
+export const CompleteTransferRequest = AuthorizeTransferRequest.extend({
+  key: ProjectKey.optional(),
+}).meta({ id: "CompleteTransferRequest" });
+export type CompleteTransferRequest = z.infer<typeof CompleteTransferRequest>;
 
+// The receiver may supply a new, unused project key when the destination already has a
+// project with the transferred project's key (#95). Otherwise that key must stay free.
 export const AcceptTransferRequest = z
-  .object({ token: z.string().min(1).max(512) })
+  .object({
+    token: z.string().min(1).max(512),
+    key: ProjectKey.optional(),
+  })
   .meta({ id: "AcceptTransferRequest" });
 export type AcceptTransferRequest = z.infer<typeof AcceptTransferRequest>;
 

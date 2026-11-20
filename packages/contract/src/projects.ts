@@ -116,11 +116,21 @@ export type Actor = z.infer<typeof Actor>;
 export const IssueAssignee = Actor.nullable().meta({ id: "IssueAssignee" });
 export type IssueAssignee = z.infer<typeof IssueAssignee>;
 
+// A project's short, immutable key (#95). It is unique within one workspace and forms the
+// readable prefix of every issue identifier (`ORR-42`). The database repeats this rule.
+export const ProjectKey = z
+  .string()
+  .regex(/^[A-Z][A-Z0-9]{1,9}$/, "Use 2-10 uppercase letters or digits, starting with a letter.")
+  .meta({ id: "ProjectKey" });
+export type ProjectKey = z.infer<typeof ProjectKey>;
+
 export const Project = z
   .object({
     id: z.string(),
     workspaceId: z.string(),
     name: z.string(),
+    // Workspace-unique and immutable after creation; issue identifiers use it as prefix.
+    key: ProjectKey,
     createdAt: Timestamp,
     createdBy: Actor,
     // The workspace kind is part of the project's own view so a client knows whether
@@ -141,15 +151,21 @@ export type ProjectsResponse = z.infer<typeof ProjectsResponse>;
 export const CreateProjectRequest = z
   .object({
     name: z.string().trim().min(1, "Name the project.").max(120),
+    // Explicit keys are validated here. When omitted the service derives a valid,
+    // workspace-unique key from the name.
+    key: ProjectKey.optional(),
   })
   .meta({ id: "CreateProjectRequest" });
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequest>;
 
 // A project manager's configuration change. Only Manage access may rename a project;
-// the name is the project setting this slice exposes.
+// the name is the project setting this slice exposes. A key is immutable (#95): the
+// field is accepted only so the service can refuse an attempted change with a stable
+// problem instead of silently stripping it.
 export const UpdateProjectRequest = z
   .object({
     name: z.string().trim().min(1, "Name the project.").max(120),
+    key: ProjectKey.optional(),
   })
   .meta({ id: "UpdateProjectRequest" });
 export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;
@@ -201,12 +217,15 @@ export const ProjectAccessEventType = z
 export type ProjectAccessEventType = z.infer<typeof ProjectAccessEventType>;
 
 // An issue as its readers see it. `number` is the project-local issue number (1, 2, …),
-// not a global identity; the id is the stable one. `closedAt` is set only while closed.
+// not a global identity; the id is the stable one. `identifier` is the human-readable
+// `<PROJECT_KEY>-<NUMBER>` form (#95) carried alongside them; `closedAt` is set only
+// while closed.
 export const Issue = z
   .object({
     id: z.string(),
     projectId: z.string(),
     number: z.int().positive(),
+    identifier: z.string(),
     title: z.string(),
     body: z.string(),
     status: IssueStatus,

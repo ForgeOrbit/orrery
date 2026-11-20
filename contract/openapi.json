@@ -1355,6 +1355,9 @@
           "name": {
             "type": "string"
           },
+          "key": {
+            "$ref": "#/components/schemas/ProjectKey"
+          },
           "createdAt": {
             "$ref": "#/components/schemas/Timestamp"
           },
@@ -1375,12 +1378,17 @@
           "id",
           "workspaceId",
           "name",
+          "key",
           "createdAt",
           "createdBy",
           "workspaceKind",
           "accessLevel",
           "fallbackPolicy"
         ]
+      },
+      "ProjectKey": {
+        "type": "string",
+        "pattern": "^[A-Z][A-Z0-9]{1,9}$"
       },
       "Actor": {
         "type": "object",
@@ -1441,6 +1449,9 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 120
+          },
+          "key": {
+            "$ref": "#/components/schemas/ProjectKey"
           }
         },
         "required": [
@@ -1454,6 +1465,9 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 120
+          },
+          "key": {
+            "$ref": "#/components/schemas/ProjectKey"
           }
         },
         "required": [
@@ -1542,6 +1556,9 @@
             "type": "integer",
             "exclusiveMinimum": 0
           },
+          "identifier": {
+            "type": "string"
+          },
           "title": {
             "type": "string"
           },
@@ -1589,6 +1606,7 @@
           "id",
           "projectId",
           "number",
+          "identifier",
           "title",
           "body",
           "status",
@@ -1723,6 +1741,9 @@
             "type": "integer",
             "exclusiveMinimum": 0
           },
+          "identifier": {
+            "type": "string"
+          },
           "title": {
             "type": "string"
           },
@@ -1776,6 +1797,7 @@
           "id",
           "projectId",
           "number",
+          "identifier",
           "title",
           "body",
           "status",
@@ -3343,10 +3365,29 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 512
+          },
+          "key": {
+            "$ref": "#/components/schemas/ProjectKey"
           }
         },
         "required": [
           "token"
+        ]
+      },
+      "CompleteTransferRequest": {
+        "type": "object",
+        "properties": {
+          "destinationWorkspaceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "key": {
+            "$ref": "#/components/schemas/ProjectKey"
+          }
+        },
+        "required": [
+          "destinationWorkspaceId"
         ]
       }
     },
@@ -6188,7 +6229,7 @@
       },
       "post": {
         "summary": "Create a project in a workspace",
-        "description": "A personal workspace's owner or a shared workspace's owner can always create a project. A shared member needs the Create projects capability; the member who creates a project receives Manage on it. The project belongs to the workspace, its creator is recorded as authorship, and the creation is recorded in the project's activity.",
+        "description": "A personal workspace's owner or a shared workspace's owner can always create a project. A shared member needs the Create projects capability; the member who creates a project receives Manage on it. The project belongs to the workspace, its creator is recorded as authorship, and the creation is recorded in the project's activity. Supply a workspace-unique uppercase key or let the server derive one from the name.",
         "parameters": [
           {
             "schema": {
@@ -6261,6 +6302,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Another project in this workspace already uses that key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         }
       }
@@ -6326,7 +6377,7 @@
       },
       "patch": {
         "summary": "Configure a project",
-        "description": "Manage access may rename the project. A request that does not change the name returns the project unchanged and records no event.",
+        "description": "Manage access may rename the project. A request that does not change the name returns the project unchanged and records no event. A project's key is immutable and cannot be changed here.",
         "parameters": [
           {
             "schema": {
@@ -6392,6 +6443,16 @@
           },
           "404": {
             "description": "No project with this id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A project's key cannot be changed after it is created",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -9955,7 +10016,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AuthorizeTransferRequest"
+                "$ref": "#/components/schemas/CompleteTransferRequest"
               }
             }
           }
@@ -10012,7 +10073,7 @@
             }
           },
           "409": {
-            "description": "Active work remains, or the project changed since authorization",
+            "description": "Active work remains, the project changed, or its key collides in the destination",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -10090,7 +10151,7 @@
             }
           },
           "409": {
-            "description": "The project changed since authorization, or active work remains",
+            "description": "The project changed, active work remains, or its key collides in the destination",
             "content": {
               "application/problem+json": {
                 "schema": {
