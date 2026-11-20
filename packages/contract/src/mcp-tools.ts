@@ -15,6 +15,7 @@ import {
   UpdateIssueRequest,
   UpdateKnowledgeEntryRequest,
 } from "./projects.ts";
+import { RunReportInput, RunReportResponse } from "./runs.ts";
 
 // Every MCP tool an agent can call, as a contract. The server registers a handler for each one,
 // and `pnpm gen` writes their JSON Schemas to /contract/mcp-tools.json.
@@ -126,7 +127,21 @@ const updateKnowledge = {
   output: z.object({ entry: KnowledgeEntry }),
 };
 
-export const tools: readonly ToolContract[] = [
+// Run reporting (issue #34). The single static /mcp endpoint cannot distinguish
+// concurrent clients, so an explicit runId or the harness's (harness, nativeSessionId)
+// key correlates a report. The bearer key decides the agent and workspace; no lease is
+// implied by a check-in. Per-CLI wiring of this tool follows in #44 and #45.
+const runCheckin = {
+  name: "orrery_run_checkin",
+  description:
+    "Report a harness conversation's identity and metadata. Correlate by an explicit runId or by the harness's (harness, nativeSessionId) key — send runKey as null when only a runId is known; a new key starts a run, the same key resumes it. Report model and harnessVersion directly or under `reported` (#29); they are stored only as reported and missing values stay unknown. This tool does not claim work or renew a lease.",
+  input: RunReportInput,
+  output: RunReportResponse,
+};
+
+// Each feature registers only its own tools; `tools` is the complete list used by
+// `pnpm gen` to write contract/mcp-tools.json.
+export const projectTools: readonly ToolContract[] = [
   listProjects,
   getProject,
   listIssues,
@@ -141,3 +156,7 @@ export const tools: readonly ToolContract[] = [
   createKnowledge,
   updateKnowledge,
 ];
+
+export const runTools: readonly ToolContract[] = [runCheckin];
+
+export const tools: readonly ToolContract[] = [...projectTools, ...runTools];

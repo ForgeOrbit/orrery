@@ -14,6 +14,7 @@ import { sessionQuery } from "../features/accounts/index.ts";
 import { AgentsSection, agentKeysQuery, agentsQuery } from "../features/agents/index.ts";
 import { InvitationList } from "../features/invitations/index.ts";
 import { createProject, projectQuery, projectsQuery } from "../features/projects/index.ts";
+import { RunsSection, workspaceRunsQuery } from "../features/runs/index.ts";
 import {
   appointWorkspaceOwner,
   inviteWorkspaceMember,
@@ -83,6 +84,7 @@ export const Route = createFileRoute("/workspaces/$workspaceId")({
       context.queryClient.ensureQueryData(sessionQuery),
       context.queryClient.ensureQueryData(agentsQuery),
       context.queryClient.ensureQueryData(agentKeysQuery(params.workspaceId)),
+      context.queryClient.ensureQueryData(workspaceRunsQuery(params.workspaceId)),
       ...(mayManageMembers(workspace)
         ? [context.queryClient.ensureQueryData(workspaceMembersQuery(params.workspaceId))]
         : []),
@@ -122,6 +124,7 @@ function WorkspacePage() {
         canCreate={workspace.isOwner || workspace.canCreateProjects}
       />
       <AgentsSection workspaceId={workspace.id} isOwner={workspace.isOwner} />
+      <RunsSection workspaceId={workspace.id} />
       {mayManageMembers(workspace) && (
         <WorkspaceMembers workspaceId={workspace.id} workspace={workspace} />
       )}
