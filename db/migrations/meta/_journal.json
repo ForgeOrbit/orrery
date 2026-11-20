@@ -225,6 +225,13 @@
       "when": 1795208513949,
       "tag": "0031_next_masked_marvel",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1795209149887,
+      "tag": "0032_heavy_leo",
+      "breakpoints": true
     }
   ]
 }

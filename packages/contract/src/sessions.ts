@@ -13,12 +13,20 @@ export const WorkSessionStatus = z
   .meta({ id: "WorkSessionStatus" });
 export type WorkSessionStatus = z.infer<typeof WorkSessionStatus>;
 
-// The stop outcome releases the claim. "completed" is the normal stop; "released" is the
-// explicit give-up that leaves the issue open for another worker. Both end the session.
+// How the session row ends. "completed" is the normal stop; "released" is the explicit
+// give-up that leaves the issue for another worker. Both are terminal session states.
 export const WorkSessionOutcome = z
   .enum(["completed", "released"])
   .meta({ id: "WorkSessionOutcome" });
 export type WorkSessionOutcome = z.infer<typeof WorkSessionOutcome>;
+
+// #94: where a completed session leaves the issue. "review" is the default handoff to a
+// human (non-terminal, closed_at null); "done" closes the issue and requires Contribute
+// or Manage, which every caller holding a live claim already has.
+export const WorkCompletionOutcome = z
+  .enum(["review", "done"])
+  .meta({ id: "WorkCompletionOutcome" });
+export type WorkCompletionOutcome = z.infer<typeof WorkCompletionOutcome>;
 
 export const WorkSession = z
   .object({
@@ -104,14 +112,22 @@ export const ReportProgressInput = z
   .meta({ id: "ReportProgressInput" });
 export type ReportProgressInput = z.infer<typeof ReportProgressInput>;
 
+// `outcome` chooses both how the session ends and, for a completion, where the issue goes:
+// "released" gives up the claim (an in_progress issue returns to todo); "completed" is the
+// legacy spelling of the default "review" handoff; "review" and "done" are the explicit
+// #94 completion outcomes. "done" is permitted only for a caller with Contribute or
+// Manage, which the live-session gate already requires.
 export const StopWorkSessionInput = z
   .object({
     issueId: z.string().trim().min(1).max(200),
-    outcome: WorkSessionOutcome.default("completed"),
+    outcome: z
+      .union([WorkSessionOutcome, WorkCompletionOutcome])
+      .default("completed"),
     sessionId: SessionFence.optional(),
   })
   .meta({ id: "StopWorkSessionInput" });
 export type StopWorkSessionInput = z.infer<typeof StopWorkSessionInput>;
+export type StopOutcome = z.infer<typeof StopWorkSessionInput>["outcome"];
 
 export const GetWorkSessionInput = z
   .object({ issueId: z.string().trim().min(1).max(200) })
@@ -177,11 +193,11 @@ export const ResumeWorkSessionResponse = z
   .meta({ id: "ResumeWorkSessionResponse" });
 export type ResumeWorkSessionResponse = z.infer<typeof ResumeWorkSessionResponse>;
 
-// Minimal ready work: the eligible open issues in a project, not a full board. An issue
-// is ready while open, not marked Needs input, without a live (unevaluated-expired) active
-// session, and with no blocked_by issue whose status is not closed (#86). The rows are
-// ordinary Issues so REST and MCP use the same shape as every other issue listing; only
-// the filtering is minimal.
+// Minimal ready work: the eligible `todo` issues in a project, not a full board (#94). An
+// issue is ready while todo, not marked Needs input, without a live (unevaluated-expired)
+// active session, and with no blocked_by issue whose status is not done or cancelled (#86).
+// The rows are ordinary Issues so REST and MCP use the same shape as every other issue
+// listing; only the filtering is minimal.
 export const ReadyWorkResponse = z.array(Issue).meta({ id: "ReadyWorkResponse" });
 export type ReadyWorkResponse = z.infer<typeof ReadyWorkResponse>;
 

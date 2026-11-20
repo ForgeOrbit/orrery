@@ -410,10 +410,17 @@ const evaluateDeadline: InboxService["evaluateDeadline"] = async (tx, issueId) =
         gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
       ),
     );
+  // #94: the claim ended without completion, so the issue returns to todo under this
+  // locked transaction. Needs input stays set until a human answers, which keeps a paused
+  // issue out of list_ready_work without ever stranding it in in_progress.
   await tx
     .update(issues)
     .set({ needsInput: true, updatedAt: sql`statement_timestamp()` })
     .where(eq(issues.id, issueId));
+  await tx
+    .update(issues)
+    .set({ status: "todo", updatedAt: sql`statement_timestamp()` })
+    .where(and(eq(issues.id, issueId), eq(issues.status, "in_progress")));
   await recordActivity(tx, {
     projectId: paused.projectId,
     issueId,
@@ -471,7 +478,10 @@ export function createInboxService(deps: InboxDeps): InboxService {
           )
           .limit(1);
         if (run === undefined) throw new InboxError("run_not_found");
-        if (issue.status !== "open") throw new InboxError("question_not_open");
+        // #94: an ask belongs to work in progress on a live session. The session check
+        // below is the authoritative liveness gate; this guard keeps a terminal, review
+        // or triage issue from gaining a question.
+        if (issue.status !== "in_progress") throw new InboxError("question_not_open");
         const [session] = await tx
           .select({ id: workSessions.id })
           .from(workSessions)

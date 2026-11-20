@@ -176,8 +176,8 @@ test("fenced writes need a live session; reads, creation, comments and knowledge
     expect((await call(client, "update_issue", { issueId, title: "With a session" })).isError).toBe(
       false,
     );
-    expect((await call(client, "update_issue", { issueId, status: "closed" })).isError).toBe(false);
-    expect((await call(client, "update_issue", { issueId, status: "open" })).isError).toBe(false);
+    expect((await call(client, "update_issue", { issueId, status: "done" })).isError).toBe(false);
+    expect((await call(client, "update_issue", { issueId, status: "todo" })).isError).toBe(false);
     expect((await call(client, "renew_claim", { issueId })).isError).toBe(false);
     const progress = await call(client, "report_progress", { issueId, summary: "Halfway" });
     expect(progress.isError).toBe(false);
@@ -439,7 +439,7 @@ test("an open blocker hides ready work until it closes (REST and MCP)", async ()
     );
 
     // A human closes A; no dependency row is rewritten, so B becomes ready immediately.
-    const closed = await api.patch(`/api/issues/${blockerId}`, { data: { status: "closed" } });
+    const closed = await api.patch(`/api/issues/${blockerId}`, { data: { status: "done" } });
     expect(closed.status()).toBe(200);
     expect(ids((await call(client, "ready_work", { projectId })).data)).toContain(blockedId);
 
@@ -752,6 +752,69 @@ test("the board and agents panel show assignment, live session state and the sid
       for (const cookie of await context.cookies()) await recordSecret(cookie.value);
       await context.close();
     }
+    await client.close();
+  }
+});
+
+// #94: the full agent loop over both transports proves that session events drive the
+// six-state workflow, including the default review handoff and the explicit done close.
+test("session transitions drive the six-state workflow over MCP and REST", async () => {
+  const workspaceId = await personalWorkspaceOf(api);
+  const projectId = await project(api, workspaceId);
+  const agentId = await createAgent(api, `sessions-workflow-${randomUUID()}`);
+  const secret = await issueKey(api, agentId, workspaceId, projectId);
+  const client = await connect(secret);
+  const http = bearer(secret);
+  try {
+    const created = await call(client, "create_issue", { projectId, title: "Workflow issue" });
+    expect(created.isError).toBe(false);
+    const issue = asRecord(created.data.issue);
+    const issueId = requiredText(field(issue, "id"), "the issue id");
+    expect(field(issue, "status")).toBe("todo");
+
+    // Ready work is the todo queue and claim moves the issue to in_progress.
+    expect(ids((await call(client, "ready_work", { projectId })).data)).toContain(issueId);
+    const claim = await call(client, "claim_issue", {
+      issueId,
+      runId: await newRun(client),
+    });
+    expect(claim.isError).toBe(false);
+    expect(field((await call(client, "get_issue", { issueId })).data.issue, "status")).toBe(
+      "in_progress",
+    );
+
+    // Default completion hands off to review: closedAt stays null and the issue leaves
+    // the ready queue.
+    const review = await call(client, "stop_session", { issueId });
+    expect(review.isError).toBe(false);
+    const reviewed = asRecord((await call(client, "get_issue", { issueId })).data.issue);
+    expect(field(reviewed, "status")).toBe("review");
+    expect(field(reviewed, "closedAt")).toBeNull();
+    expect(ids((await call(client, "ready_work", { projectId })).data)).not.toContain(issueId);
+
+    // A fresh issue completed with outcome done closes it over REST and unblocks a
+    // dependent whose blocker was only in review.
+    const dependent = await call(client, "create_issue", { projectId, title: "Dependent" });
+    const dependentId = requiredText(field(dependent.data.issue, "id"), "the dependent id");
+    const blocker = await call(client, "create_issue", { projectId, title: "Blocker" });
+    const blockerId = requiredText(field(blocker.data.issue, "id"), "the blocker id");
+    expect(
+      (await call(client, "add_blocked_by", { issueId: dependentId, blockedByIssueId: blockerId }))
+        .isError,
+    ).toBe(false);
+    const blockerRun = await newRun(client);
+    expect(
+      (await call(client, "claim_issue", { issueId: blockerId, runId: blockerRun })).isError,
+    ).toBe(false);
+    const done = await http.post(`/api/issues/${blockerId}/work-sessions/stop`, {
+      outcome: "done",
+    });
+    expect(done.status).toBe(200);
+    const closed = asRecord(await (await api.get(`/api/issues/${blockerId}`)).json());
+    expect(field(closed, "status")).toBe("done");
+    expect(field(closed, "closedAt")).not.toBeNull();
+    expect(ids((await call(client, "ready_work", { projectId })).data)).toContain(dependentId);
+  } finally {
     await client.close();
   }
 });

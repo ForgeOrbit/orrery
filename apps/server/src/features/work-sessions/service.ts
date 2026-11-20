@@ -14,10 +14,24 @@ import {
   type ResumeWorkSessionResult,
   type LogSessionActivityInput,
   type SessionActivity,
+  type StopOutcome,
+  type WorkCompletionOutcome,
   type WorkSession,
   type WorkSessionOutcome,
 } from "@orrery/contract";
-import { and, desc, eq, gt, inArray, isNull, lte, ne, notExists, or, sql } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  lte,
+  notExists,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
 import { alias, type PgInsertValue } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
@@ -67,7 +81,8 @@ const messages: Record<SessionsErrorKind, string> = {
   insufficient_access: "Contribute access is required to work on this issue.",
   issue_claimed: "Another worker holds the active session for this issue.",
   issue_needs_input: "This issue needs human input and cannot be claimed yet.",
-  issue_blocked: "This issue is closed or paused for input and cannot be reacquired yet.",
+  issue_blocked:
+    "This issue is not ready work (todo) or is paused for input, so it cannot be claimed or reacquired.",
   session_required: "This agent holds no live session for this issue.",
   human_sign_in_required: "Sign in as a human to request a stop.",
   agents_cannot_request_stop: "Only a human with Contribute or Manage access may request a stop.",
@@ -138,10 +153,12 @@ export interface SessionsService {
     summary: string,
     sessionId?: string,
   ): Promise<WorkSession>;
+  // #94: `outcome` is "released" (give up, issue returns to todo) or a completion —
+  // "completed"/"review" default to the review handoff, "done" closes the issue.
   stop(
     actor: AgentActor | null,
     issueId: string,
-    outcome: WorkSessionOutcome,
+    outcome: StopOutcome,
     sessionId?: string,
   ): Promise<WorkSession>;
   // #82: a human-only stop request on an active session. It records the actor, time and
@@ -432,6 +449,11 @@ export async function releaseMemberWorkSessions(
         inArray(workSessions.id, claimIds),
       ),
     );
+
+  // #94: a departure is work ending without completion. Every affected issue returns to
+  // todo under the same issue locks; the in_progress guard leaves unrelated or already
+  // completed work alone.
+  for (const issueId of issueIds) await revertIssueToTodo(tx, issueId);
 }
 
 // Lock the target issue first. Every claim, renewal, fenced write, progress update and
@@ -455,11 +477,23 @@ async function lockIssue(tx: DbTransaction, issueId: string) {
   return row;
 }
 
+// #94: any session that ends without completing the work returns an in_progress issue to
+// the ready queue. The guard makes this safe to call whenever a session is ended: it never
+// overwrites a review, a terminal status, or an issue another live session just claimed.
+// The caller already holds the issue row lock, so the decision and the write are atomic.
+export async function revertIssueToTodo(tx: DbTransaction, issueId: string): Promise<void> {
+  await tx
+    .update(issues)
+    .set({ status: "todo", updatedAt: sql`statement_timestamp()` })
+    .where(and(eq(issues.id, issueId), eq(issues.status, "in_progress")));
+}
+
 // Lazy expiry in database time: only rows whose lease has actually lapsed become expired,
 // and only their status changes. Progress is a separate column and is never touched here,
-// so an interruption cannot erase work already recorded.
+// so an interruption cannot erase work already recorded. A lapsed lease is work ending
+// without completion, so the issue returns to todo in the same transaction.
 async function expireStale(tx: DbTransaction, issueId: string): Promise<void> {
-  await tx
+  const expired = await tx
     .update(workSessions)
     .set({
       status: WorkSessionStatus.enum.expired,
@@ -472,7 +506,11 @@ async function expireStale(tx: DbTransaction, issueId: string): Promise<void> {
         eq(workSessions.status, WorkSessionStatus.enum.active),
         lte(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
       ),
-    );
+    )
+    .returning({ id: workSessions.id });
+  // Only a lease that actually lapsed here ends the work; a still-live session must keep
+  // its issue in in_progress.
+  if (expired.length > 0) await revertIssueToTodo(tx, issueId);
 }
 
 const fiveMinutes = sql`statement_timestamp() + interval '5 minutes'`;
@@ -804,7 +842,11 @@ export function createSessionsService({
     actor: AgentActor | null,
     issueId: string,
     sessionId: string | undefined,
-    write: (tx: DbTransaction, session: SessionView, issueId: string) => Promise<T | undefined>,
+    write: (
+      tx: DbTransaction,
+      session: SessionView,
+      issue: { id: string; projectId: string },
+    ) => Promise<T | undefined>,
   ): Promise<T> => {
     const identity = requireAgent(actor);
     await deadlineCommitted(issueId);
@@ -842,7 +884,7 @@ export function createSessionsService({
         .limit(1);
       // An inactive session is never revived and a stale write never becomes a new claim.
       if (session === undefined) throw new SessionsError("session_required");
-      const result = await write(tx, session, issue.id);
+      const result = await write(tx, session, issue);
       if (result === undefined) throw new SessionsError("session_required");
       return result;
     });
@@ -865,7 +907,7 @@ export function createSessionsService({
         // snapshot so a deadline that lands between the committed check and this lock
         // cannot let a new claim start while the issue is paused.
         const [fresh] = await tx
-          .select({ needsInput: issues.needsInput })
+          .select({ status: issues.status, needsInput: issues.needsInput })
           .from(issues)
           .where(eq(issues.id, issue.id))
           .limit(1);
@@ -889,6 +931,9 @@ export function createSessionsService({
         // A paused or open question owns Needs input: nobody may start new work on the
         // issue until a human answers and clears the flag.
         if (fresh?.needsInput ?? false) throw new SessionsError("issue_needs_input");
+        // #94: only ready work may be claimed. Backlog is triage, review is a handoff,
+        // done/cancelled are terminal, and an in_progress issue needs a live session.
+        if (fresh?.status !== "todo") throw new SessionsError("issue_blocked");
 
         const created = await insertFreshSession(tx, issue.id, {
           id: randomUUID(),
@@ -901,7 +946,15 @@ export function createSessionsService({
           createdAt: sql`statement_timestamp()`,
           updatedAt: sql`statement_timestamp()`,
         });
-        if (created !== undefined) return toSession(created);
+        if (created !== undefined) {
+          // The claim and the status transition are one atomic write on the already
+          // locked issue: nobody ever sees a claimed issue still sitting in todo.
+          await tx
+            .update(issues)
+            .set({ status: "in_progress", updatedAt: sql`statement_timestamp()` })
+            .where(and(eq(issues.id, issue.id), eq(issues.status, "todo")));
+          return toSession(created);
+        }
 
         // A different live claimant won the partial unique index; it is never joined.
         throw new SessionsError("issue_claimed");
@@ -913,7 +966,7 @@ export function createSessionsService({
         // While a question is open, checking in keeps the claim but never past the one-hour
         // deadline. After the deadline the question has been paused by the evaluation above,
         // so there is no live session left to renew.
-        const deadline = await leaseDeadline(tx, issue);
+        const deadline = await leaseDeadline(tx, issue.id);
         const lease =
           deadline === null
             ? fiveMinutes
@@ -955,8 +1008,15 @@ export function createSessionsService({
     },
 
     async stop(actor, issueId, outcome, sessionId) {
-      const nextStatus = workSessionMachine.assertTransition("active", outcome);
-      return withLiveSession(actor, issueId, sessionId, async (tx, session) => {
+      // Two decisions live in one transport field (#94). "released" ends the claim
+      // without completing the work; every other spelling completes it, defaulting to
+      // the non-terminal "review" handoff. "done" is the explicit close path.
+      const sessionOutcome: WorkSessionOutcome =
+        outcome === "released" ? WorkSessionStatus.enum.released : WorkSessionStatus.enum.completed;
+      const issueOutcome: WorkCompletionOutcome | null =
+        outcome === "released" ? null : outcome === "done" ? "done" : "review";
+      const nextStatus = workSessionMachine.assertTransition("active", sessionOutcome);
+      return withLiveSession(actor, issueId, sessionId, async (tx, session, issue) => {
         const [updated] = await tx
           .update(workSessions)
           .set({
@@ -972,7 +1032,38 @@ export function createSessionsService({
             ),
           )
           .returning(sessionColumns);
-        return updated === undefined ? undefined : toSession(updated);
+        if (updated === undefined) return undefined;
+
+        if (issueOutcome === null) {
+          // An explicit release returns the issue to the ready queue.
+          await revertIssueToTodo(tx, issue.id);
+          return toSession(updated);
+        }
+
+        // A completion decides the issue's next state. withLiveSession has already
+        // rechecked Contribute access on this exact transaction, which is the #94
+        // requirement for the "done" close; a Read-level caller cannot get here.
+        const done = issueOutcome === "done";
+        await tx
+          .update(issues)
+          .set({
+            status: done ? "done" : "review",
+            closedAt: done ? sql`statement_timestamp()` : null,
+            updatedAt: sql`statement_timestamp()`,
+          })
+          .where(eq(issues.id, issue.id));
+        await tx.insert(projectActivity).values({
+          id: randomUUID(),
+          projectId: issue.projectId,
+          issueId: issue.id,
+          type: done
+            ? ProjectActivityType.enum.issue_closed
+            : ProjectActivityType.enum.issue_review_handoff,
+          actorAgentId: session.agentId,
+          summary: done ? "Work completed and issue closed" : "Work handed off for review",
+          createdAt: sql`statement_timestamp()`,
+        });
+        return toSession(updated);
       });
     },
 
@@ -1250,9 +1341,10 @@ export function createSessionsService({
         ) {
           throw new SessionsError("session_required");
         }
-        // A closed or Needs-input issue is not available, even with no competing claimant.
+        // A non-todo or Needs-input issue is not available, even with no competing
+        // claimant. Expiry already returned an in_progress issue to todo.
         if (
-          fresh?.status !== "open" ||
+          fresh?.status !== "todo" ||
           (fresh?.needsInput ?? false) ||
           decision === "issue_blocked"
         ) {
@@ -1274,7 +1366,15 @@ export function createSessionsService({
           createdAt: sql`statement_timestamp()`,
           updatedAt: sql`statement_timestamp()`,
         });
-        if (created !== undefined) return toSession(created);
+        if (created !== undefined) {
+          // Reacquisition is a claim: the issue becomes in_progress in the same
+          // transaction so the board never shows it as ready without a worker.
+          await tx
+            .update(issues)
+            .set({ status: "in_progress", updatedAt: sql`statement_timestamp()` })
+            .where(and(eq(issues.id, issue.id), eq(issues.status, "todo")));
+          return toSession(created);
+        }
 
         // A different live claimant won the partial unique index; it is never joined.
         throw new SessionsError("issue_claimed");
@@ -1401,17 +1501,20 @@ export function createSessionsService({
             eq(workSessions.status, WorkSessionStatus.enum.active),
             gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
           );
-          // #86: an issue is not ready while any of its blockers is still open. A closed
-          // blocker stops matching immediately, so the issue becomes ready without any
-          // dependency row being rewritten. The correlated NOT EXISTS keeps one row per
-          // candidate issue even when several blockers are open.
+          // #86/#94: an issue is not ready while any blocker is non-terminal. Reaching
+          // done or cancelled stops matching immediately, so the issue becomes ready
+          // without any dependency row being rewritten; review stays blocking. The
+          // correlated NOT EXISTS keeps one row per candidate even with several blockers.
           const noOpenBlocker = notExists(
             tx
               .select({ id: issueDependencies.id })
               .from(issueDependencies)
               .innerJoin(blockerIssue, eq(issueDependencies.blockedByIssueId, blockerIssue.id))
               .where(
-                and(eq(issueDependencies.issueId, issues.id), ne(blockerIssue.status, "closed")),
+                and(
+                  eq(issueDependencies.issueId, issues.id),
+                  notInArray(blockerIssue.status, ["done", "cancelled"]),
+                ),
               ),
           );
           // This query only produces the eligible id set. The returned order comes from
@@ -1420,7 +1523,7 @@ export function createSessionsService({
           // that list, so REST and MCP ready work share one deterministic order (#84).
           const conditions = [
             eq(issues.projectId, projectId),
-            eq(issues.status, "open"),
+            eq(issues.status, "todo"),
             eq(issues.needsInput, false),
             isNull(workSessions.id),
             noOpenBlocker,

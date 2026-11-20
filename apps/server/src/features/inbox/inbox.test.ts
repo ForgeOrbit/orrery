@@ -1023,7 +1023,7 @@ describe("fallback deadline and late answers against real Postgres", () => {
     await sessions.renew({ kind: "agent", identity: f.identity }, issue.id);
 
     // Work already proceeded with the fallback; the issue was closed afterwards.
-    await projectsService.updateIssue(await humanActor(f), issue.id, { status: "closed" });
+    await projectsService.updateIssue(await humanActor(f), issue.id, { status: "done" });
     const late = await inbox.answer(await humanActor(f), question.id, "Use v2 after all");
 
     expect(late.status).toBe("fallback_used");
@@ -1034,7 +1034,7 @@ describe("fallback deadline and late answers against real Postgres", () => {
     expect(late.followUpAt).not.toBeNull();
     expect((await questionOf(question.id))?.status).toBe("fallback_used");
     expect(await isNeedsInput(issue.id)).toBe(false);
-    expect((await projectsService.getIssue(await humanActor(f), issue.id)).status).toBe("closed");
+    expect((await projectsService.getIssue(await humanActor(f), issue.id)).status).toBe("done");
     expect(await activityTypes(f.projectId)).toContain("issue_question_follow_up");
 
     // A second answer cannot overwrite the first follow-up.

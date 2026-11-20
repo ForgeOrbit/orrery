@@ -524,7 +524,7 @@ describe("shared project access", () => {
     const deniedMutations = [
       await postJson(app, `/api/projects/${project.id}/issues`, { title: "No" }, member.cookie),
       await patchJson(app, `/api/issues/${issue.id}`, { title: "No" }, member.cookie),
-      await patchJson(app, `/api/issues/${issue.id}`, { status: "closed" }, member.cookie),
+      await patchJson(app, `/api/issues/${issue.id}`, { status: "done" }, member.cookie),
       await postJson(app, `/api/issues/${issue.id}/comments`, { body: "No" }, member.cookie),
       await postJson(app, `/api/projects/${project.id}/knowledge`, { title: "No" }, member.cookie),
       await patchJson(app, `/api/knowledge/${knowledge.id}`, { title: "No" }, member.cookie),
@@ -581,14 +581,14 @@ describe("shared project access", () => {
     const closed = await patchJson(
       app,
       `/api/issues/${contributedIssue.id}`,
-      { status: "closed" },
+      { status: "done" },
       member.cookie,
     );
     expect(closed.status).toBe(200);
     const reopened = await patchJson(
       app,
       `/api/issues/${contributedIssue.id}`,
-      { status: "open" },
+      { status: "todo" },
       member.cookie,
     );
     expect(reopened.status).toBe(200);

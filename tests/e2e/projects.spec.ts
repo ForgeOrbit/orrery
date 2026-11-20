@@ -68,7 +68,7 @@ test("runs the full project cycle over REST", async () => {
     number: 1,
     title: "REST issue",
     body: "The **first** draft.",
-    status: "open",
+    status: "todo",
     closedAt: null,
     createdBy: { email: ADMIN_EMAIL },
     updatedBy: { email: ADMIN_EMAIL },
@@ -82,7 +82,7 @@ test("runs the full project cycle over REST", async () => {
   expect(await edited.json()).toMatchObject({
     title: "REST issue edited",
     body: "The **final** draft.",
-    status: "open",
+    status: "todo",
     updatedBy: { email: ADMIN_EMAIL },
   });
 
@@ -103,15 +103,15 @@ test("runs the full project cycle over REST", async () => {
   ]);
 
   // Close, then reopen. closedAt follows the status.
-  const closed = await api.patch(`/api/issues/${issueId}`, { data: { status: "closed" } });
+  const closed = await api.patch(`/api/issues/${issueId}`, { data: { status: "done" } });
   expect(closed.status()).toBe(200);
   const closedBody = await closed.json();
-  expect(closedBody).toMatchObject({ status: "closed" });
+  expect(closedBody).toMatchObject({ status: "done" });
   expect(field(closedBody, "closedAt")).toEqual(expect.any(String));
 
-  const reopened = await api.patch(`/api/issues/${issueId}`, { data: { status: "open" } });
+  const reopened = await api.patch(`/api/issues/${issueId}`, { data: { status: "todo" } });
   expect(reopened.status()).toBe(200);
-  expect(await reopened.json()).toMatchObject({ status: "open", closedAt: null });
+  expect(await reopened.json()).toMatchObject({ status: "todo", closedAt: null });
 
   // A basic Markdown knowledge entry, then an edit that keeps the creator and records
   // the last editor.
@@ -197,7 +197,7 @@ test("refuses unauthenticated listing and fetching of a project", async () => {
       await anonymous.post(`/api/projects/${projectId}/issues`, { data: { title: "No" } }),
       await anonymous.post(`/api/issues/${issueId}/comments`, { data: { body: "No" } }),
       await anonymous.post(`/api/projects/${projectId}/knowledge`, { data: { title: "No" } }),
-      await anonymous.patch(`/api/issues/${issueId}`, { data: { status: "closed" } }),
+      await anonymous.patch(`/api/issues/${issueId}`, { data: { status: "done" } }),
       await anonymous.patch(`/api/knowledge/${entryId}`, { data: { title: "No" } }),
     ];
     for (const res of attempts) {
@@ -228,7 +228,7 @@ test("runs the complete cycle in the browser", async ({ page }) => {
   await page.getByLabel("Description").fill("Created in the browser.");
   await page.getByRole("button", { name: "Create issue" }).click();
   await expect(page.getByRole("heading", { name: "Browser issue" })).toBeVisible();
-  await expect(page.locator("[data-issue-status]")).toHaveAttribute("data-issue-status", "open");
+  await expect(page.locator("[data-issue-status]")).toHaveAttribute("data-issue-status", "todo");
 
   // Edit the issue in place.
   await page.getByLabel("Title").fill("Browser issue edited");
@@ -244,10 +244,10 @@ test("runs the complete cycle in the browser", async ({ page }) => {
 
   // Close, then reopen.
   await page.getByRole("button", { name: "Close issue" }).click();
-  await expect(page.locator("[data-issue-status]")).toHaveAttribute("data-issue-status", "closed");
+  await expect(page.locator("[data-issue-status]")).toHaveAttribute("data-issue-status", "done");
   await expect(page.getByRole("button", { name: "Reopen issue" })).toBeVisible();
   await page.getByRole("button", { name: "Reopen issue" }).click();
-  await expect(page.locator("[data-issue-status]")).toHaveAttribute("data-issue-status", "open");
+  await expect(page.locator("[data-issue-status]")).toHaveAttribute("data-issue-status", "todo");
   await expect(page.getByRole("button", { name: "Close issue" })).toBeVisible();
 
   // A basic Markdown knowledge entry, then an edit.

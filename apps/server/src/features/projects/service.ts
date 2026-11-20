@@ -3,6 +3,7 @@ import {
   FallbackPolicy,
   ISSUE_SORT_STEP,
   IssueStatus,
+  isTerminalIssueStatus,
   ProjectAccessEventType,
   ProjectAccessLevel,
   WorkspaceKind,
@@ -2051,6 +2052,10 @@ export function createProjectsService({
         if (counter === undefined) throw new ProjectsError("project_not_found");
 
         const id = randomUUID();
+        // #94: an unspecified status is `todo` (ready work); `backlog` is the explicit
+        // triage staging area. A terminal status at creation still gets closed_at so the
+        // database invariant holds, even though callers normally reach it via a transition.
+        const status = input.status ?? IssueStatus.enum.todo;
         const [created] = await tx
           .insert(issues)
           .values({
@@ -2059,7 +2064,8 @@ export function createProjectsService({
             number: counter.number,
             title: input.title,
             body: input.body ?? "",
-            status: IssueStatus.enum.open,
+            status,
+            closedAt: isTerminalIssueStatus(status) ? sql`statement_timestamp()` : null,
             priority: input.priority ?? IssuePriority.enum.none,
             sortOrder: input.sortOrder ?? counter.number * ISSUE_SORT_STEP,
             createdByHumanId: humanIdOf(actor),
@@ -2187,12 +2193,15 @@ export function createProjectsService({
           return toIssue(current);
         }
 
-        const closedAt =
-          status === IssueStatus.enum.closed
-            ? current.status === IssueStatus.enum.closed
-              ? current.closedAt
-              : sql`statement_timestamp()`
-            : null;
+        const terminalNow = isTerminalIssueStatus(status);
+        const wasTerminal = isTerminalIssueStatus(current.status);
+        // closed_at is set on entering a terminal state, preserved while staying in one,
+        // and cleared on leaving it. Only done and cancelled are terminal (#94).
+        const closedAt = terminalNow
+          ? wasTerminal
+            ? current.closedAt
+            : sql`statement_timestamp()`
+          : null;
         const [updated] = await tx
           .update(issues)
           .set({
@@ -2218,7 +2227,10 @@ export function createProjectsService({
         // A priority change is a real edit and is recorded. A reorder is not: dragging a
         // card writes only its midpoint, and an activity event per drag would drown the
         // feed, so sortOrder updates stay invisible there (the issue's updatedAt still moves).
-        if (titleChanged || bodyChanged || priorityChanged || assigneeChanged) {
+        // A workflow move that does not cross the terminal boundary is still a real edit,
+        // but it is not a close or a reopen; those names stay reserved for that boundary.
+        const workflowMove = statusChanged && !terminalNow && !wasTerminal;
+        if (titleChanged || bodyChanged || priorityChanged || assigneeChanged || workflowMove) {
           await recordActivity(tx, {
             projectId: current.projectId,
             type: "issue_edited",
@@ -2227,10 +2239,10 @@ export function createProjectsService({
             summary: title,
           });
         }
-        if (statusChanged) {
+        if (statusChanged && (terminalNow || wasTerminal)) {
           await recordActivity(tx, {
             projectId: current.projectId,
-            type: status === IssueStatus.enum.closed ? "issue_closed" : "issue_reopened",
+            type: terminalNow ? "issue_closed" : "issue_reopened",
             actor,
             issueId,
             summary: title,

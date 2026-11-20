@@ -8,6 +8,7 @@ import {
   IssueLinkKind,
   IssuePriority,
   IssueStatus,
+  TERMINAL_ISSUE_STATUSES,
   ProjectAccessEventType,
   ProjectAccessLevel,
   ProjectActivityType,
@@ -838,7 +839,8 @@ export const runChildren = pgTable(
 
 // An issue in a project. The body is Markdown, stored as written. `number` is local to
 // the project; the id is the stable identity. `closed_at` is set exactly while the issue
-// is closed, so reopening clears it and an edit while closed leaves it untouched.
+// is terminal (done or cancelled), so leaving a terminal state clears it and an edit
+// while terminal leaves it untouched.
 export const issues = pgTable(
   "issues",
   {
@@ -921,15 +923,17 @@ export const issues = pgTable(
         sqlLiteralList(FallbackPolicy),
       )}))`,
     ),
+    // #94: both done and cancelled are terminal; review stays non-terminal and blocking.
     check(
       "issues_closed_at_matches_status",
-      sql`(${t.status} = 'closed') = (${t.closedAt} is not null)`,
+      sql`(${t.status} in (${sql.raw(TERMINAL_ISSUE_STATUSES.map((status) => `'${status}'`).join(", "))})) = (${t.closedAt} is not null)`,
     ),
   ],
 );
 
 // A directed blocked_by edge (#86): `issue_id` cannot be ready work until
-// `blocked_by_issue_id` is closed. Both issues belong to one project; the service checks
+// `blocked_by_issue_id` reaches a terminal state (done or cancelled, #94). `review` is a
+// non-terminal handoff and still blocks. Both issues belong to one project; the service checks
 // project scope and acyclicity before writing, and these constraints make the data rule
 // hold even for a writer that bypasses it. The unique index stops duplicate edges, and the
 // reverse index keeps "what does this issue block" lookups indexed.

@@ -1,5 +1,10 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import { ReadyWorkFilter, SessionActivityKind, type AgentIdentity } from "@orrery/contract";
+import {
+  ReadyWorkFilter,
+  SessionActivityKind,
+  type AgentIdentity,
+  type StopOutcome,
+} from "@orrery/contract";
 import { sessionTools } from "@orrery/contract";
 import { isAgentError, type AgentAuthenticator } from "../agents/index.ts";
 import { SessionsError, type SessionsService } from "./service.ts";
@@ -19,6 +24,13 @@ const str = (value: unknown, field: string): string => {
 // one keeps #36 callers working, a present one pins the write to that exact session.
 const sessionFence = (args: Args): string | undefined =>
   typeof args.sessionId === "string" ? args.sessionId : undefined;
+
+// #94: the validated tool argument is one of completed/released/review/done. A missing
+// value means the default completion (review handoff), matching the shared contract.
+const stopOutcome = (args: Args): StopOutcome =>
+  args.outcome === "released" || args.outcome === "done" || args.outcome === "review"
+    ? args.outcome
+    : "completed";
 
 // The tool's input schema already validated the detail; this narrows the parsed `unknown`
 // to the service's type without a second parser or an unchecked assertion. The kind uses
@@ -55,7 +67,9 @@ export function createSessionsMcp(service: SessionsService, authenticate: AgentA
       session: await service.stop(
         { kind: "agent", identity },
         str(args.issueId, "issueId"),
-        args.outcome === "released" ? "released" : "completed",
+        // The tool's input schema has already validated the outcome; keep the legacy
+        // "completed" spelling as the default review handoff.
+        stopOutcome(args),
         sessionFence(args),
       ),
     }),

@@ -1049,10 +1049,10 @@ describe("workspace-scoped agent API keys", () => {
         body: "New **body** by the agent.",
       });
       expect(editedIssue.updatedBy).toMatchObject({ agentId });
-      const closed = await projectsService.updateIssue(actor, issue.id, { status: "closed" });
+      const closed = await projectsService.updateIssue(actor, issue.id, { status: "done" });
       expect(closed.updatedBy).toMatchObject({ agentId });
-      const reopened = await projectsService.updateIssue(actor, issue.id, { status: "open" });
-      expect(reopened).toMatchObject({ status: "open", closedAt: null });
+      const reopened = await projectsService.updateIssue(actor, issue.id, { status: "todo" });
+      expect(reopened).toMatchObject({ status: "todo", closedAt: null });
       expect(reopened.updatedBy).toMatchObject({ agentId });
       const comment = await projectsService.createComment(actor, issue.id, {
         body: "Agent comment",
@@ -1151,7 +1151,7 @@ describe("workspace-scoped agent API keys", () => {
 
       const denials = await Promise.all([
         rejection(projectsService.createIssue(actor, projectId, { title: "No" })),
-        rejection(projectsService.updateIssue(actor, humanIssue.id, { status: "closed" })),
+        rejection(projectsService.updateIssue(actor, humanIssue.id, { status: "done" })),
         rejection(projectsService.createComment(actor, humanIssue.id, { body: "No" })),
         rejection(projectsService.createKnowledge(actor, projectId, { title: "No" })),
       ]);
@@ -1166,11 +1166,11 @@ describe("workspace-scoped agent API keys", () => {
       const restDenied = await patchJson(
         app,
         `/api/issues/${humanIssue.id}`,
-        { status: "closed" },
+        { status: "done" },
         memberCookie,
       );
       await expectProblem(restDenied, 403, "insufficient_project_access");
-      const bearerOnly = await patchJson(app, `/api/issues/${humanIssue.id}`, { status: "closed" });
+      const bearerOnly = await patchJson(app, `/api/issues/${humanIssue.id}`, { status: "done" });
       expect(bearerOnly.status).toBe(401);
     });
 
