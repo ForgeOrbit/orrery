@@ -68,6 +68,15 @@ async function call(client: Client, name: string, args: Record<string, unknown>)
   return { isError: result.isError === true, data: asRecord(result.structuredContent) };
 }
 
+async function newRun(client: Client): Promise<string> {
+  const result = await call(client, "orrery_run_checkin", {
+    event: "run_started",
+    runKey: { harness: "codex", nativeSessionId: randomUUID() },
+  });
+  expect(result.isError).toBe(false);
+  return requiredText(field(result.data, "runId"), "the run id");
+}
+
 test("REST manages labels, one-level subtasks, and the ready queue", async () => {
   const project = await createProject("LBLS");
   const sibling = await createProject("LBLS2");
@@ -215,6 +224,15 @@ test("MCP manages labels and one-level subtasks with the same shapes", async () 
     expect(asArray(ready.data.issues).map((issue) => field(issue, "id"))).toEqual(
       expect.arrayContaining([parentId, subtaskId]),
     );
+
+    // The subtask is independently claimable end-to-end: no session on the parent is
+    // needed, and the claim is a real active work session on the subtask itself.
+    const claim = await call(client, "claim_issue", {
+      issueId: subtaskId,
+      runId: await newRun(client),
+    });
+    expect(claim.isError).toBe(false);
+    expect(asRecord(claim.data.session)).toMatchObject({ issueId: subtaskId, status: "active" });
 
     const tooDeep = await call(client, "update_issue", {
       issueId: parentId,

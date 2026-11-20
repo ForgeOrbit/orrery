@@ -9,7 +9,7 @@ import {
 import { eq, sql } from "drizzle-orm";
 import type { Hono } from "hono";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { humans, issueLabels, issues, workspaces } from "../../db/schema.ts";
+import { humans, issueLabels, issues, projects, workspaces } from "../../db/schema.ts";
 import { createDb, type Database } from "../../platform/db.ts";
 import { rootCause } from "../../platform/errors.ts";
 import { createApp } from "../../platform/http.ts";
@@ -205,6 +205,8 @@ describe("project-scoped labels (#97)", () => {
 
     const removed = await del(`/api/labels/${label.id}`);
     expect(removed.status).toBe(204);
+    // A racing second delete cannot succeed or emit a second activity event.
+    await problemOf(await del(`/api/labels/${label.id}`), 404, "label_not_found");
     const afterDelete = await get(`/api/projects/${pid}/labels`);
     expect(await afterDelete.json()).toEqual([]);
     const missing = await patch(`/api/labels/${randomUUID()}`, { name: "Nope" });
@@ -267,6 +269,12 @@ describe("project-scoped labels (#97)", () => {
     expect(field(Array.isArray(listedBody) ? listedBody[0] : undefined, "labels")).toMatchObject([
       { id: label },
     ]);
+    // The fallback-policy override path reuses the same issue mapper and must keep labels.
+    const overridden = await patch(`/api/issues/${issueA.id}/fallback-policy`, {
+      override: "require_human",
+    });
+    expect(overridden.status).toBe(200);
+    expect(field(await overridden.json(), "labels")).toMatchObject([{ id: label }]);
 
     await problemOf(
       await post(`/api/issues/${issueB.id}/labels/${foreign}`, {}),
@@ -439,6 +447,65 @@ describe("one-level subtasks (#97)", () => {
         ),
       ),
     ).resolves.toMatch(/same project/i);
+
+    // A parent cannot move to another project while its subtasks stay behind, even when
+    // a writer bypasses the service and updates project_id directly.
+    await expect(
+      rejectionMessage(
+        database.db.execute(sql`update issues set project_id = ${other} where id = ${rootId}`),
+      ),
+    ).resolves.toMatch(/project|project_id/i);
+  });
+
+  it("404s a parent id in a workspace the caller cannot read (#97 review)", async () => {
+    const pid = await project();
+    const humanId = randomUUID();
+    expect(humanId).toBeTruthy();
+    await database.db.insert(humans).values({
+      id: humanId,
+      email: `other-${humanId}@example.com`,
+      passwordHash: "not-a-real-hash",
+    });
+    const foreignWorkspaceId = randomUUID();
+    await database.db.insert(workspaces).values({
+      id: foreignWorkspaceId,
+      kind: "personal",
+      name: "Foreign workspace",
+      personalOwnerHumanId: humanId,
+    });
+    const foreignProjectId = randomUUID();
+    await database.db.insert(projects).values({
+      id: foreignProjectId,
+      workspaceId: foreignWorkspaceId,
+      name: "Foreign project",
+      key: "FRGN",
+      createdByHumanId: humanId,
+    });
+    const foreignIssueId = randomUUID();
+    await database.db.insert(issues).values({
+      id: foreignIssueId,
+      projectId: foreignProjectId,
+      number: 1,
+      title: "Foreign parent",
+      status: "todo",
+      sortOrder: 65535,
+      createdByHumanId: humanId,
+      updatedByHumanId: humanId,
+    });
+
+    // An unreadable parent answers like a missing one, on both create and update, rather
+    // than leaking its existence with a cross-project conflict.
+    await problemOf(
+      await post(`/api/projects/${pid}/issues`, { title: "Child", parentIssueId: foreignIssueId }),
+      404,
+      "issue_not_found",
+    );
+    const own = await issue(pid);
+    await problemOf(
+      await patch(`/api/issues/${own.id}`, { parentIssueId: foreignIssueId }),
+      404,
+      "issue_not_found",
+    );
   });
 
   it("serializes concurrent parent writes so two racers cannot create depth 2", async () => {

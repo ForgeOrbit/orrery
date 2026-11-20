@@ -7444,7 +7444,7 @@
             }
           },
           "409": {
-            "description": "The parent already has a parent, or has subtasks of its own",
+            "description": "The parent already has a parent or has subtasks of its own, or the agent holds no live work session for this issue",
             "content": {
               "application/problem+json": {
                 "schema": {

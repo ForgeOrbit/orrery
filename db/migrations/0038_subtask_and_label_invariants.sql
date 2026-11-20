@@ -10,6 +10,14 @@ DECLARE
   parent_parent text;
   parent_found boolean;
 BEGIN
+  -- A project-scoped parent cannot move to another project while its subtasks stay behind.
+  -- This must be checked before the no-parent early return: a parent has no parent of its
+  -- own, but it may still have children whose project_id must keep matching it.
+  IF TG_OP = 'UPDATE' AND NEW.project_id <> OLD.project_id AND EXISTS (
+    SELECT 1 FROM issues WHERE parent_issue_id = NEW.id AND project_id <> NEW.project_id
+  ) THEN
+    RAISE EXCEPTION 'a parent issue cannot change project while its subtasks stay in the old project' USING ERRCODE = '23514';
+  END IF;
   IF NEW.parent_issue_id IS NULL THEN
     RETURN NEW;
   END IF;

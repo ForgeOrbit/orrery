@@ -2112,7 +2112,7 @@
   },
   {
     "name": "attach_issue_label",
-    "description": "Attach a label from the issue's own project to an issue. Attaching an already attached label is a no-op. Returns the issue with its labels. Requires Contribute access and, for an agent, a live work session on the issue.",
+    "description": "Attach a label from the issue's own project to an issue. Attaching an already attached label is a no-op. Returns the issue with its labels. Requires Contribute access.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
@@ -2399,7 +2399,7 @@
   },
   {
     "name": "detach_issue_label",
-    "description": "Detach a label from an issue; detaching a label that is not attached is a no-op. Returns the issue with its labels. Requires Contribute access and, for an agent, a live work session on the issue.",
+    "description": "Detach a label from an issue; detaching a label that is not attached is a no-op. Returns the issue with its labels. Requires Contribute access.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",

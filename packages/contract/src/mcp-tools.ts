@@ -140,14 +140,14 @@ const deleteLabel = {
 const attachIssueLabel = {
   name: "attach_issue_label",
   description:
-    "Attach a label from the issue's own project to an issue. Attaching an already attached label is a no-op. Returns the issue with its labels. Requires Contribute access and, for an agent, a live work session on the issue.",
+    "Attach a label from the issue's own project to an issue. Attaching an already attached label is a no-op. Returns the issue with its labels. Requires Contribute access.",
   input: z.object({ issueId: id("The issue id"), labelId }),
   output: z.object({ issue: Issue }),
 };
 const detachIssueLabel = {
   name: "detach_issue_label",
   description:
-    "Detach a label from an issue; detaching a label that is not attached is a no-op. Returns the issue with its labels. Requires Contribute access and, for an agent, a live work session on the issue.",
+    "Detach a label from an issue; detaching a label that is not attached is a no-op. Returns the issue with its labels. Requires Contribute access.",
   input: z.object({ issueId: id("The issue id"), labelId }),
   output: z.object({ issue: Issue }),
 };

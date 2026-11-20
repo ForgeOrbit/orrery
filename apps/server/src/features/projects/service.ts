@@ -1137,6 +1137,25 @@ async function requireLabel(
   return { ...row, ...facts, accessLevel: requireLevel(facts, actor, required, "label_not_found") };
 }
 
+// #97: resolve the parent through the SAME read gate as every other issue lookup, BEFORE
+// touching any row lock. An issue outside the caller's readable projects answers 404, so a
+// parent id cannot probe another workspace for existence; only a parent the caller can read
+// earns the more precise cross_project_parent answer. Callers re-check the rules under the
+// locks in validateParent before writing.
+async function requireParent(
+  tx: DbTransaction,
+  parentIssueId: string,
+  projectId: string,
+  issueId: string,
+  actor: WorkActor,
+) {
+  if (issueId === parentIssueId) throw new ProjectsError("self_parent");
+  const parent = await requireIssue(tx, parentIssueId, actor, ProjectAccessLevel.enum.read);
+  if (parent.projectId !== projectId) throw new ProjectsError("cross_project_parent");
+  if (parent.parentIssueId !== null) throw new ProjectsError("subtask_depth_exceeded");
+  return parent;
+}
+
 // #97: lock the project row first (global projects -> issues order) and then the issue and
 // its would-be parent in ascending id order, so two concurrent reparentings cannot both
 // read an old tree and commit a second level. The database trigger repeats the check under
@@ -2048,7 +2067,9 @@ export function createProjectsService({
         if (loosens && !projectAccessAtLeast(current.accessLevel, ProjectAccessLevel.enum.manage)) {
           throw new ProjectsError("insufficient_project_access");
         }
-        if (current.fallbackPolicyOverride === override) return toIssue(current);
+        if (current.fallbackPolicyOverride === override) {
+          return toIssue(current, await loadIssueLabels(tx, issueId));
+        }
         const [updated] = await tx
           .update(issues)
           .set({
@@ -2065,7 +2086,10 @@ export function createProjectsService({
           issueId,
           summary: `Fallback policy override ${override === null ? "cleared" : `set to ${override}`}`,
         });
-        return toIssue({ ...current, fallbackPolicyOverride: updated.fallbackPolicyOverride });
+        return toIssue(
+          { ...current, fallbackPolicyOverride: updated.fallbackPolicyOverride },
+          await loadIssueLabels(tx, issueId),
+        );
       });
     },
 
@@ -2335,6 +2359,9 @@ export function createProjectsService({
         const status = input.status ?? IssueStatus.enum.todo;
         const parentIssueId = input.parentIssueId ?? null;
         if (parentIssueId !== null) {
+          // Resolve and authorize the target BEFORE locking it: an unreadable parent must
+          // answer 404 rather than reveal itself as a cross-project conflict.
+          await requireParent(tx, parentIssueId, projectId, id, actor);
           // The counter update above already holds the project row. Lock the parent issue
           // too, then validate every subtree rule under that lock.
           await lockSubtaskWrite(tx, projectId, id, parentIssueId);
@@ -2435,6 +2462,9 @@ export function createProjectsService({
         // reparentings cannot race past the depth check.
         const requestedParent = input.parentIssueId;
         if (requestedParent !== undefined && requestedParent !== null) {
+          // The read gate runs first, so a parent in a workspace the caller cannot read
+          // answers 404 and its row is never locked.
+          await requireParent(tx, requestedParent, target.projectId, issueId, actor);
           await lockSubtaskWrite(tx, target.projectId, issueId, requestedParent);
         } else {
           await tx
@@ -3219,7 +3249,13 @@ export function createProjectsService({
       const actor = requireActor(actorArg);
       return db.transaction(async (tx) => {
         const current = await requireLabel(tx, labelId, actor, ProjectAccessLevel.enum.contribute);
-        await tx.delete(projectLabels).where(eq(projectLabels.id, labelId));
+        // The DELETE's row count is the commit decision: a concurrent delete that won the
+        // race leaves nothing for this transaction, so it must not write a second event.
+        const deleted = await tx
+          .delete(projectLabels)
+          .where(eq(projectLabels.id, labelId))
+          .returning({ id: projectLabels.id });
+        if (deleted.length === 0) throw new ProjectsError("label_not_found");
         await recordActivity(tx, {
           projectId: current.projectId,
           type: "project_label_deleted",

@@ -316,7 +316,9 @@ const updateIssue = createRoute({
     404: problem(
       "No issue with this id is accessible to the caller, or the assignee is unknown or inactive in the workspace",
     ),
-    409: problem("The parent already has a parent, or has subtasks of its own"),
+    409: problem(
+      "The parent already has a parent or has subtasks of its own, or the agent holds no live work session for this issue",
+    ),
   },
 });
 
