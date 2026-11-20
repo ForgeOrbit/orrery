@@ -1965,6 +1965,91 @@ def extract_code_facts() -> dict[str, Any]:
 
 
 
+    # M25 (#43): ownership recovery. Every guard comes from the new feature's one service,
+    # its human-only REST routes, the minimal directory contract, both event writes, the
+    # history filter, and the migration that permits the retained former-owner shape.
+    own_src = read_text("apps/server/src/features/ownership/service.ts")
+    own_rest = read_text("apps/server/src/features/ownership/rest.ts")
+    own_contract = read_text("packages/contract/src/ownership.ts")
+    recover_fn = slice_between(own_src, "async recoverOwnership(", "\n  };\n}")
+    directory_fn = slice_between(own_src, "async directory(", "    // One transaction.")
+    admin_fn = slice_between(own_src, "async function requireActiveAdministrator(", "async function lockOwnershipWrites")
+    notify_fn = slice_between(own_src, "async function notifyMembers(", "export function createOwnershipService")
+    directory_schema = slice_between(own_contract, "export const InstallationWorkspace = z", "export type InstallationWorkspace =")
+    hist_account_fn = slice_between(hist_src, "async function loadAccountStatusEvents(", "export interface HistoryDeps")
+    mig_0030 = read_text("db/migrations/0030_neat_tusk.sql")
+
+    m25_one_tx = recover_fn.count("db.transaction(") == 1 and "await notifyMembers(db, deliver, log, {" in recover_fn
+    m25_lock_first = ordered(recover_fn, "db.transaction(async (tx) => {", "await lockOwnershipWrites(tx);")
+    m25_admin_recheck = (
+        "await requireActiveAdministrator(tx, actor.humanId)" in recover_fn
+        and "await requireActiveAdministrator(tx, actor.humanId)" in directory_fn
+        and "eq(humans.isSystemAdministrator, true)" in admin_fn
+        and "isNull(humans.deactivatedAt)" in admin_fn
+    )
+    m25_shared_only = (
+        "workspace.kind !== WorkspaceKind.enum.shared" in recover_fn
+        and 'throw new OwnershipError("workspace_not_found")' in recover_fn
+    )
+    m25_guard_bump = ordered(recover_fn, "await bumpGuard(tx, workspaceId)", "self_recovery_forbidden")
+    m25_self_guard = (
+        "targetHumanId === actor.humanId" in recover_fn
+        and 'throw new OwnershipError("self_recovery_forbidden")' in recover_fn
+    )
+    m25_active_owner_guard = (
+        'throw new OwnershipError("workspace_has_active_owner")' in recover_fn
+        and "eq(workspaceMemberships.isOwner, true)" in recover_fn
+        and "isNull(workspaceMemberships.suspendedAt)" in recover_fn
+        and "(owners?.count ?? 0) >= 1" in recover_fn
+    )
+    m25_target_active_guard = (
+        "target.deactivatedAt !== null" in recover_fn
+        and 'throw new OwnershipError("target_deactivated")' in recover_fn
+    )
+    m25_membership_guard = (
+        "membership.suspendedAt === null" in recover_fn
+        and "membership.isFormerOwner" in recover_fn
+        and 'throw new OwnershipError("member_not_found")' in recover_fn
+        and 'throw new OwnershipError("recipient_ineligible")' in recover_fn
+    )
+    m25_promote = (
+        "set({ isOwner: true, suspendedAt: null, isFormerOwner: false })" in recover_fn
+        and "insert(workspaceMemberships)" not in recover_fn
+    )
+    m25_events = (
+        recover_fn.count('type: "workspace_ownership_recovered"') >= 2
+        and "insert(workspaceEvents)" in recover_fn
+        and "insert(accountRecoveryEvents)" in recover_fn
+        and "'workspace_ownership_recovered'" in mig_0030
+    )
+    m25_history = (
+        '"workspace_ownership_recovered"' in hist_account_fn
+        and "eq(workspaceEvents.workspaceId, workspaceId)" in hist_src
+    )
+    m25_directory_scope = (
+        "projects" not in directory_fn
+        and "issues" not in directory_fn
+        and "knowledge" not in directory_fn
+        and "project" not in directory_schema
+        and "eq(workspaces.kind, WorkspaceKind.enum.shared)" in directory_fn
+    )
+    m25_human_only = "sessionReader" in own_rest and "agentAuthenticator" not in own_rest
+    m25_http_problems = all(f"{code}: problem(" in own_rest for code in (400, 401, 403, 404, 409))
+    m25_notify_after_commit = (
+        ordered(
+            recover_fn,
+            "const { workspaceName, ...result } = await db.transaction",
+            "await notifyMembers(db, deliver, log, {",
+        )
+        and "await deliver({ to, subject, text })" in notify_fn
+    )
+    m25_no_admin_grant = (
+        "insert(projectAccessGrants)" not in recover_fn
+        and "insert(projectAccessGrants)" not in notify_fn
+        and "insert(workspaceMemberships)" not in recover_fn
+    )
+    m25_no_key_revival = "agentApiKeys" not in recover_fn and "agentApiKeys" not in notify_fn
+
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
         "m2a_supersedes_failed": m2a_supersedes_failed,
@@ -2275,6 +2360,24 @@ def extract_code_facts() -> dict[str, Any]:
         "m24_expire_lapsed": m24_expire_lapsed,
         "m24_http_problems": m24_http_problems,
         "m24_human_only": m24_human_only,
+        "m25_one_tx": m25_one_tx,
+        "m25_lock_first": m25_lock_first,
+        "m25_admin_recheck": m25_admin_recheck,
+        "m25_shared_only": m25_shared_only,
+        "m25_guard_bump": m25_guard_bump,
+        "m25_self_guard": m25_self_guard,
+        "m25_active_owner_guard": m25_active_owner_guard,
+        "m25_target_active_guard": m25_target_active_guard,
+        "m25_membership_guard": m25_membership_guard,
+        "m25_promote": m25_promote,
+        "m25_events": m25_events,
+        "m25_history": m25_history,
+        "m25_directory_scope": m25_directory_scope,
+        "m25_human_only": m25_human_only,
+        "m25_http_problems": m25_http_problems,
+        "m25_notify_after_commit": m25_notify_after_commit,
+        "m25_no_admin_grant": m25_no_admin_grant,
+        "m25_no_key_revival": m25_no_key_revival,
     }
 
 
@@ -5760,6 +5863,218 @@ def check_m24(facts: dict[str, Any]) -> CheckResult:
     )
 
 
+def check_m25(facts: dict[str, Any]) -> CheckResult:
+    """#43: ownership recovery of an ownerless shared workspace.
+
+    State: (workspace kind, active owner present, actor active, actor is admin,
+    actor membership/current and initial, actor project grant/current and initial,
+    target self/existence/activity/membership, recovered, notified, events,
+    violations). The model explores refusals (active owner, self-promotion,
+    deactivated target, outsider, suspended non-former-owner, personal workspace,
+    inactive or non-admin caller) alongside both eligible promotions (an active
+    member after another owner's deactivation, and a reactivated former sole owner).
+    Each source guard is extracted from the service, REST, contract, history and
+    migration; flipping any single one makes the same explorer reach a named
+    counterexample, which is the sensitivity proof.
+    """
+    g = facts
+    files = [
+        "apps/server/src/features/ownership/service.ts",
+        "apps/server/src/features/ownership/rest.ts",
+        "packages/contract/src/ownership.ts",
+        "apps/server/src/features/history/service.ts",
+        "apps/server/src/db/schema.ts",
+        "db/migrations/0030_neat_tusk.sql",
+    ]
+
+    def bad(violations: frozenset[str], reason: str) -> frozenset[str]:
+        return violations | {reason}
+
+    structural = [
+        ("m25_one_tx", "recovery_split_across_transactions"),
+        ("m25_lock_first", "ownership_lock_not_first"),
+        ("m25_admin_recheck", "admin_recheck_missing"),
+        ("m25_shared_only", "personal_workspace_recoverable"),
+        ("m25_guard_bump", "ownership_guard_not_bumped"),
+        ("m25_self_guard", "self_promotion_guard_missing"),
+        ("m25_active_owner_guard", "active_owner_guard_missing"),
+        ("m25_target_active_guard", "deactivated_target_guard_missing"),
+        ("m25_membership_guard", "eligibility_guard_missing"),
+        ("m25_promote", "promotion_not_atomic"),
+        ("m25_events", "events_not_recorded"),
+        ("m25_history", "recovery_not_visible_in_history"),
+        ("m25_notify_after_commit", "notification_missing_or_before_commit"),
+        ("m25_no_admin_grant", "administrator_gained_membership_or_project"),
+        ("m25_no_key_revival", "old_agent_keys_revived"),
+        ("m25_human_only", "agent_key_can_recover"),
+        ("m25_http_problems", "undeclared_problem_response"),
+    ]
+
+    def recover(state):
+        (wsk, has_owner, aa, aadmin, am, ami, ag, agi, tself, texists, tactive,
+         tmem, recovered, notified, events, v) = state
+        for guard, reason in structural:
+            if not g[guard]:
+                v = bad(v, reason)
+        if recovered:
+            return state[:-1] + (v,)
+        # Every refusal leaves the workspace untouched; the guards above fail the
+        # property if a refusal were not enforced or a transition were torn.
+        if not (aa and aadmin):
+            return state[:-1] + (v,)
+        if wsk != "shared" or tself or has_owner:
+            return state[:-1] + (v,)
+        if not texists or not tactive or tmem not in ("active", "suspended_former"):
+            return state[:-1] + (v,)
+        # One promotion, both audit trails, notification after commit, and no new
+        # administrator membership or project grant.
+        return (wsk, has_owner, aa, aadmin, am, ami, ag, agi, tself, texists,
+                tactive, tmem, True, True, events | {"workspace_event", "installation_event"}, v)
+
+    def read_directory(state):
+        v = state[-1]
+        if not g["m25_directory_scope"]:
+            v = bad(v, "directory_leaked_project_content")
+        if not g["m25_admin_recheck"]:
+            v = bad(v, "non_admin_directory_access")
+        return state[:-1] + (v,)
+
+    def make_personal(state):
+        return ("personal",) + state[1:]
+
+    def deactivate_sole_owner(state):
+        if state[11] not in ("active", "suspended_former"):
+            return state
+        return state[:1] + (False,) + state[2:11] + ("suspended_former",) + state[12:]
+
+    def other_owner_deactivated(state):
+        if state[11] != "active":
+            return state
+        return state[:1] + (False,) + state[2:]
+
+    def make_outsider(state):
+        return state[:11] + ("none",) + state[12:]
+
+    def make_suspended_other(state):
+        return state[:11] + ("suspended_other",) + state[12:]
+
+    def deactivate_target(state):
+        return state[:10] + (False,) + state[11:]
+
+    def make_self(state):
+        return state[:8] + (True,) + state[9:]
+
+    def remove_target(state):
+        return state[:9] + (False,) + state[10:]
+
+    def deactivate_actor(state):
+        return state[:2] + (False,) + state[3:]
+
+    def remove_admin_role(state):
+        return state[:3] + (False,) + state[4:]
+
+    def give_actor_membership(state):
+        return state[:4] + (True, True) + state[6:]
+
+    def give_actor_grant(state):
+        return state[:6] + (True, True) + state[8:]
+
+    # Setup actions describe the world before recovery; replaying one afterwards would
+    # manufacture an impossible post-recovery state (e.g. turning the workspace personal
+    # after it was promoted), so they are inert once recovery has committed.
+    def setup(action):
+        return lambda s: s if s[12] else action(s)
+
+    actions = [
+        ("the workspace is personal rather than shared", setup(make_personal)),
+        ("the sole owner is deactivated, retaining a suspended former owner", setup(deactivate_sole_owner)),
+        ("a different owner is deactivated while the target stays an active member", setup(other_owner_deactivated)),
+        ("the target is an outsider with no membership row", setup(make_outsider)),
+        ("the target's suspended membership never held ownership", setup(make_suspended_other)),
+        ("the target is still deactivated", setup(deactivate_target)),
+        ("the target is the acting administrator", setup(make_self)),
+        ("the target account does not exist", setup(remove_target)),
+        ("the administrator account is deactivated", setup(deactivate_actor)),
+        ("the caller is not an administrator", setup(remove_admin_role)),
+        ("the administrator is an active member of the workspace", setup(give_actor_membership)),
+        ("the administrator already holds a project grant", setup(give_actor_grant)),
+        ("an administrator reads the installation directory", read_directory),
+        ("an administrator recovers ownership", recover),
+    ]
+
+    # shared, active owner, active admin caller, not a member, no grant,
+    # target is an existing, active, ordinary member, nothing recovered yet.
+    init = ("shared", True, True, True, False, False, False, False, False, True,
+            True, "active", False, False, frozenset(), frozenset())
+
+    def inv(state):
+        v = state[-1]
+        if v:
+            return False, f"ownership-recovery invariant broken: {sorted(v)[0]}"
+        (wsk, has_owner, aa, aadmin, am, ami, ag, agi, tself, texists, tactive,
+         tmem, recovered, notified, events, _) = state
+        if recovered:
+            if wsk != "shared":
+                return False, "a personal workspace was recovered"
+            if has_owner:
+                return False, "recovery happened while an active owner existed"
+            if tself:
+                return False, "the administrator promoted themselves"
+            if not (aa and aadmin):
+                return False, "an inactive or non-admin caller recovered ownership"
+            if not (texists and tactive):
+                return False, "a missing or still-deactivated target was promoted"
+            if tmem not in ("active", "suspended_former"):
+                return False, "an ineligible target was promoted"
+            if "workspace_event" not in events or "installation_event" not in events:
+                return False, "both workspace and installation events were not recorded"
+            if not notified:
+                return False, "members were not notified"
+            if am != ami or ag != agi:
+                return False, "recovery changed the administrator's membership or project access"
+        return True, ""
+
+    def run(check_id: str) -> CheckResult:
+        return bfs_check(
+            check_id,
+            "Ownership Recovery (#43)",
+            "Only an active system administrator may read a minimal shared-workspace directory and promote an eligible active member or reactivated former sole owner of an ownerless shared workspace; recovery is one transaction that never lets the administrator promote themselves, gain membership or project access, or revive old keys, and it records and notifies",
+            "safety",
+            init,
+            lambda s: [(label, action(s)) for label, action in actions],
+            inv,
+            files,
+        )
+
+    result = run("M25")
+    if result.status != "verified":
+        return result
+
+    # Sensitivity: each extracted guard is flipped on its own. If any flip still passes,
+    # the model proves nothing and is reported as a failure.
+    for guard in [key for key in g if key.startswith("m25_")]:
+        saved = g[guard]
+        g[guard] = not saved
+        try:
+            naive = run(f"M25-naive-{guard}")
+        finally:
+            g[guard] = saved
+        if naive.status == "verified":
+            return CheckResult(
+                "M25", result.model, result.property_name, result.kind, "violated",
+                result.states_explored, result.transitions_explored,
+                f"model is not sensitive: flipping {guard} left the invariant intact",
+                [f"flip {guard}"], files,
+            )
+    guard_count = len([key for key in g if key.startswith("m25_")])
+    return CheckResult(
+        "M25", result.model, result.property_name, result.kind, "verified",
+        result.states_explored, result.transitions_explored,
+        f"{result.summary}; all {guard_count} source guards proven sensitive by single-guard mutation",
+        [], files,
+    )
+
+
 def main() -> None:
     facts = extract_code_facts()
     results = [
@@ -5788,6 +6103,7 @@ def main() -> None:
         check_m22(facts),
         check_m23(facts),
         check_m24(facts),
+        check_m25(facts),
     ]
 
     if "--json" in sys.argv:
