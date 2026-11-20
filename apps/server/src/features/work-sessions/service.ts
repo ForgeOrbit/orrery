@@ -937,7 +937,7 @@ export function createSessionsService({
           // blocker stops matching immediately, so the issue becomes ready without any
           // dependency row being rewritten. The correlated NOT EXISTS keeps one row per
           // candidate issue even when several blockers are open.
-          const hasOpenBlocker = notExists(
+          const noOpenBlocker = notExists(
             tx
               .select({ id: issueDependencies.id })
               .from(issueDependencies)
@@ -956,7 +956,7 @@ export function createSessionsService({
                 eq(issues.status, "open"),
                 eq(issues.needsInput, false),
                 isNull(workSessions.id),
-                hasOpenBlocker,
+                noOpenBlocker,
               ),
             )
             .orderBy(issues.number);

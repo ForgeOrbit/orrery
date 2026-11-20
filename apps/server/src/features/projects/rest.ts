@@ -777,7 +777,7 @@ export function createProjectsRest(
       await service.removeBlockedBy(await workActor(c), issueId, blockedByIssueId);
       return c.body(null, 204);
     } catch (error) {
-      return failure(c, error, dependencyWriteKinds);
+      return failure(c, error, commentWriteKinds);
     }
   });
 

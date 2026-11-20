@@ -1799,6 +1799,17 @@ export function createProjectsService({ db, sessionGate }: ProjectsDeps): Projec
           throw new ProjectsError("cross_project_dependency");
         }
 
+        // One project-level lock serializes every dependency write in this project. The
+        // two endpoint locks alone are not enough: concurrent adds on disjoint pairs
+        // (A->B alongside C->D, then B->C alongside D->A) could each pass BFS under
+        // Read Committed and together close a cycle. Taking the project row here, after
+        // its id is resolved and under the same transaction, closes that race.
+        await tx
+          .select({ id: projects.id })
+          .from(projects)
+          .where(eq(projects.id, current.projectId))
+          .for("update");
+
         // Re-adding an edge is a no-op: the unique constraint stays the database's final
         // word, and a repeated agent call must not invent a second activity event.
         const [existing] = await tx
@@ -1822,8 +1833,8 @@ export function createProjectsService({ db, sessionGate }: ProjectsDeps): Projec
         if (existing !== undefined) return toIssueDependency(existing);
 
         // Walk forward from the new blocker. Reaching the issue being blocked means the
-        // new edge would close a cycle. Bounded by the project's graph; both endpoints are
-        // already locked, so a concurrent add of the reverse edge observes this one.
+        // new edge would close a cycle. Bounded by the project's graph; the project row is
+        // locked for the whole check-and-insert, so no concurrent add can race past it.
         const visited = new Set<string>([blockedByIssueId]);
         let frontier: string[] = [blockedByIssueId];
         while (frontier.length > 0) {

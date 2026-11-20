@@ -191,11 +191,6 @@ export const IssueDependency = z
   .meta({ id: "IssueDependency" });
 export type IssueDependency = z.infer<typeof IssueDependency>;
 
-export const IssueDependenciesResponse = z
-  .array(IssueDependency)
-  .meta({ id: "IssueDependenciesResponse" });
-export type IssueDependenciesResponse = z.infer<typeof IssueDependenciesResponse>;
-
 // Adding a blocker names the other issue in the same project. The service resolves both
 // ids before writing, so no database id is taken from anything else.
 export const AddBlockedByRequest = z

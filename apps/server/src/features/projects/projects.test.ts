@@ -834,4 +834,31 @@ describe("projects", () => {
     );
     expect(constraint).toContain("issue_dependencies_no_self_link");
   });
+
+  it("serializes concurrent adds so two disjoint pairs cannot close a longer cycle", async () => {
+    const { app, adminCookie, workspaceId } = await readyApp();
+    const project = await createProject(app, adminCookie, workspaceId, "Concurrent deps");
+    const a = await createIssue(app, adminCookie, project.id, { title: "A" });
+    const b = await createIssue(app, adminCookie, project.id, { title: "B" });
+    const c = await createIssue(app, adminCookie, project.id, { title: "C" });
+    const d = await createIssue(app, adminCookie, project.id, { title: "D" });
+
+    // A -> B and C -> D on their own are acyclic. Racing B -> C and D -> A closes the
+    // four-node cycle; the project-level lock must serialize the two checks so the
+    // second writer sees the first edge and refuses it.
+    expect((await addDependency(app, adminCookie, a.id, b.id)).status).toBe(201);
+    expect((await addDependency(app, adminCookie, c.id, d.id)).status).toBe(201);
+    const raced = await Promise.all([
+      addDependency(app, adminCookie, b.id, c.id),
+      addDependency(app, adminCookie, d.id, a.id),
+    ]);
+    const accepted = raced.filter((res) => res.status === 201);
+    const refused = raced.filter((res) => res.status === 409);
+    expect(accepted).toHaveLength(1);
+    expect(refused).toHaveLength(1);
+    expect(await problemBody(refused[0]!)).toMatchObject({
+      status: 409,
+      code: "dependency_cycle",
+    });
+  });
 });
