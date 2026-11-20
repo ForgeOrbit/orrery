@@ -1050,9 +1050,11 @@ def extract_code_facts() -> dict[str, Any]:
         and "expireStale(tx" in live_fn
         and "expireCommitted(issueId)" in sess_src
     )
+    # #42 moved the availability check to a re-read of the issue after the locked
+    # deadline evaluation: `fresh?.needsInput` (with a status recheck) is now the guard.
     m18_reacquire_available = (
         "const active = await findActive(tx, issue.id)" in reacquire_fn
-        and "issue.needsInput" in reacquire_fn
+        and "fresh?.needsInput" in reacquire_fn
         and 'throw new SessionsError("issue_claimed")' in reacquire_fn
         and 'throw new SessionsError("issue_blocked")' in reacquire_fn
     )
@@ -1090,7 +1092,8 @@ def extract_code_facts() -> dict[str, Any]:
         and "sessionId: SessionFence.optional()" in sess_contract
         and "sessionFence(args)" in sess_mcp_src
     )
-    m18_closed_refused = 'issue.status !== "open"' in reacquire_fn
+    # #42 re-reads status alongside needs_input after the locked deadline evaluation.
+    m18_closed_refused = 'fresh?.status !== "open"' in reacquire_fn
     m18_update_db_time = all(
         "liveLease," in fn for fn in (renew_only_fn, progress_only_fn, stop_only_fn)
     )
