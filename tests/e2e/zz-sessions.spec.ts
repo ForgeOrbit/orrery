@@ -22,6 +22,8 @@ const requiredText = (value: unknown, what: string): string => {
 const asRecord = (value: unknown): Record<string, unknown> =>
   typeof value === "object" && value !== null ? Object.fromEntries(Object.entries(value)) : {};
 const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+const ids = (data: Record<string, unknown>) =>
+  asArray(field(data, "issues")).map((item) => field(item, "id"));
 
 async function personalWorkspaceOf(client: APIRequestContext): Promise<string> {
   const res = await client.get("/api/workspaces");
@@ -111,6 +113,11 @@ const bearer = (secret: string) => ({
     }),
   get: (path: string) =>
     fetch(new URL(path, baseUrl), { headers: { authorization: `Bearer ${secret}` } }),
+  del: (path: string) =>
+    fetch(new URL(path, baseUrl), {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${secret}` },
+    }),
 });
 
 let api: APIRequestContext;
@@ -256,5 +263,68 @@ test("ready work omits claimed issues and two claims yield one winner", async ()
   } finally {
     await client.close();
     await rival.close();
+  }
+});
+
+test("an open blocker hides ready work until it closes (REST and MCP)", async () => {
+  const workspaceId = await personalWorkspaceOf(api);
+  const projectId = await project(api, workspaceId);
+  const agentId = await createAgent(api, `sessions-deps-${randomUUID()}`);
+  const secret = await issueKey(api, agentId, workspaceId, projectId);
+  const client = await connect(secret);
+  const http = bearer(secret);
+  try {
+    const blocker = await call(client, "create_issue", { projectId, title: "Blocker A" });
+    const blocked = await call(client, "create_issue", { projectId, title: "Blocked B" });
+    const blockerId = requiredText(field(blocker.data.issue, "id"), "the blocker id");
+    const blockedId = requiredText(field(blocked.data.issue, "id"), "the blocked issue id");
+
+    // MCP add and list both directions.
+    const added = await call(client, "add_blocked_by", {
+      issueId: blockedId,
+      blockedByIssueId: blockerId,
+    });
+    expect(added.isError).toBe(false);
+    expect(field(added.data.dependency, "blockedByIssueId")).toBe(blockerId);
+    expect(ids((await call(client, "list_blocked_by", { issueId: blockedId })).data)).toContain(
+      blockerId,
+    );
+    expect(ids((await call(client, "list_blocking", { issueId: blockerId })).data)).toContain(
+      blockedId,
+    );
+
+    // REST sees the same edge; re-adding it is idempotent.
+    const restAdd = await http.post(`/api/issues/${blockedId}/blocked-by`, {
+      blockedByIssueId: blockerId,
+    });
+    expect(restAdd.status).toBe(201);
+    expect(asRecord(await restAdd.json())).toMatchObject({
+      issueId: blockedId,
+      blockedByIssueId: blockerId,
+    });
+
+    // B is not ready while A is open, over both transports.
+    expect(ids((await call(client, "ready_work", { projectId })).data)).not.toContain(blockedId);
+    const restReadyBlocked = await http.get(`/api/projects/${projectId}/ready-work`);
+    expect(restReadyBlocked.status).toBe(200);
+    expect(asArray(await restReadyBlocked.json()).map((issue) => field(issue, "id"))).not.toContain(
+      blockedId,
+    );
+
+    // A human closes A; no dependency row is rewritten, so B becomes ready immediately.
+    const closed = await api.patch(`/api/issues/${blockerId}`, { data: { status: "closed" } });
+    expect(closed.status()).toBe(200);
+    expect(ids((await call(client, "ready_work", { projectId })).data)).toContain(blockedId);
+
+    const restReady = await http.get(`/api/projects/${projectId}/ready-work`);
+    expect(restReady.status).toBe(200);
+    expect(asArray(await restReady.json()).map((issue) => field(issue, "id"))).toContain(blockedId);
+
+    // REST removal over the same key clears the relation.
+    const removed = await http.del(`/api/issues/${blockedId}/blocked-by/${blockerId}`);
+    expect(removed.status).toBe(204);
+    expect(ids((await call(client, "list_blocked_by", { issueId: blockedId })).data)).toEqual([]);
+  } finally {
+    await client.close();
   }
 });

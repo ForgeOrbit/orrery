@@ -159,6 +159,7 @@ afterEach(async () => {
     await tx.execute(sql`delete from project_access_events`);
     await tx.execute(sql`delete from project_access_grants`);
     await tx.execute(sql`delete from project_activity`);
+    await tx.execute(sql`delete from issue_dependencies`);
     await tx.execute(sql`delete from knowledge_entries`);
     await tx.execute(sql`delete from issue_comments`);
     await tx.execute(sql`delete from issues`);
@@ -701,6 +702,37 @@ describe("work sessions against real Postgres", () => {
     await setLease(claimed.id, "statement_timestamp() - interval '1 second'");
     const afterExpiry = await sessionsService.readyWork({ kind: "agent", identity }, f.projectId);
     expect(afterExpiry.map((item) => item.id)).toEqual([plain.id, claimed.id]);
+  });
+
+  it("excludes an issue with an open blocker and includes it once the blocker closes", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const human = {
+      kind: "human" as const,
+      account: {
+        humanId: f.humanId,
+        email: ADMIN_EMAIL,
+        isSystemAdministrator: false,
+        emailVerifiedAt: new Date(),
+      },
+    };
+    const blocker = await humanIssue(f, "Prerequisite");
+    const downstream = await humanIssue(f, "Downstream");
+    await projectsService.addBlockedBy(human, downstream.id, { blockedByIssueId: blocker.id });
+
+    const before = await sessionsService.readyWork({ kind: "agent", identity }, f.projectId);
+    expect(before.map((item) => item.id)).toContain(blocker.id);
+    expect(before.map((item) => item.id)).not.toContain(downstream.id);
+
+    await projectsService.updateIssue(human, blocker.id, { status: "closed" });
+    const after = await sessionsService.readyWork({ kind: "agent", identity }, f.projectId);
+    expect(after.map((item) => item.id)).toContain(downstream.id);
+
+    // Removing the edge changes nothing for a closed blocker, but proves both reads use
+    // the live dependency state rather than a cached snapshot.
+    await projectsService.removeBlockedBy(human, downstream.id, blocker.id);
+    const afterRemoval = await sessionsService.readyWork({ kind: "agent", identity }, f.projectId);
+    expect(afterRemoval.map((item) => item.id)).toContain(downstream.id);
   });
 
   it("exposes claim, progress, read and stop through bearer REST", async () => {

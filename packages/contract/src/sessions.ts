@@ -141,9 +141,10 @@ export const ResumeWorkSessionResponse = z
 export type ResumeWorkSessionResponse = z.infer<typeof ResumeWorkSessionResponse>;
 
 // Minimal ready work: the eligible open issues in a project, not a full board. An issue
-// is ready while open, not marked Needs input, and without a live (unevaluated-expired)
-// active session. The rows are ordinary Issues so REST and MCP use the same shape as every
-// other issue listing; only the filtering is minimal.
+// is ready while open, not marked Needs input, without a live (unevaluated-expired) active
+// session, and with no blocked_by issue whose status is not closed (#86). The rows are
+// ordinary Issues so REST and MCP use the same shape as every other issue listing; only
+// the filtering is minimal.
 export const ReadyWorkResponse = z.array(Issue).meta({ id: "ReadyWorkResponse" });
 export type ReadyWorkResponse = z.infer<typeof ReadyWorkResponse>;
 

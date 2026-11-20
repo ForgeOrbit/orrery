@@ -1,10 +1,12 @@
 // Public interface of the projects feature in the web app. Routes and other features
 // import only this file.
 export {
+  addBlockedBy,
   createIssue,
   createIssueComment,
   createKnowledgeEntry,
   createProject,
+  removeBlockedBy,
   removeProjectAccess,
   setProjectAccess,
   updateIssue,
@@ -14,6 +16,8 @@ export {
 export { ResourceLoadError } from "./LoadError.tsx";
 export { TitleBodyForm } from "./TitleBodyForm.tsx";
 export {
+  issueBlockedByQuery,
+  issueBlockingQuery,
   issueCommentsQuery,
   issueQuery,
   issuesQuery,
