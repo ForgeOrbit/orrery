@@ -25,6 +25,7 @@ export type SessionsErrorKind =
   | "run_not_found"
   | "insufficient_access"
   | "issue_claimed"
+  | "issue_needs_input"
   | "session_required";
 
 const messages: Record<SessionsErrorKind, string> = {
@@ -34,6 +35,7 @@ const messages: Record<SessionsErrorKind, string> = {
   run_not_found: "No such run belongs to this agent in this workspace.",
   insufficient_access: "Contribute access is required to work on this issue.",
   issue_claimed: "Another worker holds the active session for this issue.",
+  issue_needs_input: "This issue needs human input and cannot be claimed yet.",
   session_required: "This agent holds no live session for this issue.",
 };
 
@@ -69,6 +71,14 @@ export interface SessionsDeps {
   // Projects' public listing, borrowed so ready work returns the same Issue shape every
   // other issue listing uses. Called outside this feature's transaction, never nested.
   listIssues: (actor: WorkActor, projectId: string) => Promise<Issue[]>;
+  // The deadline of an open question on this issue, evaluated on the caller's locked tx.
+  // A check-in may never renew a claim past it. A due question is paused (releasing the
+  // claim) by evaluateQuestionDeadline before any renewal decision is made.
+  // Optional for standalone service construction (tests); createFeatures wires both.
+  questionLeaseDeadline?:
+    | ((tx: DbTransaction, issueId: string) => Promise<Date | null>)
+    | undefined;
+  evaluateQuestionDeadline?: ((tx: DbTransaction, issueId: string) => Promise<void>) | undefined;
 }
 
 // The adapter always resolves an agent key before claiming, renewing or stopping: a work
@@ -148,7 +158,7 @@ function requireAgent(actor: AgentActor | null) {
 // consistent state and two writers to the same issue serialize.
 async function lockIssue(tx: DbTransaction, issueId: string) {
   const [row] = await tx
-    .select({ id: issues.id, projectId: issues.projectId })
+    .select({ id: issues.id, projectId: issues.projectId, needsInput: issues.needsInput })
     .from(issues)
     .where(eq(issues.id, issueId))
     .limit(1)
@@ -244,12 +254,21 @@ export function createSessionsService({
   projectAccessCeiling,
   projectAccessAtLeast,
   listIssues,
+  questionLeaseDeadline,
+  evaluateQuestionDeadline,
 }: SessionsDeps): SessionsService {
+  // Standalone construction (unit tests) has no inbox wired; production provides both.
+  const leaseDeadline = questionLeaseDeadline ?? (async () => null);
+  const checkDeadline = evaluateQuestionDeadline ?? (async () => {});
   // The in-transaction expiry below decides the claim. A lapsed lease must also be
   // released when the operation is refused — the rejected transaction rolls back — so a
   // committed expiry runs first, *before* any transaction is opened by this feature. It is
   // idempotent: the second, locked expiry inside the operation serializes with the claim.
   const expireCommitted = (issueId: string) => db.transaction((tx) => expireStale(tx, issueId));
+  // A due one-hour question must commit its pause even when the check-in or claim that
+  // triggered it is refused, otherwise the deadline would be re-evaluated forever. Like
+  // lease expiry, it runs in its own committed transaction before the operation's tx.
+  const deadlineCommitted = (issueId: string) => db.transaction((tx) => checkDeadline(tx, issueId));
 
   // Renew, progress and stop share one live-session decision: lock the issue, expire a
   // stale lease, re-check the agent's current project level, find the live session the
@@ -257,14 +276,22 @@ export function createSessionsService({
   const withLiveSession = async (
     actor: AgentActor | null,
     issueId: string,
-    update: (tx: DbTransaction, sessionId: string) => Promise<SessionView | undefined>,
+    update: (
+      tx: DbTransaction,
+      sessionId: string,
+      issueId: string,
+    ) => Promise<SessionView | undefined>,
   ): Promise<WorkSession> => {
     const identity = requireAgent(actor);
+    await deadlineCommitted(issueId);
     await expireCommitted(issueId);
     return db.transaction(async (tx) => {
       const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
       const issue = await lockIssue(tx, issueId);
       await expireStale(tx, issue.id);
+      // A due question pauses the issue and releases the claim before any check-in. The
+      // evaluation runs on this locked transaction, never in a nested one.
+      await checkDeadline(tx, issue.id);
       await requireAccess(
         { kind: "agent", identity },
         issue.projectId,
@@ -285,7 +312,7 @@ export function createSessionsService({
         .limit(1);
       // An inactive session is never revived and a stale write never becomes a new claim.
       if (session === undefined) throw new SessionsError("session_required");
-      const updated = await update(tx, session.id);
+      const updated = await update(tx, session.id, issue.id);
       if (updated === undefined) throw new SessionsError("session_required");
       return toSession(updated);
     });
@@ -294,11 +321,21 @@ export function createSessionsService({
   return {
     async claim(actor, input) {
       const identity = requireAgent(actor);
+      await deadlineCommitted(input.issueId);
       await expireCommitted(input.issueId);
       return db.transaction(async (tx) => {
         const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
         const issue = await lockIssue(tx, input.issueId);
         await expireStale(tx, issue.id);
+        await checkDeadline(tx, issue.id);
+        // The locked evaluation may have just set Needs input; re-read it on this same
+        // snapshot so a deadline that lands between the committed check and this lock
+        // cannot let a new claim start while the issue is paused.
+        const [fresh] = await tx
+          .select({ needsInput: issues.needsInput })
+          .from(issues)
+          .where(eq(issues.id, issue.id))
+          .limit(1);
         await requireAccess(
           { kind: "agent", identity },
           issue.projectId,
@@ -331,6 +368,9 @@ export function createSessionsService({
           }
           throw new SessionsError("issue_claimed");
         }
+        // A paused or open question owns Needs input: nobody may start new work on the
+        // issue until a human answers and clears the flag.
+        if (fresh?.needsInput ?? false) throw new SessionsError("issue_needs_input");
 
         const [created] = await tx
           .insert(workSessions)
@@ -365,10 +405,18 @@ export function createSessionsService({
     },
 
     async renew(actor, issueId) {
-      return withLiveSession(actor, issueId, async (tx, sessionId) => {
+      return withLiveSession(actor, issueId, async (tx, sessionId, issue) => {
+        // While a question is open, checking in keeps the claim but never past the one-hour
+        // deadline. After the deadline the question has been paused by the evaluation above,
+        // so there is no live session left to renew.
+        const deadline = await leaseDeadline(tx, issue);
+        const lease =
+          deadline === null
+            ? fiveMinutes
+            : sql`least(statement_timestamp() + interval '5 minutes', ${deadline.toISOString()}::timestamptz)`;
         const [updated] = await tx
           .update(workSessions)
-          .set({ leaseExpiresAt: fiveMinutes, updatedAt: sql`statement_timestamp()` })
+          .set({ leaseExpiresAt: lease, updatedAt: sql`statement_timestamp()` })
           .where(eq(workSessions.id, sessionId))
           .returning(sessionColumns);
         return updated;

@@ -7,6 +7,7 @@ import {
   ProjectAccessEventType,
   ProjectAccessLevel,
   ProjectActivityType,
+  QuestionStatus,
   RunStatus,
   WorkSessionStatus,
   WorkspaceKind,
@@ -853,6 +854,75 @@ export const workSessions = pgTable(
     index("work_sessions_agent_created").on(t.agentId, t.createdAt),
     index("work_sessions_run_created").on(t.runId, t.createdAt),
     index("work_sessions_issue_created").on(t.issueId, t.createdAt),
+  ],
+);
+
+// A question an agent asked the team (issue #41). Its identity is the work session that
+// asked it, never the API key used to reach the service, so key rotation keeps the same
+// question history. The one-hour response deadline and every resolution are evaluated in
+// database time; the partial unique index guarantees one open-or-paused question per issue,
+// which is what keeps issues.needs_input unambiguous under concurrent asks.
+export const questions = pgTable(
+  "questions",
+  {
+    id: text("id").primaryKey(),
+    issueId: text("issue_id")
+      .notNull()
+      .references(() => issues.id),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id),
+    runId: text("run_id")
+      .notNull()
+      .references(() => runs.id),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => workSessions.id),
+    question: text("question").notNull(),
+    proposedFallback: text("proposed_fallback").notNull(),
+    status: text("status").$type<QuestionStatus>().notNull().default("open"),
+    responseDeadlineAt: timestamp("response_deadline_at", { withTimezone: true }).notNull(),
+    answer: text("answer"),
+    answeredByHumanId: text("answered_by_human_id").references(() => humans.id),
+    answeredAt: timestamp("answered_at", { withTimezone: true }),
+    followUp: text("follow_up"),
+    followUpByHumanId: text("follow_up_by_human_id").references(() => humans.id),
+    followUpAt: timestamp("follow_up_at", { withTimezone: true }),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check("questions_status", sql`${t.status} in (${sql.raw(sqlLiteralList(QuestionStatus))})`),
+    check("questions_deadline_after_creation", sql`${t.responseDeadlineAt} > ${t.createdAt}`),
+    // Exactly one resolution shape per status. `fallback_used` (#42) may carry a follow-up
+    // answer, but it never clears that resolution or reverses the fallback work.
+    check(
+      "questions_resolution_matches_status",
+      sql`(
+        (${t.status} = 'open' and ${t.answer} is null and ${t.answeredByHumanId} is null
+          and ${t.answeredAt} is null and ${t.resolvedAt} is null
+          and ${t.followUp} is null and ${t.followUpByHumanId} is null and ${t.followUpAt} is null)
+        or (${t.status} = 'answered' and ${t.answer} is not null and ${t.answeredByHumanId} is not null
+          and ${t.answeredAt} is not null and ${t.resolvedAt} is not null
+          and ${t.followUp} is null and ${t.followUpByHumanId} is null and ${t.followUpAt} is null)
+        or (${t.status} in ('paused', 'fallback_used') and ${t.answer} is null
+          and ${t.answeredByHumanId} is null and ${t.answeredAt} is null and ${t.resolvedAt} is not null
+          and ((${t.followUp} is null and ${t.followUpByHumanId} is null and ${t.followUpAt} is null)
+            or (${t.followUp} is not null and ${t.followUpByHumanId} is not null and ${t.followUpAt} is not null)))
+      )`,
+    ),
+    // One active question per issue, so needs_input has a single owner at any moment.
+    uniqueIndex("one_open_question_per_issue")
+      .on(t.issueId)
+      .where(sql`${t.status} in ('open', 'paused')`),
+    index("questions_issue_created").on(t.issueId, t.createdAt),
+    index("questions_workspace_created").on(t.workspaceId, t.createdAt),
   ],
 );
 

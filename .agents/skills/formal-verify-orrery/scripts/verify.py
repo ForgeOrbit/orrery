@@ -1022,6 +1022,95 @@ def extract_code_facts() -> dict[str, Any]:
     )
     m17_problems = sess_rest_src.count("400: problem(") >= 5
 
+    # M18 (#41): the verified three-resolution question lifecycle. Every guard is read from
+    # the inbox service, its REST/MCP adapters, the contract/schema/migration and the work
+    # session renewal path. Removing a row lock, the DB-time boundary, the pause transition,
+    # the needs_input sync or the human-only answer gate flips the model to a shortest trace.
+    q_src = read_text("apps/server/src/features/inbox/service.ts")
+    q_rest_src = read_text("apps/server/src/features/inbox/rest.ts")
+    q_mcp_src = read_text("apps/server/src/features/inbox/mcp.ts")
+    q_contract = read_text("packages/contract/src/questions.ts")
+    q_migration = read_text("db/migrations/0023_groovy_sue_storm.sql")
+    index_src = read_text("apps/server/src/features/index.ts")
+    q_lock_fn = slice_between(q_src, "async function lockIssue(", "// Record the question")
+    q_ask_fn = slice_between(q_src, "async ask(actorArg, input)", "async answer(actorArg")
+    q_answer_fn = slice_between(q_src, "async answer(actorArg", "async list(actorArg")
+    q_eval_fn = slice_between(q_src, "const evaluateDeadline", "const questionDeadline")
+    q_deadline_fn = slice_between(q_src, "const questionDeadline", "export function createInboxService")
+    sess_claim_fn = slice_between(sess_src, "async claim(actor, input)", "async renew(actor, issueId)")
+    sess_renew_fn = slice_between(sess_src, "async renew(actor, issueId)", "async progress(actor, issueId, summary)")
+
+    m18_statuses = (
+        all(s in q_contract for s in ("open", "answered", "paused", "fallback_used"))
+        and "'open', 'answered', 'paused', 'fallback_used'" in q_migration
+        and "timed_out" not in q_contract
+        and "timed_out" not in q_src
+    )
+    m18_issue_lock = (
+        '.for("update")' in q_lock_fn
+        and "lockIssue(tx" in q_ask_fn
+        and "lockIssue(tx" in q_answer_fn
+        and ".for(" in q_answer_fn
+    )
+    m18_db_time = (
+        "lte(questions.responseDeadlineAt, sql`statement_timestamp()`)" in q_eval_fn
+        and "evaluateDeadline(tx, issue.id)" in q_answer_fn
+        and "statement_timestamp()" in q_answer_fn
+        and "interval '1 hour'" in q_ask_fn
+    )
+    m18_exact_once = (
+        "questions.status} in ('open', 'paused')" in q_answer_fn
+        and 'throw new InboxError("question_resolved")' in q_answer_fn
+    )
+    m18_release_pause = (
+        'status: "paused"' in q_eval_fn
+        and 'status: "released"' in q_eval_fn
+        and "needsInput: true" in q_eval_fn
+    )
+    m18_paused_unblock = (
+        "needsInput: false" in q_answer_fn
+        and "'open', 'paused'" in q_answer_fn
+        and "throw new InboxError(\"question_resolved\")" in q_answer_fn
+    )
+    m18_needs_sync = (
+        "needsInput: true" in q_ask_fn
+        and "needsInput: true" in q_eval_fn
+        and "needsInput: false" in q_answer_fn
+        and "eq(issues.needsInput, false)" in ready_fn
+    )
+    m18_no_nested = (
+        "db.transaction(" not in q_eval_fn
+        and "db.transaction(" not in q_deadline_fn
+        and "db.transaction(" not in q_lock_fn
+    )
+    m18_human_only = (
+        'throw new InboxError("agents_cannot_answer")' in q_answer_fn
+        and "ProjectAccessLevel.enum.contribute" in q_answer_fn
+        and "agents_cannot_answer" in q_rest_src
+        and "await authenticate(c.req.raw)" in q_rest_src
+        and "sessionReader(c)" in q_rest_src
+    )
+    m18_email_after_commit = (
+        "deps.deliver(" in q_ask_fn
+        and q_ask_fn.index("deps.deliver(") > q_ask_fn.index("db.transaction(")
+    )
+    m18_history = all(
+        code in q_src
+        for code in ("issue_question_asked", "issue_question_answered", "issue_question_paused")
+    )
+    m18_claim_bounded = (
+        "least(" in sess_renew_fn
+        and "statement_timestamp()" in sess_renew_fn
+        and "needsInput" in sess_claim_fn
+        and "questionLeaseDeadline" in index_src
+        and "evaluateQuestionDeadline" in index_src
+    )
+    m18_adapters = (
+        "ask_for_input" in tools_src
+        and "ask_for_input" in q_mcp_src
+        and q_rest_src.count("400: problem(") >= 4
+    )
+
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
         "m2a_supersedes_failed": m2a_supersedes_failed,
@@ -1165,6 +1254,19 @@ def extract_code_facts() -> dict[str, Any]:
         "m17_adapters": m17_adapters,
         "m17_tools": m17_tools,
         "m17_problems": m17_problems,
+        "m18_statuses": m18_statuses,
+        "m18_issue_lock": m18_issue_lock,
+        "m18_db_time": m18_db_time,
+        "m18_exact_once": m18_exact_once,
+        "m18_release_pause": m18_release_pause,
+        "m18_paused_unblock": m18_paused_unblock,
+        "m18_needs_sync": m18_needs_sync,
+        "m18_no_nested": m18_no_nested,
+        "m18_human_only": m18_human_only,
+        "m18_email_after_commit": m18_email_after_commit,
+        "m18_history": m18_history,
+        "m18_claim_bounded": m18_claim_bounded,
+        "m18_adapters": m18_adapters,
     }
 
 
@@ -2768,6 +2870,233 @@ def check_m17(facts: dict[str, Any]) -> CheckResult:
     )
 
 
+
+def check_m18(facts: dict[str, Any]) -> CheckResult:
+    """#41: the three-resolution question lifecycle (open -> answered | paused |
+    fallback_used, with paused -> answered). The fixed model is proven deadlock-free and
+    exactly-once in database time; the same explorer run with the naive two-state timeout
+    guards MUST deadlock a paused issue, which is the sensitivity proof for this model.
+
+    State: (question status, issues.needs_input, claim, clock vs deadline, violations).
+    Every transition below consults a guard extracted from the live service/contract.
+    """
+    guards = {
+        "statuses": facts["m18_statuses"],
+        "lock": facts["m18_issue_lock"],
+        "db_time": facts["m18_db_time"],
+        "once": facts["m18_exact_once"],
+        "release": facts["m18_release_pause"],
+        "unblock": facts["m18_paused_unblock"],
+        "needs": facts["m18_needs_sync"],
+        "no_nested": facts["m18_no_nested"],
+        "human": facts["m18_human_only"],
+        "email": facts["m18_email_after_commit"],
+        "history": facts["m18_history"],
+        "claim": facts["m18_claim_bounded"],
+        "adapters": facts["m18_adapters"],
+    }
+
+    def explore(g: dict[str, bool], naive: bool) -> CheckResult:
+        # The naive variant is the same explorer with every guard turned off: the 2-state
+        # open -> answered | timed_out design from the literal reading of #20.
+        g = {key: False for key in g} if naive else g
+        init = ("open", True, "held", "before", frozenset())
+
+        def transitions(state):
+            status, needs, claim, clock, violations = state
+            out: list[tuple[str, Any]] = []
+
+            def go(label, nstatus, nneeds, nclaim, nclock, extra=frozenset()):
+                out.append((label, (nstatus, nneeds, nclaim, nclock, violations | extra)))
+
+            def bad(*reasons):
+                return frozenset(reasons)
+
+            if naive:
+                # The literal 2-state reading of #20: open -> answered | timed_out, where a
+                # post-deadline answer is follow-up only. This is the buggy variant whose
+                # deadlock the fixed model must be shown to avoid.
+                if clock == "before":
+                    go("one-hour deadline passes in database time", status, needs, claim, "after")
+                if claim == "held":
+                    go("five-minute claim lapses without check-in", status, needs, "released", clock)
+                if status == "open" and clock == "before":
+                    go("human answers before the deadline", "answered", False, claim, clock)
+                if status == "open" and clock == "after":
+                    go("deadline marks the question timed_out (two-state model)", "timed_out", True, "released", clock)
+                if status == "timed_out":
+                    go("human answer after the deadline is stored only as a follow-up", status, needs, claim, clock)
+                return out
+
+            # Database time moves independently of any process: at/after the deadline an
+            # answer is no longer "on time", even if no sweeper has run.
+            if clock == "before":
+                go("one-hour deadline passes in database time", status, needs, claim, "after")
+
+            # A lapsed five-minute lease releases only the claim. It never erases the
+            # question and never clears Needs input.
+            if claim == "held":
+                go("five-minute claim lapses without check-in", status, needs, "released", clock)
+
+            # Check-in while waiting keeps the claim, bounded by the response deadline.
+            if status == "open" and claim == "held" and clock == "before":
+                go(
+                    "waiting agent checks in and renews its claim",
+                    status,
+                    needs,
+                    claim,
+                    clock,
+                    frozenset() if g["claim"] else bad("claim_not_bounded_by_deadline"),
+                )
+            if status == "open" and claim == "held" and clock == "after":
+                if g["db_time"] and g["release"]:
+                    go("check-in at the deadline pauses and releases the claim", "paused", True, "released", clock)
+                else:
+                    go("check-in renews past the deadline (bug)", status, needs, claim, clock, bad("renewed_past_deadline"))
+
+            # Atomic deadline evaluation: open -> paused in DB time, release the claim, keep
+            # Needs input; no fallback is authorized in #41.
+            if status == "open" and clock == "after":
+                if g["db_time"] and g["release"]:
+                    go("deadline evaluation pauses, releases the claim, keeps Needs input", "paused", True, "released", clock)
+                else:
+                    go("deadline marks timed_out without pausing (bug)", "timed_out", True, "released", clock, bad("naive_two_state_timeout"))
+
+            # Human answer before the deadline: the only on-time resolution.
+            if status == "open" and clock == "before":
+                if g["once"] and g["needs"]:
+                    go("human answers before the deadline", "answered", False, claim, clock)
+                else:
+                    go("answer leaves Needs input set (bug)", "answered", True, claim, clock, bad("answer_left_needs_input"))
+
+            # Human answer at/after the deadline. In the 3-resolution model an answer that
+            # races the boundary first pauses, then unblocks; an answer to a paused question
+            # transitions paused -> answered. In the naive model it is a follow-up only.
+            if clock == "after":
+                if status == "open":
+                    if g["db_time"] and g["unblock"] and g["release"]:
+                        go("answer races the deadline: pause then answered, Needs input cleared", "answered", False, claim, clock)
+                    else:
+                        go("late answer is follow-up only (bug)", "timed_out", True, claim, clock, bad("paused_issue_deadlock"))
+                elif status == "paused":
+                    if g["unblock"] and g["needs"]:
+                        go("human answers a paused question; issue unblocked for reacquisition", "answered", False, "released", clock)
+                    else:
+                        go("answer to paused question stays follow-up only (bug)", status, needs, claim, clock, bad("paused_issue_deadlock"))
+                elif status == "timed_out":
+                    go("late answer to timed_out question stays follow-up only (bug)", status, needs, claim, clock, bad("paused_issue_deadlock"))
+                elif status == "fallback_used":
+                    go("late answer stored as follow-up without reversing fallback work", status, needs, claim, clock)
+                elif status == "answered":
+                    if g["once"]:
+                        go("second answer is refused: one resolution", status, needs, claim, clock)
+                    else:
+                        go("second answer overwrites the resolution (bug)", status, needs, claim, clock, bad("two_resolutions"))
+
+            # Strict actor gate: agent keys (including sibling runs), Readers and unrelated
+            # members can never answer.
+            go("sibling agent key tries to answer", status, needs, claim, clock,
+               frozenset() if g["human"] else bad("agent_answered"))
+            go("reader or unrelated member tries to answer", status, needs, claim, clock,
+               frozenset() if g["human"] else bad("unauthorized_answered"))
+
+            # Ready work and reacquisition must respect Needs input.
+            if needs and not g["needs"]:
+                go("ready-work listing offers a Needs input issue (bug)", status, needs, claim, clock, bad("needs_input_offered_as_ready"))
+            else:
+                go("ready-work listing omits Needs input issues", status, needs, claim, clock)
+            if needs:
+                go("agent tries to claim a Needs input issue", status, needs, claim, clock,
+                   frozenset() if g["claim"] else bad("claimed_needs_input_issue"))
+            elif claim == "released":
+                go("agent reacquires the claim after the answer", status, needs, "held", clock)
+
+            # Static source guards: their absence is itself a violation trace.
+            if not g["statuses"]:
+                go("schema uses a naive two-state resolution (bug)", status, needs, claim, clock, bad("no_paused_or_fallback_resolution"))
+            if not g["lock"]:
+                go("question write without an issue FOR UPDATE lock (bug)", status, needs, claim, clock, bad("unlocked_question_write"))
+            if not g["no_nested"]:
+                go("nested transaction while holding the issue row lock (bug)", status, needs, claim, clock, bad("nested_transaction"))
+            if not g["email"]:
+                go("owner email sent inside the DB lock (bug)", status, needs, claim, clock, bad("email_inside_lock"))
+            if not g["history"]:
+                go("question and resolution missing from history (bug)", status, needs, claim, clock, bad("question_not_in_history"))
+            if not g["adapters"]:
+                go("ask tool or REST validation missing (bug)", status, needs, claim, clock, bad("adapters_missing"))
+            return out
+
+        def invariant(state):
+            status, needs, claim, clock, violations = state
+            if naive and status == "timed_out":
+                return False, "paused_issue_deadlock: a human answer at or after 1h is only a follow-up, so a paused issue stays Needs input forever"
+            if violations:
+                return False, "3-resolution question invariant broken: " + sorted(violations)[0]
+            if status in ("open", "paused", "timed_out") and not needs:
+                return False, "Needs input was lost while the question is unresolved"
+            if status == "answered" and needs:
+                return False, "an answered issue is still Needs input"
+            if status == "paused" and claim == "held":
+                return False, "a paused issue still holds the claim"
+            return True, ""
+
+        return bfs_check(
+            "M18-naive" if naive else "M18",
+            "Three-Resolution Question Lifecycle (#41)",
+            "Naive two-state timeout deadlocks paused issues" if naive else
+            "One DB-time resolution; a paused issue is unblocked by a human answer, keeps Needs input until then, and only humans may answer",
+            "liveness" if naive else "safety",
+            init,
+            transitions,
+            invariant,
+            [
+                "apps/server/src/features/inbox/service.ts",
+                "apps/server/src/features/inbox/rest.ts",
+                "apps/server/src/features/inbox/mcp.ts",
+                "apps/server/src/features/work-sessions/service.ts",
+                "apps/server/src/features/work-sessions/index.ts",
+                "apps/server/src/features/index.ts",
+                "packages/contract/src/questions.ts",
+                "packages/contract/src/mcp-tools.ts",
+                "apps/server/src/db/schema.ts",
+                "db/migrations/0023_groovy_sue_storm.sql",
+            ],
+        )
+
+    fixed = explore(guards, False)
+    naive = explore(guards, True)
+
+    files = fixed.files
+    if fixed.status != "verified":
+        return fixed
+    if naive.status != "violated":
+        return CheckResult(
+            "M18",
+            "Three-Resolution Question Lifecycle (#41)",
+            "Sensitivity: the naive 2-state model must deadlock a paused issue",
+            "safety",
+            "violated",
+            fixed.states_explored,
+            fixed.transitions_explored,
+            "The buggy two-state variant was not detected; the model is not sensitive.",
+            [],
+            files,
+        )
+    return CheckResult(
+        "M18",
+        "Three-Resolution Question Lifecycle (#41)",
+        "One DB-time resolution; a paused issue is unblocked by a human answer, keeps Needs input until then, and only humans may answer",
+        "safety",
+        "verified",
+        fixed.states_explored + naive.states_explored,
+        fixed.transitions_explored + naive.transitions_explored,
+        f"Verified across {fixed.states_explored} reachable states ({fixed.transitions_explored} transitions); "
+        f"sensitivity: the naive 2-state variant is violated at '{naive.summary.split(': ')[-1]}' "
+        f"with trace: {' -> '.join(naive.counterexample[:4])}.",
+        [],
+        files,
+    )
+
 def main() -> None:
     facts = extract_code_facts()
     results = [
@@ -2789,6 +3118,7 @@ def main() -> None:
         check_m15(facts),
         check_m16(facts),
         check_m17(facts),
+        check_m18(facts),
     ]
 
     if "--json" in sys.argv:

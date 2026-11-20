@@ -1600,6 +1600,9 @@
           "issue_commented",
           "issue_closed",
           "issue_reopened",
+          "issue_question_asked",
+          "issue_question_answered",
+          "issue_question_paused",
           "knowledge_created",
           "knowledge_edited"
         ]
@@ -2333,6 +2336,186 @@
         "items": {
           "$ref": "#/components/schemas/WorkSession"
         }
+      },
+      "Question": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "issueId": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "workspaceId": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "proposedFallback": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/QuestionStatus"
+          },
+          "responseDeadlineAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "answer": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "answeredByHumanId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "answeredAt": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            ]
+          },
+          "followUp": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "followUpByHumanId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "followUpAt": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            ]
+          },
+          "resolvedAt": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            ]
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "id",
+          "issueId",
+          "projectId",
+          "workspaceId",
+          "agentId",
+          "runId",
+          "question",
+          "proposedFallback",
+          "status",
+          "responseDeadlineAt",
+          "answer",
+          "answeredByHumanId",
+          "answeredAt",
+          "followUp",
+          "followUpByHumanId",
+          "followUpAt",
+          "resolvedAt",
+          "createdAt"
+        ]
+      },
+      "QuestionStatus": {
+        "type": "string",
+        "enum": [
+          "open",
+          "answered",
+          "paused",
+          "fallback_used"
+        ]
+      },
+      "AskForInputInput": {
+        "type": "object",
+        "properties": {
+          "issueId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "runId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20000
+          },
+          "proposedFallback": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20000
+          }
+        },
+        "required": [
+          "issueId",
+          "runId",
+          "question",
+          "proposedFallback"
+        ]
+      },
+      "InboxResponse": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Question"
+        }
+      },
+      "AnswerQuestionInput": {
+        "type": "object",
+        "properties": {
+          "answer": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20000
+          }
+        },
+        "required": [
+          "answer"
+        ]
       }
     },
     "parameters": {}
@@ -6896,6 +7079,292 @@
           },
           "404": {
             "description": "No such project is in scope for the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/questions": {
+      "post": {
+        "summary": "Ask the team a blocking question",
+        "description": "An agent with a live claim asks a question, proposes a fallback and sets its issue to Needs input. The agent's owner is emailed after the question commits. No fallback is authorized in this slice: at the one-hour deadline the question pauses and releases the claim.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskForInputInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The open question",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Question"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The question is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "An agent key is required, or the key is invalid or revoked",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Contribute access is required to ask",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such issue or run is in scope for this agent",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No live claim, or this issue already has an open question",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/inbox": {
+      "get": {
+        "summary": "The human input inbox",
+        "description": "Open, paused and resolved questions for projects the signed-in human can read, newest first. Agent keys are refused: only humans use the inbox, and only Contribute or Manage may answer.",
+        "responses": {
+          "200": {
+            "description": "The questions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in as a human",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Agent keys cannot use the human inbox",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/questions/{questionId}/answer": {
+      "post": {
+        "summary": "Answer a question in the inbox",
+        "description": "A human with Contribute or Manage answers a question. Answering before the one-hour deadline, or after a paused question, resolves it exactly once and clears Needs input. Agents and sibling runs are refused, as are Readers and unrelated members.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "questionId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnswerQuestionInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The resolved question",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Question"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The answer is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in as a human",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only humans with Contribute or Manage on the project may answer",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such question is in scope for the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This question has already been resolved",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/{issueId}/questions": {
+      "get": {
+        "summary": "An issue's question history",
+        "description": "Every question asked about an issue and its resolution, newest first. The question and its resolution also appear in the project's history feed. Needs no claim.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "issueId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The issue's questions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The issue id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the agent key is invalid or revoked",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read access is required to inspect this issue",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such issue is in scope for the caller",
             "content": {
               "application/problem+json": {
                 "schema": {

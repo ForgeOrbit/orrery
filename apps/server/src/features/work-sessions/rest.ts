@@ -184,6 +184,7 @@ const statusFor = {
   run_not_found: 404,
   insufficient_access: 403,
   issue_claimed: 409,
+  issue_needs_input: 409,
   session_required: 409,
 } as const satisfies Record<SessionsErrorKind, number>;
 
@@ -216,6 +217,7 @@ const claimKinds = [
   "run_not_found",
   "insufficient_access",
   "issue_claimed",
+  "issue_needs_input",
 ] as const;
 const writeKinds = [
   "not_signed_in",
