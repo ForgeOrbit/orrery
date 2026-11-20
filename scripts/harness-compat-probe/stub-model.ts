@@ -56,6 +56,24 @@ function sendSse(
   response.end();
 }
 
+// The run-reporting gate (#44) aims the CLI at the real Orrery /mcp endpoint. STUB_TOOL
+// lets it name a real Orrery tool without changing this probe's default behaviour.
+function resolvedTool(name: string, input: Record<string, unknown>) {
+  if (name === "Task" || !process.env.STUB_TOOL) return { name, input };
+  let overridden = input;
+  if (process.env.STUB_TOOL_INPUT) {
+    try {
+      const parsed: unknown = JSON.parse(process.env.STUB_TOOL_INPUT);
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        overridden = asRecord(parsed);
+      }
+    } catch {
+      // Keep the mode's default input when the override is not valid JSON.
+    }
+  }
+  return { name: process.env.STUB_TOOL, input: overridden };
+}
+
 function toolCall(
   response: ServerResponse,
   stream: boolean,
@@ -63,6 +81,7 @@ function toolCall(
   input: Record<string, unknown>,
 ): void {
   toolCalls += 1;
+  const { name: actualName, input: actualInput } = resolvedTool(name, input);
   const id = `toolu_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
   const model = "stub-model";
   if (!stream) {
@@ -71,7 +90,7 @@ function toolCall(
       type: "message",
       role: "assistant",
       model,
-      content: [{ type: "tool_use", id, name, input }],
+      content: [{ type: "tool_use", id, name: actualName, input: actualInput }],
       stop_reason: "tool_use",
       stop_sequence: null,
       usage: { input_tokens: 100, output_tokens: 20 },
@@ -102,7 +121,7 @@ function toolCall(
       data: {
         type: "content_block_start",
         index: 0,
-        content_block: { type: "tool_use", id, name, input: {} },
+        content_block: { type: "tool_use", id, name: actualName, input: {} },
       },
     },
     {
@@ -110,7 +129,7 @@ function toolCall(
       data: {
         type: "content_block_delta",
         index: 0,
-        delta: { type: "input_json_delta", partial_json: JSON.stringify(input) },
+        delta: { type: "input_json_delta", partial_json: JSON.stringify(actualInput) },
       },
     },
     { event: "content_block_stop", data: { type: "content_block_stop", index: 0 } },
@@ -271,7 +290,7 @@ const server = createServer((request, response) => {
     } else if (mode === "subagent") {
       toolCall(response, stream, "Task", {
         description: "probe child",
-        prompt: `${marker}: call mcp__orrery_probe__probe_echo with label claude-subagent-child.`,
+        prompt: `${marker}: call ${process.env.STUB_TOOL ?? "mcp__orrery_probe__probe_echo"} with label claude-subagent-child.`,
         subagent_type: "general-purpose",
       });
     } else {

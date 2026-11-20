@@ -16,8 +16,10 @@ Codex results are live, model-driven calls. Claude Code results prove what the r
 MCP and to hooks; the stub model's text is not evidence about a real model. The first live Claude
 probe returned the exact error
 `Failed to authenticate: OAuth session expired and could not be refreshed`. The live
-Claude model-metadata check remains for
-[issue #44](https://github.com/forge-orbit/orrery/issues/44).
+Claude model-metadata check remains outstanding. [Issue #44](https://github.com/forge-orbit/orrery/issues/44)
+rechecked those credentials on 2026-11-20 and got the same error, then wired the CLI and verified
+its hook and static-MCP plumbing against a real local Orrery using the stub model; see
+[Claude Code run reporting](../guides/claude-code-runs.md).
 
 ## Local probe harness
 

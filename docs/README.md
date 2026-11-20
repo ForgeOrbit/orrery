@@ -15,6 +15,8 @@ These pages are also published on the website:
 
 ## Guides
 
+- [Claude Code run reporting](./guides/claude-code-runs.md) — hook and static MCP setup, with the
+  [issue #44](https://github.com/forge-orbit/orrery/issues/44) gate results.
 - [Codex CLI run reporting](./guides/codex-run-reporting.md) — hook setup and the live gate record.
 
 ## Planned guides
