@@ -93,7 +93,10 @@ async function accountById(tx: DbTransaction, humanId: string) {
     })
     .from(humans)
     .where(eq(humans.id, humanId))
-    .limit(1);
+    .limit(1)
+    // FOR UPDATE conflicts with the key-share lock claims take on the account before any
+    // issue lock, so a racing claim cannot slip past the deactivation and its release pass.
+    .for("update");
   if (row === undefined) throw new DeactivationError("account_not_found");
   return row;
 }
@@ -227,10 +230,88 @@ export function createDeactivationService({ db }: DeactivationDeps): Deactivatio
           });
         }
 
-        // 4. Release every active claim held by the human's agents across ALL workspaces.
-        // Affected issues are locked FOR UPDATE in id order before the sessions are ended,
-        // so a racing renewal cannot retain a released claim. A claim that legitimately
-        // completed after the read is left alone by the status guard.
+        // 4. Revoke every project access grant for this human across shared workspaces,
+        // with the same attributed, level-aware event a manager's revocation writes.
+        const grants = await tx
+          .select({
+            id: projectAccessGrants.id,
+            projectId: projectAccessGrants.projectId,
+            level: projectAccessGrants.level,
+          })
+          .from(projectAccessGrants)
+          .where(eq(projectAccessGrants.humanId, humanId));
+        if (grants.length > 0) {
+          await tx.delete(projectAccessGrants).where(
+            inArray(
+              projectAccessGrants.id,
+              grants.map((grant) => grant.id),
+            ),
+          );
+          for (const grant of grants) {
+            await tx.insert(projectAccessEvents).values({
+              id: randomUUID(),
+              projectId: grant.projectId,
+              actorHumanId: actor.humanId,
+              subjectHumanId: humanId,
+              type: ProjectAccessEventType.enum.project_access_revoked,
+              level: null,
+              previousLevel: ProjectAccessLevel.parse(grant.level),
+              createdAt: sql`statement_timestamp()`,
+            });
+          }
+        }
+
+        // 5. Suspend each shared membership in place: keep the row and its history,
+        // remember the ownership it held, and strip every current authority. The deferred
+        // owner trigger accepts a workspace with no active owner only because a suspended
+        // is_former_owner row remains (#38 -> #43). Personal workspaces never appear here.
+        const sharedWorkspaceIds = tx
+          .select({ id: workspaces.id })
+          .from(workspaces)
+          .where(eq(workspaces.kind, WorkspaceKind.enum.shared));
+        // An explicit FOR UPDATE is required, not the implicit NO KEY UPDATE of the UPDATE
+        // below: the claim path holds FOR KEY SHARE on this membership while it locks an
+        // issue, and only FOR UPDATE conflicts with that lock. Taking it here, before the
+        // issue locks, gives every writer the same membership -> issue lock order.
+        await tx
+          .select({ id: workspaceMemberships.id })
+          .from(workspaceMemberships)
+          .where(
+            and(
+              eq(workspaceMemberships.humanId, humanId),
+              isNull(workspaceMemberships.suspendedAt),
+              inArray(workspaceMemberships.workspaceId, sharedWorkspaceIds),
+            ),
+          )
+          .orderBy(workspaceMemberships.id)
+          .for("update");
+        await tx
+          .update(workspaceMemberships)
+          .set({
+            suspendedAt: sql`statement_timestamp()`,
+            isFormerOwner: sql`${workspaceMemberships.isOwner}`,
+            isOwner: false,
+            canCreateProjects: false,
+            canInviteMembers: false,
+            canRemoveMembers: false,
+            canManageMemberPermissions: false,
+          })
+          .where(
+            and(
+              eq(workspaceMemberships.humanId, humanId),
+              isNull(workspaceMemberships.suspendedAt),
+              inArray(workspaceMemberships.workspaceId, sharedWorkspaceIds),
+            ),
+          );
+
+        // 6. Release every active claim held by the human's agents across ALL workspaces.
+        // This runs AFTER the membership suspension above on purpose: claims and renewals
+        // lock the human's membership FOR KEY SHARE before they lock an issue FOR UPDATE,
+        // so deactivation must take the same two locks in the same order. Suspending the
+        // membership first makes a racing claim either wait and then see a suspended
+        // membership, or commit before the suspension and be visible to this release pass.
+        // Affected issues are locked in id order before the sessions are ended; a claim
+        // that legitimately completed after the read is left alone by the status guard.
         const claims = await tx
           .select({ id: workSessions.id, issueId: workSessions.issueId })
           .from(workSessions)
@@ -265,64 +346,6 @@ export function createDeactivationService({ db }: DeactivationDeps): Deactivatio
               ),
             );
         }
-
-        // 5. Revoke every project access grant for this human across shared workspaces,
-        // with the same attributed, level-aware event a manager's revocation writes.
-        const grants = await tx
-          .select({
-            id: projectAccessGrants.id,
-            projectId: projectAccessGrants.projectId,
-            level: projectAccessGrants.level,
-          })
-          .from(projectAccessGrants)
-          .where(eq(projectAccessGrants.humanId, humanId));
-        if (grants.length > 0) {
-          await tx.delete(projectAccessGrants).where(
-            inArray(
-              projectAccessGrants.id,
-              grants.map((grant) => grant.id),
-            ),
-          );
-          for (const grant of grants) {
-            await tx.insert(projectAccessEvents).values({
-              id: randomUUID(),
-              projectId: grant.projectId,
-              actorHumanId: actor.humanId,
-              subjectHumanId: humanId,
-              type: ProjectAccessEventType.enum.project_access_revoked,
-              level: null,
-              previousLevel: ProjectAccessLevel.parse(grant.level),
-              createdAt: sql`statement_timestamp()`,
-            });
-          }
-        }
-
-        // 6. Suspend each shared membership in place: keep the row and its history,
-        // remember the ownership it held, and strip every current authority. The deferred
-        // owner trigger accepts a workspace with no active owner only because a suspended
-        // is_former_owner row remains (#38 -> #43). Personal workspaces never appear here.
-        const sharedWorkspaceIds = tx
-          .select({ id: workspaces.id })
-          .from(workspaces)
-          .where(eq(workspaces.kind, WorkspaceKind.enum.shared));
-        await tx
-          .update(workspaceMemberships)
-          .set({
-            suspendedAt: sql`statement_timestamp()`,
-            isFormerOwner: sql`${workspaceMemberships.isOwner}`,
-            isOwner: false,
-            canCreateProjects: false,
-            canInviteMembers: false,
-            canRemoveMembers: false,
-            canManageMemberPermissions: false,
-          })
-          .where(
-            and(
-              eq(workspaceMemberships.humanId, humanId),
-              isNull(workspaceMemberships.suspendedAt),
-              inArray(workspaceMemberships.workspaceId, sharedWorkspaceIds),
-            ),
-          );
 
         // 7. One secret-free event so administrators can inspect the change in history.
         await recordAccountEvent(tx, {

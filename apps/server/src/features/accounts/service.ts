@@ -121,6 +121,7 @@ export async function accountByEmail(runner: AccountRunner, email: string) {
       email: humans.email,
       emailVerifiedAt: humans.emailVerifiedAt,
       isSystemAdministrator: humans.isSystemAdministrator,
+      deactivatedAt: humans.deactivatedAt,
     })
     .from(humans)
     .where(eq(humans.email, email))
@@ -201,6 +202,7 @@ export interface AccountsService {
     email: string;
     emailVerifiedAt: Date | null;
     isSystemAdministrator: boolean;
+    deactivatedAt: Date | null;
   } | null>;
   setPassword(humanId: string, password: string, tx: DbTransaction): Promise<void>;
   invalidateBrowserSessions(humanId: string, tx: DbTransaction): Promise<void>;

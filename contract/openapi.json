@@ -4949,7 +4949,7 @@
             }
           },
           "403": {
-            "description": "The signed-in account has a different or unverified email, or the inviter no longer has authority",
+            "description": "The signed-in account is deactivated, has a different or unverified email, or the inviter no longer has authority",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4959,7 +4959,7 @@
             }
           },
           "409": {
-            "description": "The account is already a member of the workspace, or an offered project no longer belongs to it",
+            "description": "The account is already a member, an offered project left the workspace, or the workspace has no active owner yet",
             "content": {
               "application/problem+json": {
                 "schema": {

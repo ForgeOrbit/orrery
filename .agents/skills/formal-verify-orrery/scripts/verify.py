@@ -1535,6 +1535,38 @@ def extract_code_facts() -> dict[str, Any]:
         and "409: problem" in deact_rest
     )
 
+    # Follow-up review: uniform lock ordering and active-account guards at every entry point.
+    account_by_id_fn = slice_between(deact_src, "async function accountById(", "async function lockOwnershipWrites")
+    lock_agent_fn = slice_between(sess_src, "async function lockAgentWorkspaceAccess(", "export async function releaseMemberWorkSessions")
+    can_use_fn = slice_between(ag_src, "async function humanCanUseWorkspace(", "async function requireWorkspaceOwner")
+    accept_fn_m22 = slice_between(ws_src, "async acceptInvitation(", "    // A new address:")
+    reset_request_fn = slice_between(rec_src, "async requestReset(email)", "    async confirmReset(token, password)")
+    local_recover_fn = slice_between(rec_src, "async localRecover(email, password)", "\n  };\n}")
+    reg_install_fn = slice_between(inv_src, "async registerInstallation(input)", "\n  };\n}")
+    m22_account_lock = '.for("update")' in account_by_id_fn
+    m22_membership_lock = (
+        '.for("update")' in deact_fn
+        and "workspaceMemberships.id" in deact_fn
+    )
+    m22_lock_order = (
+        deact_fn.find("Suspend each shared membership") < deact_fn.find("Release every active claim")
+        and deact_fn.find("Revoke every project access grant") < deact_fn.find("Release every active claim")
+    )
+    m22_claim_account_lock = (
+        ".for(\"key share\")" in lock_agent_fn
+        and "humans.deactivatedAt" in lock_agent_fn
+    )
+    m22_key_issuance_guard = "humanDeactivatedAt !== null" in can_use_fn
+    m22_reset_guard = (
+        "account.deactivatedAt === null" in reset_request_fn
+        and "account.deactivatedAt !== null" in local_recover_fn
+    )
+    m22_invitation_recheck = (
+        "human.deactivatedAt !== null" in accept_fn_m22
+        and "isNull(humans.deactivatedAt)" in reg_install_fn
+    )
+    m22_ownerless_refusal = 'throw new WorkspacesError("ownerless_workspace")' in accept_fn_m22
+
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
         "m2a_supersedes_failed": m2a_supersedes_failed,
@@ -1784,6 +1816,14 @@ def extract_code_facts() -> dict[str, Any]:
         "m22_membership_checks": m22_membership_checks,
         "m22_trigger": m22_trigger,
         "m22_http_problems": m22_http_problems,
+        "m22_account_lock": m22_account_lock,
+        "m22_membership_lock": m22_membership_lock,
+        "m22_lock_order": m22_lock_order,
+        "m22_claim_account_lock": m22_claim_account_lock,
+        "m22_key_issuance_guard": m22_key_issuance_guard,
+        "m22_reset_guard": m22_reset_guard,
+        "m22_invitation_recheck": m22_invitation_recheck,
+        "m22_ownerless_refusal": m22_ownerless_refusal,
     }
 
 
@@ -4367,6 +4407,13 @@ def check_m22(facts: dict[str, Any]) -> CheckResult:
              former, was_owner, is_admin, revived, events, v) = s
             if not g["m22_http_problems"]:
                 v = with_bad(v, "undeclared_problem_response")
+            if not (
+                g["m22_lock_order"]
+                and g["m22_account_lock"]
+                and g["m22_membership_lock"]
+                and g["m22_claim_account_lock"]
+            ):
+                v = with_bad(v, "lock_order_inversion_or_claim_race")
             if status == "deactivated":
                 return s[:-1] + (v,)
             if not g["m22_deactivated_column"]:
@@ -4413,6 +4460,21 @@ def check_m22(facts: dict[str, Any]) -> CheckResult:
                 return s[:-1] + (with_bad(s[-1], "deactivated_session_succeeded"),)
             return s
 
+        def stale_issue_key(s):
+            if s[0] == "deactivated" and not g["m22_key_issuance_guard"]:
+                return s[:-1] + (with_bad(s[-1], "key_minted_after_deactivation"),)
+            return s
+
+        def stale_reset(s):
+            if s[0] == "deactivated" and not g["m22_reset_guard"]:
+                return s[:-1] + (with_bad(s[-1], "reset_link_for_deactivated"),)
+            return s
+
+        def stale_invitation(s):
+            if s[0] == "deactivated" and not g["m22_invitation_recheck"]:
+                return s[:-1] + (with_bad(s[-1], "invitation_accepted_while_deactivated"),)
+            return s
+
         def use_key(s):
             v = s[-1]
             if s[0] == "deactivated" and not (g["m22_auth_key"] and g["m22_keys_revoked"]):
@@ -4437,6 +4499,12 @@ def check_m22(facts: dict[str, Any]) -> CheckResult:
 
         def reinvite(s):
             if s[0] != "active" or not s[11]:
+                return s
+            if s[8]:
+                # A former owner in a still ownerless workspace must be refused cleanly
+                # (409) until #43 appoints a new owner, not crash the deferred trigger.
+                if not g["m22_ownerless_refusal"]:
+                    return s[:-1] + (with_bad(s[-1], "ownerless_rejoin_500"),)
                 return s
             # A fresh invitation unsuspends the retained row with fresh access, but it never
             # restores former ownership and never unrevokes an old key.
@@ -4468,6 +4536,9 @@ def check_m22(facts: dict[str, Any]) -> CheckResult:
             ("an active administrator deactivates the account", apply_deactivate),
             ("the deactivated human tries to sign in", login),
             ("a retained session cookie is presented after deactivation", use_session),
+            ("a stale session identity tries to issue a new key", stale_issue_key),
+            ("a reset request is made for the deactivated account", stale_reset),
+            ("a stale invitation is accepted by the deactivated account", stale_invitation),
             ("the deactivated human's agent key authenticates", use_key),
             ("a claim completes on its own before deactivation", settle_claim),
             ("an administrator reactivates the account", reactivate),

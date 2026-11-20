@@ -193,8 +193,13 @@ async function humanCanUseWorkspace(
     .select({
       personalOwnerHumanId: workspaces.personalOwnerHumanId,
       membershipId: workspaceMemberships.id,
+      humanDeactivatedAt: humans.deactivatedAt,
     })
     .from(workspaces)
+    // The account itself is part of the access decision: a deactivated human cannot use
+    // any workspace, including their personal one, so a key issued just before
+    // deactivation cannot keep working afterwards (#38).
+    .innerJoin(humans, eq(humans.id, humanId))
     .leftJoin(
       workspaceMemberships,
       and(
@@ -206,7 +211,7 @@ async function humanCanUseWorkspace(
     )
     .where(eq(workspaces.id, workspaceId))
     .limit(1);
-  if (row === undefined) return false;
+  if (row === undefined || row.humanDeactivatedAt !== null) return false;
   return row.personalOwnerHumanId === humanId || row.membershipId !== null;
 }
 

@@ -76,6 +76,7 @@ export interface RecoveryAccountAccess {
     email: string;
     emailVerifiedAt: Date | null;
     isSystemAdministrator: boolean;
+    deactivatedAt: Date | null;
   } | null>;
   setPassword(humanId: string, password: string, tx: DbTransaction): Promise<void>;
   invalidateBrowserSessions(humanId: string, tx: DbTransaction): Promise<void>;
@@ -139,7 +140,9 @@ export function createRecoveryService({
       // delivered, or failed. No event is written for nothing that happened: an
       // unverified or unknown address gets no mail and no token.
       const account = await accounts.accountByEmail(email);
-      if (account !== null && account.emailVerifiedAt !== null) {
+      // A deactivated account is not eligible: no token, no mail, no event, and the same
+      // uniform answer as every other address (#38).
+      if (account !== null && account.emailVerifiedAt !== null && account.deactivatedAt === null) {
         const token = randomBytes(32).toString("base64url");
         const id = randomUUID();
         await db.insert(passwordResetTokens).values({
@@ -217,6 +220,9 @@ export function createRecoveryService({
       const recoveredEmail = await db.transaction(async (tx) => {
         const account = await accounts.accountByEmail(email, tx);
         if (account === null) throw new RecoveryError("account_not_found");
+        // A deactivated administrator cannot use the local command as a back door to a
+        // live credential (#38); reactivation is the administrator's separate decision.
+        if (account.deactivatedAt !== null) throw new RecoveryError("account_deactivated");
         if (!account.isSystemAdministrator) {
           throw new RecoveryError("not_system_administrator");
         }

@@ -62,7 +62,11 @@ export type WorkspacesErrorKind =
   | "account_exists"
   | "member_not_found"
   | "last_owner"
-  | "workspace_owner_capability";
+  | "workspace_owner_capability"
+  // #38: a deactivated identity cannot accept an invitation, and a workspace whose only
+  // owner was deactivated needs #43 ownership recovery before anyone rejoins it.
+  | "account_deactivated"
+  | "ownerless_workspace";
 
 // Each kind is the REST error's stable code and its message the Problem's title
 // (ADR-0003), so clients branch on the code and people read the title.
@@ -86,6 +90,9 @@ const messages = {
   member_not_found: "This person is not a member of the workspace.",
   last_owner: "A workspace must keep at least one owner.",
   workspace_owner_capability: "Workspace owners always hold every capability.",
+  account_deactivated: "This account is deactivated and cannot join a workspace.",
+  ownerless_workspace:
+    "This workspace has no active owner. Ownership recovery must happen before it can accept members.",
 } as const satisfies Record<WorkspacesErrorKind, string>;
 
 export class WorkspacesError extends Error {
@@ -1510,15 +1517,54 @@ export function createWorkspacesService({
         // a forwarded link cannot attach to another address, and an unverified account
         // cannot claim an invitation that would otherwise verify it for free.
         const [human] = await tx
-          .select({ email: humans.email, emailVerifiedAt: humans.emailVerifiedAt })
+          .select({
+            email: humans.email,
+            emailVerifiedAt: humans.emailVerifiedAt,
+            deactivatedAt: humans.deactivatedAt,
+          })
           .from(humans)
           .where(eq(humans.id, actor.humanId))
           .limit(1);
         if (human === undefined) throw new WorkspacesError("not_signed_in");
+        // The session may have been read just before a concurrent deactivation committed.
+        // Recheck the account inside this transaction, so a suspended identity cannot
+        // unsuspend a membership or gain fresh project access (#38).
+        if (human.deactivatedAt !== null) throw new WorkspacesError("account_deactivated");
         if (human.email !== invitation.email) {
           throw new WorkspacesError("invitation_recipient_mismatch");
         }
         if (human.emailVerifiedAt === null) throw new WorkspacesError("email_unverified");
+
+        // Rejoining a workspace whose only owner was deactivated would produce zero active
+        // owners and trip the deferred 0007 trigger at COMMIT as a 500. A deactivated
+        // former owner stays suspended until #43 ownership recovery appoints a new owner;
+        // here the caller gets a clean, actionable 409 instead.
+        const [suspendedMembership] = await tx
+          .select({ isFormerOwner: workspaceMemberships.isFormerOwner })
+          .from(workspaceMemberships)
+          .where(
+            and(
+              eq(workspaceMemberships.workspaceId, invitation.workspaceId),
+              eq(workspaceMemberships.humanId, actor.humanId),
+              isNotNull(workspaceMemberships.suspendedAt),
+            ),
+          )
+          .limit(1);
+        if (suspendedMembership?.isFormerOwner === true) {
+          const [activeOwners] = await tx
+            .select({ count: sql<number>`count(*)::int` })
+            .from(workspaceMemberships)
+            .where(
+              and(
+                eq(workspaceMemberships.workspaceId, invitation.workspaceId),
+                eq(workspaceMemberships.isOwner, true),
+                isNull(workspaceMemberships.suspendedAt),
+              ),
+            );
+          if ((activeOwners?.count ?? 0) === 0) {
+            throw new WorkspacesError("ownerless_workspace");
+          }
+        }
 
         // A previously deactivated human has a suspended membership row (#38). Accepting
         // a fresh invitation revives that same row with fresh access and no former

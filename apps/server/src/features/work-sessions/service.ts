@@ -17,6 +17,7 @@ import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
 import {
   agents,
+  humans,
   issues,
   projects,
   runs,
@@ -221,6 +222,19 @@ async function humanStillHasWorkspaceAccess(
 // then sees the newly committed claim. Personal workspaces have no membership row; their
 // single owner is checked directly and cannot be removed.
 async function lockAgentWorkspaceAccess(tx: DbTransaction, identity: AgentIdentity): Promise<void> {
+  // Lock the agent owner's account before any workspace or issue lock, for personal and
+  // shared workspaces alike. Deactivation writes humans.deactivated_at in its own
+  // transaction; waiting on this key-share lock makes a claim/renewal/reacquire that read
+  // an active account either commit before the deactivation (and be visible to its claim
+  // release pass) or see the deactivated account and fail here. No active session can be
+  // inserted after the account was suspended.
+  const [owner] = await tx
+    .select({ id: humans.id })
+    .from(humans)
+    .where(and(eq(humans.id, identity.humanId), isNull(humans.deactivatedAt)))
+    .for("key share");
+  if (owner === undefined) throw new SessionsError("insufficient_access");
+
   const [workspace] = await tx
     .select({ personalOwnerHumanId: workspaces.personalOwnerHumanId })
     .from(workspaces)

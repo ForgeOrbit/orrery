@@ -14,11 +14,3 @@ export const AccountStatus = z
   })
   .meta({ id: "AccountStatus" });
 export type AccountStatus = z.infer<typeof AccountStatus>;
-
-// The target of a deactivation/reactivation is a human id in the path.
-export const AccountStatusPath = z
-  .object({
-    humanId: z.string(),
-  })
-  .meta({ id: "AccountStatusPath" });
-export type AccountStatusPath = z.infer<typeof AccountStatusPath>;
