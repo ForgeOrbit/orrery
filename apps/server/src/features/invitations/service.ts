@@ -10,6 +10,7 @@ import { tokenHash } from "../../platform/tokens.ts";
 import type { SessionAccount } from "../accounts/index.ts";
 import type { OutgoingMail } from "../settings/index.ts";
 import { invitations, humans } from "../../db/schema.ts";
+import { canResendInvitation, supersedeTargetForPending } from "./state-machine.ts";
 
 // The service is the only file in a feature that decides anything. rest.ts calls it.
 
@@ -416,19 +417,17 @@ export function createInvitationsService({
             .where(eq(invitations.id, invitationId))
             .for("update");
           if (row === undefined) throw new InvitationsError("invitation_not_found");
-          if (
-            row.status !== InvitationStatus.enum.pending &&
-            row.status !== InvitationStatus.enum.expired
-          ) {
+          if (!canResendInvitation(row.status)) {
             throw new InvitationsError("invitation_not_pending");
           }
           if (await emailRegistered(row.email, tx)) throw new InvitationsError("account_exists");
 
           if (row.status === InvitationStatus.enum.pending) {
+            const superseded = supersedeTargetForPending(row.live);
             await tx
               .update(invitations)
               .set(
-                row.live
+                superseded === "revoked"
                   ? {
                       status: InvitationStatus.enum.revoked,
                       revokedAt: sql`statement_timestamp()`,

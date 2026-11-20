@@ -28,6 +28,7 @@ import {
   workspaces,
 } from "../../db/schema.ts";
 import type { SessionAccount } from "../accounts/index.ts";
+import { canAuthenticateKey, canRotateKey, effectiveAgentKeyState } from "./state-machine.ts";
 
 // The service is the only file in this feature that decides anything. rest.ts validates
 // and maps results; every rule about who may act, which workspace a key can reach, and
@@ -432,7 +433,14 @@ async function resolveKeyInTransaction(
 
   // Revocation wins over everything, including "Never": it is checked on every request
   // and takes effect immediately, independently of any connection state.
-  if (row.key.revokedAt !== null) throw new AgentsError("key_revoked");
+  if (row.key.revokedAt !== null) {
+    effectiveAgentKeyState({
+      revokedAt: row.key.revokedAt,
+      validity: AgentKeyValidity.parse(row.key.validity),
+      expired: false,
+    });
+    throw new AgentsError("key_revoked");
+  }
 
   // Membership is an access check, not a transport detail: removing the human from the
   // key's workspace stops the key immediately, even a Never key with no project grants.
@@ -448,7 +456,12 @@ async function resolveKeyInTransaction(
       .from(agentApiKeys)
       .where(and(eq(agentApiKeys.id, row.key.id), gt(agentApiKeys.expiresAt, sql`now()`)))
       .limit(1);
-    if (live === undefined) throw new AgentsError("key_expired");
+    const keyState = effectiveAgentKeyState({
+      revokedAt: null,
+      validity: AgentKeyValidity.parse(row.key.validity),
+      expired: live === undefined,
+    });
+    if (!canAuthenticateKey(keyState)) throw new AgentsError("key_expired");
   }
 
   // A key is scoped to exactly one workspace. A request naming another workspace fails
@@ -645,15 +658,30 @@ export function createAgentsService({
         // be a lie. A revoked key is refused outright; an expired one is checked in
         // database time even if no sweeper has stamped it. The check is about the
         // source's own state, independent of the requested replacement validity.
-        if (source.key.revokedAt !== null) throw new AgentsError("source_key_revoked");
-        if (AgentKeyValidity.parse(source.key.validity) !== AgentKeyValidity.enum.never) {
+        const sourceValidity = AgentKeyValidity.parse(source.key.validity);
+        let sourceExpired = false;
+        if (source.key.revokedAt !== null) {
+          effectiveAgentKeyState({
+            revokedAt: source.key.revokedAt,
+            validity: sourceValidity,
+            expired: false,
+          });
+          throw new AgentsError("source_key_revoked");
+        }
+        if (sourceValidity !== AgentKeyValidity.enum.never) {
           const [live] = await tx
             .select({ id: agentApiKeys.id })
             .from(agentApiKeys)
             .where(and(eq(agentApiKeys.id, keyId), gt(agentApiKeys.expiresAt, sql`now()`)))
             .limit(1);
-          if (live === undefined) throw new AgentsError("source_key_expired");
+          sourceExpired = live === undefined;
         }
+        const sourceState = effectiveAgentKeyState({
+          revokedAt: source.key.revokedAt,
+          validity: sourceValidity,
+          expired: sourceExpired,
+        });
+        if (!canRotateKey(sourceState)) throw new AgentsError("source_key_expired");
 
         // A key whose human owner can no longer use its workspace cannot be the source
         // of a fresh credential for that workspace.
