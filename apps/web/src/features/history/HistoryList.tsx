@@ -43,6 +43,8 @@ const labels: Record<string, string> = {
   installation_invitation_declined: "declined an invitation from",
   installation_invitation_expired: "let an invitation expire for",
   installation_invitation_revoked: "revoked an invitation for",
+  account_deactivated: "deactivated",
+  account_reactivated: "reactivated",
 };
 
 const formatTime = (value: string) => new Date(value).toLocaleString();

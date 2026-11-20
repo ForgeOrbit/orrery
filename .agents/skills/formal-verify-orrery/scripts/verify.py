@@ -1458,6 +1458,115 @@ def extract_code_facts() -> dict[str, Any]:
     )
 
 
+    # #38: account deactivation/reactivation. The policy lives in one service; the auth
+    # refusals live in accounts and agents; the membership predicates and the retained
+    # former-owner trigger shape are read from the live sources and migrations.
+    deact_src = read_text("apps/server/src/features/deactivation/service.ts")
+    deact_rest = read_text("apps/server/src/features/deactivation/rest.ts")
+    schema_src = read_text("apps/server/src/db/schema.ts")
+    mig_0027 = read_text("db/migrations/0027_account_deactivation_owner_guard.sql")
+    deact_fn = slice_between(deact_src, "async deactivate(", "\n    async reactivate(")
+    react_fn = slice_between(deact_src, "async reactivate(", "\n  };\n}")
+    login_fn = slice_between(acc_src, "    async login(", "    async session(")
+    session_fn = slice_between(acc_src, "    async session(", "    async markEmailVerified(")
+    resolve_key_fn = slice_between(ag_src, "async function resolveKeyInTransaction(", "export function createAgentsService")
+
+    m22_deactivated_column = "deactivatedAt: timestamp(\"deactivated_at\"" in schema_src
+    m22_suspended_column = (
+        "suspendedAt: timestamp(\"suspended_at\"" in schema_src
+        and "isFormerOwner: boolean(\"is_former_owner\"" in schema_src
+    )
+    m22_last_admin_guard = 'throw new DeactivationError("last_admin")' in deact_fn
+    m22_one_tx = (
+        deact_fn.count("db.transaction") == 1
+        and react_fn.count("db.transaction") == 1
+        and "select lock_workspace_ownership_writes()" in deact_src
+    )
+    m22_sessions_deleted = "delete(browserSessions)" in deact_fn
+    m22_keys_revoked = (
+        "revokedAt: sql`statement_timestamp()`" in deact_fn
+        and "AgentKeyEventType.enum.agent_key_revoked" in deact_fn
+    )
+    m22_claims_released = (
+        '.for("update")' in deact_fn
+        and "WorkSessionStatus.enum.released" in deact_fn
+        and "eq(workSessions.status, WorkSessionStatus.enum.active)" in deact_fn
+    )
+    m22_grants_revoked = (
+        "delete(projectAccessGrants)" in deact_fn
+        and "ProjectAccessEventType.enum.project_access_revoked" in deact_fn
+    )
+    m22_membership_suspended = (
+        "suspendedAt: sql`statement_timestamp()`" in deact_fn
+        and "isFormerOwner: sql`${workspaceMemberships.isOwner}`" in deact_fn
+        and "isOwner: false" in deact_fn
+    )
+    m22_no_restore = (
+        ".set({ deactivatedAt: null })" in react_fn
+        and "workspaceMemberships" not in react_fn
+        and "agentApiKeys" not in react_fn
+        and "projectAccessGrants" not in react_fn
+        and "deactivatedAt: null" in react_fn
+    )
+    m22_events = (
+        '"account_deactivated"' in deact_fn and '"account_reactivated"' in react_fn
+    )
+    m22_auth_login = "human.deactivatedAt !== null" in login_fn
+    m22_auth_session = "isNull(humans.deactivatedAt)" in session_fn
+    m22_auth_key = "row.humanDeactivatedAt !== null" in resolve_key_fn
+    m22_membership_checks = (
+        "isNull(workspaceMemberships.suspendedAt)" in ws_src
+        and "isNull(workspaceMemberships.suspendedAt)" in proj_src
+        and "isNull(workspaceMemberships.suspendedAt)" in ag_src
+        and "isNull(workspaceMemberships.suspendedAt)" in sess_src
+        and "isNull(workspaceMemberships.suspendedAt)" in tr_src
+        and "isNull(workspaceMemberships.suspendedAt)" in hist_src
+    )
+    m22_trigger = (
+        "AND suspended_at IS NULL" in mig_0027
+        and "suspended_at IS NOT NULL" in mig_0027
+        and "is_former_owner" in mig_0027
+    )
+    m22_http_problems = (
+        '400: problem("The account id is invalid")' in deact_rest
+        and "401: problem" in deact_rest
+        and "403: problem" in deact_rest
+        and "404: problem" in deact_rest
+        and "409: problem" in deact_rest
+    )
+
+    # Follow-up review: uniform lock ordering and active-account guards at every entry point.
+    account_by_id_fn = slice_between(deact_src, "async function accountById(", "async function lockOwnershipWrites")
+    lock_agent_fn = slice_between(sess_src, "async function lockAgentWorkspaceAccess(", "export async function releaseMemberWorkSessions")
+    can_use_fn = slice_between(ag_src, "async function humanCanUseWorkspace(", "async function requireWorkspaceOwner")
+    accept_fn_m22 = slice_between(ws_src, "async acceptInvitation(", "    // A new address:")
+    reset_request_fn = slice_between(rec_src, "async requestReset(email)", "    async confirmReset(token, password)")
+    local_recover_fn = slice_between(rec_src, "async localRecover(email, password)", "\n  };\n}")
+    reg_install_fn = slice_between(inv_src, "async registerInstallation(input)", "\n  };\n}")
+    m22_account_lock = '.for("update")' in account_by_id_fn
+    m22_membership_lock = (
+        '.for("update")' in deact_fn
+        and "workspaceMemberships.id" in deact_fn
+    )
+    m22_lock_order = (
+        deact_fn.find("Suspend each shared membership") < deact_fn.find("Release every active claim")
+        and deact_fn.find("Revoke every project access grant") < deact_fn.find("Release every active claim")
+    )
+    m22_claim_account_lock = (
+        ".for(\"key share\")" in lock_agent_fn
+        and "humans.deactivatedAt" in lock_agent_fn
+    )
+    m22_key_issuance_guard = "humanDeactivatedAt !== null" in can_use_fn
+    m22_reset_guard = (
+        "account.deactivatedAt === null" in reset_request_fn
+        and "account.deactivatedAt !== null" in local_recover_fn
+    )
+    m22_invitation_recheck = (
+        "human.deactivatedAt !== null" in accept_fn_m22
+        and "isNull(humans.deactivatedAt)" in reg_install_fn
+    )
+    m22_ownerless_refusal = 'throw new WorkspacesError("ownerless_workspace")' in accept_fn_m22
+
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
         "m2a_supersedes_failed": m2a_supersedes_failed,
@@ -1690,6 +1799,31 @@ def extract_code_facts() -> dict[str, Any]:
         "m21_pending_offers_only": m21_pending_offers_only,
         "m21_revoke_siblings": m21_revoke_siblings,
         "m21_accept_membership": m21_accept_membership,
+        "m22_deactivated_column": m22_deactivated_column,
+        "m22_suspended_column": m22_suspended_column,
+        "m22_last_admin_guard": m22_last_admin_guard,
+        "m22_one_tx": m22_one_tx,
+        "m22_sessions_deleted": m22_sessions_deleted,
+        "m22_keys_revoked": m22_keys_revoked,
+        "m22_claims_released": m22_claims_released,
+        "m22_grants_revoked": m22_grants_revoked,
+        "m22_membership_suspended": m22_membership_suspended,
+        "m22_no_restore": m22_no_restore,
+        "m22_events": m22_events,
+        "m22_auth_login": m22_auth_login,
+        "m22_auth_session": m22_auth_session,
+        "m22_auth_key": m22_auth_key,
+        "m22_membership_checks": m22_membership_checks,
+        "m22_trigger": m22_trigger,
+        "m22_http_problems": m22_http_problems,
+        "m22_account_lock": m22_account_lock,
+        "m22_membership_lock": m22_membership_lock,
+        "m22_lock_order": m22_lock_order,
+        "m22_claim_account_lock": m22_claim_account_lock,
+        "m22_key_issuance_guard": m22_key_issuance_guard,
+        "m22_reset_guard": m22_reset_guard,
+        "m22_invitation_recheck": m22_invitation_recheck,
+        "m22_ownerless_refusal": m22_ownerless_refusal,
     }
 
 
@@ -4252,6 +4386,249 @@ def check_m21(facts: dict[str, Any]) -> CheckResult:
         ],
     )
 
+def check_m22(facts: dict[str, Any]) -> CheckResult:
+    """Account deactivation/reactivation (#38): one atomic suspension, no revival.
+
+    The model explores a deactivation, attempts to sign in and use a key while suspended,
+    a reactivation, and a fresh invitation. Each transition consults the guards extracted
+    from the live service, auth paths, contract and migration; flipping any one of them
+    makes the invariant fail, which is the sensitivity proof for this model.
+    """
+    g = facts
+
+    def model_bfs() -> CheckResult:
+        def with_bad(v: frozenset, label: str) -> frozenset:
+            return v | {label}
+
+        # (status, active_admins, sessions, key, claim, grant, membership, is_owner,
+        #  former_owner, was_owner, is_admin, revived, events, violations)
+        def apply_deactivate(s):
+            (status, admins, sessions, key, claim, grant, membership, is_owner,
+             former, was_owner, is_admin, revived, events, v) = s
+            if not g["m22_http_problems"]:
+                v = with_bad(v, "undeclared_problem_response")
+            if not (
+                g["m22_lock_order"]
+                and g["m22_account_lock"]
+                and g["m22_membership_lock"]
+                and g["m22_claim_account_lock"]
+            ):
+                v = with_bad(v, "lock_order_inversion_or_claim_race")
+            if status == "deactivated":
+                return s[:-1] + (v,)
+            if not g["m22_deactivated_column"]:
+                v = with_bad(v, "no_deactivation_marker")
+            if not g["m22_suspended_column"]:
+                v = with_bad(v, "no_suspended_membership_column")
+            if was_owner and not g["m22_trigger"]:
+                v = with_bad(v, "sole_owner_deactivation_failed")
+            # Last active administrator: the guard refuses the whole transition.
+            if is_admin and admins <= 1:
+                if not g["m22_last_admin_guard"]:
+                    v = with_bad(v, "last_admin_deactivated")
+                    admins -= 1
+                else:
+                    return s[:-1] + (v,)
+            elif is_admin:
+                admins -= 1
+            if not g["m22_one_tx"]:
+                v = with_bad(v, "torn_deactivation")
+            sessions = sessions if not g["m22_sessions_deleted"] else 0
+            key = key if not g["m22_keys_revoked"] else "revoked"
+            claim = claim if not g["m22_claims_released"] else "released"
+            grant = grant if not g["m22_grants_revoked"] else False
+            suspended = g["m22_membership_suspended"]
+            # A still-suspended membership is not rewritten by a second deactivation: its
+            # retained former-owner mark must survive exactly as the SQL UPDATE's
+            # suspended_at IS NULL guard preserves it.
+            if suspended and membership != "suspended":
+                membership, new_owner, new_former = "suspended", False, is_owner
+            else:
+                new_owner, new_former = is_owner, former
+            if g["m22_events"]:
+                events = events | {"account_deactivated"}
+            return ("deactivated", admins, sessions, key, claim, grant, membership,
+                    new_owner, new_former, was_owner, is_admin, revived, events, v)
+
+        def login(s):
+            if s[0] == "deactivated" and not g["m22_auth_login"]:
+                return s[:-1] + (with_bad(s[-1], "deactivated_login_succeeded"),)
+            return s
+
+        def use_session(s):
+            if s[0] == "deactivated" and not g["m22_auth_session"]:
+                return s[:-1] + (with_bad(s[-1], "deactivated_session_succeeded"),)
+            return s
+
+        def stale_issue_key(s):
+            if s[0] == "deactivated" and not g["m22_key_issuance_guard"]:
+                return s[:-1] + (with_bad(s[-1], "key_minted_after_deactivation"),)
+            return s
+
+        def stale_reset(s):
+            if s[0] == "deactivated" and not g["m22_reset_guard"]:
+                return s[:-1] + (with_bad(s[-1], "reset_link_for_deactivated"),)
+            return s
+
+        def stale_invitation(s):
+            if s[0] == "deactivated" and not g["m22_invitation_recheck"]:
+                return s[:-1] + (with_bad(s[-1], "invitation_accepted_while_deactivated"),)
+            return s
+
+        def use_key(s):
+            v = s[-1]
+            if s[0] == "deactivated" and not (g["m22_auth_key"] and g["m22_keys_revoked"]):
+                v = with_bad(v, "deactivated_key_succeeded")
+            if s[6] == "suspended" and not g["m22_membership_checks"]:
+                v = with_bad(v, "suspended_membership_key_succeeded")
+            return s[:-1] + (v,)
+
+        def reactivate(s):
+            if s[0] != "deactivated":
+                return s
+            (status, admins, sessions, key, claim, grant, membership, is_owner,
+             former, was_owner, is_admin, revived, events, v) = s
+            if not g["m22_no_restore"]:
+                # The forbidden revival: shared membership, old ownership and old key come
+                # back automatically. Fresh grants are indistinguishable from old ones here.
+                membership, is_owner, former, grant, key = "active", was_owner, was_owner, True, "live"
+            if g["m22_events"]:
+                events = events | {"account_reactivated"}
+            return ("active", admins, sessions, key, claim, grant, membership, is_owner,
+                    former, was_owner, is_admin, True, events, v)
+
+        def reinvite(s):
+            if s[0] != "active" or not s[11]:
+                return s
+            if s[8]:
+                # A former owner in a still ownerless workspace must be refused cleanly
+                # (409) until #43 appoints a new owner, not crash the deferred trigger.
+                if not g["m22_ownerless_refusal"]:
+                    return s[:-1] + (with_bad(s[-1], "ownerless_rejoin_500"),)
+                return s
+            # A fresh invitation unsuspends the retained row with fresh access, but it never
+            # restores former ownership and never unrevokes an old key.
+            return (s[0], s[1], s[2], s[3], s[4], True, "active", False, False,
+                    False, s[10], s[11], s[12], s[13])
+
+        def make_non_owner(s):
+            if s[0] != "active" or s[6] != "active" or s[11]:
+                return s
+            return (s[0], s[1], s[2], s[3], s[4], s[5], s[6], False, s[8], False,
+                    s[10], s[11], s[12], s[13])
+
+        def make_admin_with_successor(s):
+            if s[0] != "active" or s[10] or s[11]:
+                return s
+            return (s[0], s[1] + 1, s[2], s[3], s[4], s[5], s[6], s[7], s[8],
+                    s[9], True, s[11], s[12], s[13])
+
+        def settle_claim(s):
+            if s[0] != "active" or s[4] != "active":
+                return s
+            return (s[0], s[1], s[2], s[3], "ended", s[5], s[6], s[7], s[8],
+                    s[9], s[10], s[11], s[12], s[13])
+
+        actions = [
+            ("a shared-workspace owner is the account to deactivate", lambda s: s),
+            ("the account is also an ordinary member, not an owner", make_non_owner),
+            ("a second administrator is appointed so this admin is not last", make_admin_with_successor),
+            ("an active administrator deactivates the account", apply_deactivate),
+            ("the deactivated human tries to sign in", login),
+            ("a retained session cookie is presented after deactivation", use_session),
+            ("a stale session identity tries to issue a new key", stale_issue_key),
+            ("a reset request is made for the deactivated account", stale_reset),
+            ("a stale invitation is accepted by the deactivated account", stale_invitation),
+            ("the deactivated human's agent key authenticates", use_key),
+            ("a claim completes on its own before deactivation", settle_claim),
+            ("an administrator reactivates the account", reactivate),
+            ("the reactivated human accepts a fresh invitation", reinvite),
+        ]
+
+        init = ("active", 1, 1, "live", "active", True, "active", True, False,
+                True, False, False, frozenset(), frozenset())
+
+        def inv(s):
+            v = s[-1]
+            if v:
+                return False, f"account-deactivation invariant broken: {sorted(v)[0]}"
+            (status, admins, sessions, key, claim, grant, membership, is_owner,
+             former, was_owner, is_admin, revived, events, _) = s
+            if admins <= 0:
+                return False, "no active system administrator remains"
+            if status == "deactivated":
+                if sessions != 0:
+                    return False, "a browser session survived deactivation"
+                if key != "revoked":
+                    return False, "an agent key survived deactivation"
+                if claim not in ("released", "ended"):
+                    return False, "an active claim survived deactivation"
+                if grant or membership != "suspended":
+                    return False, "shared authority survived deactivation"
+                if is_owner or former != was_owner:
+                    return False, "former ownership was not retained correctly"
+                if "account_deactivated" not in events:
+                    return False, "no deactivation event was recorded"
+            if revived:
+                if "account_reactivated" not in events:
+                    return False, "no reactivation event was recorded"
+                if membership == "suspended" and (is_owner or former != was_owner):
+                    return False, "reactivation restored former ownership"
+                if membership == "active" and (is_owner or former):
+                    return False, "re-invitation restored former ownership"
+                if membership == "suspended" and key != "revoked":
+                    return False, "an old key was revived on reactivation"
+            return True, ""
+
+        result = bfs_check(
+            "M22",
+            "Account Deactivation and Reactivation (#38)",
+            "Deactivation is one transaction that ends sessions, revokes every key and grant, releases claims, suspends memberships while retaining former ownership, and records an event; the last active administrator is refused; reactivation restores only the identity, never shared authority or old credentials, which return only through a fresh invitation and replacement keys",
+            "safety",
+            init,
+            lambda s: [(label, action(s)) for label, action in actions],
+            inv,
+            [
+                "apps/server/src/features/deactivation/service.ts",
+                "apps/server/src/features/deactivation/rest.ts",
+                "apps/server/src/features/accounts/service.ts",
+                "apps/server/src/features/agents/service.ts",
+                "apps/server/src/features/workspaces/service.ts",
+                "apps/server/src/features/projects/service.ts",
+                "apps/server/src/features/work-sessions/service.ts",
+                "apps/server/src/features/transfers/service.ts",
+                "apps/server/src/features/history/service.ts",
+                "apps/server/src/db/schema.ts",
+                "db/migrations/0027_account_deactivation_owner_guard.sql",
+            ],
+        )
+        if result.status != "verified":
+            return result
+
+        # Sensitivity: run the same bounded explorer with every M22 guard flipped. A model
+        # that still passes would prove nothing, so that case is reported as a failure.
+        saved = dict(g)
+        for key in [k for k in saved if k.startswith("m22_")]:
+            g[key] = not saved[key]
+        try:
+            naive = bfs_check("M22-naive", result.model, result.property_name, result.kind,
+                              init, lambda s: [(label, action(s)) for label, action in actions],
+                              inv, result.files)
+        finally:
+            g.clear()
+            g.update(saved)
+        if naive.status == "verified":
+            return CheckResult(
+                "M22", result.model, result.property_name, result.kind, "violated",
+                result.states_explored, result.transitions_explored,
+                "model is not sensitive: flipping every extracted M22 guard left the invariant intact",
+                ["flip every m22_* guard"], result.files,
+            )
+        return result
+
+    return model_bfs()
+
+
 def main() -> None:
     facts = extract_code_facts()
     results = [
@@ -4277,6 +4654,7 @@ def main() -> None:
         check_m19(facts),
         check_m20(facts),
         check_m21(facts),
+        check_m22(facts),
     ]
 
     if "--json" in sys.argv:

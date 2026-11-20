@@ -23,6 +23,7 @@ import {
   agentApiKeys,
   agentKeyEvents,
   agents,
+  humans,
   projects,
   workspaceMemberships,
   workspaces,
@@ -72,6 +73,7 @@ export type AgentsErrorKind =
   | "key_workspace_inaccessible"
   | "key_out_of_scope"
   | "insufficient_agent_access"
+  | "human_deactivated"
   | "source_key_revoked"
   | "source_key_expired";
 
@@ -89,6 +91,7 @@ const messages: Record<AgentsErrorKind, string> = {
   key_workspace_inaccessible: "The human who owns this key can no longer use its workspace.",
   key_out_of_scope: "The API key is not scoped to this workspace.",
   insufficient_agent_access: "The agent has no access to this project.",
+  human_deactivated: "The human who owns this key is deactivated.",
   source_key_revoked: "A revoked key cannot be rotated.",
   source_key_expired: "An expired key cannot be rotated.",
 };
@@ -191,18 +194,25 @@ async function humanCanUseWorkspace(
     .select({
       personalOwnerHumanId: workspaces.personalOwnerHumanId,
       membershipId: workspaceMemberships.id,
+      humanDeactivatedAt: humans.deactivatedAt,
     })
     .from(workspaces)
+    // The account itself is part of the access decision: a deactivated human cannot use
+    // any workspace, including their personal one, so a key issued just before
+    // deactivation cannot keep working afterwards (#38).
+    .innerJoin(humans, eq(humans.id, humanId))
     .leftJoin(
       workspaceMemberships,
       and(
         eq(workspaceMemberships.workspaceId, workspaces.id),
         eq(workspaceMemberships.humanId, humanId),
+        // A suspended membership (#38) grants no workspace access to the key's human.
+        isNull(workspaceMemberships.suspendedAt),
       ),
     )
     .where(eq(workspaces.id, workspaceId))
     .limit(1);
-  if (row === undefined) return false;
+  if (row === undefined || row.humanDeactivatedAt !== null) return false;
   return row.personalOwnerHumanId === humanId || row.membershipId !== null;
 }
 
@@ -222,6 +232,7 @@ async function requireWorkspaceOwner(
       and(
         eq(workspaceMemberships.workspaceId, workspaces.id),
         eq(workspaceMemberships.humanId, humanId),
+        isNull(workspaceMemberships.suspendedAt),
       ),
     )
     .where(eq(workspaces.id, workspaceId))
@@ -424,12 +435,20 @@ async function resolveKeyInTransaction(
       key: keyRowColumns(),
       agentName: agents.name,
       humanId: agents.humanId,
+      humanDeactivatedAt: humans.deactivatedAt,
     })
     .from(agentApiKeys)
     .innerJoin(agents, eq(agents.id, agentApiKeys.agentId))
+    .innerJoin(humans, eq(humans.id, agents.humanId))
     .where(eq(agentApiKeys.tokenHash, tokenHash(token)))
     .limit(1);
   if (row === undefined) throw new AgentsError("invalid_key");
+
+  // A deactivated owner's key never authenticates (#38). Deactivation also revokes every
+  // key in the same transaction; this independent check means a key cannot authenticate
+  // even if it somehow escaped revocation. The human row is always present (deactivation
+  // keeps the identity), so a null here is a corrupt key owner, not a deactivated one.
+  if (row.humanDeactivatedAt !== null) throw new AgentsError("human_deactivated");
 
   // Revocation wins over everything, including "Never": it is checked on every request
   // and takes effect immediately, independently of any connection state.

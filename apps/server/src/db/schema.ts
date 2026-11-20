@@ -43,6 +43,11 @@ export const humans = pgTable(
     emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
     isSystemAdministrator: boolean("is_system_administrator").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // Account deactivation (#38). A non-null timestamp means the identity is suspended
+    // across the installation: login, sessions, and agent keys stop, but the row (and
+    // everything attributed to it) stays. Reactivation clears this same timestamp; it
+    // never restores shared authority or old credentials.
+    deactivatedAt: timestamp("deactivated_at", { withTimezone: true }),
   },
   (t) => [check("humans_email_normalized", sql`${t.email} = lower(btrim(${t.email}))`)],
 );
@@ -122,6 +127,14 @@ export const workspaceMemberships = pgTable(
     canRemoveMembers: boolean("can_remove_members").notNull().default(false),
     canManageMemberPermissions: boolean("can_manage_member_permissions").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // A suspended membership (#38) grants no shared access. Deactivation suspends in
+    // place rather than deleting, so it keeps the human's place in the workspace's history.
+    // Re-inviting a reactivated human clears this and issues fresh grants.
+    suspendedAt: timestamp("suspended_at", { withTimezone: true }),
+    // Ownership held at suspension time, kept so a workspace whose only owner was
+    // deactivated is eligible for later ownership recovery (#43) without ever restoring
+    // ownership automatically on reactivation.
+    isFormerOwner: boolean("is_former_owner").notNull().default(false),
   },
   (t) => [
     // One membership per person per workspace: accepting twice cannot double access.
@@ -332,6 +345,10 @@ export const accountRecoveryEventTypes = [
   "password_reset_requested",
   "password_reset_completed",
   "local_recovery_completed",
+  // #38: installation-wide account status changes. `humanId` is the affected account;
+  // `actorHumanId` is the administrator who made the change. Secret-free by design.
+  "account_deactivated",
+  "account_reactivated",
 ] as const;
 export type AccountRecoveryEventType = (typeof accountRecoveryEventTypes)[number];
 
@@ -342,6 +359,9 @@ export const accountRecoveryEvents = pgTable(
     humanId: text("human_id")
       .notNull()
       .references(() => humans.id),
+    // Null for password-recovery events, whose subject is also the actor. Set for the
+    // deactivation/reactivation events (#38), recorded by a system administrator.
+    actorHumanId: text("actor_human_id").references(() => humans.id),
     type: text("type").$type<AccountRecoveryEventType>().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

@@ -3,6 +3,7 @@
 export * from "./agents.ts";
 export * from "./auth.ts";
 export * from "./common.ts";
+export * from "./deactivation.ts";
 export * from "./health.ts";
 export * from "./history.ts";
 export * from "./invitations.ts";

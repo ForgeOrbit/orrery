@@ -43,6 +43,7 @@ import { createRecoveryFeature } from "../recovery/index.ts";
 import type { OutgoingMail } from "../settings/index.ts";
 import { createSessionsFeature, type SessionsService } from "../work-sessions/index.ts";
 import { createAgentsFeature, type AgentAuthenticator } from "./index.ts";
+import { createAgentsService } from "./service.ts";
 
 // Real Postgres (AGENTS.md): key scoping, revocation, expiry, the dynamic human-access
 // ceiling, and credential audit events are database behavior. The black-box e2e suite
@@ -598,6 +599,51 @@ afterEach(async () => {
 });
 
 describe("workspace-scoped agent API keys", () => {
+  it("refuses to issue a key for a deactivated human, even with a stale session identity", async () => {
+    const app = await makeApp();
+    await bootstrapAdmin(app);
+    const adminCookie = await cookieFor(app, ADMIN_EMAIL, ADMIN_PASSWORD);
+    const admin = await database.db
+      .select()
+      .from(humans)
+      .where(eq(humans.email, ADMIN_EMAIL))
+      .then((rows) => rows[0]);
+    if (admin === undefined) throw new Error("the admin was not found");
+    const workspace = await personalWorkspaceOf(admin.id);
+    const p = await project(workspace.id, "Personal project", admin.id);
+    const agentId = await makeAgent(app, adminCookie, "deactivated-bot");
+
+    await database.db
+      .update(humans)
+      .set({ deactivatedAt: sql`now()` })
+      .where(eq(humans.id, admin.id));
+
+    // Call the service directly with the identity a session read before deactivation
+    // would have carried: the transaction rechecks the account and refuses the issuance.
+    const service = createAgentsService({
+      db: database.db,
+      projectAccessCeiling: async () => new Map([[p.id, "manage" as const]]),
+      projectAccessAtLeast: () => true,
+    });
+    await expect(
+      service.issueKey(
+        {
+          humanId: admin.id,
+          email: admin.email,
+          isSystemAdministrator: admin.isSystemAdministrator,
+          emailVerifiedAt: admin.emailVerifiedAt,
+        },
+        {
+          agentId,
+          workspaceId: workspace.id,
+          validity: "90",
+          projects: [{ projectId: p.id, level: "manage" }],
+        },
+      ),
+    ).rejects.toMatchObject({ kind: "workspace_not_found" });
+    expect(await database.db.select().from(agentApiKeys)).toHaveLength(0);
+  });
+
   it("creates an agent, issues a 90-day key by default, and authenticates REST as that agent", async () => {
     const app = await makeApp();
     await bootstrapAdmin(app);

@@ -254,10 +254,10 @@ const acceptWorkspaceInvitation = createRoute({
     400: problem("The token is invalid, expired, or already used"),
     401: problem("Not signed in"),
     403: problem(
-      "The signed-in account has a different or unverified email, or the inviter no longer has authority",
+      "The signed-in account is deactivated, has a different or unverified email, or the inviter no longer has authority",
     ),
     409: problem(
-      "The account is already a member of the workspace, or an offered project no longer belongs to it",
+      "The account is already a member, an offered project left the workspace, or the workspace has no active owner yet",
     ),
   },
 });
@@ -412,6 +412,8 @@ const statusFor = {
   member_not_found: 404,
   last_owner: 409,
   workspace_owner_capability: 409,
+  account_deactivated: 403,
+  ownerless_workspace: 409,
 } as const satisfies Record<WorkspacesErrorKind, number>;
 
 // True when the error's kind is one of the route's kinds. A type guard is the honest
@@ -465,12 +467,14 @@ const declineKinds = ["invitation_invalid"] as const;
 const previewKinds = ["invitation_invalid", "invitation_scope_invalid"] as const;
 const acceptKinds = [
   "not_signed_in",
+  "account_deactivated",
   "invitation_invalid",
   "inviter_not_authorized",
   "invitation_recipient_mismatch",
   "email_unverified",
   "already_member",
   "invitation_scope_invalid",
+  "ownerless_workspace",
 ] as const;
 const registerKinds = [
   "invitation_invalid",

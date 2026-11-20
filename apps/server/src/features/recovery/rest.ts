@@ -41,6 +41,7 @@ const confirmPasswordReset = createRoute({
       content: { "application/json": { schema: RecoveryMessage } },
     },
     400: problem("The request is invalid, or the link is invalid, expired, or already used"),
+    403: problem("The account is deactivated"),
   },
 });
 
@@ -61,7 +62,10 @@ export function createRecoveryRest(service: RecoveryService) {
       const { token, password } = c.req.valid("json");
       return c.json(await service.confirmReset(token, password), 200);
     } catch (error) {
-      if (error instanceof RecoveryError && error.kind === "reset_token_invalid") {
+      if (
+        error instanceof RecoveryError &&
+        (error.kind === "reset_token_invalid" || error.kind === "account_deactivated")
+      ) {
         return failure(c, error);
       }
       throw error;
@@ -72,4 +76,8 @@ export function createRecoveryRest(service: RecoveryService) {
 }
 
 const failure = (c: Context, error: RecoveryError) =>
-  problemResponse(c, { status: 400, code: error.kind, title: error.message });
+  problemResponse(c, {
+    status: error.kind === "account_deactivated" ? 403 : 400,
+    code: error.kind,
+    title: error.message,
+  });

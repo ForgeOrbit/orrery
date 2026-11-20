@@ -584,7 +584,12 @@ export function createInboxService(deps: InboxDeps): InboxService {
           const memberships = await tx
             .select({ workspaceId: workspaceMemberships.workspaceId })
             .from(workspaceMemberships)
-            .where(eq(workspaceMemberships.humanId, humanId));
+            .where(
+              and(
+                eq(workspaceMemberships.humanId, humanId),
+                isNull(workspaceMemberships.suspendedAt),
+              ),
+            );
           const workspaceIds = [
             ...new Set([
               ...personal.map((row) => row.id),

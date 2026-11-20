@@ -566,7 +566,9 @@ export function createInvitationsService({
         const [inviter] = await tx
           .select({ isSystemAdministrator: humans.isSystemAdministrator })
           .from(humans)
-          .where(eq(humans.id, row.invitedByHumanId))
+          // An invitation sent by an administrator deactivated after it was issued cannot
+          // be redeemed (#38): authority is rechecked at redemption, inside this transaction.
+          .where(and(eq(humans.id, row.invitedByHumanId), isNull(humans.deactivatedAt)))
           .limit(1);
         if (inviter?.isSystemAdministrator !== true) {
           throw new InvitationsError("inviter_not_authorized");
