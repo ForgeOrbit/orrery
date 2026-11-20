@@ -358,6 +358,16 @@ function rejection(promise: Promise<unknown>): Promise<unknown> {
   );
 }
 
+// #94: read the persisted issue state, not just the returned view.
+async function issueStatus(issueId: string) {
+  const [row] = await database.db
+    .select({ status: issues.status, closedAt: issues.closedAt })
+    .from(issues)
+    .where(eq(issues.id, issueId));
+  if (row === undefined) throw new Error("missing issue");
+  return row;
+}
+
 describe("work sessions against real Postgres", () => {
   it("claims and stops a session tied to the agent, run, workspace and issue", async () => {
     const f = await bootstrap();
@@ -393,9 +403,9 @@ describe("work sessions against real Postgres", () => {
     expect(stopped).toMatchObject({ status: "completed" });
     expect(stopped.endedAt).not.toBeNull();
     expect(await activeCount(issue.id)).toBe(0);
-    expect(await sessionsService.readyWork({ kind: "agent", identity }, f.projectId)).toEqual([
-      expect.objectContaining({ id: issue.id }),
-    ]);
+    // #94: completing a session is a handoff to review, not a return to the ready queue.
+    expect(await issueStatus(issue.id)).toMatchObject({ status: "review", closedAt: null });
+    expect(await sessionsService.readyWork({ kind: "agent", identity }, f.projectId)).toEqual([]);
   });
 
   it("lets one of two concurrent claims win and enforces the unique index", async () => {
@@ -493,7 +503,7 @@ describe("work sessions against real Postgres", () => {
     const staleWrites = [
       () => projectsService.updateIssue(actor, issue.id, { title: "Stale edit" }),
       () => projectsService.updateIssue(actor, issue.id, { body: "Stale body" }),
-      () => projectsService.updateIssue(actor, issue.id, { status: "closed" }),
+      () => projectsService.updateIssue(actor, issue.id, { status: "done" }),
     ];
     for (const write of staleWrites) {
       const error = await rejection(write());
@@ -512,7 +522,7 @@ describe("work sessions against real Postgres", () => {
     const [row] = await database.db.select().from(issues).where(eq(issues.id, issue.id));
     expect(row?.title).toBe("Fenced issue");
     expect(row?.body).toBe("");
-    expect(row?.status).toBe("open");
+    expect(row?.status).toBe("todo");
     expect(await activeCount(issue.id)).toBe(0);
     expect((await sessionsService.getSession(actor, issue.id)).progress).toBe("before lapse");
 
@@ -755,13 +765,17 @@ describe("work sessions against real Postgres", () => {
         },
       },
       closed.id,
-      { status: "closed" },
+      { status: "done" },
     );
 
     const ready = await sessionsService.readyWork({ kind: "agent", identity }, f.projectId);
     expect(ready.map((item) => item.id)).toEqual([plain.id]);
     await setLease(claimed.id, "statement_timestamp() - interval '1 second'");
+    // #94: a lapsed lease ends the work even with no check-in. Ready work materializes
+    // the expiry itself, so the crashed worker's issue is immediately claimable again.
+    expect((await issueStatus(claimed.id)).status).toBe("in_progress");
     const afterExpiry = await sessionsService.readyWork({ kind: "agent", identity }, f.projectId);
+    expect((await issueStatus(claimed.id)).status).toBe("todo");
     expect(afterExpiry.map((item) => item.id)).toEqual([plain.id, claimed.id]);
   });
 
@@ -785,7 +799,7 @@ describe("work sessions against real Postgres", () => {
     expect(before.map((item) => item.id)).toContain(blocker.id);
     expect(before.map((item) => item.id)).not.toContain(downstream.id);
 
-    await projectsService.updateIssue(human, blocker.id, { status: "closed" });
+    await projectsService.updateIssue(human, blocker.id, { status: "done" });
     const after = await sessionsService.readyWork({ kind: "agent", identity }, f.projectId);
     expect(after.map((item) => item.id)).toContain(downstream.id);
 
@@ -794,6 +808,30 @@ describe("work sessions against real Postgres", () => {
     await projectsService.removeBlockedBy(human, downstream.id, blocker.id);
     const afterRemoval = await sessionsService.readyWork({ kind: "agent", identity }, f.projectId);
     expect(afterRemoval.map((item) => item.id)).toContain(downstream.id);
+  });
+
+  it("unblocks a dependent when its blocker is cancelled, but not when it is in review", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const agent = { kind: "agent" as const, identity };
+    const blocker = await humanIssue(f, "Cancelled prerequisite");
+    const downstream = await humanIssue(f, "Downstream of cancelled");
+    await projectsService.addBlockedBy(humanActor(f), downstream.id, {
+      blockedByIssueId: blocker.id,
+    });
+
+    // Review is a non-terminal handoff and still blocks.
+    await projectsService.updateIssue(humanActor(f), blocker.id, { status: "review" });
+    expect((await sessionsService.readyWork(agent, f.projectId)).map((i) => i.id)).not.toContain(
+      downstream.id,
+    );
+
+    // Cancelling is terminal: it sets closed_at and frees the dependent immediately.
+    await projectsService.updateIssue(humanActor(f), blocker.id, { status: "cancelled" });
+    expect((await issueStatus(blocker.id)).closedAt).not.toBeNull();
+    expect((await sessionsService.readyWork(agent, f.projectId)).map((i) => i.id)).toContain(
+      downstream.id,
+    );
   });
 
   it("orders ready work by priority, then sortOrder, then createdAt", async () => {
@@ -1147,7 +1185,7 @@ describe("work sessions against real Postgres", () => {
       () => sessionsService.progress(stale, issue.id, "Stale overwrite"),
       () => sessionsService.stop(stale, issue.id, "completed"),
       () => projectsService.updateIssue(stale, issue.id, { title: "Stale title" }),
-      () => projectsService.updateIssue(stale, issue.id, { status: "closed" }),
+      () => projectsService.updateIssue(stale, issue.id, { status: "done" }),
     ]) {
       const error = await rejection(operation());
       expect(errorKind(error)).toBe("session_required");
@@ -1156,7 +1194,8 @@ describe("work sessions against real Postgres", () => {
     expect(await activeCount(issue.id)).toBe(1);
     const [row] = await database.db.select().from(issues).where(eq(issues.id, issue.id));
     expect(row?.title).toBe("Contested issue");
-    expect(row?.status).toBe("open");
+    // #94: the replacement worker's claim moved the issue to in_progress.
+    expect(row?.status).toBe("in_progress");
     // The original progress lives on its expired session; the replacement has none.
     const history = await sessionsService.listSessions(current, issue.id);
     expect(history).toEqual(
@@ -1254,7 +1293,7 @@ describe("work sessions against real Postgres", () => {
         },
       },
       issue.id,
-      { status: "closed" },
+      { status: "done" },
     );
     const blocked = await rejection(sessionsService.reacquire(actor, { issueId: issue.id, runId }));
     expect(errorKind(blocked)).toBe("issue_blocked");
@@ -1272,7 +1311,7 @@ describe("work sessions against real Postgres", () => {
         },
       },
       issue.id,
-      { status: "open" },
+      { status: "todo" },
     );
     await expect(
       sessionsService.reacquire(actor, { issueId: issue.id, runId }),
@@ -2199,6 +2238,116 @@ describe("agent assignment and the ready queue (#84)", () => {
     expect(rest.status).toBe(200);
     const rows = IssuesResponse.parse(await rest.json());
     expect(rows.map((row) => row.id)).toEqual([mineUrgent.id, mineLow.id]);
+  });
+
+  // #94: the six-state workflow is driven by the work-session lifecycle. Every write
+  // below is asserted against the issue row in the same real Postgres instance.
+  it("moves todo -> in_progress on claim and back on release or lease expiry", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const agent = { kind: "agent" as const, identity };
+    const issue = await humanIssue(f, "Workflow claim");
+    expect((await issueStatus(issue.id)).status).toBe("todo");
+
+    const run = await newRun(identity);
+    await sessionsService.claim(agent, { issueId: issue.id, runId: run });
+    expect((await issueStatus(issue.id)).status).toBe("in_progress");
+
+    await sessionsService.stop(agent, issue.id, "released");
+    expect((await issueStatus(issue.id)).status).toBe("todo");
+
+    // A five-minute lease lapse is materialized on the next check-in; it returns the
+    // issue to the ready queue even when the operation that noticed it is refused.
+    await sessionsService.claim(agent, { issueId: issue.id, runId: run });
+    await setLease(issue.id, "statement_timestamp() - interval '1 second'");
+    await rejection(sessionsService.renew(agent, issue.id));
+    expect((await issueStatus(issue.id)).status).toBe("todo");
+    expect((await sessionsService.readyWork(agent, f.projectId)).map((i) => i.id)).toContain(
+      issue.id,
+    );
+  });
+
+  it("completes to review by default and to done when asked, unblocking dependents only on done", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const agent = { kind: "agent" as const, identity };
+    const blocked = await humanIssue(f, "Blocked dependent");
+    const blocker = await humanIssue(f, "Blocking task");
+    await projectsService.addBlockedBy(humanActor(f), blocked.id, {
+      blockedByIssueId: blocker.id,
+    });
+    expect((await sessionsService.readyWork(agent, f.projectId)).map((i) => i.id)).not.toContain(
+      blocked.id,
+    );
+
+    // Default completion is a non-terminal handoff. closedAt stays null and the
+    // dependent remains blocked while the blocker sits in review.
+    await sessionsService.claim(agent, { issueId: blocker.id, runId: await newRun(identity) });
+    await sessionsService.stop(agent, blocker.id, "completed");
+    expect(await issueStatus(blocker.id)).toMatchObject({ status: "review", closedAt: null });
+    expect((await sessionsService.readyWork(agent, f.projectId)).map((i) => i.id)).not.toContain(
+      blocked.id,
+    );
+
+    // Close the first blocker too; review is non-terminal and still blocks.
+    await projectsService.updateIssue(humanActor(f), blocker.id, { status: "done" });
+
+    // An explicit done outcome closes a blocker and unblocks the dependent.
+    const doneIssue = await humanIssue(f, "Closed directly");
+    await projectsService.addBlockedBy(humanActor(f), blocked.id, {
+      blockedByIssueId: doneIssue.id,
+    });
+    await sessionsService.claim(agent, { issueId: doneIssue.id, runId: await newRun(identity) });
+    await sessionsService.stop(agent, doneIssue.id, "done");
+    expect((await issueStatus(doneIssue.id)).status).toBe("done");
+    expect((await issueStatus(doneIssue.id)).closedAt).not.toBeNull();
+    expect((await sessionsService.readyWork(agent, f.projectId)).map((i) => i.id)).toContain(
+      blocked.id,
+    );
+  });
+
+  it("answers a REST claim on a non-todo issue with 409 issue_blocked", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const runId = await newRun(identity);
+    const backlog = await humanIssue(f, "Triage queue");
+    await projectsService.updateIssue(humanActor(f), backlog.id, { status: "backlog" });
+    const review = await humanIssue(f, "Handoff");
+    await projectsService.updateIssue(humanActor(f), review.id, { status: "review" });
+
+    for (const issue of [backlog, review]) {
+      const res = await postJson(
+        `/api/issues/${issue.id}/work-sessions`,
+        { runId },
+        undefined,
+        f.secret,
+      );
+      expect(res.status).toBe(409);
+      expect(res.headers.get("content-type")).toBe("application/problem+json");
+      expect(Problem.parse(await res.json())).toMatchObject({
+        status: 409,
+        code: "issue_blocked",
+      });
+    }
+  });
+
+  it("offers only todo issues, and reacquisition returns an expired issue to in_progress", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const agent = { kind: "agent" as const, identity };
+    const ready = await humanIssue(f, "Ready");
+    const backlog = await humanIssue(f, "Backlog");
+    await projectsService.updateIssue(humanActor(f), backlog.id, { status: "backlog" });
+
+    const visible = (await sessionsService.readyWork(agent, f.projectId)).map((i) => i.id);
+    expect(visible).toContain(ready.id);
+    expect(visible).not.toContain(backlog.id);
+
+    const run = await newRun(identity);
+    await sessionsService.claim(agent, { issueId: ready.id, runId: run });
+    await setLease(ready.id, "statement_timestamp() - interval '1 second'");
+    await sessionsService.reacquire(agent, { issueId: ready.id, runId: run });
+    expect((await issueStatus(ready.id)).status).toBe("in_progress");
   });
 });
 

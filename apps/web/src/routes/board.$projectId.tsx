@@ -11,11 +11,10 @@ import {
 } from "../features/projects/index.ts";
 import { activeSessionsQuery } from "../features/work-sessions/index.ts";
 
-// #84: a project Kanban board over Orrery's fixed workflow. IssueStatus stays open/closed;
-// columns are derived during render from existing state, never from a new database enum:
-// closed -> Done, Needs input -> its own column, a live session -> In progress, a reserved
-// or prioritised issue -> Todo, the rest -> Backlog. Review is reserved for the handoff
-// slice and stays empty until sessions can report it. No effect: every value is derived.
+// #84/#94: a project Kanban board over Orrery's fixed six-state workflow. Each column
+// maps to the issue's own status; Needs input is an orthogonal flag derived from questions
+// and takes precedence over the status column, and a live session keeps a card in
+// In progress. No effect: every value is derived during render.
 const COLUMNS = ["Backlog", "Todo", "In progress", "Needs input", "Review", "Done"] as const;
 type BoardColumn = (typeof COLUMNS)[number];
 
@@ -83,11 +82,14 @@ function BoardPage() {
 }
 
 function columnFor(issue: Issue, sessions: readonly ActiveWorkSession[]): BoardColumn {
-  if (issue.status === "closed") return "Done";
+  if (issue.status === "done" || issue.status === "cancelled") return "Done";
   if (issue.needsInput) return "Needs input";
-  if (sessions.some((session) => session.issueId === issue.id)) return "In progress";
-  if (issue.assignee !== null || issue.priority !== "none") return "Todo";
-  return "Backlog";
+  if (issue.status === "in_progress" || sessions.some((session) => session.issueId === issue.id)) {
+    return "In progress";
+  }
+  if (issue.status === "review") return "Review";
+  if (issue.status === "backlog") return "Backlog";
+  return "Todo";
 }
 
 function BoardCard({

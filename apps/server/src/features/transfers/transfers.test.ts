@@ -424,10 +424,12 @@ afterEach(async () => {
     await tx.execute(sql`delete from run_children`);
     await tx.execute(sql`delete from run_model_changes`);
     await tx.execute(sql`delete from runs`);
+    // #94: completing a session now records agent-attributed project activity, so the
+    // activity rows must go before the agents they name.
+    await tx.execute(sql`delete from project_activity`);
     await tx.execute(sql`delete from agents`);
     await tx.execute(sql`delete from project_access_events`);
     await tx.execute(sql`delete from project_access_grants`);
-    await tx.execute(sql`delete from project_activity`);
     await tx.execute(sql`delete from knowledge_entries`);
     await tx.execute(sql`delete from issue_comments`);
     await tx.execute(sql`delete from issues`);

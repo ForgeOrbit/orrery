@@ -140,7 +140,7 @@ test("enforces the direct-request matrix for every level", async () => {
   const readDenials = [
     await memberApi.post(`/api/projects/${projectId}/issues`, { data: { title: "No" } }),
     await memberApi.patch(`/api/issues/${requiredText(field(issue, "id"), "the issue id")}`, {
-      data: { status: "closed" },
+      data: { status: "done" },
     }),
     await memberApi.post(
       `/api/issues/${requiredText(field(issue, "id"), "the issue id")}/comments`,
@@ -178,12 +178,10 @@ test("enforces the direct-request matrix for every level", async () => {
     ).status(),
   ).toBe(200);
   expect(
-    (
-      await memberApi.patch(`/api/issues/${memberIssueId}`, { data: { status: "closed" } })
-    ).status(),
+    (await memberApi.patch(`/api/issues/${memberIssueId}`, { data: { status: "done" } })).status(),
   ).toBe(200);
   expect(
-    (await memberApi.patch(`/api/issues/${memberIssueId}`, { data: { status: "open" } })).status(),
+    (await memberApi.patch(`/api/issues/${memberIssueId}`, { data: { status: "todo" } })).status(),
   ).toBe(200);
   expect(
     (

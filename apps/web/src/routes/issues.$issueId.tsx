@@ -291,7 +291,9 @@ function Blockers({
                 #{blocker.number} {blocker.title}
               </Link>{" "}
               · {blocker.status}
-              {blocker.status !== "closed" ? " — open, not ready" : ""}
+              {blocker.status === "done" || blocker.status === "cancelled"
+                ? ""
+                : " — not terminal, still blocking"}
               {canContribute && (
                 <button
                   type="button"
@@ -347,12 +349,15 @@ function Blockers({
 }
 
 // Closing and reopening are one transition on the issue; the button follows the status
-// the server returned, not a local guess.
+// the server returned, not a local guess. #94's terminal states are done and cancelled;
+// every other status is "open work" for this simple control (the full six-state workflow
+// is available over REST and MCP).
 function IssueStatusButton({ issue }: { issue: Issue }) {
   const queryClient = useQueryClient();
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
-  const next = issue.status === "open" ? "closed" : "open";
+  const isClosed = issue.status === "done" || issue.status === "cancelled";
+  const next = isClosed ? "todo" : "done";
 
   async function onToggle() {
     setSubmitting(true);
@@ -378,7 +383,7 @@ function IssueStatusButton({ issue }: { issue: Issue }) {
     <section>
       {error !== undefined && <p role="alert">{error}</p>}
       <button type="button" onClick={() => void onToggle()} disabled={submitting}>
-        {next === "closed" ? "Close issue" : "Reopen issue"}
+        {next === "done" ? "Close issue" : "Reopen issue"}
       </button>
     </section>
   );

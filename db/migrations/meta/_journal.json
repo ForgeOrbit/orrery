@@ -253,6 +253,13 @@
       "when": 1795212270100,
       "tag": "0035_aspiring_lyja",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1795212353313,
+      "tag": "0036_tan_firebrand",
+      "breakpoints": true
     }
   ]
 }

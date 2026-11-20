@@ -1025,7 +1025,7 @@ describe("fallback deadline and late answers against real Postgres", () => {
     await sessions.renew({ kind: "agent", identity: f.identity }, issue.id);
 
     // Work already proceeded with the fallback; the issue was closed afterwards.
-    await projectsService.updateIssue(await humanActor(f), issue.id, { status: "closed" });
+    await projectsService.updateIssue(await humanActor(f), issue.id, { status: "done" });
     const late = await inbox.answer(await humanActor(f), question.id, "Use v2 after all");
 
     expect(late.status).toBe("fallback_used");
@@ -1036,7 +1036,7 @@ describe("fallback deadline and late answers against real Postgres", () => {
     expect(late.followUpAt).not.toBeNull();
     expect((await questionOf(question.id))?.status).toBe("fallback_used");
     expect(await isNeedsInput(issue.id)).toBe(false);
-    expect((await projectsService.getIssue(await humanActor(f), issue.id)).status).toBe("closed");
+    expect((await projectsService.getIssue(await humanActor(f), issue.id)).status).toBe("done");
     expect(await activityTypes(f.projectId)).toContain("issue_question_follow_up");
 
     // A second answer cannot overwrite the first follow-up.
@@ -1196,5 +1196,67 @@ describe("fallback deadline and late answers against real Postgres", () => {
     )[0];
     expect(fromHistory?.status).toBe("fallback_used");
     expect(fromHistory?.authorizedFallback).toBe("Use v1");
+  });
+
+  // #94: a work session that ends without completing the work must never leave an
+  // in_progress issue behind, and answering the question must return it to ready work.
+  it("reverts an in_progress issue to todo at the require_human pause and re-offers it when answered", async () => {
+    const f = await bootstrap();
+    const issue = await newIssue(f, "Paused work");
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    await ask(f, issue.id, runId);
+    expect((await projectsService.getIssue(await humanActor(f), issue.id)).status).toBe(
+      "in_progress",
+    );
+
+    // The 1h deadline pauses a require_human question, releases the claim and returns the
+    // issue to todo while Needs input keeps it out of the ready queue.
+    const question = (await inbox.list(await humanActor(f)))[0];
+    if (question === undefined) throw new Error("the question was not found");
+    await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
+    expect(
+      errorKindOf(await refused(sessions.renew({ kind: "agent", identity: f.identity }, issue.id))),
+    ).toBe("session_required");
+    expect((await questionOf(question.id))?.status).toBe("paused");
+    expect((await projectsService.getIssue(await humanActor(f), issue.id)).status).toBe("todo");
+    expect(await isNeedsInput(issue.id)).toBe(true);
+    expect(
+      (await sessions.readyWork(await humanActor(f), f.projectId)).map((i) => i.id),
+    ).not.toContain(issue.id);
+
+    // Answering the paused question clears Needs input; the issue is already todo, so it
+    // appears in ready work without ever sitting stranded in in_progress.
+    await inbox.answer(await humanActor(f), question.id, "Use v2");
+    expect(await isNeedsInput(issue.id)).toBe(false);
+    expect((await projectsService.getIssue(await humanActor(f), issue.id)).status).toBe("todo");
+    expect((await sessions.readyWork(await humanActor(f), f.projectId)).map((i) => i.id)).toContain(
+      issue.id,
+    );
+  });
+
+  it("reverts an in_progress issue to todo when answering after the claim lease lapsed", async () => {
+    const f = await bootstrap();
+    const issue = await newIssue(f, "Lapsed claim");
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const question = await ask(f, issue.id, runId);
+    expect((await projectsService.getIssue(await humanActor(f), issue.id)).status).toBe(
+      "in_progress",
+    );
+
+    // Only the five-minute claim lease lapses; the one-hour question deadline has not,
+    // so evaluateDeadline is a no-op and the question is still open.
+    await database.db.execute(
+      sql`update work_sessions set lease_expires_at = statement_timestamp() - interval '1 second' where issue_id = ${issue.id}`,
+    );
+    const answered = await inbox.answer(await humanActor(f), question.id, "Use v2");
+    expect(answered.status).toBe("answered");
+    expect(await isNeedsInput(issue.id)).toBe(false);
+    expect((await projectsService.getIssue(await humanActor(f), issue.id)).status).toBe("todo");
+    expect(await activeSessions(issue.id)).toBe(0);
+    expect((await sessions.readyWork(await humanActor(f), f.projectId)).map((i) => i.id)).toContain(
+      issue.id,
+    );
   });
 });

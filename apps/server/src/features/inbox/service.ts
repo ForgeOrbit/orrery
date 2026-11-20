@@ -410,10 +410,17 @@ const evaluateDeadline: InboxService["evaluateDeadline"] = async (tx, issueId) =
         gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
       ),
     );
+  // #94: the claim ended without completion, so the issue returns to todo under this
+  // locked transaction. Needs input stays set until a human answers, which keeps a paused
+  // issue out of list_ready_work without ever stranding it in in_progress.
   await tx
     .update(issues)
     .set({ needsInput: true, updatedAt: sql`statement_timestamp()` })
     .where(eq(issues.id, issueId));
+  await tx
+    .update(issues)
+    .set({ status: "todo", updatedAt: sql`statement_timestamp()` })
+    .where(and(eq(issues.id, issueId), eq(issues.status, "in_progress")));
   await recordActivity(tx, {
     projectId: paused.projectId,
     issueId,
@@ -471,7 +478,10 @@ export function createInboxService(deps: InboxDeps): InboxService {
           )
           .limit(1);
         if (run === undefined) throw new InboxError("run_not_found");
-        if (issue.status !== "open") throw new InboxError("question_not_open");
+        // #94: an ask belongs to work in progress on a live session. The session check
+        // below is the authoritative liveness gate; this guard keeps a terminal, review
+        // or triage issue from gaining a question.
+        if (issue.status !== "in_progress") throw new InboxError("question_not_open");
         const [session] = await tx
           .select({ id: workSessions.id })
           .from(workSessions)
@@ -661,6 +671,41 @@ export function createInboxService(deps: InboxDeps): InboxService {
           .update(issues)
           .set({ needsInput: false, updatedAt: sql`statement_timestamp()` })
           .where(eq(issues.id, issue.id));
+        // #94: the one-hour deadline is not the only way a claim can end. A five-minute
+        // lease can lapse while the question is still open (so evaluateDeadline was a
+        // no-op). Answering must not leave a live issue stranded in in_progress with no
+        // worker: expire the lapsed claim and return it to todo under this issue lock.
+        const [liveClaim] = await tx
+          .select({ id: workSessions.id })
+          .from(workSessions)
+          .where(
+            and(
+              eq(workSessions.issueId, issue.id),
+              eq(workSessions.status, "active"),
+              gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
+            ),
+          )
+          .limit(1);
+        if (liveClaim === undefined) {
+          await tx
+            .update(workSessions)
+            .set({
+              status: "expired",
+              endedAt: sql`statement_timestamp()`,
+              updatedAt: sql`statement_timestamp()`,
+            })
+            .where(
+              and(
+                eq(workSessions.issueId, issue.id),
+                eq(workSessions.status, "active"),
+                lte(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
+              ),
+            );
+          await tx
+            .update(issues)
+            .set({ status: "todo", updatedAt: sql`statement_timestamp()` })
+            .where(and(eq(issues.id, issue.id), eq(issues.status, "in_progress")));
+        }
         await recordActivity(tx, {
           projectId: issue.projectId,
           issueId: issue.id,

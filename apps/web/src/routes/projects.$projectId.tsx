@@ -55,6 +55,7 @@ const activityLabels: Record<ProjectActivityType, string> = {
   issue_created: "opened issue",
   issue_edited: "edited issue",
   issue_commented: "commented on issue",
+  issue_review_handoff: "handed issue off for review",
   issue_closed: "closed issue",
   issue_reopened: "reopened issue",
   issue_dependency_added: "added a blocker to issue",

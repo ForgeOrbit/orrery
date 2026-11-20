@@ -4,6 +4,7 @@ import {
   SessionActivityKind,
   type AgentIdentity,
   type SessionTelemetry,
+  type StopOutcome,
 } from "@orrery/contract";
 import { sessionTools } from "@orrery/contract";
 import { isAgentError, type AgentAuthenticator } from "../agents/index.ts";
@@ -34,6 +35,13 @@ const telemetry = (args: Args): SessionTelemetry | undefined => {
   if (typeof args.costUsdMicros === "number") reported.costUsdMicros = args.costUsdMicros;
   return Object.keys(reported).length === 0 ? undefined : reported;
 };
+
+// #94: the validated tool argument is one of completed/released/review/done. A missing
+// value means the default completion (review handoff), matching the shared contract.
+const stopOutcome = (args: Args): StopOutcome =>
+  args.outcome === "released" || args.outcome === "done" || args.outcome === "review"
+    ? args.outcome
+    : "completed";
 
 // The tool's input schema already validated the detail; this narrows the parsed `unknown`
 // to the service's type without a second parser or an unchecked assertion. The kind uses
@@ -72,7 +80,9 @@ export function createSessionsMcp(service: SessionsService, authenticate: AgentA
       session: await service.stop(
         { kind: "agent", identity },
         str(args.issueId, "issueId"),
-        args.outcome === "released" ? "released" : "completed",
+        // The tool's input schema has already validated the outcome; keep the legacy
+        // "completed" spelling as the default review handoff.
+        stopOutcome(args),
         sessionFence(args),
         telemetry(args),
       ),

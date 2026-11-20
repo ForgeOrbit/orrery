@@ -263,7 +263,7 @@ describe("projects", () => {
     expect(issue).toMatchObject({
       projectId: project.id,
       number: 1,
-      status: "open",
+      status: "todo",
       createdBy: { humanId: admin.id, email: EMAIL },
       updatedBy: { humanId: admin.id, email: EMAIL },
       closedAt: null,
@@ -283,7 +283,7 @@ describe("projects", () => {
       await postJson(app, `/api/projects/${project.id}/issues`, { title: "No" }),
       await postJson(app, `/api/issues/${issue.id}/comments`, { body: "No" }),
       await postJson(app, `/api/projects/${project.id}/knowledge`, { title: "No" }),
-      await patchJson(app, `/api/issues/${issue.id}`, { status: "closed" }),
+      await patchJson(app, `/api/issues/${issue.id}`, { status: "done" }),
       await patchJson(app, `/api/knowledge/${randomUUID()}`, { title: "No" }),
     ];
     for (const res of anonymous) {
@@ -313,7 +313,7 @@ describe("projects", () => {
       number: 1,
       title: "Write the release notes",
       body: "Draft the **release notes** for the next version.",
-      status: "open",
+      status: "todo",
       createdByHumanId: admin.id,
       updatedByHumanId: admin.id,
       closedAt: null,
@@ -331,7 +331,7 @@ describe("projects", () => {
     expect(editedIssue).toMatchObject({
       title: "Write the final release notes",
       body: "Final **release notes**.",
-      status: "open",
+      status: "todo",
       createdBy: { humanId: admin.id, email: EMAIL },
       updatedBy: { humanId: admin.id, email: EMAIL },
     });
@@ -365,12 +365,12 @@ describe("projects", () => {
     const closed = await patchJson(
       app,
       `/api/issues/${created.id}`,
-      { status: "closed" },
+      { status: "done" },
       adminCookie,
     );
     expect(closed.status).toBe(200);
     const closedIssue = Issue.parse(await closed.json());
-    expect(closedIssue.status).toBe("closed");
+    expect(closedIssue.status).toBe("done");
     expect(closedIssue.closedAt).not.toBeNull();
     const closedAt = closedIssue.closedAt;
 
@@ -382,30 +382,30 @@ describe("projects", () => {
     );
     expect(editedWhileClosed.status).toBe(200);
     const stillClosed = Issue.parse(await editedWhileClosed.json());
-    expect(stillClosed.status).toBe("closed");
+    expect(stillClosed.status).toBe("done");
     expect(stillClosed.closedAt).toBe(closedAt);
 
     // Reopen: closedAt is cleared.
     const reopened = await patchJson(
       app,
       `/api/issues/${created.id}`,
-      { status: "open" },
+      { status: "todo" },
       adminCookie,
     );
     expect(reopened.status).toBe(200);
     const reopenedIssue = Issue.parse(await reopened.json());
-    expect(reopenedIssue.status).toBe("open");
+    expect(reopenedIssue.status).toBe("todo");
     expect(reopenedIssue.closedAt).toBeNull();
 
     // A repeated close is a no-op: no new event, no changed timestamp.
     const closeAgain = await patchJson(
       app,
       `/api/issues/${created.id}`,
-      { status: "open" },
+      { status: "todo" },
       adminCookie,
     );
     expect(closeAgain.status).toBe(200);
-    expect(Issue.parse(await closeAgain.json()).status).toBe("open");
+    expect(Issue.parse(await closeAgain.json()).status).toBe("todo");
 
     // The activity feed has one event per real change, in order, each with its actor.
     const activity = await activityFor(app, adminCookie, project.id);
@@ -443,7 +443,7 @@ describe("projects", () => {
     expect(Issue.parse(await fetched.json())).toMatchObject({
       title: "Write the final release notes",
       body: "An addendum while closed.",
-      status: "open",
+      status: "todo",
       createdBy: { humanId: admin.id },
       updatedBy: { humanId: admin.id },
     });
@@ -553,7 +553,7 @@ describe("projects", () => {
           insert into issues
             (id, project_id, number, title, status, priority, sort_order, created_by_human_id, updated_by_human_id)
           values
-            (${randomUUID()}, ${project.id}, 99, 'Bypass', 'open', 'critical', 1, ${writerId}, ${writerId})
+            (${randomUUID()}, ${project.id}, 99, 'Bypass', 'todo', 'critical', 1, ${writerId}, ${writerId})
         `),
       ),
     ).toContain("issues_priority");
@@ -571,7 +571,7 @@ describe("projects", () => {
             insert into issues
               (id, project_id, number, title, status, priority, sort_order, created_by_human_id, updated_by_human_id)
             values
-              (${randomUUID()}, ${project.id}, 98, 'Non-finite', 'open', 'none', ${sql.raw(nonFinite)}, ${writerId}, ${writerId})
+              (${randomUUID()}, ${project.id}, 98, 'Non-finite', 'todo', 'none', ${sql.raw(nonFinite)}, ${writerId}, ${writerId})
           `),
         ),
       ).toContain("issues_sort_order_finite");
@@ -843,9 +843,9 @@ describe("projects", () => {
 
     // Race a close with a title edit and a second close on the same issue.
     const [close1, editTitle, close2] = await Promise.all([
-      patchJson(app, `/api/issues/${issue.id}`, { status: "closed" }, adminCookie),
+      patchJson(app, `/api/issues/${issue.id}`, { status: "done" }, adminCookie),
       patchJson(app, `/api/issues/${issue.id}`, { title: "Updated title" }, adminCookie),
-      patchJson(app, `/api/issues/${issue.id}`, { status: "closed" }, adminCookie),
+      patchJson(app, `/api/issues/${issue.id}`, { status: "done" }, adminCookie),
     ]);
     expect(close1.status).toBe(200);
     expect(editTitle.status).toBe(200);
@@ -855,7 +855,7 @@ describe("projects", () => {
     expect(finalRes.status).toBe(200);
     expect(await finalRes.json()).toMatchObject({
       title: "Updated title",
-      status: "closed",
+      status: "done",
     });
 
     const activity = await activityFor(app, adminCookie, project.id);
@@ -1340,5 +1340,58 @@ describe("projects", () => {
     const after = await activityFor(app, adminCookie, project.id);
     expect(after.length).toBe(before.length);
     expect(after.filter((entry) => entry.type === "issue_edited")).toHaveLength(1);
+  });
+
+  // #94: new work is ready work by default; backlog is the explicit triage queue.
+  it("defaults new issues to todo, allows backlog at creation, and enforces the six-state closedAt invariant", async () => {
+    const { app, adminCookie, workspaceId } = await readyApp();
+    const project = await createProject(app, adminCookie, workspaceId, "Workflow");
+
+    const ready = await createIssue(app, adminCookie, project.id, { title: "Ready" });
+    expect(ready).toMatchObject({ status: "todo", closedAt: null });
+
+    const staged = await createIssue(app, adminCookie, project.id, {
+      title: "Staged",
+      status: "backlog",
+    });
+    expect(staged).toMatchObject({ status: "backlog", closedAt: null });
+
+    // Both terminal states set closedAt; every other state clears it.
+    const done = await patchJson(app, `/api/issues/${ready.id}`, { status: "done" }, adminCookie);
+    expect(done.status).toBe(200);
+    const doneIssue = Issue.parse(await done.json());
+    expect(doneIssue).toMatchObject({ status: "done" });
+    expect(doneIssue.closedAt).not.toBeNull();
+
+    const reopened = await patchJson(
+      app,
+      `/api/issues/${ready.id}`,
+      { status: "todo" },
+      adminCookie,
+    );
+    expect(Issue.parse(await reopened.json())).toMatchObject({ status: "todo", closedAt: null });
+
+    const cancelled = await patchJson(
+      app,
+      `/api/issues/${ready.id}`,
+      { status: "cancelled" },
+      adminCookie,
+    );
+    expect(Issue.parse(await cancelled.json()).closedAt).not.toBeNull();
+
+    // The database rejects an unknown status and a terminal status without closedAt.
+    const probe = await createIssue(app, adminCookie, project.id, { title: "Constraint probe" });
+    expect(
+      await rejection(
+        database.db.execute(sql`update issues set status = 'not_a_status' where id = ${probe.id}`),
+      ),
+    ).toContain("issues_status");
+    expect(
+      await rejection(
+        database.db.execute(
+          sql`update issues set status = 'done', closed_at = null where id = ${probe.id}`,
+        ),
+      ),
+    ).toContain("issues_closed_at_matches_status");
   });
 });

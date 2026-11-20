@@ -183,7 +183,7 @@ async function insertActiveClaim(
         number: 1,
         title: "A task",
         body: "",
-        status: "open",
+        status: "todo",
         sortOrder: 65535,
         createdByHumanId,
         updatedByHumanId: createdByHumanId,
@@ -335,7 +335,7 @@ describe("account deactivation and reactivation (#38)", () => {
     );
     expect(session.status).toBe(WorkSessionStatus.enum.released);
     const issue = one(await database.db.select().from(issues).where(eq(issues.id, claimed.id)));
-    expect(issue.status).toBe("open");
+    expect(issue.status).toBe("todo");
 
     // The author is still named and attributed; the display marks them deactivated instead
     // of falling back to an "unknown" label (#38).

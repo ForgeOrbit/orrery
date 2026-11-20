@@ -1626,8 +1626,12 @@
       "IssueStatus": {
         "type": "string",
         "enum": [
-          "open",
-          "closed"
+          "backlog",
+          "todo",
+          "in_progress",
+          "review",
+          "done",
+          "cancelled"
         ]
       },
       "IssuePriority": {
@@ -1712,6 +1716,9 @@
           },
           "body": {
             "$ref": "#/components/schemas/IssueBody"
+          },
+          "status": {
+            "$ref": "#/components/schemas/IssueStatus"
           },
           "priority": {
             "$ref": "#/components/schemas/IssuePriority"
@@ -2090,6 +2097,7 @@
           "issue_created",
           "issue_edited",
           "issue_commented",
+          "issue_review_handoff",
           "issue_closed",
           "issue_reopened",
           "issue_dependency_added",
@@ -2818,8 +2826,14 @@
         "enum": [
           "completed",
           "released"
-        ],
-        "default": "completed"
+        ]
+      },
+      "WorkCompletionOutcome": {
+        "type": "string",
+        "enum": [
+          "review",
+          "done"
+        ]
       },
       "ResumeWorkSessionResult": {
         "type": "object",
@@ -8679,7 +8693,7 @@
             }
           },
           "409": {
-            "description": "The issue is assigned to a human or another agent, or another worker holds it",
+            "description": "The issue is not ready work (todo), is assigned to another worker, or another worker holds it",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -9031,7 +9045,15 @@
                     "minimum": 0
                   },
                   "outcome": {
-                    "$ref": "#/components/schemas/WorkSessionOutcome"
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/WorkSessionOutcome"
+                      },
+                      {
+                        "$ref": "#/components/schemas/WorkCompletionOutcome"
+                      }
+                    ],
+                    "default": "completed"
                   },
                   "sessionId": {
                     "type": "string",

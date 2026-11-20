@@ -349,6 +349,13 @@ export function createDeactivationService({ db }: DeactivationDeps): Deactivatio
                 ),
               ),
             );
+          // #94: a released claim is work ending without completion. Under the same
+          // issue locks, return any in_progress issue to the ready queue; the guard
+          // leaves work that completed in the meantime untouched.
+          await tx
+            .update(issues)
+            .set({ status: "todo", updatedAt: sql`statement_timestamp()` })
+            .where(and(inArray(issues.id, issueIds), eq(issues.status, "in_progress")));
         }
 
         // 7. One secret-free event so administrators can inspect the change in history.
