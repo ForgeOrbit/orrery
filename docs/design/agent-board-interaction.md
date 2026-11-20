@@ -56,10 +56,19 @@ Plane maintains a dedicated link/mention log (`PageLog`) for forward links, back
 - When a knowledge entry (vault doc) is created or updated, parse its `[[wikilinks]]` and issue references into a normalized Postgres link table (`knowledge_links`) within the same transaction.
 - Use this index for instant backlink lists on docs, "linked docs" panels on issues, and broken-link detection, without adding an external search or graph database.
 
+## 5. Agent-ready queue primitives (blocking, ordering, links)
+
+Three small data-model primitives from Plane directly improve autonomous agent execution without adding Agile ceremony:
+
+- **Blocking dependencies (`blocked_by`, M2 #3 / M3 #4):** Store directed `issue_dependencies(issue_id, blocked_by_issue_id)` edges (preventing self-links and cycles). `list_ready_work` excludes any issue that has an open blocker, so agents never claim downstream work prematurely.
+- **Priority and float `sort_order` (M2 #3 / M4 #5):** Add `priority` (`urgent | high | medium | low | none`) and a floating-point `sort_order` to `issues`. Dragging a card on the board updates one row, and `list_ready_work` orders ready issues deterministically (assigned-to-self first, then priority, then `sort_order`).
+- **Structured `issue_links` (M2 #3 / M6 #7):** Store external links (`url`, `title`, `kind: pr | commit | doc | link`) in a dedicated `issue_links` table so agents and humans attach PRs and branches cleanly over REST and MCP instead of burying URLs in Markdown comments.
+
 ## Explicitly deferred (post-MVP)
 
 - **`@mention` comment triggers and outbound webhooks:** For local agents running on laptops, `@mentioning` an offline agent in a comment creates a broken expectation ("I mentioned it and nothing happened"), and reliable webhooks require SSRF validation, HMAC signing, retry queues, and delivery logs. Revisit only when hosted/always-on remote agents are in scope.
 - **Custom project workflows / state groups:** Plane's `StateGroup` model supports arbitrary custom states per project. For MVP, Orrery's fixed workflow (`Backlog → Todo → In progress → Needs input → Review → Done`) is a deliberate advantage for agents because every project exposes predictable state transitions without per-project state discovery.
+- **Human-centric PM ceremony:** Cycles (sprints), modules, external intake portals, saved rich-filter views (deferred to v1.1 #15), estimates/story points, draft issues, reactions, votes, stickies, and CRDT live servers stay out of MVP.
 
 ## Related issues
 
@@ -67,4 +76,4 @@ Plane maintains a dedicated link/mention log (`PageLog`) for forward links, back
 - [#5 — M4: Board, agents panel and needs-input inbox](https://github.com/forge-orbit/orrery/issues/5)
 - [#6 — M5: Shared vault](https://github.com/forge-orbit/orrery/issues/6)
 - [#15 — Agent-customizable UI and rich content](https://github.com/forge-orbit/orrery/issues/15)
-- Delivery slices: [#82](https://github.com/forge-orbit/orrery/issues/82) (human stop signal), [#83](https://github.com/forge-orbit/orrery/issues/83) (ephemeral session activities & sidecar), [#84](https://github.com/forge-orbit/orrery/issues/84) (agent assignment & board/agents panel)
+- Delivery slices: [#82](https://github.com/forge-orbit/orrery/issues/82) (human stop signal), [#83](https://github.com/forge-orbit/orrery/issues/83) (ephemeral session activities & sidecar), [#84](https://github.com/forge-orbit/orrery/issues/84) (agent assignment & board/agents panel), [#86](https://github.com/forge-orbit/orrery/issues/86) (blocking dependencies in ready work), [#87](https://github.com/forge-orbit/orrery/issues/87) (structured issue links), [#88](https://github.com/forge-orbit/orrery/issues/88) (priority & `sortOrder` ordering)
