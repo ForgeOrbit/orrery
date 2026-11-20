@@ -25,9 +25,13 @@ export type IssuePriority = z.infer<typeof IssuePriority>;
 
 // A card's position in its project's board order. It is a float so a client can move one
 // card between two neighbours by storing their midpoint, rewriting only that one row.
-// New issues are spaced in increments of 65535 by project-local issue number.
+// New issues are spaced in increments of ISSUE_SORT_STEP by project-local issue number.
 export const IssueSortOrder = z.number().finite().meta({ id: "IssueSortOrder" });
 export type IssueSortOrder = z.infer<typeof IssueSortOrder>;
+
+// The spacing between newly created cards, shared by the server's initializer and the UI's
+// midpoint reorder so both agree on how far apart neighbours start.
+export const ISSUE_SORT_STEP = 65535;
 
 // Fallback policy (#42). A project defaults to `require_human`: at the one-hour deadline
 // the question pauses and the claim is released. `fallback_allowed` authorizes returning

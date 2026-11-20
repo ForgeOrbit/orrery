@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import { IssueLinkKind, IssuePriority, projectTools } from "@orrery/contract";
+import { IssueLinkKind, IssuePriority, IssueSortOrder, projectTools } from "@orrery/contract";
 import { isAgentError, type AgentAuthenticator } from "../agents/index.ts";
 import { ProjectsError, type ProjectsService, type WorkActor } from "./service.ts";
 
@@ -17,16 +17,13 @@ const str = (value: unknown, field: string): string => {
   return value;
 };
 
-// The shared tool contract has already validated these optional fields. Parsing priority
-// with the contract enum and checking the number's type keeps the service boundary typed
-// without inventing a second set of values here.
+// The shared tool contract has already validated these optional fields. Parsing both with
+// their contract schemas keeps the service boundary typed and rejects non-finite positions
+// exactly as REST does, without inventing a second set of values here.
 const priority = (value: unknown): IssuePriority | undefined =>
   value === undefined ? undefined : IssuePriority.parse(value);
-const sortOrder = (value: unknown): number | undefined => {
-  if (value === undefined) return undefined;
-  if (typeof value !== "number") throw new Error("invalid sortOrder");
-  return value;
-};
+const sortOrder = (value: unknown): number | undefined =>
+  value === undefined ? undefined : IssueSortOrder.parse(value);
 
 export function createProjectsMcp(service: ProjectsService, authenticate: AgentAuthenticator) {
   const strategies: Record<string, Strategy> = {

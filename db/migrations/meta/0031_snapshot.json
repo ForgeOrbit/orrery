@@ -1,5 +1,5 @@
 {
-  "id": "099cf559-a440-411a-aeee-8dfad724796a",
+  "id": "417bb4df-deb1-48a7-bdf4-3e93b81ce382",
   "prevId": "a2336741-c179-4a5a-bd4e-71acb832e8c7",
   "version": "7",
   "dialect": "postgresql",
@@ -1650,6 +1650,10 @@
         "issues_priority": {
           "name": "issues_priority",
           "value": "\"issues\".\"priority\" in ('urgent', 'high', 'medium', 'low', 'none')"
+        },
+        "issues_sort_order_finite": {
+          "name": "issues_sort_order_finite",
+          "value": "\"issues\".\"sort_order\" > '-Infinity'::double precision and \"issues\".\"sort_order\" < 'Infinity'::double precision"
         },
         "issues_fallback_policy_override": {
           "name": "issues_fallback_policy_override",

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   FallbackPolicy,
+  ISSUE_SORT_STEP,
   IssueStatus,
   ProjectAccessEventType,
   ProjectAccessLevel,
@@ -372,10 +373,6 @@ const issueBoardOrder = [
   asc(issues.createdAt),
   asc(issues.number),
 ];
-
-// Spacing for a newly created card. Two neighbours are always at least this far apart,
-// so their midpoint is distinct from both and a drag rewrites only the dragged row.
-const ISSUE_SORT_STEP = 65535;
 
 const issueColumns = {
   id: issues.id,

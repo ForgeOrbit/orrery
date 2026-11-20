@@ -1,12 +1,8 @@
-import { IssuePriority, type Issue, type IssueDetail } from "@orrery/contract";
+import { ISSUE_SORT_STEP, IssuePriority, type Issue, type IssueDetail } from "@orrery/contract";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { updateIssue } from "./commands.ts";
 import { issueQuery, issuesQuery, projectActivityQuery } from "./queries.ts";
-
-// New cards are spaced by this much (the server uses the same step), so the midpoint of a
-// card and its neighbour is always distinct from both.
-const SORT_STEP = 65535;
 
 // A board badge is a plain label: readers always see the current importance, even when
 // they cannot change it.
@@ -15,15 +11,26 @@ export function PriorityBadge({ priority }: { priority: IssuePriority }) {
 }
 
 // Move one card within its own priority group. Crossing groups by changing sortOrder would
-// have no visible effect, so the neighbours are drawn only from cards of the same priority.
-function midpointWithinGroup(issues: Issue[], issue: Issue, direction: -1 | 1): number | undefined {
-  const group = issues.filter((candidate) => candidate.priority === issue.priority);
-  const index = group.findIndex((candidate) => candidate.id === issue.id);
-  const neighbour = group[index + direction];
+// have no visible effect, so the caller passes the already-filtered group and the card's
+// index in it. `up` goes toward smaller sortOrder, `down` toward larger.
+function midpointWithinGroup(
+  group: Issue[],
+  index: number,
+  direction: "up" | "down",
+): number | undefined {
+  const delta = direction === "up" ? -1 : 1;
+  const neighbour = group[index + delta];
   if (neighbour === undefined) return undefined;
-  const beyond = group[index + 2 * direction];
-  const beyondOrder = beyond?.sortOrder ?? neighbour.sortOrder + direction * SORT_STEP;
-  return (neighbour.sortOrder + beyondOrder) / 2;
+  const beyond = group[index + 2 * delta];
+  // With no second neighbour, step out by a full spacing so there is room to land between.
+  const beyondOrder = beyond?.sortOrder ?? neighbour.sortOrder + delta * ISSUE_SORT_STEP;
+  // Equal adjacent positions have no midpoint; a one-unit step still breaks the tie.
+  if (beyond !== undefined && neighbour.sortOrder === beyond.sortOrder) {
+    return direction === "up" ? neighbour.sortOrder - 1 : neighbour.sortOrder + 1;
+  }
+  // Add the half-gap to the neighbour rather than averaging the two: (a + b) / 2 can
+  // overflow to Infinity for large positions, while a + (b - a) / 2 cannot.
+  return neighbour.sortOrder + (beyondOrder - neighbour.sortOrder) / 2;
 }
 
 // The Contribute controls for the board: set importance, or move a card one slot within its
@@ -66,8 +73,8 @@ export function IssuePriorityControls({
     }
   }
 
-  function move(direction: -1 | 1) {
-    const sortOrder = midpointWithinGroup(issues, issue, direction);
+  function move(direction: "up" | "down") {
+    const sortOrder = midpointWithinGroup(group, index, direction);
     if (sortOrder !== undefined) void save({ sortOrder });
   }
 
@@ -90,10 +97,10 @@ export function IssuePriorityControls({
           </option>
         ))}
       </select>{" "}
-      <button type="button" disabled={saving || !canMoveUp} onClick={() => move(-1)}>
+      <button type="button" disabled={saving || !canMoveUp} onClick={() => move("up")}>
         Move up
       </button>{" "}
-      <button type="button" disabled={saving || !canMoveDown} onClick={() => move(1)}>
+      <button type="button" disabled={saving || !canMoveDown} onClick={() => move("down")}>
         Move down
       </button>
       {error !== undefined && <span role="alert">{error}</span>}

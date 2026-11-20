@@ -549,6 +549,25 @@ describe("projects", () => {
         `),
       ),
     ).toContain("issues_priority");
+
+    // A position must be finite. Postgres orders NaN above Infinity, so bounding the value
+    // on both sides rejects NaN as well as both infinities — including from a raw writer.
+    for (const nonFinite of [
+      "'Infinity'::double precision",
+      "'-Infinity'::double precision",
+      "'NaN'::double precision",
+    ]) {
+      expect(
+        await rejection(
+          database.db.execute(sql`
+            insert into issues
+              (id, project_id, number, title, status, priority, sort_order, created_by_human_id, updated_by_human_id)
+            values
+              (${randomUUID()}, ${project.id}, 98, 'Non-finite', 'open', 'none', ${sql.raw(nonFinite)}, ${writerId}, ${writerId})
+          `),
+        ),
+      ).toContain("issues_sort_order_finite");
+    }
   });
 
   it("creates and edits a basic Markdown knowledge entry with authorship and activity", async () => {

@@ -883,6 +883,13 @@ export const issues = pgTable(
     // DDL cannot bind parameters; the values come from the IssueStatus contract enum.
     check("issues_status", sql`${t.status} in (${sql.raw(sqlLiteralList(IssueStatus))})`),
     check("issues_priority", sql`${t.priority} in (${sql.raw(sqlLiteralList(IssuePriority))})`),
+    // Postgres sorts NaN above Infinity, so bounding the value on both sides rejects NaN
+    // as well as ±Infinity. Midpoint arithmetic can otherwise produce a non-finite position
+    // that no client can reorder past, and the CHECK holds even for a bypassing writer.
+    check(
+      "issues_sort_order_finite",
+      sql`${t.sortOrder} > '-Infinity'::double precision and ${t.sortOrder} < 'Infinity'::double precision`,
+    ),
     check(
       "issues_fallback_policy_override",
       sql`(${t.fallbackPolicyOverride} is null or ${t.fallbackPolicyOverride} in (${sql.raw(
