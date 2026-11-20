@@ -1621,6 +1621,129 @@
             "$ref": "#/components/schemas/KnowledgeBody"
           }
         }
+      },
+      "HistoryResponse": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/HistoryEvent"
+        }
+      },
+      "HistoryEvent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/HistoryEventKind"
+          },
+          "type": {
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/HistoryScope"
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "actor": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "subject": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              }
+            ]
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "level": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProjectAccessLevel"
+              },
+              {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            ]
+          },
+          "previousLevel": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProjectAccessLevel"
+              },
+              {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "type",
+          "scope",
+          "createdAt",
+          "actor",
+          "subject",
+          "summary",
+          "level",
+          "previousLevel"
+        ]
+      },
+      "HistoryEventKind": {
+        "type": "string",
+        "enum": [
+          "workspace_access",
+          "project_access",
+          "agent_key",
+          "project_activity",
+          "installation_access"
+        ]
+      },
+      "HistoryScope": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "installation",
+              "workspace",
+              "project"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "name"
+        ]
       }
     },
     "parameters": {}
@@ -5139,6 +5262,174 @@
           },
           "404": {
             "description": "No knowledge entry with this id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspaces/{workspaceId}/history": {
+      "get": {
+        "summary": "The access history of a workspace the caller manages",
+        "description": "Workspace owners see membership, permission, credential, and project access events in this workspace; a delegated permission manager sees membership and permission events plus access changes on projects they Manage. An ordinary member or a non-member gets no history: a non-member answers exactly like a missing workspace. No credential secret is ever returned.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The workspace's access events, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The workspace id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an owner or delegated permission manager of this workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No workspace with this id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{projectId}/history": {
+      "get": {
+        "summary": "The activity and access history of a granted project",
+        "description": "Any human with granted access to the project sees its attributed activity. Only a project manager, including a workspace owner, additionally sees who granted, changed, or revoked project access. A project outside the caller's access answers exactly like a missing one, so history cannot enumerate projects.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The project's visible events, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The project id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No project with this id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/installation/history": {
+      "get": {
+        "summary": "The installation's access history, for system administrators",
+        "description": "System administrators only: the bootstrap record and the lifecycle of installation invitations. The administrator role alone grants no workspace or project access, so no private project content or workspace the administrator does not belong to appears here.",
+        "responses": {
+          "200": {
+            "description": "The installation's access events, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a system administrator",
             "content": {
               "application/problem+json": {
                 "schema": {

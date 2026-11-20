@@ -14,10 +14,13 @@ import { Route as RegisterRouteImport } from './routes/register'
 import { Route as SetupRouteImport } from './routes/setup'
 import { Route as SigninRouteImport } from './routes/signin'
 import { Route as WorkspaceInvitationRouteImport } from './routes/workspace-invitation'
+import { Route as HistoryInstallationRouteImport } from './routes/history.installation'
 import { Route as IssuesIssueIdRouteImport } from './routes/issues.$issueId'
 import { Route as KnowledgeEntryIdRouteImport } from './routes/knowledge.$entryId'
 import { Route as ProjectsProjectIdRouteImport } from './routes/projects.$projectId'
 import { Route as WorkspacesWorkspaceIdRouteImport } from './routes/workspaces.$workspaceId'
+import { Route as HistoryProjectProjectIdRouteImport } from './routes/history.project.$projectId'
+import { Route as HistoryWorkspaceWorkspaceIdRouteImport } from './routes/history.workspace.$workspaceId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -44,6 +47,11 @@ const WorkspaceInvitationRoute = WorkspaceInvitationRouteImport.update({
   path: '/workspace-invitation',
   getParentRoute: () => rootRouteImport,
 } as any)
+const HistoryInstallationRoute = HistoryInstallationRouteImport.update({
+  id: '/history/installation',
+  path: '/history/installation',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IssuesIssueIdRoute = IssuesIssueIdRouteImport.update({
   id: '/issues/$issueId',
   path: '/issues/$issueId',
@@ -64,6 +72,17 @@ const WorkspacesWorkspaceIdRoute = WorkspacesWorkspaceIdRouteImport.update({
   path: '/workspaces/$workspaceId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const HistoryProjectProjectIdRoute = HistoryProjectProjectIdRouteImport.update({
+  id: '/history/project/$projectId',
+  path: '/history/project/$projectId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const HistoryWorkspaceWorkspaceIdRoute =
+  HistoryWorkspaceWorkspaceIdRouteImport.update({
+    id: '/history/workspace/$workspaceId',
+    path: '/history/workspace/$workspaceId',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -71,10 +90,13 @@ export interface FileRoutesByFullPath {
   '/setup': typeof SetupRoute
   '/signin': typeof SigninRoute
   '/workspace-invitation': typeof WorkspaceInvitationRoute
+  '/history/installation': typeof HistoryInstallationRoute
   '/issues/$issueId': typeof IssuesIssueIdRoute
   '/knowledge/$entryId': typeof KnowledgeEntryIdRoute
   '/projects/$projectId': typeof ProjectsProjectIdRoute
   '/workspaces/$workspaceId': typeof WorkspacesWorkspaceIdRoute
+  '/history/project/$projectId': typeof HistoryProjectProjectIdRoute
+  '/history/workspace/$workspaceId': typeof HistoryWorkspaceWorkspaceIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -82,10 +104,13 @@ export interface FileRoutesByTo {
   '/setup': typeof SetupRoute
   '/signin': typeof SigninRoute
   '/workspace-invitation': typeof WorkspaceInvitationRoute
+  '/history/installation': typeof HistoryInstallationRoute
   '/issues/$issueId': typeof IssuesIssueIdRoute
   '/knowledge/$entryId': typeof KnowledgeEntryIdRoute
   '/projects/$projectId': typeof ProjectsProjectIdRoute
   '/workspaces/$workspaceId': typeof WorkspacesWorkspaceIdRoute
+  '/history/project/$projectId': typeof HistoryProjectProjectIdRoute
+  '/history/workspace/$workspaceId': typeof HistoryWorkspaceWorkspaceIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -94,10 +119,13 @@ export interface FileRoutesById {
   '/setup': typeof SetupRoute
   '/signin': typeof SigninRoute
   '/workspace-invitation': typeof WorkspaceInvitationRoute
+  '/history/installation': typeof HistoryInstallationRoute
   '/issues/$issueId': typeof IssuesIssueIdRoute
   '/knowledge/$entryId': typeof KnowledgeEntryIdRoute
   '/projects/$projectId': typeof ProjectsProjectIdRoute
   '/workspaces/$workspaceId': typeof WorkspacesWorkspaceIdRoute
+  '/history/project/$projectId': typeof HistoryProjectProjectIdRoute
+  '/history/workspace/$workspaceId': typeof HistoryWorkspaceWorkspaceIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -107,10 +135,13 @@ export interface FileRouteTypes {
     | '/setup'
     | '/signin'
     | '/workspace-invitation'
+    | '/history/installation'
     | '/issues/$issueId'
     | '/knowledge/$entryId'
     | '/projects/$projectId'
     | '/workspaces/$workspaceId'
+    | '/history/project/$projectId'
+    | '/history/workspace/$workspaceId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -118,10 +149,13 @@ export interface FileRouteTypes {
     | '/setup'
     | '/signin'
     | '/workspace-invitation'
+    | '/history/installation'
     | '/issues/$issueId'
     | '/knowledge/$entryId'
     | '/projects/$projectId'
     | '/workspaces/$workspaceId'
+    | '/history/project/$projectId'
+    | '/history/workspace/$workspaceId'
   id:
     | '__root__'
     | '/'
@@ -129,10 +163,13 @@ export interface FileRouteTypes {
     | '/setup'
     | '/signin'
     | '/workspace-invitation'
+    | '/history/installation'
     | '/issues/$issueId'
     | '/knowledge/$entryId'
     | '/projects/$projectId'
     | '/workspaces/$workspaceId'
+    | '/history/project/$projectId'
+    | '/history/workspace/$workspaceId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -141,10 +178,13 @@ export interface RootRouteChildren {
   SetupRoute: typeof SetupRoute
   SigninRoute: typeof SigninRoute
   WorkspaceInvitationRoute: typeof WorkspaceInvitationRoute
+  HistoryInstallationRoute: typeof HistoryInstallationRoute
   IssuesIssueIdRoute: typeof IssuesIssueIdRoute
   KnowledgeEntryIdRoute: typeof KnowledgeEntryIdRoute
   ProjectsProjectIdRoute: typeof ProjectsProjectIdRoute
   WorkspacesWorkspaceIdRoute: typeof WorkspacesWorkspaceIdRoute
+  HistoryProjectProjectIdRoute: typeof HistoryProjectProjectIdRoute
+  HistoryWorkspaceWorkspaceIdRoute: typeof HistoryWorkspaceWorkspaceIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -184,6 +224,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WorkspaceInvitationRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/history/installation': {
+      id: '/history/installation'
+      path: '/history/installation'
+      fullPath: '/history/installation'
+      preLoaderRoute: typeof HistoryInstallationRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/issues/$issueId': {
       id: '/issues/$issueId'
       path: '/issues/$issueId'
@@ -212,6 +259,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WorkspacesWorkspaceIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/history/project/$projectId': {
+      id: '/history/project/$projectId'
+      path: '/history/project/$projectId'
+      fullPath: '/history/project/$projectId'
+      preLoaderRoute: typeof HistoryProjectProjectIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/history/workspace/$workspaceId': {
+      id: '/history/workspace/$workspaceId'
+      path: '/history/workspace/$workspaceId'
+      fullPath: '/history/workspace/$workspaceId'
+      preLoaderRoute: typeof HistoryWorkspaceWorkspaceIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -221,10 +282,13 @@ const rootRouteChildren: RootRouteChildren = {
   SetupRoute: SetupRoute,
   SigninRoute: SigninRoute,
   WorkspaceInvitationRoute: WorkspaceInvitationRoute,
+  HistoryInstallationRoute: HistoryInstallationRoute,
   IssuesIssueIdRoute: IssuesIssueIdRoute,
   KnowledgeEntryIdRoute: KnowledgeEntryIdRoute,
   ProjectsProjectIdRoute: ProjectsProjectIdRoute,
   WorkspacesWorkspaceIdRoute: WorkspacesWorkspaceIdRoute,
+  HistoryProjectProjectIdRoute: HistoryProjectProjectIdRoute,
+  HistoryWorkspaceWorkspaceIdRoute: HistoryWorkspaceWorkspaceIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
