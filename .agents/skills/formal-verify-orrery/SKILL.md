@@ -9,7 +9,7 @@ Exhaustive finite-state model checking for Orrery's highest-stakes concurrency, 
 
 ## Sync Commit & Coverage Record
 
-- **Last verified commit:** `b005459`
+- **Last verified commit:** `e3a2018`
 - **Check whether a change touches verified code:**
   ```bash
   git diff --name-only 7fa5d0c -- \
