@@ -2075,13 +2075,6 @@ export function createProjectsService({
       const actor = requireActor(actorArg);
       const blockedByIssueId = input.blockedByIssueId;
       return db.transaction(async (tx) => {
-        await tx
-          .select({ id: issues.id })
-          .from(issues)
-          .where(inArray(issues.id, [issueId, blockedByIssueId].toSorted()))
-          .orderBy(issues.id)
-          .for("update");
-
         const current = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
         if (issueId === blockedByIssueId) throw new ProjectsError("self_dependency");
         const blocker = await requireIssue(
@@ -2094,15 +2087,21 @@ export function createProjectsService({
           throw new ProjectsError("cross_project_dependency");
         }
 
-        // One project-level lock serializes every dependency write in this project. The
-        // two endpoint locks alone are not enough: concurrent adds on disjoint pairs
-        // (A->B alongside C->D, then B->C alongside D->A) could each pass BFS under
-        // Read Committed and together close a cycle. Taking the project row here, after
-        // its id is resolved and under the same transaction, closes that race.
+        // Lock the parent project row FIRST (matching Orrery's global projects -> issues
+        // lock order shared with transfers M21/M24 so concurrent transfer + dependency
+        // writes cannot AB-BA deadlock), then lock the two endpoint issues in id order.
+        // Serializing on the project row also closes the >=4-node concurrent cycle race.
         await tx
           .select({ id: projects.id })
           .from(projects)
           .where(eq(projects.id, current.projectId))
+          .for("update");
+
+        await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(inArray(issues.id, [issueId, blockedByIssueId].toSorted()))
+          .orderBy(issues.id)
           .for("update");
 
         // Re-adding an edge is a no-op: the unique constraint stays the database's final
