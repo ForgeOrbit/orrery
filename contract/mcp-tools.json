@@ -2262,7 +2262,7 @@
   },
   {
     "name": "renew_claim",
-    "description": "Check in on an issue this agent currently holds and refresh its five-minute lease in database time. Requires a live session; an expired or released session is never renewed or silently reacquired.",
+    "description": "Check in on an issue this agent currently holds and refresh its five-minute lease in database time. Requires a live session; an expired or released session is never renewed or silently reacquired. Pass sessionId to fence a delayed call from an interrupted session: it is refused if that session is no longer the live one, even after reacquisition.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "$ref": "#/$defs/RenewWorkSessionInput",
@@ -2271,6 +2271,11 @@
           "type": "object",
           "properties": {
             "issueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "sessionId": {
               "type": "string",
               "minLength": 1,
               "maxLength": 200
@@ -2388,7 +2393,7 @@
   },
   {
     "name": "report_progress",
-    "description": "Record progress on the live session this agent holds for an issue. Progress is stored independently of the lease, so an interruption never erases it. Requires a live session.",
+    "description": "Record progress on the live session this agent holds for an issue. Progress is stored independently of the lease, so an interruption never erases it. Requires a live session; pass sessionId to refuse a delayed report from an expired session instead of writing to a newer one.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "$ref": "#/$defs/ReportProgressInput",
@@ -2405,6 +2410,11 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 20000
+            },
+            "sessionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
             }
           },
           "required": [
@@ -2520,7 +2530,7 @@
   },
   {
     "name": "stop_session",
-    "description": "Complete or release the live session this agent holds for an issue. Requires a live session; stopping is distinct from closing the issue.",
+    "description": "Complete or release the live session this agent holds for an issue. Requires a live session; stopping is distinct from closing the issue. Pass sessionId to fence a delayed completion from an interrupted session: it is refused rather than completing a newer session.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "$ref": "#/$defs/StopWorkSessionInput",
@@ -2536,6 +2546,11 @@
             "outcome": {
               "default": "completed",
               "$ref": "#/$defs/WorkSessionOutcome"
+            },
+            "sessionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
             }
           },
           "required": [
@@ -2674,6 +2689,310 @@
           },
           "required": [
             "issueId"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$ref": "#/$defs/WorkSessionResponse",
+      "$defs": {
+        "WorkSessionResponse": {
+          "type": "object",
+          "properties": {
+            "session": {
+              "$ref": "#/$defs/WorkSession"
+            }
+          },
+          "required": [
+            "session"
+          ],
+          "additionalProperties": false
+        },
+        "WorkSession": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "agentId": {
+              "type": "string"
+            },
+            "runId": {
+              "type": "string"
+            },
+            "workspaceId": {
+              "type": "string"
+            },
+            "issueId": {
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/$defs/WorkSessionStatus"
+            },
+            "leaseExpiresAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "progress": {
+              "type": "string"
+            },
+            "progressUpdatedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updatedAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "endedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "agentId",
+            "runId",
+            "workspaceId",
+            "issueId",
+            "status",
+            "leaseExpiresAt",
+            "progress",
+            "progressUpdatedAt",
+            "createdAt",
+            "updatedAt",
+            "endedAt"
+          ],
+          "additionalProperties": false
+        },
+        "WorkSessionStatus": {
+          "type": "string",
+          "enum": [
+            "active",
+            "completed",
+            "released",
+            "expired"
+          ]
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        }
+      }
+    }
+  },
+  {
+    "name": "resume_work_session",
+    "description": "Inspect the work session the given run (the harness conversation, including resumes) recorded for an issue. Returns disposition active, expired, ended or none, and the session with its recorded progress. This is a read in database time: it never renews or resurrects an expired lease.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$ref": "#/$defs/ResumeWorkSessionInput",
+      "$defs": {
+        "ResumeWorkSessionInput": {
+          "type": "object",
+          "properties": {
+            "issueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "runId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
+          "required": [
+            "issueId",
+            "runId"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$ref": "#/$defs/ResumeWorkSessionResponse",
+      "$defs": {
+        "ResumeWorkSessionResponse": {
+          "type": "object",
+          "properties": {
+            "resume": {
+              "$ref": "#/$defs/ResumeWorkSessionResult"
+            }
+          },
+          "required": [
+            "resume"
+          ],
+          "additionalProperties": false
+        },
+        "ResumeWorkSessionResult": {
+          "type": "object",
+          "properties": {
+            "runId": {
+              "type": "string"
+            },
+            "issueId": {
+              "type": "string"
+            },
+            "disposition": {
+              "$ref": "#/$defs/ResumeDisposition"
+            },
+            "session": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/WorkSession"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "runId",
+            "issueId",
+            "disposition",
+            "session"
+          ],
+          "additionalProperties": false
+        },
+        "ResumeDisposition": {
+          "type": "string",
+          "enum": [
+            "active",
+            "expired",
+            "ended",
+            "none"
+          ]
+        },
+        "WorkSession": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "agentId": {
+              "type": "string"
+            },
+            "runId": {
+              "type": "string"
+            },
+            "workspaceId": {
+              "type": "string"
+            },
+            "issueId": {
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/$defs/WorkSessionStatus"
+            },
+            "leaseExpiresAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "progress": {
+              "type": "string"
+            },
+            "progressUpdatedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updatedAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "endedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "agentId",
+            "runId",
+            "workspaceId",
+            "issueId",
+            "status",
+            "leaseExpiresAt",
+            "progress",
+            "progressUpdatedAt",
+            "createdAt",
+            "updatedAt",
+            "endedAt"
+          ],
+          "additionalProperties": false
+        },
+        "WorkSessionStatus": {
+          "type": "string",
+          "enum": [
+            "active",
+            "completed",
+            "released",
+            "expired"
+          ]
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        }
+      }
+    }
+  },
+  {
+    "name": "reacquire_issue",
+    "description": "Reacquire this run's expired claim on an issue after an interruption. Creates a new active session for the same agent, run, workspace and issue, carrying forward the recorded progress, and only when no other worker holds a live claim and the issue is not paused for input. Retries with the same run return the same session; a stale call on an expired session is refused, never turned into a fresh claim.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$ref": "#/$defs/ResumeWorkSessionInput",
+      "$defs": {
+        "ResumeWorkSessionInput": {
+          "type": "object",
+          "properties": {
+            "issueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "runId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
+          "required": [
+            "issueId",
+            "runId"
           ],
           "additionalProperties": false
         }
