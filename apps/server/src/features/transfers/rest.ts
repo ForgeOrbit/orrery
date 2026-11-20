@@ -41,7 +41,7 @@ const previewTransfer = createRoute({
     },
     400: problem("The request is invalid"),
     401: problem("Not signed in"),
-    404: problem("No personal project or shared workspace with these ids is accessible"),
+    404: problem("No project owned by the caller or shared workspace with these ids is accessible"),
   },
 });
 
@@ -65,7 +65,7 @@ const authorizeTransfer = createRoute({
     },
     400: problem("The request is invalid"),
     401: problem("Not signed in"),
-    404: problem("No personal project or shared workspace with these ids is accessible"),
+    404: problem("No project owned by the caller or shared workspace with these ids is accessible"),
   },
 });
 
@@ -111,7 +111,7 @@ const completeTransfer = createRoute({
     400: problem("The request is invalid"),
     401: problem("Not signed in"),
     403: problem("The caller lacks Create projects in the destination"),
-    404: problem("No personal project or shared workspace with these ids is accessible"),
+    404: problem("No project owned by the caller or shared workspace with these ids is accessible"),
     409: problem("Active work remains, or the project changed since authorization"),
   },
 });

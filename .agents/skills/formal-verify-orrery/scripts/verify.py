@@ -4584,13 +4584,15 @@ def check_m22(facts: dict[str, Any]) -> CheckResult:
             if not g["m22_accept_membership"]:
                 return apply_transfer_violation(state, "non_member_accepted_transfer")
             return state
-        if not owner:
-            if not g["m22_recheck_shared_owner"]:
-                return apply_transfer_violation(state, "accepted_after_source_owner_lost")
-            return state
+        # Destination authority is gated before the source-owner recheck, so a stranger or
+        # a member without Create projects never learns the authorizer lost ownership.
         if not dest_ok:
             if not g["m22_dest_authority"]:
                 return apply_transfer_violation(state, "accepted_after_destination_authority_lost")
+            return state
+        if not owner:
+            if not g["m22_recheck_shared_owner"]:
+                return apply_transfer_violation(state, "accepted_after_source_owner_lost")
             return state
         if dest_ok and not g["m22_dest_authority"]:
             v = bad(v, "valid_destination_authority_refused")

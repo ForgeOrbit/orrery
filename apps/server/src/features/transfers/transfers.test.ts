@@ -1106,6 +1106,11 @@ describe("shared-to-shared project transfer against real Postgres", () => {
         ),
       );
 
+    // Destination membership is gated first: a stranger holding the token still gets a
+    // missing-authorization 404, never a hint that the source owner was demoted.
+    const stranger = await insertHuman("lost-owner-stranger@example.com");
+    const strangerCookie = await sessionFor(stranger.id);
+    await expectProblem(await accept(strangerCookie, authorization.token), 404, "transfer_invalid");
     await expectProblem(
       await accept(sourceW1.cookie, authorization.token),
       409,

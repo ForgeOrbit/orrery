@@ -537,11 +537,27 @@ async function acceptInTransaction(
     .limit(1);
   if (live === undefined) throw new TransfersError("transfer_invalid");
 
+  // The source row is needed below for the guard bump, but its authority is deliberately
+  // rechecked *after* the destination gate. A leaked token in a stranger's hands must
+  // answer as a missing authorization, never reveal that the source owner was demoted.
   const [source] = await tx
     .select()
     .from(workspaces)
     .where(eq(workspaces.id, auth.sourceWorkspaceId))
     .limit(1);
+
+  // The acceptor must hold a live membership in the destination. A valid token in the
+  // hands of a stranger answers as a missing authorization, not as a workspace probe.
+  if (!(await hasDestinationMembership(tx, auth.destinationWorkspaceId, acceptorHumanId))) {
+    throw new TransfersError("transfer_invalid");
+  }
+  const destination = await readSharedDestination(tx, auth.destinationWorkspaceId);
+  if (!(await hasCreateProjectsAuthority(tx, destination.id, acceptorHumanId))) {
+    throw new TransfersError("destination_authority_required");
+  }
+
+  // Only a destination member with Create projects learns whether the source owner's
+  // authority was lost (409); everyone else gets the two answers above first.
   if (source === undefined) throw new TransfersError("source_authority_lost");
   if (source.kind === WorkspaceKind.enum.personal) {
     // #39: the personal workspace's single owner must still own it.
@@ -566,16 +582,6 @@ async function acceptInTransaction(
     if (ownerMembership === undefined) throw new TransfersError("source_authority_lost");
   } else {
     throw new TransfersError("source_authority_lost");
-  }
-
-  // The acceptor must hold a live membership in the destination. A valid token in the
-  // hands of a stranger answers as a missing authorization, not as a workspace probe.
-  if (!(await hasDestinationMembership(tx, auth.destinationWorkspaceId, acceptorHumanId))) {
-    throw new TransfersError("transfer_invalid");
-  }
-  const destination = await readSharedDestination(tx, auth.destinationWorkspaceId);
-  if (!(await hasCreateProjectsAuthority(tx, destination.id, acceptorHumanId))) {
-    throw new TransfersError("destination_authority_required");
   }
 
   // Workspace guards before the project row, then issues: one deterministic order.

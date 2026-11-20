@@ -7981,7 +7981,7 @@
             }
           },
           "404": {
-            "description": "No personal project or shared workspace with these ids is accessible",
+            "description": "No project owned by the caller or shared workspace with these ids is accessible",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8051,7 +8051,7 @@
             }
           },
           "404": {
-            "description": "No personal project or shared workspace with these ids is accessible",
+            "description": "No project owned by the caller or shared workspace with these ids is accessible",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8199,7 +8199,7 @@
             }
           },
           "404": {
-            "description": "No personal project or shared workspace with these ids is accessible",
+            "description": "No project owned by the caller or shared workspace with these ids is accessible",
             "content": {
               "application/problem+json": {
                 "schema": {
