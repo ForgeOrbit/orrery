@@ -1,6 +1,8 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import {
+  Agent,
+  CreateAgentKeyResponse,
   InvitationSummaries,
   InvitationSummary,
   Problem,
@@ -17,10 +19,13 @@ import type { Hono } from "hono";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createAccountsFeature } from "../accounts/index.ts";
+import { createAgentsFeature, revokeMemberWorkspaceKeys } from "../agents/index.ts";
 import { createInvitationsFeature } from "../invitations/index.ts";
 import { createProjectsFeature } from "../projects/index.ts";
 import { createSettingsFeature } from "../settings/index.ts";
 import {
+  agentApiKeys,
+  agentKeyEvents,
   browserSessions,
   humans,
   projectAccessGrants,
@@ -301,6 +306,10 @@ describe("workspaces", () => {
 
   afterEach(async () => {
     await database.db.transaction(async (tx) => {
+      await tx.execute(sql`delete from agent_key_events`);
+      await tx.execute(sql`delete from agent_api_key_projects`);
+      await tx.execute(sql`delete from agent_api_keys`);
+      await tx.execute(sql`delete from agents`);
       await tx.execute(sql`delete from project_access_events`);
       await tx.execute(sql`delete from project_access_grants`);
       await tx.execute(sql`delete from project_activity`);
@@ -366,9 +375,11 @@ describe("workspaces", () => {
       createInvitedHuman: accounts.createInvitedHuman,
       markEmailVerified: accounts.markEmailVerified,
       deliver: settings.deliver,
-      // This suite does not create projects; the projects feature's cleanup is covered
-      // end-to-end in projects/access.test.ts.
+      // This suite does not create agent keys; their revocation on removal is covered
+      // by makeAgentsApp below. The projects feature's cleanup is covered end-to-end in
+      // projects/access.test.ts.
       revokeMemberProjectAccess: async () => {},
+      revokeMemberWorkspaceKeys: async () => {},
       applyInvitationGrants: (tx, workspaceId, humanId, grantedByHumanId, offered) =>
         projectsFeature.applyInvitationGrants(tx, workspaceId, humanId, grantedByHumanId, offered),
       log: silentLogger,
@@ -394,6 +405,91 @@ describe("workspaces", () => {
   // and SMTP is saved, so an invitation can actually deliver.
   async function readyApp() {
     const made = makeApp();
+    await bootstrapAdmin(made.app);
+    await saveSmtp(made.app, await cookieFor(made.app, EMAIL, PASSWORD));
+    const [admin] = await database.db.select().from(humans).where(eq(humans.email, EMAIL));
+    if (admin === undefined) throw new Error("the administrator was not found");
+    await verifyHuman(admin.id);
+    return { ...made, admin, adminCookie: await cookieFor(made.app, EMAIL, PASSWORD) };
+  }
+
+  // The same wiring as features/index.ts, with the real agents feature added: the tests
+  // that issue and revoke keys need the key owner, the workspace removal, and the mail
+  // transport for re-invitation to agree on one database and one set of feature seams.
+  function makeAgentsApp() {
+    const sent: { to: string; subject: string; text: string }[] = [];
+    const accounts = createAccountsFeature({
+      db: database.db,
+      setupSecret: SECRET,
+      publicUrl: PUBLIC_URL,
+    });
+    const settings = createSettingsFeature({
+      db: database.db,
+      publicUrl: PUBLIC_URL,
+      encryptionKey: undefined,
+      sessionReader: accounts.sessionReader,
+      markEmailVerified: accounts.markEmailVerified,
+      sendMail: async (_settings, mail) => {
+        sent.push({ to: mail.to, subject: mail.subject, text: mail.text });
+      },
+      log: silentLogger,
+    });
+    const invitationsFeature = createInvitationsFeature({
+      db: database.db,
+      publicUrl: PUBLIC_URL,
+      sessionReader: accounts.sessionReader,
+      emailRegistered: accounts.emailRegistered,
+      createInvitedHuman: accounts.createInvitedHuman,
+      markEmailVerified: accounts.markEmailVerified,
+      deliver: settings.deliver,
+      log: silentLogger,
+    });
+    const projectsFeature = createProjectsFeature({
+      db: database.db,
+      sessionReader: accounts.sessionReader,
+      agentAuthenticator: async () => null,
+    });
+    const agentsFeature = createAgentsFeature({
+      db: database.db,
+      sessionReader: accounts.sessionReader,
+      projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
+        projectsFeature.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
+      projectAccessAtLeast: (actual, required) =>
+        ["read", "contribute", "manage"].indexOf(actual) >=
+        ["read", "contribute", "manage"].indexOf(required),
+    });
+    const workspacesFeature = createWorkspacesFeature({
+      db: database.db,
+      publicUrl: PUBLIC_URL,
+      sessionReader: accounts.sessionReader,
+      createInvitedHuman: accounts.createInvitedHuman,
+      markEmailVerified: accounts.markEmailVerified,
+      deliver: settings.deliver,
+      revokeMemberProjectAccess: (tx, workspaceId, humanId, actorHumanId) =>
+        projectsFeature.revokeMemberProjectAccess(tx, workspaceId, humanId, actorHumanId),
+      revokeMemberWorkspaceKeys: (tx, workspaceId, humanId, actorHumanId) =>
+        revokeMemberWorkspaceKeys(tx, workspaceId, humanId, actorHumanId),
+      applyInvitationGrants: (tx, workspaceId, humanId, grantedByHumanId, offered) =>
+        projectsFeature.applyInvitationGrants(tx, workspaceId, humanId, grantedByHumanId, offered),
+      log: silentLogger,
+    });
+    const app = createApp({
+      features: [
+        accounts,
+        settings,
+        invitationsFeature,
+        projectsFeature,
+        workspacesFeature,
+        agentsFeature,
+      ],
+      publicUrl: PUBLIC_URL,
+      log: silentLogger,
+    });
+    return { app, sent };
+  }
+
+  async function readyAgentsApp() {
+    const made = makeAgentsApp();
     await bootstrapAdmin(made.app);
     await saveSmtp(made.app, await cookieFor(made.app, EMAIL, PASSWORD));
     const [admin] = await database.db.select().from(humans).where(eq(humans.email, EMAIL));
@@ -2982,5 +3078,226 @@ describe("workspaces", () => {
     const url = `/api/workspaces/${workspace.id}/invitations`;
     await assertForbidden(postEmpty(app, `${url}/${invitation.id}/resend`, manager.cookie));
     await assertForbidden(postEmpty(app, `${url}/${invitation.id}/revoke`, manager.cookie));
+  });
+
+  it("supersedes an owner's stale-scope offer instead of blocking the email for seven days", async () => {
+    const { app, sent, admin, adminCookie } = await readyApp();
+    const name = "Stale Scope Team";
+    const workspace = await createWorkspace(app, adminCookie, name);
+    const destination = await directSharedWorkspace([admin.id], "Destination Team");
+    const projectId = await createProjectDirect(workspace.id, admin.id, "Moved Out");
+
+    await invite(app, adminCookie, workspace.id, INVITEE, [{ projectId, level: "read" }]);
+    const staleToken = await workspaceInviteToken(sent, INVITEE, name);
+
+    // Simulate #46: the offered project leaves the invited workspace. The owner is still
+    // an owner and still verified, so the old liveness check called this offer live.
+    await database.db
+      .update(projects)
+      .set({ workspaceId: destination })
+      .where(eq(projects.id, projectId));
+
+    const stale = await getJson(app, `/api/workspace-invitations/preview?token=${staleToken}`);
+    expect(stale.status).toBe(409);
+    expect(await problemBody(stale)).toMatchObject({ code: "invitation_scope_invalid" });
+
+    // A fresh offer to the same address must supersede the dead one, not answer 409
+    // invitation_pending while its seven-day deadline runs out.
+    await invite(app, adminCookie, workspace.id, INVITEE);
+    const rows = await database.db
+      .select({ status: workspaceInvitations.status })
+      .from(workspaceInvitations)
+      .where(
+        and(
+          eq(workspaceInvitations.workspaceId, workspace.id),
+          eq(workspaceInvitations.email, INVITEE),
+        ),
+      );
+    expect(rows.map((row) => row.status).toSorted()).toEqual(["pending", "revoked"]);
+
+    const replacementToken = (() => {
+      const mail = sent.findLast(
+        (candidate) => candidate.to === INVITEE && candidate.text.includes(`"${name}"`),
+      );
+      const token = mail === undefined ? undefined : tokenFrom(mail.text);
+      if (token === undefined) throw new Error("the replacement invitation carried no token");
+      return token;
+    })();
+    const [invitee] = await insertHuman({ email: INVITEE, verified: true });
+    const accepted = await postJson(
+      app,
+      "/api/workspace-invitations/acceptance",
+      { token: replacementToken },
+      await sessionFor(app, invitee.id),
+    );
+    expect(accepted.status).toBe(200);
+  });
+
+  it("revokes a removed member's keys so a re-invitation cannot revive them", async () => {
+    const { app, sent, admin, adminCookie } = await readyAgentsApp();
+    const name = "Key Revocation Team";
+    const workspace = await createWorkspace(app, adminCookie, name);
+    const projectId = await createProjectDirect(workspace.id, admin.id, "Team Work");
+    const member = await addMember(app, workspace.id, INVITEE);
+    await grantProjectManage(projectId, member.human.id, admin.id);
+
+    const me = (bearer: string) =>
+      app.request("/api/agents/me", { headers: { authorization: `Bearer ${bearer}` } });
+    const agentRes = await postJson(app, "/api/agents", { name: "member-bot" }, member.cookie);
+    expect(agentRes.status).toBe(201);
+    const agentId = Agent.parse(await agentRes.json()).id;
+    const keyRes = await postJson(
+      app,
+      "/api/agents/keys",
+      {
+        agentId,
+        workspaceId: workspace.id,
+        projects: [{ projectId, level: "contribute" }],
+      },
+      member.cookie,
+    );
+    expect(keyRes.status).toBe(201);
+    const issued = CreateAgentKeyResponse.parse(await keyRes.json());
+    expect((await me(issued.secret)).status).toBe(200);
+
+    // The removal revokes the key in its own transaction, with one secret-free event.
+    const removed = await deleteRequest(
+      app,
+      `/api/workspaces/${workspace.id}/members/${member.human.id}`,
+      adminCookie,
+    );
+    expect(removed.status).toBe(204);
+    const [storedKey] = await database.db
+      .select()
+      .from(agentApiKeys)
+      .where(eq(agentApiKeys.id, issued.key.id));
+    expect(storedKey?.revokedAt).not.toBeNull();
+    expect(storedKey?.revokedByHumanId).toBe(admin.id);
+    const revokeEvents = await database.db
+      .select()
+      .from(agentKeyEvents)
+      .where(
+        and(eq(agentKeyEvents.keyId, issued.key.id), eq(agentKeyEvents.type, "agent_key_revoked")),
+      );
+    expect(revokeEvents).toHaveLength(1);
+    expect(revokeEvents[0]).toMatchObject({
+      actorHumanId: admin.id,
+      workspaceId: workspace.id,
+      agentId,
+    });
+    expect(JSON.stringify(revokeEvents)).not.toContain(issued.secret);
+    const refused = await me(issued.secret);
+    expect(refused.status).toBe(401);
+    expect(await problemBody(refused)).toMatchObject({ code: "key_revoked" });
+
+    // Re-invitation restores membership and project access, but never the old credential.
+    await invite(app, adminCookie, workspace.id, INVITEE, [{ projectId, level: "read" }]);
+    const replacementToken = (() => {
+      const mail = sent.findLast(
+        (candidate) => candidate.to === INVITEE && candidate.text.includes(`"${name}"`),
+      );
+      const token = mail === undefined ? undefined : tokenFrom(mail.text);
+      if (token === undefined) throw new Error("the re-invitation carried no token");
+      return token;
+    })();
+    const accepted = await postJson(
+      app,
+      "/api/workspace-invitations/acceptance",
+      { token: replacementToken },
+      member.cookie,
+    );
+    expect(accepted.status).toBe(200);
+    const stillRefused = await me(issued.secret);
+    expect(stillRefused.status).toBe(401);
+    expect(await problemBody(stillRefused)).toMatchObject({ code: "key_revoked" });
+
+    // A newly issued key is live, and capped at the freshly granted level.
+    const newKeyRes = await postJson(
+      app,
+      "/api/agents/keys",
+      { agentId, workspaceId: workspace.id, projects: [{ projectId, level: "read" }] },
+      member.cookie,
+    );
+    expect(newKeyRes.status).toBe(201);
+    const fresh = CreateAgentKeyResponse.parse(await newKeyRes.json());
+    const newMe = await me(fresh.secret);
+    expect(newMe.status).toBe(200);
+    expect(await newMe.json()).toMatchObject({ projects: [{ projectId, level: "read" }] });
+
+    // Only one revocation event despite the rejoin and the second issuance.
+    expect(await database.db.select().from(agentKeyEvents)).toHaveLength(3);
+  });
+
+  it("serializes issueKey with removeMember so a removed member keeps no live key", async () => {
+    const { app, admin, adminCookie } = await readyAgentsApp();
+    const workspace = await createWorkspace(app, adminCookie, "Lock Order Team");
+    const projectId = await createProjectDirect(workspace.id, admin.id, "Locked Work");
+    const member = await addMember(app, workspace.id, "lock.member@example.com");
+    await grantProjectManage(projectId, member.human.id, admin.id);
+    const agentRes = await postJson(app, "/api/agents", { name: "lock-bot" }, member.cookie);
+    const agentId = Agent.parse(await agentRes.json()).id;
+
+    // Hold the installation-wide ownership lock, then start both writers. Each must
+    // queue behind it: without the lock in issueKey, its INSERT could commit after the
+    // removal's revocation UPDATE and leave a live key for a removed member.
+    const release = createGate();
+    const acquired = createGate();
+    const holder = database.sql.begin(async (tx) => {
+      await tx`select lock_workspace_ownership_writes()`;
+      acquired.release();
+      await release.opened;
+    });
+    await acquired.opened;
+
+    const issuing = postJson(
+      app,
+      "/api/agents/keys",
+      { agentId, workspaceId: workspace.id, projects: [{ projectId, level: "read" }] },
+      member.cookie,
+    );
+    const removing = deleteRequest(
+      app,
+      `/api/workspaces/${workspace.id}/members/${member.human.id}`,
+      adminCookie,
+    );
+    // Both the issuance and the removal are blocked on the same advisory lock.
+    await expect
+      .poll(
+        async () => {
+          const [row] = await database.sql<{ count: number }[]>`
+            select count(*)::int as count
+            from pg_stat_activity
+            where wait_event_type = 'Lock'
+              and query ilike '%lock_workspace_ownership_writes%'
+              and pid <> pg_backend_pid()
+          `;
+          return row?.count ?? 0;
+        },
+        { timeout: 5_000, interval: 25 },
+      )
+      .toBeGreaterThanOrEqual(2);
+
+    release.release();
+    await holder;
+    const [issued, removed] = await Promise.all([issuing, removing]);
+    expect(removed.status).toBe(204);
+
+    // Whichever writer won the lock, no unrevoked key may survive for the removed
+    // member. If removal won first, issuance refuses the workspace outright.
+    const keys = await database.db
+      .select()
+      .from(agentApiKeys)
+      .where(and(eq(agentApiKeys.workspaceId, workspace.id), eq(agentApiKeys.agentId, agentId)));
+    expect(keys.filter((key) => key.revokedAt === null)).toHaveLength(0);
+    const issuance = {
+      status: issued.status,
+      code: issued.status === 201 ? "issued" : (await problemBody(issued)).code,
+      keys: keys.length,
+    };
+    expect(issuance).toMatchObject(
+      issuance.status === 201
+        ? { status: 201, code: "issued", keys: 1 }
+        : { status: 404, code: "workspace_not_found", keys: 0 },
+    );
   });
 });

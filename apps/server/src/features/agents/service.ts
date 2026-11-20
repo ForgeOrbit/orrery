@@ -99,6 +99,14 @@ function requireKey(token: string | null): string {
   return token;
 }
 
+// Issuing a key takes the same installation-wide ownership write lock as project access
+// and workspace membership changes, and takes it first: no row lock comes before it.
+// Without it, a concurrent member removal could run its revocation UPDATE before this
+// key's INSERT committed, leaving an unrevoked key for a member who is already gone.
+async function lockWorkspaceOwnershipWrites(tx: DbTransaction) {
+  await tx.execute(sql`select lock_workspace_ownership_writes()`);
+}
+
 // A project ceiling decided by the projects feature's one resolver, borrowed through
 // the feature's public interface. Agents never grow a second project-level policy.
 export type ProjectAccessCeiling = (
@@ -337,6 +345,44 @@ async function revokeInTransaction(
   return key;
 }
 
+// Membership removal ends every key the removed human's agents hold in that workspace,
+// inside the removal's own transaction. agentApiKeys belongs to this feature, so the
+// workspaces feature borrows this helper through the registry instead of writing to the
+// key table itself. The conditional UPDATE ... RETURNING makes it idempotent: a key that
+// was already revoked (by its owner or an owner) changes nothing and writes no second
+// event. One secret-free event is recorded per newly revoked key, with the remover as
+// actor — the same audit shape as any other revocation.
+export async function revokeMemberWorkspaceKeys(
+  tx: DbTransaction,
+  workspaceId: string,
+  humanId: string,
+  actorHumanId: string,
+): Promise<void> {
+  const revoked = await tx
+    .update(agentApiKeys)
+    .set({ revokedAt: sql`now()`, revokedByHumanId: actorHumanId })
+    .where(
+      and(
+        eq(agentApiKeys.workspaceId, workspaceId),
+        isNull(agentApiKeys.revokedAt),
+        inArray(
+          agentApiKeys.agentId,
+          tx.select({ id: agents.id }).from(agents).where(eq(agents.humanId, humanId)),
+        ),
+      ),
+    )
+    .returning({ id: agentApiKeys.id, agentId: agentApiKeys.agentId });
+
+  for (const key of revoked) {
+    await recordEvent(
+      tx,
+      AgentKeyEventType.enum.agent_key_revoked,
+      { id: key.id, agentId: key.agentId, workspaceId },
+      actorHumanId,
+    );
+  }
+}
+
 // Bearer resolution inside one transaction: the lookup, the revocation/expiry/activity
 // checks, the dynamic human-access ceiling, and the optional target scope all see one
 // consistent snapshot.
@@ -476,6 +522,9 @@ export function createAgentsService({
       const actor = requireAccount(account);
       const validity = AgentKeyValidity.parse(input.validity ?? AgentKeyValidity.enum["90"]);
       return db.transaction(async (tx) => {
+        // Serialize with member removal and every other ownership write. The lock is
+        // taken before any row is read or written, matching projects and workspaces.
+        await lockWorkspaceOwnershipWrites(tx);
         const [agent] = await tx
           .select({ id: agents.id, name: agents.name })
           .from(agents)
@@ -604,8 +653,20 @@ export function createAgentsService({
 
     async authenticate(token, target) {
       const presented = requireKey(token);
-      return db.transaction((tx) =>
-        resolveKeyInTransaction(tx, projectAccessCeiling, projectAccessAtLeast, presented, target),
+      // Authentication is a read-only decision over several tables (the key, its
+      // revocation, the human's membership, expiry, and the project ceiling). One
+      // REPEATABLE READ snapshot keeps those reads consistent instead of letting a
+      // concurrent revoke, removal, or demotion tear the decision apart mid-flight.
+      return db.transaction(
+        (tx) =>
+          resolveKeyInTransaction(
+            tx,
+            projectAccessCeiling,
+            projectAccessAtLeast,
+            presented,
+            target,
+          ),
+        { isolationLevel: "repeatable read", accessMode: "read only" },
       );
     },
   };

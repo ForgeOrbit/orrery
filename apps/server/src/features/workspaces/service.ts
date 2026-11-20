@@ -385,6 +385,11 @@ async function inviterStillAuthorized(
   ) {
     return false;
   }
+  // Scope is an authority check too, and it applies to owners as much as delegates: a
+  // project that moved out of this workspace makes the offer dead. Returning false here
+  // frees the address so a fresh invite supersedes the stale offer instead of blocking
+  // it with invitation_pending for seven days.
+  if (!(await offeredProjectsInWorkspace(tx, workspaceId, offered))) return false;
   if (inviter.isOwner) return true;
   const managed = await loadManagedProjectIds(tx, workspaceId, inviterHumanId);
   return offered.every((grant) => managed.has(grant.projectId));
@@ -567,6 +572,23 @@ async function readWorkspaceInvitationSummary(
   return toWorkspaceSummary(row, grants.get(invitationId) ?? []);
 }
 
+// Every offered project must currently belong to the workspace. Owners, delegates, and
+// the liveness check that decides whether a pending offer blocks an address all ask the
+// same question; this is the one non-throwing answer they share.
+async function offeredProjectsInWorkspace(
+  tx: DbTransaction,
+  workspaceId: string,
+  offered: readonly { projectId: string }[],
+): Promise<boolean> {
+  const ids = [...new Set(offered.map((grant) => grant.projectId))];
+  if (ids.length === 0) return true;
+  const rows = await tx
+    .select({ id: projects.id })
+    .from(projects)
+    .where(and(eq(projects.workspaceId, workspaceId), inArray(projects.id, ids)));
+  return rows.length === ids.length;
+}
+
 // Validate an offered scope at invitation creation: every project must currently belong
 // to the workspace. Acceptance rechecks the same fact under the workspace lock.
 async function requireOfferedProjectsInWorkspace(
@@ -574,14 +596,7 @@ async function requireOfferedProjectsInWorkspace(
   workspaceId: string,
   offered: readonly { projectId: string }[],
 ) {
-  const ids = [...new Set(offered.map((grant) => grant.projectId))];
-  if (ids.length === 0) return;
-  const rows = await tx
-    .select({ id: projects.id, workspaceId: projects.workspaceId })
-    .from(projects)
-    .where(inArray(projects.id, ids));
-  const current = new Map(rows.map((row) => [row.id, row.workspaceId]));
-  if (ids.some((id) => current.get(id) !== workspaceId)) {
+  if (!(await offeredProjectsInWorkspace(tx, workspaceId, offered))) {
     throw new WorkspacesError("invitation_scope_invalid");
   }
 }
@@ -602,6 +617,14 @@ export interface WorkspacesDeps {
   // Projects owns project grants: removing a member ends them in the same transaction
   // and records the revocations. The projects feature's public interface supplies this.
   revokeMemberProjectAccess: (
+    tx: DbTransaction,
+    workspaceId: string,
+    humanId: string,
+    actorHumanId: string,
+  ) => Promise<void>;
+  // Agents owns API keys: removing a member also revokes every key their agents hold in
+  // this workspace, so a re-invitation cannot silently revive a pre-removal credential.
+  revokeMemberWorkspaceKeys: (
     tx: DbTransaction,
     workspaceId: string,
     humanId: string,
@@ -801,6 +824,7 @@ export function createWorkspacesService({
   markEmailVerified,
   deliver,
   revokeMemberProjectAccess,
+  revokeMemberWorkspaceKeys,
   applyInvitationGrants,
   log,
 }: WorkspacesDeps): WorkspacesService {
@@ -1666,8 +1690,11 @@ export function createWorkspacesService({
             ),
           );
         // Project grants die with the membership, in this transaction, so a rejoin
-        // starts fresh and cannot revive an old level.
+        // starts fresh and cannot revive an old level. So do the human's API keys in
+        // this workspace: without this, a pre-removal key would authenticate again the
+        // moment a re-invitation restored the membership.
         await revokeMemberProjectAccess(tx, workspaceId, humanId, actor.humanId);
+        await revokeMemberWorkspaceKeys(tx, workspaceId, humanId, actor.humanId);
         await recordEvent(
           tx,
           target.isOwner ? "owner_removed" : "member_removed",

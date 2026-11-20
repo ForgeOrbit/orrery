@@ -284,6 +284,7 @@ describe("shared project access", () => {
       log: silentLogger,
       revokeMemberProjectAccess: (tx, targetWorkspaceId, humanId, actorHumanId) =>
         projects.revokeMemberProjectAccess(tx, targetWorkspaceId, humanId, actorHumanId),
+      revokeMemberWorkspaceKeys: async () => {},
       applyInvitationGrants: (tx, workspaceId, humanId, grantedByHumanId, offered) =>
         projects.applyInvitationGrants(tx, workspaceId, humanId, grantedByHumanId, offered),
     });
