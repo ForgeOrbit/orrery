@@ -504,8 +504,14 @@ export function createSessionsService({
   // A due one-hour question must commit its pause even when the check-in or claim that
   // triggered it is refused, otherwise the deadline would be re-evaluated forever. Like
   // lease expiry, it runs in its own committed transaction before the operation's tx.
-  const deadlineCommitted = (issueId: string) =>
-    db.transaction(async (tx) => {
+  // Skip the row lock entirely when no open question exists on the issue (the common case).
+  const deadlineCommitted = async (issueId: string) => {
+    if (evaluateQuestionDeadline === undefined) return;
+    const deadline = await db.transaction((tx) => leaseDeadline(tx, issueId), {
+      accessMode: "read only",
+    });
+    if (deadline === null) return;
+    await db.transaction(async (tx) => {
       // Lock in the same order as every other writer (issues -> questions -> work_sessions).
       // Without this, a due question could lock questions first and deadlock (40P01) against
       // an answer or check-in already holding the issue row.
@@ -518,6 +524,7 @@ export function createSessionsService({
       if (row === undefined) return;
       await checkDeadline(tx, issueId);
     });
+  };
 
   // Renew, progress and stop share one live-session decision: lock the issue, expire a
   // stale lease, re-check the agent's current project level, find the live session the
