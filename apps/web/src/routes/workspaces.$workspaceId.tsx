@@ -112,6 +112,13 @@ function WorkspacePage() {
           ? "Personal workspace"
           : `Shared workspace · ${workspace.isOwner ? "Owner" : "Member"}`}
       </p>
+      {(workspace.isOwner || workspace.canManageMemberPermissions) && (
+        <p>
+          <Link to="/history/workspace/$workspaceId" params={{ workspaceId: workspace.id }}>
+            View access history
+          </Link>
+        </p>
+      )}
       <Projects
         workspaceId={workspace.id}
         canCreate={workspace.isOwner || workspace.canCreateProjects}

@@ -60,6 +60,12 @@ def extract_code_facts() -> dict[str, Any]:
     inv_src = read_text("apps/server/src/features/invitations/service.ts")
     acc_src = read_text("apps/server/src/features/accounts/service.ts")
     set_src = read_text("apps/server/src/features/settings/service.ts")
+    # #32 history views: the scope decisions live in one service, the transport is thin,
+    # and the response shape is the shared contract. All three are read so deleting a
+    # guard flips the M13 attempts below to their wrong outcomes.
+    hist_src = read_text("apps/server/src/features/history/service.ts")
+    hist_rest = read_text("apps/server/src/features/history/rest.ts")
+    hist_contract = read_text("packages/contract/src/history.ts")
     mig_0007 = read_text("db/migrations/0007_workspace_owner_guards.sql")
     mig_0008 = read_text("db/migrations/0008_workspace_ownership_write_order.sql")
 
@@ -579,7 +585,62 @@ def extract_code_facts() -> dict[str, Any]:
         and "await sessionReader(c)" in set_access_rest
     )
 
-    # M13 (#34): runs and child workers. Identity is the authenticated agent plus the
+    # M13: history visibility boundaries (#32). Each guard is read from the decision that
+    # produces it: the three service methods, the installation projection, and the thin
+    # REST adapter. A missing scope check or a leaked secret field flips an attempt below.
+    hist_ws_fn = slice_between(hist_src, "async workspaceHistory(", "async projectHistory(")
+    hist_proj_fn = slice_between(hist_src, "async projectHistory(", "async installationHistory(")
+    hist_inst_fn = hist_src.split("async installationHistory(", 1)[1] if "async installationHistory(" in hist_src else ""
+    hist_install_fn = slice_between(hist_src, "async function loadInstallationEvents(", "export interface HistoryDeps")
+    hist_key_fn = slice_between(hist_src, "async function loadKeyEvents(", "async function loadProjectAccessEvents(")
+
+    m13_session_only = (
+        hist_rest.count("await sessionReader(c)") >= 3
+        and "agentAuthenticator" not in hist_rest
+        and "readBearerToken" not in hist_rest
+    )
+    m13_workspace_404 = (
+        'throw new HistoryError("workspace_not_found")' in hist_ws_fn
+        and "workspaceMemberships" in hist_ws_fn
+    )
+    m13_delegate_scope = (
+        'throw new HistoryError("workspace_history_forbidden")' in hist_ws_fn
+        and "row.canManageMemberPermissions !== true" in hist_ws_fn
+        and "eq(projectAccessGrants.level, ProjectAccessLevel.enum.manage)" in hist_ws_fn
+    )
+    m13_owner_keys = (
+        "if (isOwner) {" in hist_ws_fn
+        and "loadKeyEvents(" in hist_ws_fn
+        and "loadKeyEvents(" not in hist_ws_fn.split("if (isOwner) {", 1)[0]
+    )
+    m13_project_404 = (
+        'throw new HistoryError("project_not_found")' in hist_proj_fn
+        and "ceiling.get(projectId)" in hist_proj_fn
+    )
+    m13_manage_access = "projectAccessAtLeast(level, ProjectAccessLevel.enum.manage)" in hist_proj_fn
+    m13_activity_granted = ordered(
+        hist_proj_fn, "const events = await loadProjectActivity(", "projectAccessAtLeast("
+    )
+    m13_admin_only = (
+        "isSystemAdministrator" in hist_inst_fn
+        and 'throw new HistoryError("not_system_administrator")' in hist_inst_fn
+    )
+    m13_installation_scope = (
+        "from(instanceSetup)" in hist_install_fn
+        and "from(invitations)" in hist_install_fn
+        and not any(
+            table in hist_install_fn
+            for table in [
+                "workspaceEvents", "projectAccessEvents", "projectActivity",
+                "agentKeyEvents", "workspaceMemberships",
+            ]
+        )
+    )
+    m13_no_secret = not re.search(
+        r"(secret|tokenHash|token_hash|passwordHash|password_hash|smtpPassword)\s*:",
+        hist_contract + hist_key_fn + hist_install_fn,
+    )
+    # M14 (#34): runs and child workers. Identity is the authenticated agent plus the
     # harness's native session id, enforced by a partial unique index. The whole report
     # mutation runs in one transaction under a FOR UPDATE row lock, so concurrent model
     # reports cannot duplicate history or drop a child update. Reported metadata is
@@ -595,7 +656,7 @@ def extract_code_facts() -> dict[str, Any]:
     list_runs_fn = slice_between(run_src, "async listWorkspaceRuns(", "  };\n}")
     child_fn = slice_between(run_src, "async function recordChild(", "export function createRunsService")
 
-    m13_db_identity = (
+    m14_db_identity = (
         "one_run_per_agent_workspace_harness_session" in runs_table
         and "is not null and" in runs_table
         and "coalesce" not in runs_table
@@ -603,7 +664,7 @@ def extract_code_facts() -> dict[str, Any]:
         and "is not null and" in mig_0019
         and "coalesce" not in mig_0019
     )
-    m13_identity_key = all(
+    m14_identity_key = all(
         marker in report_fn
         for marker in [
             "agentId: identity.agentId",
@@ -612,13 +673,13 @@ def extract_code_facts() -> dict[str, Any]:
             "nativeSessionId: runKey.nativeSessionId",
         ]
     )
-    m13_conflict = (
+    m14_conflict = (
         ".onConflictDoNothing()" in report_fn
         and "eq(runs.harness, runKey.harness)" in report_fn
         and "eq(runs.nativeSessionId, runKey.nativeSessionId)" in report_fn
         and "row = created" in report_fn
     )
-    m13_explicit_scope = all(
+    m14_explicit_scope = all(
         marker in report_fn
         for marker in [
             "eq(runs.id, input.runId)",
@@ -627,7 +688,7 @@ def extract_code_facts() -> dict[str, Any]:
             'throw new RunsError("run_not_found")',
         ]
     )
-    m13_child_link = (
+    m14_child_link = (
         "await recordChild(tx, identity, row.id, input, observedAt)" in report_fn
         and "childRunId," in child_fn
         and "agentId," in child_fn
@@ -637,7 +698,7 @@ def extract_code_facts() -> dict[str, Any]:
         and "is not null or" in mig_0019
         and 'FOREIGN KEY ("child_run_id") REFERENCES "public"."runs"("id") ON DELETE set null' in mig_0019
     )
-    m13_child_scope = all(
+    m14_child_scope = all(
         marker in child_fn
         for marker in [
             "childRunId === runId",
@@ -648,21 +709,21 @@ def extract_code_facts() -> dict[str, Any]:
             '.for("update")',
         ]
     )
-    m13_serialized = (
+    m14_serialized = (
         "db.transaction(async (tx)" in report_fn
         and 'const [locked]' in report_fn
         and 'previousModel = locked.model' in report_fn
         and '.for("update")' in report_fn
         and '.for("update")' in child_fn
     )
-    m13_model_change = (
+    m14_model_change = (
         "const modelChanged = reportedModel !== null && reportedModel !== previousModel;" in report_fn
         and "if (modelChanged && !inserted)" in report_fn
         and "fromModel: previousModel" in report_fn
         and "toModel: reportedModel" in report_fn
         and "insert(runModelChanges)" in report_fn
     )
-    m13_unknown = (
+    m14_unknown = (
         "const reportedModel = input.model ?? input.reported?.model ?? null" in report_fn
         and "runId: null," in report_fn
         and "harness: null," in report_fn
@@ -670,23 +731,23 @@ def extract_code_facts() -> dict[str, Any]:
         and "model: z.string().nullable()" in run_contract_src
         and "runId: z.string().nullable()" in run_contract_src
     )
-    m13_reported_contract = (
+    m14_reported_contract = (
         "reported:" in run_contract_src
         and "runKey: RunKey.nullable().optional()" in run_contract_src
         and "input.checkIn?.at" in report_fn
         and "input.reported?.harnessVersion" in report_fn
     )
-    m13_no_lease = not any(
+    m14_no_lease = not any(
         word in source
         for word in ["leaseExpiresAt", "claimExpiresAt"]
         for source in [run_src, run_contract_src, run_mcp_src, mig_0019]
     )
-    m13_human_scope = (
+    m14_human_scope = (
         "humanCanReadWorkspace(db, workspaceId, actor.humanId)" in list_runs_fn
         and "innerJoin(agents" in list_runs_fn
         and 'throw new RunsError("workspace_not_found")' in list_runs_fn
     )
-    m13_adapters = (
+    m14_adapters = (
         "report(identity: AgentIdentity | null, input: RunReportInput)" in run_src
         and "await authenticate(c.req.raw)" in run_rest_src
         and "await authenticate(request)" in run_mcp_src
@@ -696,7 +757,7 @@ def extract_code_facts() -> dict[str, Any]:
         and "isAgentError(error)" in run_mcp_src
         and "Request" not in slice_between(run_src, "export interface RunsService", "type RunRow")
     )
-    m13_tool = "orrery_run_checkin" in tool_names
+    m14_tool = "orrery_run_checkin" in tool_names
 
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
@@ -772,20 +833,30 @@ def extract_code_facts() -> dict[str, Any]:
         "m12_rest_bearer": m12_rest_bearer,
         "m12_rest_admin_session": m12_rest_admin_session,
         "m12_list_scope": m12_list_scope,
-        "m13_db_identity": m13_db_identity,
-        "m13_identity_key": m13_identity_key,
-        "m13_conflict": m13_conflict,
-        "m13_explicit_scope": m13_explicit_scope,
-        "m13_child_link": m13_child_link,
-        "m13_child_scope": m13_child_scope,
-        "m13_serialized": m13_serialized,
-        "m13_model_change": m13_model_change,
-        "m13_unknown": m13_unknown,
-        "m13_reported_contract": m13_reported_contract,
-        "m13_no_lease": m13_no_lease,
-        "m13_human_scope": m13_human_scope,
-        "m13_adapters": m13_adapters,
-        "m13_tool": m13_tool,
+        "m13_session_only": m13_session_only,
+        "m13_workspace_404": m13_workspace_404,
+        "m13_delegate_scope": m13_delegate_scope,
+        "m13_owner_keys": m13_owner_keys,
+        "m13_project_404": m13_project_404,
+        "m13_manage_access": m13_manage_access,
+        "m13_activity_granted": m13_activity_granted,
+        "m13_admin_only": m13_admin_only,
+        "m13_installation_scope": m13_installation_scope,
+        "m13_no_secret": m13_no_secret,
+        "m14_db_identity": m14_db_identity,
+        "m14_identity_key": m14_identity_key,
+        "m14_conflict": m14_conflict,
+        "m14_explicit_scope": m14_explicit_scope,
+        "m14_child_link": m14_child_link,
+        "m14_child_scope": m14_child_scope,
+        "m14_serialized": m14_serialized,
+        "m14_model_change": m14_model_change,
+        "m14_unknown": m14_unknown,
+        "m14_reported_contract": m14_reported_contract,
+        "m14_no_lease": m14_no_lease,
+        "m14_human_scope": m14_human_scope,
+        "m14_adapters": m14_adapters,
+        "m14_tool": m14_tool,
     }
 
 
@@ -1655,46 +1726,37 @@ def check_m12(facts: dict[str, Any]) -> CheckResult:
 
 
 def check_m13(facts: dict[str, Any]) -> CheckResult:
-    # #34: run identity is isolated per agent/workspace/harness/session, a resume reuses
-    # the run, children link to their parent, model changes are events, and missing
-    # metadata stays unknown. Each attempt is a direct probe of one extracted guard.
-    identity = facts["m13_db_identity"] and facts["m13_identity_key"]
-    resume = facts["m13_conflict"]
-    scope = facts["m13_explicit_scope"]
-    child = facts["m13_child_link"]
-    child_scope = facts["m13_child_scope"]
-    serialized = facts["m13_serialized"]
-    history = facts["m13_model_change"]
-    unknown = facts["m13_unknown"]
-    reported = facts["m13_reported_contract"]
-    adapters = facts["m13_adapters"]
-
+    # #32 history visibility. Every attempted read is a direct request against one of the
+    # three history routes; each guard is extracted from the decision that enforces it.
+    # The 4th tuple item is the outcome when the guard is missing: if a source guard is
+    # removed, that attempt resolves to the wrong outcome and this check FAILS. That is
+    # the sensitivity proof — positive controls below also fail if a guard over-blocks.
     attempts: list[tuple[str, str, bool, str]] = [
-        ("two clients share one key but report different native session ids", "2_distinct_runs", identity, "1_shared_run"),
-        ("two anonymous children of one run are reported", "2_children", facts["m13_child_link"], "1_collapsed_child"),
-        ("two check-ins carry the same (harness, nativeSessionId) under one key", "1_run_resumed", resume and facts["m13_db_identity"], "2_runs"),
-        ("a resume reuses an explicit runId of this agent's run", "same_run", scope, "new_run"),
-        ("a report names a runId belonging to another workspace's agent", "run_not_found", scope, "run_hijacked"),
-        ("child_started reports agentId/agentType on the parent run", "linked_to_parent", child, "unlinked"),
-        ("a child runId points at the parent run itself", "run_not_found", child_scope, "self_loop"),
-        ("a child runId names a run of another agent", "run_not_found", child_scope, "foreign_agent_link"),
-        ("a child runId names a run in another workspace", "run_not_found", child_scope, "cross_workspace_link"),
-        ("a repeated child event updates the same child row under a row lock", "1_child_updated", child and serialized, "update_dropped"),
-        ("two simultaneous A-to-B model reports share one transaction and row lock", "history=1_no_duplicate", serialized and history, "duplicate_history"),
-        ("the model changes from A to B during one run", "history=A_to_B", history, "no_history"),
-        ("the same model is reported twice", "no_second_event", history, "duplicate_event"),
-        ("a report omits the model", "unknown_or_unchanged", unknown, "model_cleared"),
-        ("a report has no runId and no runKey", "runId=null_no_row", unknown, "transport_session_run"),
-        ("harness version and model are absent on a new run", "stored_null", unknown, "synthesised"),
-        ("a check-in sends reported:{model,harnessVersion} and runKey:null with a runId", "metadata_stored", reported and scope, "metadata_stripped"),
-        ("a check-in omits `at` but carries checkIn.at", "observed_at_used", reported, "time_missing"),
-        ("a revoked or keyless report is authenticated in the adapters", "refused", adapters, "accepted_by_service"),
-        ("REST hook and MCP check-in map key failures to the same codes", "same_codes", adapters, "divergent"),
-        ("a human outside the workspace lists its runs", "workspace_not_found", facts["m13_human_scope"], "listed"),
-        ("the workspace view names the agent, not only its id", "agentName", facts["m13_human_scope"], "raw_id"),
-        ("the run-reporting tool advertises a lease expiry or claim", "absent", facts["m13_no_lease"], "present"),
-        ("orrery_run_checkin is registered on MCP", "exposed", facts["m13_tool"], "missing"),
-        ("a run is attributed to the authenticated agent, never a reported name", "actor=agent", identity and adapters, "actor=reported"),
+        # Positive controls: the entitled reader really does get the events.
+        ("workspace owner reads membership, key, and project access history", "visible", facts["m13_owner_keys"], "omitted"),
+        ("delegated permission manager reads workspace membership history", "visible", facts["m13_delegate_scope"], "403"),
+        ("project reader sees attributed activity in a granted project", "activity", facts["m13_activity_granted"], "404"),
+        ("project manager additionally sees access events in their project", "access+activity", facts["m13_manage_access"], "activity_only"),
+        ("system administrator reads installation history", "visible", facts["m13_admin_only"], "403"),
+        ("all three history routes use the human session reader", "session", facts["m13_session_only"], "bearer"),
+        # Scope isolation: out-of-scope workspaces and projects are indistinguishable
+        # from missing ones, and a delegate's project view stops at what they Manage.
+        ("non-member reads another workspace's history", "404", facts["m13_workspace_404"], "200"),
+        ("system administrator reads a workspace they do not belong to", "404", facts["m13_workspace_404"], "200"),
+        ("ordinary member reads workspace access history", "403", facts["m13_delegate_scope"], "200"),
+        ("delegated manager reads another workspace's history", "404", facts["m13_workspace_404"], "200"),
+        ("delegated manager reads access events for a project they do not Manage", "omitted", facts["m13_delegate_scope"], "included"),
+        ("ordinary member reads an ungranted project's history", "404", facts["m13_project_404"], "200"),
+        ("system administrator reads a private project's history", "404", facts["m13_project_404"], "200"),
+        ("ordinary member sees project access events in a granted project", "omitted", facts["m13_manage_access"], "included"),
+        ("delegated manager reads a key event from their workspace", "omitted", facts["m13_owner_keys"], "included"),
+        # Installation history carries only installation records; no private content.
+        ("ordinary account reads installation history", "403", facts["m13_admin_only"], "200"),
+        ("installation history includes another workspace's membership events", "absent", facts["m13_installation_scope"], "included"),
+        ("installation history includes a private project's activity", "absent", facts["m13_installation_scope"], "included"),
+        # Secrets never enter an event payload or a history response.
+        ("history response carries a credential secret", "absent", facts["m13_no_secret"], "included"),
+        ("credential event carries a token hash", "absent", facts["m13_no_secret"], "included"),
     ]
     init = ("start",)
 
@@ -1716,6 +1778,85 @@ def check_m13(facts: dict[str, Any]) -> CheckResult:
 
     return bfs_check(
         "M13",
+        "History Visibility Boundaries (#32)",
+        "Owners and delegates see in-scope access history, members only granted-project activity, administrators only installation events, out-of-scope reads are 404, and no secret is returned",
+        "safety",
+        init,
+        next_states,
+        inv,
+        [
+            "apps/server/src/features/history/service.ts",
+            "apps/server/src/features/history/rest.ts",
+            "packages/contract/src/history.ts",
+            "apps/server/src/features/accounts/index.ts",
+            "apps/server/src/features/projects/index.ts",
+            "apps/server/src/db/schema.ts",
+        ],
+    )
+
+
+def check_m14(facts: dict[str, Any]) -> CheckResult:
+    # #34: run identity is isolated per agent/workspace/harness/session, a resume reuses
+    # the run, children link to their parent, model changes are events, and missing
+    # metadata stays unknown. Each attempt is a direct probe of one extracted guard.
+    identity = facts["m14_db_identity"] and facts["m14_identity_key"]
+    resume = facts["m14_conflict"]
+    scope = facts["m14_explicit_scope"]
+    child = facts["m14_child_link"]
+    child_scope = facts["m14_child_scope"]
+    serialized = facts["m14_serialized"]
+    history = facts["m14_model_change"]
+    unknown = facts["m14_unknown"]
+    reported = facts["m14_reported_contract"]
+    adapters = facts["m14_adapters"]
+
+    attempts: list[tuple[str, str, bool, str]] = [
+        ("two clients share one key but report different native session ids", "2_distinct_runs", identity, "1_shared_run"),
+        ("two anonymous children of one run are reported", "2_children", facts["m14_child_link"], "1_collapsed_child"),
+        ("two check-ins carry the same (harness, nativeSessionId) under one key", "1_run_resumed", resume and facts["m14_db_identity"], "2_runs"),
+        ("a resume reuses an explicit runId of this agent's run", "same_run", scope, "new_run"),
+        ("a report names a runId belonging to another workspace's agent", "run_not_found", scope, "run_hijacked"),
+        ("child_started reports agentId/agentType on the parent run", "linked_to_parent", child, "unlinked"),
+        ("a child runId points at the parent run itself", "run_not_found", child_scope, "self_loop"),
+        ("a child runId names a run of another agent", "run_not_found", child_scope, "foreign_agent_link"),
+        ("a child runId names a run in another workspace", "run_not_found", child_scope, "cross_workspace_link"),
+        ("a repeated child event updates the same child row under a row lock", "1_child_updated", child and serialized, "update_dropped"),
+        ("two simultaneous A-to-B model reports share one transaction and row lock", "history=1_no_duplicate", serialized and history, "duplicate_history"),
+        ("the model changes from A to B during one run", "history=A_to_B", history, "no_history"),
+        ("the same model is reported twice", "no_second_event", history, "duplicate_event"),
+        ("a report omits the model", "unknown_or_unchanged", unknown, "model_cleared"),
+        ("a report has no runId and no runKey", "runId=null_no_row", unknown, "transport_session_run"),
+        ("harness version and model are absent on a new run", "stored_null", unknown, "synthesised"),
+        ("a check-in sends reported:{model,harnessVersion} and runKey:null with a runId", "metadata_stored", reported and scope, "metadata_stripped"),
+        ("a check-in omits `at` but carries checkIn.at", "observed_at_used", reported, "time_missing"),
+        ("a revoked or keyless report is authenticated in the adapters", "refused", adapters, "accepted_by_service"),
+        ("REST hook and MCP check-in map key failures to the same codes", "same_codes", adapters, "divergent"),
+        ("a human outside the workspace lists its runs", "workspace_not_found", facts["m14_human_scope"], "listed"),
+        ("the workspace view names the agent, not only its id", "agentName", facts["m14_human_scope"], "raw_id"),
+        ("the run-reporting tool advertises a lease expiry or claim", "absent", facts["m14_no_lease"], "present"),
+        ("orrery_run_checkin is registered on MCP", "exposed", facts["m14_tool"], "missing"),
+        ("a run is attributed to the authenticated agent, never a reported name", "actor=agent", identity and adapters, "actor=reported"),
+    ]
+    init = ("start",)
+
+    def next_states(state):
+        if state != ("start",):
+            return []
+        return [
+            (f"{label} -> {expected if guard else wrong}", ("probed", idx, expected if guard else wrong))
+            for idx, (label, expected, guard, wrong) in enumerate(attempts)
+        ]
+
+    def inv(state):
+        if state[0] != "probed":
+            return True, ""
+        label, expected, _, _ = attempts[state[1]]
+        if state[2] != expected:
+            return False, f"{label} returned {state[2]}, expected {expected}"
+        return True, ""
+
+    return bfs_check(
+        "M14",
         "Runs and Child Workers (#34)",
         "Run identity is isolated per key and harness session, resumes reuse the run, children link to their parent, model changes are recorded, and unreported metadata stays unknown",
         "safety",
@@ -1751,6 +1892,7 @@ def main() -> None:
         check_m11(facts),
         check_m12(facts),
         check_m13(facts),
+        check_m14(facts),
     ]
 
     if "--json" in sys.argv:

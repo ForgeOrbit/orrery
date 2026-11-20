@@ -182,6 +182,9 @@ function InstallationInvitations() {
   return (
     <section>
       <h2>Installation invitations</h2>
+      <p>
+        <Link to="/history/installation">View installation history</Link>
+      </p>
       <form onSubmit={(event) => void onInvite(event)}>
         <label htmlFor="installation-invite-email">Email</label>
         <input

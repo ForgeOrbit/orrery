@@ -7,6 +7,7 @@ import type { Logger } from "../platform/log.ts";
 import { createAccountsFeature, accountsRoutes } from "./accounts/index.ts";
 import { createAgentsFeature, agentsRoutes, revokeMemberWorkspaceKeys } from "./agents/index.ts";
 import type { AgentAuthenticator } from "./agents/index.ts";
+import { createHistoryFeature, historyRoutes } from "./history/index.ts";
 import { createInvitationsFeature, invitationsRoutes } from "./invitations/index.ts";
 import { createProjectsFeature, projectAccessAtLeast, projectsRoutes } from "./projects/index.ts";
 import { createRunsFeature, runsRoutes } from "./runs/index.ts";
@@ -88,6 +89,14 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     }),
     projects,
     agents,
+    // History borrows only projects' access resolver; it never imports another feature's
+    // service, and its routes use accounts' human session reader, never an agent key.
+    createHistoryFeature({
+      db: database.db,
+      sessionReader: accounts.sessionReader,
+      projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
+        projects.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
+    }),
     // Run reporting borrows the same authenticator; the agents feature is built above,
     // so the late-bound seam is live by the time any MCP tool or hook is called.
     createRunsFeature({
@@ -107,5 +116,6 @@ export const routes = [
   ...invitationsRoutes,
   ...workspacesRoutes,
   ...projectsRoutes,
+  ...historyRoutes,
   ...runsRoutes,
 ];
