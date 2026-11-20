@@ -503,7 +503,7 @@ function LinkForm({ issueId, projectId }: { issueId: string; projectId: string }
         placeholder="https://…"
         required
       />
-      <label htmlFor="issue-link-title">Title</label>
+      <label htmlFor="issue-link-title">Link title</label>
       <input
         id="issue-link-title"
         name="title"
