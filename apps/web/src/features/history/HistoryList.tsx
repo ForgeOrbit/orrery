@@ -50,6 +50,7 @@ const labels: Record<string, string> = {
   installation_invitation_revoked: "revoked an invitation for",
   account_deactivated: "deactivated",
   account_reactivated: "reactivated",
+  workspace_ownership_recovered: "recovered workspace ownership for",
 };
 
 const formatTime = (value: string) => new Date(value).toLocaleString();

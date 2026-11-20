@@ -183,6 +183,9 @@ function InstallationInvitations() {
     <section>
       <h2>Installation invitations</h2>
       <p>
+        <Link to="/settings/smtp">Configure SMTP</Link>
+      </p>
+      <p>
         <Link to="/history/installation">View installation history</Link>
       </p>
       <form onSubmit={(event) => void onInvite(event)}>

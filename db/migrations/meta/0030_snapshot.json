@@ -1,5 +1,5 @@
 {
-  "id": "a2336741-c179-4a5a-bd4e-71acb832e8c7",
+  "id": "e95e6bfe-a2cf-4363-b166-4916c847dbb2",
   "prevId": "bc7dbc7c-adc9-4d2d-b29f-cfb0b961ea9a",
   "version": "7",
   "dialect": "postgresql",
@@ -89,7 +89,7 @@
       "checkConstraints": {
         "account_recovery_events_type": {
           "name": "account_recovery_events_type",
-          "value": "\"account_recovery_events\".\"type\" in ('password_reset_requested', 'password_reset_completed', 'local_recovery_completed', 'account_deactivated', 'account_reactivated')"
+          "value": "\"account_recovery_events\".\"type\" in ('password_reset_requested', 'password_reset_completed', 'local_recovery_completed', 'account_deactivated', 'account_reactivated', 'workspace_ownership_recovered')"
         }
       },
       "isRLSEnabled": false
@@ -1139,285 +1139,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.issue_dependencies": {
-      "name": "issue_dependencies",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "issue_id": {
-          "name": "issue_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "blocked_by_issue_id": {
-          "name": "blocked_by_issue_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_by_human_id": {
-          "name": "created_by_human_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_by_agent_id": {
-          "name": "created_by_agent_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "one_blocked_by_per_issue": {
-          "name": "one_blocked_by_per_issue",
-          "columns": [
-            {
-              "expression": "issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "blocked_by_issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "issue_dependencies_blocked_by": {
-          "name": "issue_dependencies_blocked_by",
-          "columns": [
-            {
-              "expression": "blocked_by_issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "issue_dependencies_issue_id_issues_id_fk": {
-          "name": "issue_dependencies_issue_id_issues_id_fk",
-          "tableFrom": "issue_dependencies",
-          "tableTo": "issues",
-          "columnsFrom": ["issue_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "issue_dependencies_blocked_by_issue_id_issues_id_fk": {
-          "name": "issue_dependencies_blocked_by_issue_id_issues_id_fk",
-          "tableFrom": "issue_dependencies",
-          "tableTo": "issues",
-          "columnsFrom": ["blocked_by_issue_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "issue_dependencies_created_by_human_id_humans_id_fk": {
-          "name": "issue_dependencies_created_by_human_id_humans_id_fk",
-          "tableFrom": "issue_dependencies",
-          "tableTo": "humans",
-          "columnsFrom": ["created_by_human_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "issue_dependencies_created_by_agent_id_agents_id_fk": {
-          "name": "issue_dependencies_created_by_agent_id_agents_id_fk",
-          "tableFrom": "issue_dependencies",
-          "tableTo": "agents",
-          "columnsFrom": ["created_by_agent_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "issue_dependencies_no_self_link": {
-          "name": "issue_dependencies_no_self_link",
-          "value": "\"issue_dependencies\".\"issue_id\" <> \"issue_dependencies\".\"blocked_by_issue_id\""
-        },
-        "issue_dependencies_created_by_actor": {
-          "name": "issue_dependencies_created_by_actor",
-          "value": "(\"issue_dependencies\".\"created_by_human_id\" is not null) <> (\"issue_dependencies\".\"created_by_agent_id\" is not null)"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.issue_links": {
-      "name": "issue_links",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "issue_id": {
-          "name": "issue_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "url": {
-          "name": "url",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "title": {
-          "name": "title",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_by_human_id": {
-          "name": "created_by_human_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_by_agent_id": {
-          "name": "created_by_agent_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "one_link_per_issue_and_url": {
-          "name": "one_link_per_issue_and_url",
-          "columns": [
-            {
-              "expression": "issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "url",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "issue_links_issue_created": {
-          "name": "issue_links_issue_created",
-          "columns": [
-            {
-              "expression": "issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "issue_links_issue_id_issues_id_fk": {
-          "name": "issue_links_issue_id_issues_id_fk",
-          "tableFrom": "issue_links",
-          "tableTo": "issues",
-          "columnsFrom": ["issue_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "issue_links_created_by_human_id_humans_id_fk": {
-          "name": "issue_links_created_by_human_id_humans_id_fk",
-          "tableFrom": "issue_links",
-          "tableTo": "humans",
-          "columnsFrom": ["created_by_human_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "issue_links_created_by_agent_id_agents_id_fk": {
-          "name": "issue_links_created_by_agent_id_agents_id_fk",
-          "tableFrom": "issue_links",
-          "tableTo": "agents",
-          "columnsFrom": ["created_by_agent_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "issue_links_created_by_actor": {
-          "name": "issue_links_created_by_actor",
-          "value": "(\"issue_links\".\"created_by_human_id\" is not null) <> (\"issue_links\".\"created_by_agent_id\" is not null)"
-        },
-        "issue_links_kind": {
-          "name": "issue_links_kind",
-          "value": "\"issue_links\".\"kind\" in ('pr', 'commit', 'doc', 'link')"
-        },
-        "issue_links_url_http_s": {
-          "name": "issue_links_url_http_s",
-          "value": "\"issue_links\".\"url\" ~* '^https?://'"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.issues": {
       "name": "issues",
       "schema": "",
@@ -2269,11 +1990,11 @@
         },
         "project_activity_type": {
           "name": "project_activity_type",
-          "value": "\"project_activity\".\"type\" in ('project_created', 'project_renamed', 'project_fallback_policy_changed', 'issue_created', 'issue_edited', 'issue_commented', 'issue_closed', 'issue_reopened', 'issue_dependency_added', 'issue_dependency_removed', 'issue_link_added', 'issue_link_removed', 'issue_question_asked', 'issue_question_answered', 'issue_question_paused', 'issue_question_fallback_used', 'issue_question_follow_up', 'issue_fallback_policy_override_changed', 'issue_stop_requested', 'knowledge_created', 'knowledge_edited')"
+          "value": "\"project_activity\".\"type\" in ('project_created', 'project_renamed', 'project_fallback_policy_changed', 'issue_created', 'issue_edited', 'issue_commented', 'issue_closed', 'issue_reopened', 'issue_question_asked', 'issue_question_answered', 'issue_question_paused', 'issue_question_fallback_used', 'issue_question_follow_up', 'issue_fallback_policy_override_changed', 'knowledge_created', 'knowledge_edited')"
         },
         "project_activity_target_matches_type": {
           "name": "project_activity_target_matches_type",
-          "value": "(\n        (\"project_activity\".\"type\" in ('project_created', 'project_renamed', 'project_fallback_policy_changed') and \"project_activity\".\"issue_id\" is null and \"project_activity\".\"knowledge_entry_id\" is null)\n        or (\"project_activity\".\"type\" in ('issue_created', 'issue_edited', 'issue_commented', 'issue_closed', 'issue_reopened', 'issue_dependency_added', 'issue_dependency_removed', 'issue_link_added', 'issue_link_removed', 'issue_question_asked', 'issue_question_answered', 'issue_question_paused', 'issue_question_fallback_used', 'issue_question_follow_up', 'issue_fallback_policy_override_changed', 'issue_stop_requested') and \"project_activity\".\"issue_id\" is not null and \"project_activity\".\"knowledge_entry_id\" is null)\n        or (\"project_activity\".\"type\" in ('knowledge_created', 'knowledge_edited') and \"project_activity\".\"issue_id\" is null and \"project_activity\".\"knowledge_entry_id\" is not null)\n      )"
+          "value": "(\n        (\"project_activity\".\"type\" in ('project_created', 'project_renamed', 'project_fallback_policy_changed') and \"project_activity\".\"issue_id\" is null and \"project_activity\".\"knowledge_entry_id\" is null)\n        or (\"project_activity\".\"type\" in ('issue_created', 'issue_edited', 'issue_commented', 'issue_closed', 'issue_reopened', 'issue_question_asked', 'issue_question_answered', 'issue_question_paused', 'issue_question_fallback_used', 'issue_question_follow_up', 'issue_fallback_policy_override_changed') and \"project_activity\".\"issue_id\" is not null and \"project_activity\".\"knowledge_entry_id\" is null)\n        or (\"project_activity\".\"type\" in ('knowledge_created', 'knowledge_edited') and \"project_activity\".\"issue_id\" is null and \"project_activity\".\"knowledge_entry_id\" is not null)\n      )"
         }
       },
       "isRLSEnabled": false
@@ -3288,24 +3009,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "stop_requested_at": {
-          "name": "stop_requested_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "stop_requested_by_human_id": {
-          "name": "stop_requested_by_human_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "stop_reason": {
-          "name": "stop_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -3444,15 +3147,6 @@
           "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
-        },
-        "work_sessions_stop_requested_by_human_id_humans_id_fk": {
-          "name": "work_sessions_stop_requested_by_human_id_humans_id_fk",
-          "tableFrom": "work_sessions",
-          "tableTo": "humans",
-          "columnsFrom": ["stop_requested_by_human_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -3462,10 +3156,6 @@
         "work_sessions_status": {
           "name": "work_sessions_status",
           "value": "\"work_sessions\".\"status\" in ('active', 'completed', 'released', 'expired')"
-        },
-        "work_sessions_stop_request": {
-          "name": "work_sessions_stop_request",
-          "value": "(\n        (\"work_sessions\".\"stop_requested_at\" is null and \"work_sessions\".\"stop_requested_by_human_id\" is null and \"work_sessions\".\"stop_reason\" is null)\n        or (\"work_sessions\".\"stop_requested_at\" is not null and \"work_sessions\".\"stop_requested_by_human_id\" is not null)\n      )"
         }
       },
       "isRLSEnabled": false
@@ -3570,7 +3260,7 @@
       "checkConstraints": {
         "workspace_event_type": {
           "name": "workspace_event_type",
-          "value": "\"workspace_events\".\"type\" in ('workspace_created', 'member_joined', 'owner_appointed', 'member_removed', 'owner_removed', 'member_left', 'owner_left', 'create_projects_granted', 'create_projects_revoked', 'invite_members_granted', 'invite_members_revoked', 'remove_members_granted', 'remove_members_revoked', 'manage_member_permissions_granted', 'manage_member_permissions_revoked', 'project_transfer_authorized', 'project_transfer_received', 'project_transferred_out')"
+          "value": "\"workspace_events\".\"type\" in ('workspace_created', 'member_joined', 'owner_appointed', 'member_removed', 'owner_removed', 'member_left', 'owner_left', 'create_projects_granted', 'create_projects_revoked', 'invite_members_granted', 'invite_members_revoked', 'remove_members_granted', 'remove_members_revoked', 'manage_member_permissions_granted', 'manage_member_permissions_revoked', 'project_transfer_authorized', 'project_transfer_received', 'project_transferred_out', 'workspace_ownership_recovered')"
         }
       },
       "isRLSEnabled": false

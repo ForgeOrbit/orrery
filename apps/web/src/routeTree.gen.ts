@@ -22,6 +22,7 @@ import { Route as HistoryInstallationRouteImport } from './routes/history.instal
 import { Route as IssuesIssueIdRouteImport } from './routes/issues.$issueId'
 import { Route as KnowledgeEntryIdRouteImport } from './routes/knowledge.$entryId'
 import { Route as ProjectsProjectIdRouteImport } from './routes/projects.$projectId'
+import { Route as SettingsSmtpRouteImport } from './routes/settings.smtp'
 import { Route as WorkspacesWorkspaceIdRouteImport } from './routes/workspaces.$workspaceId'
 import { Route as HistoryProjectProjectIdRouteImport } from './routes/history.project.$projectId'
 import { Route as HistoryWorkspaceWorkspaceIdRouteImport } from './routes/history.workspace.$workspaceId'
@@ -91,6 +92,11 @@ const ProjectsProjectIdRoute = ProjectsProjectIdRouteImport.update({
   path: '/projects/$projectId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsSmtpRoute = SettingsSmtpRouteImport.update({
+  id: '/settings/smtp',
+  path: '/settings/smtp',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const WorkspacesWorkspaceIdRoute = WorkspacesWorkspaceIdRouteImport.update({
   id: '/workspaces/$workspaceId',
   path: '/workspaces/$workspaceId',
@@ -122,6 +128,7 @@ export interface FileRoutesByFullPath {
   '/issues/$issueId': typeof IssuesIssueIdRoute
   '/knowledge/$entryId': typeof KnowledgeEntryIdRoute
   '/projects/$projectId': typeof ProjectsProjectIdRoute
+  '/settings/smtp': typeof SettingsSmtpRoute
   '/workspaces/$workspaceId': typeof WorkspacesWorkspaceIdRoute
   '/history/project/$projectId': typeof HistoryProjectProjectIdRoute
   '/history/workspace/$workspaceId': typeof HistoryWorkspaceWorkspaceIdRoute
@@ -140,6 +147,7 @@ export interface FileRoutesByTo {
   '/issues/$issueId': typeof IssuesIssueIdRoute
   '/knowledge/$entryId': typeof KnowledgeEntryIdRoute
   '/projects/$projectId': typeof ProjectsProjectIdRoute
+  '/settings/smtp': typeof SettingsSmtpRoute
   '/workspaces/$workspaceId': typeof WorkspacesWorkspaceIdRoute
   '/history/project/$projectId': typeof HistoryProjectProjectIdRoute
   '/history/workspace/$workspaceId': typeof HistoryWorkspaceWorkspaceIdRoute
@@ -159,6 +167,7 @@ export interface FileRoutesById {
   '/issues/$issueId': typeof IssuesIssueIdRoute
   '/knowledge/$entryId': typeof KnowledgeEntryIdRoute
   '/projects/$projectId': typeof ProjectsProjectIdRoute
+  '/settings/smtp': typeof SettingsSmtpRoute
   '/workspaces/$workspaceId': typeof WorkspacesWorkspaceIdRoute
   '/history/project/$projectId': typeof HistoryProjectProjectIdRoute
   '/history/workspace/$workspaceId': typeof HistoryWorkspaceWorkspaceIdRoute
@@ -179,6 +188,7 @@ export interface FileRouteTypes {
     | '/issues/$issueId'
     | '/knowledge/$entryId'
     | '/projects/$projectId'
+    | '/settings/smtp'
     | '/workspaces/$workspaceId'
     | '/history/project/$projectId'
     | '/history/workspace/$workspaceId'
@@ -197,6 +207,7 @@ export interface FileRouteTypes {
     | '/issues/$issueId'
     | '/knowledge/$entryId'
     | '/projects/$projectId'
+    | '/settings/smtp'
     | '/workspaces/$workspaceId'
     | '/history/project/$projectId'
     | '/history/workspace/$workspaceId'
@@ -215,6 +226,7 @@ export interface FileRouteTypes {
     | '/issues/$issueId'
     | '/knowledge/$entryId'
     | '/projects/$projectId'
+    | '/settings/smtp'
     | '/workspaces/$workspaceId'
     | '/history/project/$projectId'
     | '/history/workspace/$workspaceId'
@@ -234,6 +246,7 @@ export interface RootRouteChildren {
   IssuesIssueIdRoute: typeof IssuesIssueIdRoute
   KnowledgeEntryIdRoute: typeof KnowledgeEntryIdRoute
   ProjectsProjectIdRoute: typeof ProjectsProjectIdRoute
+  SettingsSmtpRoute: typeof SettingsSmtpRoute
   WorkspacesWorkspaceIdRoute: typeof WorkspacesWorkspaceIdRoute
   HistoryProjectProjectIdRoute: typeof HistoryProjectProjectIdRoute
   HistoryWorkspaceWorkspaceIdRoute: typeof HistoryWorkspaceWorkspaceIdRoute
@@ -332,6 +345,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProjectsProjectIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings/smtp': {
+      id: '/settings/smtp'
+      path: '/settings/smtp'
+      fullPath: '/settings/smtp'
+      preLoaderRoute: typeof SettingsSmtpRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/workspaces/$workspaceId': {
       id: '/workspaces/$workspaceId'
       path: '/workspaces/$workspaceId'
@@ -370,6 +390,7 @@ const rootRouteChildren: RootRouteChildren = {
   IssuesIssueIdRoute: IssuesIssueIdRoute,
   KnowledgeEntryIdRoute: KnowledgeEntryIdRoute,
   ProjectsProjectIdRoute: ProjectsProjectIdRoute,
+  SettingsSmtpRoute: SettingsSmtpRoute,
   WorkspacesWorkspaceIdRoute: WorkspacesWorkspaceIdRoute,
   HistoryProjectProjectIdRoute: HistoryProjectProjectIdRoute,
   HistoryWorkspaceWorkspaceIdRoute: HistoryWorkspaceWorkspaceIdRoute,

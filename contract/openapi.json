@@ -210,6 +210,116 @@
         ],
         "format": "date-time"
       },
+      "InstallationDirectoryResponse": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/InstallationWorkspace"
+        }
+      },
+      "InstallationWorkspace": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "shared"
+            ]
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "hasActiveOwner": {
+            "type": "boolean"
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InstallationWorkspaceMember"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "createdAt",
+          "hasActiveOwner",
+          "members"
+        ]
+      },
+      "InstallationWorkspaceMember": {
+        "type": "object",
+        "properties": {
+          "humanId": {
+            "type": "string"
+          },
+          "email": {
+            "$ref": "#/components/schemas/Email"
+          },
+          "isOwner": {
+            "type": "boolean"
+          },
+          "isFormerOwner": {
+            "type": "boolean"
+          },
+          "suspendedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "accountDeactivated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "humanId",
+          "email",
+          "isOwner",
+          "isFormerOwner",
+          "suspendedAt",
+          "accountDeactivated"
+        ]
+      },
+      "OwnershipRecovery": {
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string"
+          },
+          "humanId": {
+            "type": "string"
+          },
+          "email": {
+            "$ref": "#/components/schemas/Email"
+          },
+          "recoveredAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "humanId",
+          "email",
+          "recoveredAt"
+        ]
+      },
+      "RecoverOwnershipRequest": {
+        "type": "object",
+        "properties": {
+          "humanId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "humanId"
+        ]
+      },
       "Agent": {
         "type": "object",
         "properties": {
@@ -3596,6 +3706,134 @@
           },
           "409": {
             "description": "The account is not deactivated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/workspaces": {
+      "get": {
+        "summary": "The installation's shared-workspace ownership directory, for system administrators",
+        "description": "Active system administrators only. Lists shared workspaces with their identity, whether an active owner remains, and each member's status. It deliberately returns no projects, issues, knowledge, or other workspace content: the administrator role grants no project access. An unauthenticated or agent-key request is 401; a non-administrator is 403.",
+        "responses": {
+          "200": {
+            "description": "The shared workspaces and their membership status, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstallationDirectoryResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an active system administrator",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/workspaces/{workspaceId}/recover-ownership": {
+      "post": {
+        "summary": "Restore ownership of an ownerless shared workspace",
+        "description": "Active system administrators only. Promotes an active member or a reactivated former owner (including the sole member whose deactivation left the workspace ownerless) in one transaction under the workspace ownership lock. Refused while an active owner remains, for self-promotion, for a still-deactivated or ineligible target, and for a missing or personal workspace. The administrator never becomes a member and gains no project access; members are notified after commit. Human browser sessions only, never agent keys.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoverOwnershipRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The workspace has a new owner",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnershipRecovery"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The workspace id or request body is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an active system administrator, or self-promotion was attempted",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such shared workspace or account",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The workspace has an active owner, or the recipient is deactivated or ineligible",
             "content": {
               "application/problem+json": {
                 "schema": {

@@ -33,7 +33,7 @@ export async function getJson<T>(path: string, parse: (value: unknown) => T): Pr
 }
 
 async function sendJson<T>(
-  method: "POST" | "PATCH",
+  method: "POST" | "PUT" | "PATCH",
   path: string,
   body: unknown,
   parse: (value: unknown) => T,
@@ -49,6 +49,13 @@ async function sendJson<T>(
 
 export function postJson<T>(path: string, body: unknown, parse: (value: unknown) => T): Promise<T> {
   return sendJson("POST", path, body, parse);
+}
+
+// Replaces a resource wholesale. The caller supplies the complete body: an omitted field
+// is not a partial update, so settings that are secrets (and never echoed back) must be
+// supplied again by the client that saves them.
+export function putJson<T>(path: string, body: unknown, parse: (value: unknown) => T): Promise<T> {
+  return sendJson("PUT", path, body, parse);
 }
 
 // A POST whose success is a resource, with no request body (for actions whose target is

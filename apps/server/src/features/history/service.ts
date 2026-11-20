@@ -386,8 +386,9 @@ async function loadInstallationEvents(db: Db): Promise<HistoryEvent[]> {
 
 // Installation-wide account status changes (#38). The events are stored in the same
 // secret-free account event table as password recovery; only the two deactivation codes
-// are read here. The actor is the administrator who made the change, the subject the
-// account it concerned. Both labels stay stable after deactivation.
+// and #43's ownership recovery code are read here. The actor is the administrator who
+// made the change, the subject the account it concerned. Both labels stay stable after
+// deactivation, and the recovery event carries no workspace or project content.
 async function loadAccountStatusEvents(db: Db): Promise<HistoryEvent[]> {
   const subjectHuman = alias(humans, "history_account_subject");
   const actorHuman = alias(humans, "history_account_actor");
@@ -406,7 +407,16 @@ async function loadAccountStatusEvents(db: Db): Promise<HistoryEvent[]> {
     .from(accountRecoveryEvents)
     .innerJoin(subjectHuman, eq(subjectHuman.id, accountRecoveryEvents.humanId))
     .leftJoin(actorHuman, eq(actorHuman.id, accountRecoveryEvents.actorHumanId))
-    .where(inArray(accountRecoveryEvents.type, ["account_deactivated", "account_reactivated"]))
+    .where(
+      inArray(accountRecoveryEvents.type, [
+        "account_deactivated",
+        "account_reactivated",
+        // #43: recovery is an installation-wide administrative act. The stored event
+        // names only the actor and promoted human, so installation history shows it
+        // without any workspace or project content.
+        "workspace_ownership_recovered",
+      ]),
+    )
     .orderBy(desc(accountRecoveryEvents.createdAt), desc(accountRecoveryEvents.id));
   const scope = installationScope();
   return rows.map((row): HistoryEvent => ({

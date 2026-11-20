@@ -10,7 +10,9 @@ export const setupStatusQuery = queryOptions({
   queryFn: async () => SetupStatus.parse(await (await fetch("/api/setup/status")).json()),
 });
 
-export type Session = { signedIn: false } | { signedIn: true; email: string };
+export type Session =
+  | { signedIn: false }
+  | { signedIn: true; email: string; emailVerified: boolean };
 
 export const sessionQuery = queryOptions({
   queryKey: ["session"],
@@ -20,6 +22,6 @@ export const sessionQuery = queryOptions({
     if (res.status === 401) return { signedIn: false };
     if (!res.ok) throw new Error(`Session check failed (${res.status}).`);
     const account = SessionResponse.parse(await res.json());
-    return { signedIn: true, email: account.email };
+    return { signedIn: true, email: account.email, emailVerified: account.emailVerified };
   },
 });

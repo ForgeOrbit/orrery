@@ -1,6 +1,6 @@
 {
-  "id": "72a37379-d1ce-4f35-8b5a-058a7e739abc",
-  "prevId": "a2336741-c179-4a5a-bd4e-71acb832e8c7",
+  "id": "fe9ff859-92df-4fbe-a66f-a18f54664fdb",
+  "prevId": "e95e6bfe-a2cf-4363-b166-4916c847dbb2",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -89,7 +89,7 @@
       "checkConstraints": {
         "account_recovery_events_type": {
           "name": "account_recovery_events_type",
-          "value": "\"account_recovery_events\".\"type\" in ('password_reset_requested', 'password_reset_completed', 'local_recovery_completed', 'account_deactivated', 'account_reactivated')"
+          "value": "\"account_recovery_events\".\"type\" in ('password_reset_requested', 'password_reset_completed', 'local_recovery_completed', 'account_deactivated', 'account_reactivated', 'workspace_ownership_recovered')"
         }
       },
       "isRLSEnabled": false
@@ -1459,6 +1459,19 @@
           "primaryKey": false,
           "notNull": true
         },
+        "priority": {
+          "name": "priority",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'none'"
+        },
+        "sort_order": {
+          "name": "sort_order",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true
+        },
         "created_by_human_id": {
           "name": "created_by_human_id",
           "type": "text",
@@ -1515,6 +1528,18 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "assignee_type": {
+          "name": "assignee_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "assignee_id": {
+          "name": "assignee_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -1535,6 +1560,54 @@
             }
           ],
           "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "issues_project_sort_order": {
+          "name": "issues_project_sort_order",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "sort_order",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "issues_assignee": {
+          "name": "issues_assignee",
+          "columns": [
+            {
+              "expression": "assignee_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "assignee_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -1606,6 +1679,22 @@
         "issues_status": {
           "name": "issues_status",
           "value": "\"issues\".\"status\" in ('open', 'closed')"
+        },
+        "issues_priority": {
+          "name": "issues_priority",
+          "value": "\"issues\".\"priority\" in ('urgent', 'high', 'medium', 'low', 'none')"
+        },
+        "issues_assignee_pair": {
+          "name": "issues_assignee_pair",
+          "value": "(\"issues\".\"assignee_type\" is null) = (\"issues\".\"assignee_id\" is null)"
+        },
+        "issues_assignee_type": {
+          "name": "issues_assignee_type",
+          "value": "(\"issues\".\"assignee_type\" is null or \"issues\".\"assignee_type\" in ('human', 'agent'))"
+        },
+        "issues_sort_order_finite": {
+          "name": "issues_sort_order_finite",
+          "value": "\"issues\".\"sort_order\" > '-Infinity'::double precision and \"issues\".\"sort_order\" < 'Infinity'::double precision"
         },
         "issues_fallback_policy_override": {
           "name": "issues_fallback_policy_override",
@@ -3672,7 +3761,7 @@
       "checkConstraints": {
         "workspace_event_type": {
           "name": "workspace_event_type",
-          "value": "\"workspace_events\".\"type\" in ('workspace_created', 'member_joined', 'owner_appointed', 'member_removed', 'owner_removed', 'member_left', 'owner_left', 'create_projects_granted', 'create_projects_revoked', 'invite_members_granted', 'invite_members_revoked', 'remove_members_granted', 'remove_members_revoked', 'manage_member_permissions_granted', 'manage_member_permissions_revoked', 'project_transfer_authorized', 'project_transfer_received', 'project_transferred_out')"
+          "value": "\"workspace_events\".\"type\" in ('workspace_created', 'member_joined', 'owner_appointed', 'member_removed', 'owner_removed', 'member_left', 'owner_left', 'create_projects_granted', 'create_projects_revoked', 'invite_members_granted', 'invite_members_revoked', 'remove_members_granted', 'remove_members_revoked', 'manage_member_permissions_granted', 'manage_member_permissions_revoked', 'project_transfer_authorized', 'project_transfer_received', 'project_transferred_out', 'workspace_ownership_recovered')"
         }
       },
       "isRLSEnabled": false
