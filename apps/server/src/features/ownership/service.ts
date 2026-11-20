@@ -5,7 +5,7 @@ import {
   type InstallationWorkspaceMember,
   type OwnershipRecovery,
 } from "@orrery/contract";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import {
   accountRecoveryEvents,
@@ -136,6 +136,7 @@ async function notifyMembers(
         and(
           eq(workspaceMemberships.workspaceId, input.workspaceId),
           isNull(workspaceMemberships.suspendedAt),
+          isNull(humans.deactivatedAt),
         ),
       );
     recipients = [...new Set([...rows.map((row) => row.email), input.promotedEmail])];
@@ -178,7 +179,7 @@ export function createOwnershipService({ db, deliver, log }: OwnershipDeps): Own
             })
             .from(workspaces)
             .where(eq(workspaces.kind, WorkspaceKind.enum.shared))
-            .orderBy(workspaces.createdAt, workspaces.id);
+            .orderBy(desc(workspaces.createdAt), desc(workspaces.id));
           if (rows.length === 0) return [];
           const ids = rows.map((row) => row.id);
           const membershipRows = await tx

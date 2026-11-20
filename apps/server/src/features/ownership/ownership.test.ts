@@ -639,4 +639,38 @@ describe("successful ownership recovery (#43)", () => {
     expect(result.humanId).toBe(owner.humanId);
     expect((await membership(workspace.id, owner.humanId))?.isOwner).toBe(true);
   });
+
+  it("refuses a deactivated acting administrator inside the transaction", async () => {
+    const secondAdmin = await createHuman("second.admin@example.com", "second-admin-password");
+    await database.db
+      .update(humans)
+      .set({ isSystemAdministrator: true })
+      .where(eq(humans.id, secondAdmin.humanId));
+    const owner = await createHuman("deact.admin.owner@example.com", "owner-password");
+    const workspace = await insertWorkspace("Deact Admin Check", owner.humanId);
+    const cookie = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
+    await deactivate(owner.humanId, cookie);
+    await reactivate(owner.humanId, cookie);
+    await deactivate(secondAdmin.humanId, cookie);
+
+    const staleAdmin = {
+      humanId: secondAdmin.humanId,
+      email: secondAdmin.email,
+      emailVerifiedAt: new Date(),
+      isSystemAdministrator: true,
+    };
+    const service = createOwnershipService({
+      db: database.db,
+      deliver: async () => {},
+      log,
+    });
+    await expect(service.directory(staleAdmin)).rejects.toMatchObject({
+      kind: "not_system_administrator",
+    });
+    await expect(
+      service.recoverOwnership(staleAdmin, workspace.id, owner.humanId),
+    ).rejects.toMatchObject({
+      kind: "not_system_administrator",
+    });
+  });
 });
