@@ -25,7 +25,7 @@ import {
   type UpdateKnowledgeEntryRequest,
   type UpdateProjectRequest,
 } from "@orrery/contract";
-import { and, eq, inArray, isNotNull, lte, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
@@ -131,6 +131,8 @@ export async function projectAccessCeilingInTransaction(
       and(
         eq(workspaceMemberships.workspaceId, workspaces.id),
         eq(workspaceMemberships.humanId, humanId),
+        // A suspended membership (#38) grants no access, even if an old grant row survived.
+        isNull(workspaceMemberships.suspendedAt),
       ),
     )
     .where(eq(workspaces.id, workspaceId))
@@ -253,7 +255,11 @@ function humanIdMatch(actor: WorkActor, table: "membership" | "grant") {
   if (humanId === null) return sql`false`;
   const column =
     table === "membership" ? workspaceMemberships.humanId : projectAccessGrants.humanId;
-  return eq(column, humanId);
+  // A suspended membership is present but grants nothing (#38). The grant predicate stays
+  // a plain equality; deactivation deletes the grants, and re-invitation recreates them.
+  return table === "membership"
+    ? and(eq(column, humanId), isNull(workspaceMemberships.suspendedAt))
+    : eq(column, humanId);
 }
 
 // The display actor for a write: the human's email or the agent's name. An agent action
@@ -274,21 +280,30 @@ function actorForWrite(actor: WorkActor): Actor {
 }
 
 // The display actor for a stored row: exactly one of the human or agent columns is set.
+// A deactivated human still has a row and a stable email label; `deactivated` marks it
+// suspended rather than dropping the author and showing "unknown" (#38).
 function actorFromRow(
   humanId: string | null,
   email: string | null,
   agentId: string | null,
   agentName: string | null,
+  deactivatedAt: Date | null = null,
 ): Actor {
   if (humanId !== null && email !== null) {
-    return { humanId, email, displayName: email };
+    const deactivated = deactivatedAt !== null;
+    return {
+      humanId,
+      email,
+      displayName: deactivated ? `${email} (deactivated)` : email,
+      ...(deactivated ? { deactivated: true } : {}),
+    };
   }
   if (agentId !== null && agentName !== null) {
     return { agentId, agentName, displayName: agentName };
   }
-  // The actor constraint guarantees one identity; this is a defensive fallback for a
-  // deactivated author whose row is still present.
-  return { displayName: "Unknown" };
+  // The actor constraint guarantees one identity. A missing human row is corruption, not
+  // deactivation (deactivation keeps the identity), so keep a readable, non-blaming label.
+  return { displayName: "Unknown author" };
 }
 
 // Aliases let one query join humans several times: a creator and a last editor, or an
@@ -317,6 +332,7 @@ const projectColumns = {
   createdAt: projects.createdAt,
   createdByHumanId: projects.createdByHumanId,
   createdByEmail: projectCreator.email,
+  createdByDeactivatedAt: projectCreator.deactivatedAt,
   fallbackPolicy: projects.fallbackPolicy,
 };
 
@@ -333,10 +349,12 @@ const issueColumns = {
   closedAt: issues.closedAt,
   createdByHumanId: issues.createdByHumanId,
   createdByEmail: issueCreator.email,
+  createdByDeactivatedAt: issueCreator.deactivatedAt,
   createdByAgentId: issues.createdByAgentId,
   createdByAgentName: issueAgentCreator.name,
   updatedByHumanId: issues.updatedByHumanId,
   updatedByEmail: issueEditor.email,
+  updatedByDeactivatedAt: issueEditor.deactivatedAt,
   updatedByAgentId: issues.updatedByAgentId,
   updatedByAgentName: issueAgentEditor.name,
 };
@@ -348,6 +366,7 @@ const commentColumns = {
   createdAt: issueComments.createdAt,
   authorHumanId: issueComments.createdByHumanId,
   authorEmail: commentAuthor.email,
+  authorDeactivatedAt: commentAuthor.deactivatedAt,
   authorAgentId: issueComments.createdByAgentId,
   authorAgentName: commentAgentAuthor.name,
 };
@@ -361,10 +380,12 @@ const knowledgeColumns = {
   updatedAt: knowledgeEntries.updatedAt,
   createdByHumanId: knowledgeEntries.createdByHumanId,
   createdByEmail: knowledgeCreator.email,
+  createdByDeactivatedAt: knowledgeCreator.deactivatedAt,
   createdByAgentId: knowledgeEntries.createdByAgentId,
   createdByAgentName: knowledgeAgentCreator.name,
   updatedByHumanId: knowledgeEntries.updatedByHumanId,
   updatedByEmail: knowledgeEditor.email,
+  updatedByDeactivatedAt: knowledgeEditor.deactivatedAt,
   updatedByAgentId: knowledgeEntries.updatedByAgentId,
   updatedByAgentName: knowledgeAgentEditor.name,
 };
@@ -379,6 +400,7 @@ const activityColumns = {
   createdAt: projectActivity.createdAt,
   actorHumanId: projectActivity.actorHumanId,
   actorEmail: activityActor.email,
+  actorDeactivatedAt: activityActor.deactivatedAt,
   actorAgentId: projectActivity.actorAgentId,
   actorAgentName: activityAgentActor.name,
 };
@@ -390,6 +412,7 @@ type ProjectRow = {
   createdAt: Date;
   createdByHumanId: string;
   createdByEmail: string;
+  createdByDeactivatedAt: Date | null;
   workspaceKind: WorkspaceKind;
   accessLevel: ProjectAccessLevel;
   fallbackPolicy: FallbackPolicy;
@@ -401,6 +424,7 @@ type ProjectGrantRow = {
   level: ProjectAccessLevel;
   grantedByHumanId: string;
   grantedByEmail: string;
+  grantedByDeactivatedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -420,10 +444,12 @@ type IssueRow = {
   closedAt: Date | null;
   createdByHumanId: string | null;
   createdByEmail: string | null;
+  createdByDeactivatedAt: Date | null;
   createdByAgentId: string | null;
   createdByAgentName: string | null;
   updatedByHumanId: string | null;
   updatedByEmail: string | null;
+  updatedByDeactivatedAt: Date | null;
   updatedByAgentId: string | null;
   updatedByAgentName: string | null;
 };
@@ -435,6 +461,7 @@ type CommentRow = {
   createdAt: Date;
   authorHumanId: string | null;
   authorEmail: string | null;
+  authorDeactivatedAt: Date | null;
   authorAgentId: string | null;
   authorAgentName: string | null;
 };
@@ -448,10 +475,12 @@ type KnowledgeRow = {
   updatedAt: Date;
   createdByHumanId: string | null;
   createdByEmail: string | null;
+  createdByDeactivatedAt: Date | null;
   createdByAgentId: string | null;
   createdByAgentName: string | null;
   updatedByHumanId: string | null;
   updatedByEmail: string | null;
+  updatedByDeactivatedAt: Date | null;
   updatedByAgentId: string | null;
   updatedByAgentName: string | null;
 };
@@ -466,6 +495,7 @@ type ActivityRow = {
   createdAt: Date;
   actorHumanId: string | null;
   actorEmail: string | null;
+  actorDeactivatedAt: Date | null;
   actorAgentId: string | null;
   actorAgentName: string | null;
 };
@@ -476,11 +506,13 @@ function toProject(row: ProjectRow): Project {
     workspaceId: row.workspaceId,
     name: row.name,
     createdAt: row.createdAt.toISOString(),
-    createdBy: {
-      humanId: row.createdByHumanId,
-      email: row.createdByEmail,
-      displayName: row.createdByEmail,
-    },
+    createdBy: actorFromRow(
+      row.createdByHumanId,
+      row.createdByEmail,
+      null,
+      null,
+      row.createdByDeactivatedAt,
+    ),
     workspaceKind: row.workspaceKind,
     accessLevel: row.accessLevel,
     fallbackPolicy: row.fallbackPolicy,
@@ -492,11 +524,13 @@ function toProjectGrant(row: ProjectGrantRow): ProjectAccessGrant {
     humanId: row.humanId,
     email: row.email,
     level: row.level,
-    grantedBy: {
-      humanId: row.grantedByHumanId,
-      email: row.grantedByEmail,
-      displayName: row.grantedByEmail,
-    },
+    grantedBy: actorFromRow(
+      row.grantedByHumanId,
+      row.grantedByEmail,
+      null,
+      null,
+      row.grantedByDeactivatedAt,
+    ),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -520,12 +554,14 @@ function toIssue(row: IssueRow): Issue {
       row.createdByEmail,
       row.createdByAgentId,
       row.createdByAgentName,
+      row.createdByDeactivatedAt,
     ),
     updatedBy: actorFromRow(
       row.updatedByHumanId,
       row.updatedByEmail,
       row.updatedByAgentId,
       row.updatedByAgentName,
+      row.updatedByDeactivatedAt,
     ),
   };
 }
@@ -541,6 +577,7 @@ function toComment(row: CommentRow): IssueComment {
       row.authorEmail,
       row.authorAgentId,
       row.authorAgentName,
+      row.authorDeactivatedAt,
     ),
   };
 }
@@ -558,12 +595,14 @@ function toKnowledge(row: KnowledgeRow): KnowledgeEntry {
       row.createdByEmail,
       row.createdByAgentId,
       row.createdByAgentName,
+      row.createdByDeactivatedAt,
     ),
     updatedBy: actorFromRow(
       row.updatedByHumanId,
       row.updatedByEmail,
       row.updatedByAgentId,
       row.updatedByAgentName,
+      row.updatedByDeactivatedAt,
     ),
   };
 }
@@ -577,7 +616,13 @@ function toActivity(row: ActivityRow): ProjectActivity {
     issueId: row.issueId,
     knowledgeEntryId: row.knowledgeEntryId,
     createdAt: row.createdAt.toISOString(),
-    actor: actorFromRow(row.actorHumanId, row.actorEmail, row.actorAgentId, row.actorAgentName),
+    actor: actorFromRow(
+      row.actorHumanId,
+      row.actorEmail,
+      row.actorAgentId,
+      row.actorAgentName,
+      row.actorDeactivatedAt,
+    ),
   };
 }
 
@@ -612,6 +657,8 @@ async function readWorkspaceFacts(
       and(
         eq(workspaceMemberships.workspaceId, workspaces.id),
         eq(workspaceMemberships.humanId, humanId),
+        // A suspended membership (#38) grants no access, even if an old grant row survived.
+        isNull(workspaceMemberships.suspendedAt),
       ),
     )
     .where(eq(workspaces.id, workspaceId))
@@ -968,6 +1015,7 @@ const grantColumns = {
   level: projectAccessGrants.level,
   grantedByHumanId: projectAccessGrants.grantedByHumanId,
   grantedByEmail: accessGrantor.email,
+  grantedByDeactivatedAt: accessGrantor.deactivatedAt,
   createdAt: projectAccessGrants.createdAt,
   updatedAt: projectAccessGrants.updatedAt,
 };
@@ -1156,6 +1204,7 @@ export function createProjectsService({
               and(
                 eq(workspaceMemberships.workspaceId, projects.workspaceId),
                 eq(workspaceMemberships.humanId, humanId),
+                isNull(workspaceMemberships.suspendedAt),
               ),
             )
             .leftJoin(
@@ -1426,6 +1475,7 @@ export function createProjectsService({
               and(
                 eq(workspaceMemberships.workspaceId, project.workspaceId),
                 eq(workspaceMemberships.humanId, projectAccessGrants.humanId),
+                isNull(workspaceMemberships.suspendedAt),
               ),
             )
             .where(
@@ -1475,6 +1525,8 @@ export function createProjectsService({
             and(
               eq(workspaceMemberships.workspaceId, project.workspaceId),
               eq(humans.email, input.email),
+              isNull(workspaceMemberships.suspendedAt),
+              isNull(humans.deactivatedAt),
             ),
           )
           .limit(1);
@@ -1564,6 +1616,7 @@ export function createProjectsService({
             and(
               eq(workspaceMemberships.workspaceId, project.workspaceId),
               eq(workspaceMemberships.humanId, humanId),
+              isNull(workspaceMemberships.suspendedAt),
             ),
           )
           .limit(1);

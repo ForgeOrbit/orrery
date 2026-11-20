@@ -6,6 +6,13 @@ import { createInvitationsRest, routes } from "./rest.ts";
 
 export { routes as invitationsRoutes };
 export type { InvitationsService } from "./service.ts";
+export {
+  canResendInvitation,
+  effectiveInvitationState,
+  invitationDeliveryMachine,
+  invitationMachine,
+  supersedeTargetForPending,
+} from "./state-machine.ts";
 
 // What the invitations feature is wired with: from accounts, the session reader its
 // routes authorize with, the registered-email guard, the account-creation seam, and

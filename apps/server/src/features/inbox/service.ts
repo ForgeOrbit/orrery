@@ -24,6 +24,7 @@ import {
 import type { Logger } from "../../platform/log.ts";
 import type { OutgoingMail } from "../settings/index.ts";
 import type { WorkActor } from "../projects/index.ts";
+import { decideQuestionAnswer, questionMachine } from "./state-machine.ts";
 
 // The service is the only file that decides anything for human input (#41). REST and MCP
 // authenticate, validate, and map results: every access decision, deadline evaluation and
@@ -346,6 +347,7 @@ const evaluateDeadline: InboxService["evaluateDeadline"] = async (tx, issueId) =
   );
 
   if (effectivePolicy === FallbackPolicy.enum.fallback_allowed) {
+    questionMachine.assertTransition("open", "fallback_used");
     const [used] = await tx
       .update(questions)
       .set({ status: "fallback_used", resolvedAt: sql`statement_timestamp()` })
@@ -370,14 +372,30 @@ const evaluateDeadline: InboxService["evaluateDeadline"] = async (tx, issueId) =
     return;
   }
 
+  questionMachine.assertTransition("open", "paused");
   const [paused] = await tx
     .update(questions)
     .set({ status: "paused", resolvedAt: sql`statement_timestamp()` })
     .where(stillDue)
     .returning();
   if (paused === undefined) return;
-  // require_human: release the live claim, keep Needs input, and leave the issue out of
-  // ready work until a human unblocks it with an answer.
+  // require_human: materialize any already-lapsed session as 'expired' (preserving its
+  // terminal expiry for resume/reacquire) and release only a still-live claim, keeping
+  // Needs input set until a human answers.
+  await tx
+    .update(workSessions)
+    .set({
+      status: "expired",
+      endedAt: sql`statement_timestamp()`,
+      updatedAt: sql`statement_timestamp()`,
+    })
+    .where(
+      and(
+        eq(workSessions.issueId, issueId),
+        eq(workSessions.status, "active"),
+        lte(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
+      ),
+    );
   await tx
     .update(workSessions)
     .set({
@@ -385,7 +403,13 @@ const evaluateDeadline: InboxService["evaluateDeadline"] = async (tx, issueId) =
       endedAt: sql`statement_timestamp()`,
       updatedAt: sql`statement_timestamp()`,
     })
-    .where(and(eq(workSessions.issueId, issueId), eq(workSessions.status, "active")));
+    .where(
+      and(
+        eq(workSessions.issueId, issueId),
+        eq(workSessions.status, "active"),
+        gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
+      ),
+    );
   await tx
     .update(issues)
     .set({ needsInput: true, updatedAt: sql`statement_timestamp()` })
@@ -585,8 +609,10 @@ export function createInboxService(deps: InboxDeps): InboxService {
             humanId: actor.account.humanId,
           });
         const row = await freshRow();
-        if (row.status === "answered") throw new InboxError("question_resolved");
-        if (row.status === "fallback_used") return toQuestion(await followUp());
+        const answerAction = decideQuestionAnswer(row.status, row.followUp !== null);
+        if (answerAction === "already_resolved") throw new InboxError("question_resolved");
+        if (answerAction === "record_follow_up") return toQuestion(await followUp());
+        questionMachine.assertTransition(row.status, "answered");
         // Exactly one conditional update wins: open (before the deadline) or paused (after
         // a deadline pause) becomes answered. Two concurrent answers serialize on the
         // issue row lock and the guard; only one can transition the question.
@@ -662,7 +688,12 @@ export function createInboxService(deps: InboxDeps): InboxService {
           const memberships = await tx
             .select({ workspaceId: workspaceMemberships.workspaceId })
             .from(workspaceMemberships)
-            .where(eq(workspaceMemberships.humanId, humanId));
+            .where(
+              and(
+                eq(workspaceMemberships.humanId, humanId),
+                isNull(workspaceMemberships.suspendedAt),
+              ),
+            );
           const workspaceIds = [
             ...new Set([
               ...personal.map((row) => row.id),

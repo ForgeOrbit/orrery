@@ -21,6 +21,7 @@ import {
 } from "../../db/schema.ts";
 import type { DbTransaction } from "../../platform/db.ts";
 import type { SessionAccount } from "../accounts/index.ts";
+import { nextChildRunStatus, nextRunStatus } from "./state-machine.ts";
 
 // The service is the only file in this feature that decides anything. rest.ts and
 // mcp.ts authenticate the bearer key through agents' narrow seam, validate input with
@@ -145,6 +146,7 @@ async function humanCanReadWorkspace(
       and(
         eq(workspaceMemberships.workspaceId, workspaces.id),
         eq(workspaceMemberships.humanId, humanId),
+        isNull(workspaceMemberships.suspendedAt),
       ),
     )
     .where(eq(workspaces.id, workspaceId))
@@ -185,7 +187,8 @@ async function recordChild(
   const agentType = child.agentType ?? input.agentType ?? null;
   const childRunId = child.runId ?? null;
   const model = child.model ?? null;
-  const ended = input.event === "child_ended";
+  const childStatus = nextChildRunStatus(input.event);
+  const ended = childStatus === RunStatus.enum.ended;
   const at = new Date(observedAt);
 
   if (childRunId !== null) {
@@ -347,10 +350,11 @@ export function createRunsService({ db }: RunsDeps): RunsService {
           updates.harnessVersion = harnessVersion;
         }
         if (modelChanged) updates.model = reportedModel;
-        if (input.event === "run_ended") {
+        const nextStatus = nextRunStatus(RunStatus.parse(row.status), input.event);
+        if (nextStatus === RunStatus.enum.ended && input.event === "run_ended") {
           updates.status = RunStatus.enum.ended;
           updates.endedAt = at;
-        } else if (input.event === "run_started" && row.status === RunStatus.enum.ended) {
+        } else if (nextStatus === RunStatus.enum.active && row.status === RunStatus.enum.ended) {
           // A resumed conversation reuses the run and reactivates it.
           updates.status = RunStatus.enum.active;
           updates.endedAt = null;

@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { accountRecoveryEvents, passwordResetTokens } from "../../db/schema.ts";
+import { accountRecoveryEvents, humans, passwordResetTokens } from "../../db/schema.ts";
 import type { DbTransaction } from "../../platform/db.ts";
 import { errorNameAndCode } from "../../platform/errors.ts";
 import type { Logger } from "../../platform/log.ts";
@@ -44,13 +44,15 @@ function resetMail(email: string, token: string, publicUrl: string): OutgoingMai
 export type RecoveryErrorKind =
   | "reset_token_invalid"
   | "account_not_found"
-  | "not_system_administrator";
+  | "not_system_administrator"
+  | "account_deactivated";
 
 const messages = {
   reset_token_invalid: "This password reset link is invalid, expired, or already used.",
   account_not_found: "No account has that email address.",
   not_system_administrator:
     "Local recovery is for system administrators only. An ordinary account recovers by email.",
+  account_deactivated: "This account is deactivated and cannot change its password.",
 } as const satisfies Record<RecoveryErrorKind, string>;
 
 export class RecoveryError extends Error {
@@ -74,6 +76,7 @@ export interface RecoveryAccountAccess {
     email: string;
     emailVerifiedAt: Date | null;
     isSystemAdministrator: boolean;
+    deactivatedAt: Date | null;
   } | null>;
   setPassword(humanId: string, password: string, tx: DbTransaction): Promise<void>;
   invalidateBrowserSessions(humanId: string, tx: DbTransaction): Promise<void>;
@@ -137,7 +140,9 @@ export function createRecoveryService({
       // delivered, or failed. No event is written for nothing that happened: an
       // unverified or unknown address gets no mail and no token.
       const account = await accounts.accountByEmail(email);
-      if (account !== null && account.emailVerifiedAt !== null) {
+      // A deactivated account is not eligible: no token, no mail, no event, and the same
+      // uniform answer as every other address (#38).
+      if (account !== null && account.emailVerifiedAt !== null && account.deactivatedAt === null) {
         const token = randomBytes(32).toString("base64url");
         const id = randomUUID();
         await db.insert(passwordResetTokens).values({
@@ -184,6 +189,17 @@ export function createRecoveryService({
           .returning({ humanId: passwordResetTokens.humanId });
         const [row] = redeemed;
         if (row === undefined) throw new RecoveryError("reset_token_invalid");
+        // A deactivated account cannot set a new password. The check is inside the same
+        // transaction, so the token redemption rolls back and the link stays usable if an
+        // administrator reactivates the account later (#38).
+        const [account] = await tx
+          .select({ deactivatedAt: humans.deactivatedAt })
+          .from(humans)
+          .where(eq(humans.id, row.humanId))
+          .limit(1);
+        if (account === undefined || account.deactivatedAt !== null) {
+          throw new RecoveryError("account_deactivated");
+        }
         await changePasswordAndSignOut(
           tx,
           accounts,
@@ -204,6 +220,9 @@ export function createRecoveryService({
       const recoveredEmail = await db.transaction(async (tx) => {
         const account = await accounts.accountByEmail(email, tx);
         if (account === null) throw new RecoveryError("account_not_found");
+        // A deactivated administrator cannot use the local command as a back door to a
+        // live credential (#38); reactivation is the administrator's separate decision.
+        if (account.deactivatedAt !== null) throw new RecoveryError("account_deactivated");
         if (!account.isSystemAdministrator) {
           throw new RecoveryError("not_system_administrator");
         }
