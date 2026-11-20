@@ -1,6 +1,13 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { AgentIdentity, CreateAgentKeyResponse, Problem, WorkSession } from "@orrery/contract";
+import {
+  ActiveWorkSessionsResponse,
+  AgentIdentity,
+  CreateAgentKeyResponse,
+  Problem,
+  RequestStopWorkSessionInput,
+  WorkSession,
+} from "@orrery/contract";
 import { and, eq, sql } from "drizzle-orm";
 import type { Hono } from "hono";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -1272,10 +1279,11 @@ describe("human stop requests on active work sessions (#82)", () => {
     await expectProblem(
       await postJson(`/api/issues/${issue.id}/work-sessions/stop-request`, {}, undefined),
       401,
-      "not_signed_in",
+      "human_sign_in_required",
     );
 
-    // A human outside the workspace has no access to its projects.
+    // A human outside the workspace gets the same 404 as a missing issue: a stop probe
+    // must never reveal that an issue exists.
     const outsider = {
       kind: "human" as const,
       account: {
@@ -1286,7 +1294,7 @@ describe("human stop requests on active work sessions (#82)", () => {
       },
     };
     expect(errorKind(await rejection(sessionsService.requestStop(outsider, issue.id)))).toBe(
-      "insufficient_access",
+      "issue_not_found",
     );
 
     // A Read human inside a shared workspace is refused the Contribute-level action.
@@ -1390,5 +1398,122 @@ describe("human stop requests on active work sessions (#82)", () => {
       .from(projectActivity)
       .where(eq(projectActivity.type, "issue_stop_requested"));
     expect(activity).toHaveLength(0);
+  });
+
+  it("records a stop request once: repeated calls and blank reasons neither overwrite nor duplicate", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "Idempotent stop issue");
+    const runId = await newRun(identity);
+    await sessionsService.claim({ kind: "agent", identity }, { issueId: issue.id, runId });
+
+    const first = await sessionsService.requestStop(humanActor(f), issue.id, "  First reason  ");
+    expect(first.stopReason).toBe("First reason");
+    const again = await sessionsService.requestStop(
+      humanActor(f),
+      issue.id,
+      "A later reason must be ignored",
+    );
+    expect(again.id).toBe(first.id);
+    expect(again.stopReason).toBe("First reason");
+    expect(again.stopRequestedAt).toBe(first.stopRequestedAt);
+    expect(again.stopRequested).toBe(true);
+    const blank = await sessionsService.requestStop(humanActor(f), issue.id, "   ");
+    expect(blank.stopReason).toBe("First reason");
+
+    const rows = await database.db
+      .select()
+      .from(projectActivity)
+      .where(
+        and(
+          eq(projectActivity.issueId, issue.id),
+          eq(projectActivity.type, "issue_stop_requested"),
+        ),
+      );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.summary).toBe("First reason");
+
+    // The shared contract normalizes a whitespace-only reason before it reaches a route.
+    expect(RequestStopWorkSessionInput.parse({ issueId: issue.id, reason: "   " }).reason).toBe(
+      undefined,
+    );
+  });
+
+  it("does not mutate a lease before authorization and refuses a deactivated human", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "Unauthorized stop issue");
+    const runId = await newRun(identity);
+    await sessionsService.claim({ kind: "agent", identity }, { issueId: issue.id, runId });
+    await setLease(issue.id, "statement_timestamp() - interval '1 second'");
+
+    const outsider = {
+      kind: "human" as const,
+      account: {
+        humanId: randomUUID(),
+        email: "outsider@example.com",
+        isSystemAdministrator: false,
+        emailVerifiedAt: new Date(),
+      },
+    };
+    expect(errorKind(await rejection(sessionsService.requestStop(outsider, issue.id)))).toBe(
+      "issue_not_found",
+    );
+    // The refused, unauthorized call left the lapsed row untouched: no pre-authz expiry.
+    const [before] = await database.db
+      .select({ status: workSessions.status })
+      .from(workSessions)
+      .where(eq(workSessions.issueId, issue.id));
+    expect(before?.status).toBe("active");
+
+    // An authorized call commits that expiry while refusing the inactive session.
+    expect(errorKind(await rejection(sessionsService.requestStop(humanActor(f), issue.id)))).toBe(
+      "session_not_active",
+    );
+    const [after] = await database.db
+      .select({ status: workSessions.status })
+      .from(workSessions)
+      .where(eq(workSessions.issueId, issue.id));
+    expect(after?.status).toBe("expired");
+
+    // A deactivated caller is refused like a non-member even with a live session.
+    const liveIssue = await humanIssue(f, "Deactivated stop issue");
+    const liveRun = await newRun(identity);
+    await sessionsService.claim(
+      { kind: "agent", identity },
+      { issueId: liveIssue.id, runId: liveRun },
+    );
+    await database.db
+      .update(humans)
+      .set({ deactivatedAt: sql`statement_timestamp()` })
+      .where(eq(humans.id, f.humanId));
+    expect(
+      errorKind(await rejection(sessionsService.requestStop(humanActor(f), liveIssue.id))),
+    ).toBe("issue_not_found");
+  });
+
+  it("lists only live readable sessions for the agents view", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "Active listing issue");
+    const runId = await newRun(identity);
+    const claim = await sessionsService.claim(
+      { kind: "agent", identity },
+      { issueId: issue.id, runId },
+    );
+
+    expect(await sessionsService.activeSessions(humanActor(f), f.workspaceId)).toEqual([
+      expect.objectContaining({ id: claim.id, projectId: f.projectId, status: "active" }),
+    ]);
+    // REST answers with the bare array (ADR-0003), carrying the project id the UI needs.
+    const res = await getJson(`/api/workspaces/${f.workspaceId}/work-sessions/active`, f.cookie);
+    expect(res.status).toBe(200);
+    expect(ActiveWorkSessionsResponse.parse(await res.json())).toEqual([
+      expect.objectContaining({ id: claim.id, projectId: f.projectId }),
+    ]);
+
+    // A lapsed lease drops out of the live listing in database time without a write.
+    await setLease(issue.id, "statement_timestamp() - interval '1 second'");
+    expect(await sessionsService.activeSessions(humanActor(f), f.workspaceId)).toEqual([]);
   });
 });

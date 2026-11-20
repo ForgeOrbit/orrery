@@ -9,8 +9,8 @@ import {
 } from "@orrery/contract";
 import type { FormEvent } from "react";
 import { useState } from "react";
-import { issuesQuery, projectsQuery } from "../projects/index.ts";
-import { SessionStatus } from "../work-sessions/index.ts";
+import { projectsQuery } from "../projects/index.ts";
+import { activeSessionsQuery, SessionStatus } from "../work-sessions/index.ts";
 import {
   createAgent,
   issueAgentKey,
@@ -120,7 +120,7 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
         </ul>
       )}
       <h3>Active work sessions</h3>
-      <ActiveSessions projects={projects} />
+      <ActiveSessions workspaceId={workspaceId} projects={projects} />
       <RegisterAgentForm />
       {agents.length > 0 && (
         <IssueKeyForm
@@ -184,41 +184,34 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
   );
 }
 
-// #82: the agents view shows each project's issue sessions with the same badge and
-// one-click stop control as the issue page, so a human watching an agent can stop it
-// without revoking its key or waiting for the lease to expire.
-function ActiveSessions({ projects }: { projects: readonly Project[] }) {
-  if (projects.length === 0) return <p>No projects in this workspace.</p>;
+// #82: the agents view lists only live sessions from the workspace-level read, rather
+// than polling every issue of every project. The same badge and one-click stop control
+// as the issue page lets a human stop an agent without revoking its key.
+function ActiveSessions({
+  workspaceId,
+  projects,
+}: {
+  workspaceId: string;
+  projects: readonly Project[];
+}) {
+  const { data: sessions } = useSuspenseQuery(activeSessionsQuery(workspaceId));
+  if (sessions.length === 0) return <p>No active work sessions.</p>;
+  const levels = new Map(projects.map((project) => [project.id, project.accessLevel]));
   return (
-    <>
-      {projects.map((project) => (
-        <ProjectSessions key={project.id} project={project} />
+    <ul>
+      {sessions.map((session) => (
+        <li key={session.id} data-agent-session-id={session.id} data-issue-id={session.issueId}>
+          <Link to="/issues/$issueId" params={{ issueId: session.issueId }}>
+            Issue {session.issueId}
+          </Link>{" "}
+          <SessionStatus
+            issueId={session.issueId}
+            projectId={session.projectId}
+            canContribute={levels.get(session.projectId) !== "read"}
+          />
+        </li>
       ))}
-    </>
-  );
-}
-
-function ProjectSessions({ project }: { project: Project }) {
-  const { data: issues } = useSuspenseQuery(issuesQuery(project.id));
-  if (issues.length === 0) return null;
-  return (
-    <div data-sessions-project={project.id}>
-      <h4>{project.name}</h4>
-      <ul>
-        {issues.map((issue) => (
-          <li key={issue.id} data-issue-id={issue.id}>
-            <Link to="/issues/$issueId" params={{ issueId: issue.id }}>
-              #{issue.number} {issue.title}
-            </Link>{" "}
-            <SessionStatus
-              issueId={issue.id}
-              projectId={project.id}
-              canContribute={project.accessLevel !== "read"}
-            />
-          </li>
-        ))}
-      </ul>
-    </div>
+    </ul>
   );
 }
 

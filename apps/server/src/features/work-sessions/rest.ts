@@ -1,6 +1,7 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import {
+  ActiveWorkSessionsResponse,
   ClaimWorkSessionInput,
   IssuesResponse,
   ReacquireWorkSessionInput,
@@ -29,6 +30,7 @@ import { SessionsError, type SessionsErrorKind, type SessionsService } from "./s
 
 const issueParams = z.object({ issueId: z.string().min(1).max(200) });
 const projectParams = z.object({ projectId: z.string().min(1).max(200) });
+const workspaceParams = z.object({ workspaceId: z.string().min(1).max(200) });
 const claimBody = ClaimWorkSessionInput.omit({ issueId: true });
 const renewBody = RenewWorkSessionInput.omit({ issueId: true });
 const progressBody = ReportProgressInput.omit({ issueId: true });
@@ -238,6 +240,23 @@ const all = createRoute({
   },
 });
 
+const activeSessions = createRoute({
+  method: "get",
+  path: "/api/workspaces/{workspaceId}/work-sessions/active",
+  summary: "Active work sessions in a workspace",
+  description:
+    "The live sessions in a workspace that the caller can read, evaluated in database time and including any stop request. A read only: it never renews a lease. Projects without access are omitted, so the listing cannot enumerate issues.",
+  request: { params: workspaceParams },
+  responses: {
+    200: {
+      description: "The active sessions, newest first",
+      content: { "application/json": { schema: ActiveWorkSessionsResponse } },
+    },
+    400: problem("The workspace id is invalid"),
+    401: problem("Not signed in, or the agent key is invalid or revoked"),
+  },
+});
+
 const readyWork = createRoute({
   method: "get",
   path: "/api/projects/{projectId}/ready-work",
@@ -267,6 +286,7 @@ export const routes = [
   reacquire,
   current,
   all,
+  activeSessions,
   readyWork,
 ];
 
@@ -280,6 +300,7 @@ const statusFor = {
   issue_needs_input: 409,
   issue_blocked: 409,
   session_required: 409,
+  human_sign_in_required: 401,
   agents_cannot_request_stop: 403,
   session_not_active: 409,
 } as const satisfies Record<SessionsErrorKind, number>;
@@ -322,7 +343,7 @@ const writeKinds = [
   "session_required",
 ] as const;
 const stopRequestKinds = [
-  "not_signed_in",
+  "human_sign_in_required",
   "agents_cannot_request_stop",
   "issue_not_found",
   "insufficient_access",
@@ -491,6 +512,17 @@ export function createSessionsRest(
       );
     } catch (error) {
       return failure(c, error, listKinds);
+    }
+  });
+
+  app.openapi(activeSessions, async (c) => {
+    try {
+      return c.json(
+        await service.activeSessions(await workActor(c), c.req.valid("param").workspaceId),
+        200,
+      );
+    } catch (error) {
+      return failure(c, error, ["not_signed_in"] as const);
     }
   });
 

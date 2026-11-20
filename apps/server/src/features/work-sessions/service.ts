@@ -3,6 +3,7 @@ import {
   ProjectAccessLevel,
   ProjectActivityType,
   WorkSessionStatus,
+  type ActiveWorkSession,
   type AgentIdentity,
   type Issue,
   type ReacquireWorkSessionInput,
@@ -45,6 +46,7 @@ export type SessionsErrorKind =
   | "issue_needs_input"
   | "issue_blocked"
   | "session_required"
+  | "human_sign_in_required"
   | "agents_cannot_request_stop"
   | "session_not_active";
 
@@ -58,6 +60,7 @@ const messages: Record<SessionsErrorKind, string> = {
   issue_needs_input: "This issue needs human input and cannot be claimed yet.",
   issue_blocked: "This issue is closed or paused for input and cannot be reacquired yet.",
   session_required: "This agent holds no live session for this issue.",
+  human_sign_in_required: "Sign in as a human to request a stop.",
   agents_cannot_request_stop: "Only a human with Contribute or Manage access may request a stop.",
   session_not_active: "The work session is no longer active.",
 };
@@ -129,6 +132,9 @@ export interface SessionsService {
   // optional reason and surfaces stopRequested on the agent's next check-in; it never
   // ends the session or changes its status.
   requestStop(actor: WorkActor | null, issueId: string, reason?: string): Promise<WorkSession>;
+  // Live sessions in a workspace the caller can read, for the agents view. A read in
+  // database time: it never renews a lease and never materializes expiry.
+  activeSessions(actor: WorkActor | null, workspaceId: string): Promise<ActiveWorkSession[]>;
   // #40: a pure, database-time read of the original run's claim, and the only way to
   // re-arm an expired claim. Resume never mutates; reacquire creates a fresh active
   // session (carrying the recorded progress) only when the issue is actually available.
@@ -538,6 +544,74 @@ function requireAccessArgs(
   };
 }
 
+// #82 human stop gate. Non-members and deactivated humans answer 404 like a missing
+// issue, so a stop probe cannot enumerate issues; members below Contribute answer 403.
+// Locks follow M22's order — human (KEY SHARE) -> membership (KEY SHARE) -> issue
+// (UPDATE) — so a deactivation that committed first is visible here and one in flight
+// waits for this decision instead of racing past it.
+async function requireHumanStopAccess(
+  tx: DbTransaction,
+  deps: Pick<SessionsDeps, "projectAccessCeiling" | "projectAccessAtLeast">,
+  humanId: string,
+  issueId: string,
+) {
+  // Read the project first, without a lock, only to learn which workspace to lock. The
+  // authoritative existence and access checks happen under the locks below.
+  const [issueRef] = await tx
+    .select({ projectId: issues.projectId })
+    .from(issues)
+    .where(eq(issues.id, issueId))
+    .limit(1);
+  if (issueRef === undefined) throw new SessionsError("issue_not_found");
+  const [projectRef] = await tx
+    .select({ workspaceId: projects.workspaceId })
+    .from(projects)
+    .where(eq(projects.id, issueRef.projectId))
+    .limit(1);
+  if (projectRef === undefined) throw new SessionsError("issue_not_found");
+
+  const [caller] = await tx
+    .select({ id: humans.id })
+    .from(humans)
+    .where(and(eq(humans.id, humanId), isNull(humans.deactivatedAt)))
+    .for("key share");
+  if (caller === undefined) throw new SessionsError("issue_not_found");
+
+  const [workspace] = await tx
+    .select({ personalOwnerHumanId: workspaces.personalOwnerHumanId })
+    .from(workspaces)
+    .where(eq(workspaces.id, projectRef.workspaceId))
+    .limit(1);
+  if (workspace === undefined) throw new SessionsError("issue_not_found");
+  if (workspace.personalOwnerHumanId !== humanId) {
+    // A suspended membership grants no access; a missing one is indistinguishable from
+    // a missing issue to the caller (404).
+    const [membership] = await tx
+      .select({ id: workspaceMemberships.id })
+      .from(workspaceMemberships)
+      .where(
+        and(
+          eq(workspaceMemberships.workspaceId, projectRef.workspaceId),
+          eq(workspaceMemberships.humanId, humanId),
+          isNull(workspaceMemberships.suspendedAt),
+        ),
+      )
+      .for("key share");
+    if (membership === undefined) throw new SessionsError("issue_not_found");
+  }
+
+  // Now the authoritative row lock and the project level on the same snapshot.
+  const issue = await lockIssue(tx, issueId);
+  const ceiling = await deps.projectAccessCeiling(tx, projectRef.workspaceId, humanId, [
+    issue.projectId,
+  ]);
+  const level = ceiling.get(issue.projectId) ?? null;
+  if (level === null || !deps.projectAccessAtLeast(level, ProjectAccessLevel.enum.contribute)) {
+    throw new SessionsError("insufficient_access");
+  }
+  return issue;
+}
+
 export function createSessionsService({
   db,
   projectAccessCeiling,
@@ -761,28 +835,25 @@ export function createSessionsService({
     },
 
     async requestStop(actor, issueId, reason) {
-      // A stop request is human-only: a bearer key must never be able to ask its own
-      // operator to stop, and a missing actor cannot act through a human session.
-      if (actor === null) throw new SessionsError("not_signed_in");
+      // A stop request is human-only: a bearer key must never ask its operator to stop,
+      // and a missing cookie is a different mistake from presenting an agent key.
+      if (actor === null) throw new SessionsError("human_sign_in_required");
       if (actor.kind === "agent") throw new SessionsError("agents_cannot_request_stop");
       const humanId = actor.account.humanId;
+      const normalized = reason?.trim() === "" ? undefined : reason?.trim();
 
-      // As with renew/progress/stop, materialize a lapsed lease in a committed transaction
-      // before deciding, so a rejected request still leaves an already-expired claim
-      // expired. The decision below then reads and writes only in database time.
-      await expireCommitted(issueId);
-      return db.transaction(async (tx) => {
-        const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
-        const issue = await lockIssue(tx, issueId);
-        await expireStale(tx, issue.id);
-        // Readers, non-members and agents' human owners without project access are
-        // refused here with the same stable code as every other project write.
-        await requireAccess(
-          actor,
-          issue.projectId,
-          ProjectAccessLevel.enum.contribute,
-          "issue_not_found",
+      // Nothing is mutated before authorization. Lazy expiry happens after the human,
+      // membership and issue checks on the same locked transaction. An inactive session
+      // returns a sentinel so its committed expiry survives the refusal; the error is
+      // raised only after that transaction commits.
+      const outcome = await db.transaction(async (tx) => {
+        const issue = await requireHumanStopAccess(
+          tx,
+          { projectAccessCeiling, projectAccessAtLeast },
+          humanId,
+          issueId,
         );
+        await expireStale(tx, issue.id);
 
         const [session] = await tx
           .select(sessionColumns)
@@ -795,16 +866,20 @@ export function createSessionsService({
             ),
           )
           .limit(1);
-        if (session === undefined) throw new SessionsError("session_not_active");
+        if (session === undefined) return { error: "session_not_active" as const };
 
-        // The UPDATE rechecks liveness in database time: a lease that lapses between the
-        // read and this write cannot be turned into a stop request on a dead session.
+        // Idempotent: a repeated request never overwrites the recorded actor, time or
+        // reason, and never writes a second activity row.
+        if (session.stopRequestedAt !== null) return { session: toSession(session) };
+
+        // The UPDATE rechecks liveness in database time: a lease lapsing between the read
+        // and this write cannot receive a stop request.
         const [updated] = await tx
           .update(workSessions)
           .set({
             stopRequestedAt: sql`statement_timestamp()`,
             stopRequestedByHumanId: humanId,
-            stopReason: reason ?? null,
+            stopReason: normalized ?? null,
             updatedAt: sql`statement_timestamp()`,
           })
           .where(
@@ -815,7 +890,7 @@ export function createSessionsService({
             ),
           )
           .returning(sessionColumns);
-        if (updated === undefined) throw new SessionsError("session_not_active");
+        if (updated === undefined) return { error: "session_not_active" as const };
 
         // The stop request is part of the project's permanent history, written in the same
         // transaction as the signal so activity can never disagree with the session. The
@@ -826,12 +901,86 @@ export function createSessionsService({
           type: ProjectActivityType.enum.issue_stop_requested,
           issueId: issue.id,
           actorHumanId: humanId,
-          summary: reason ?? "Stop requested",
+          summary: normalized ?? "Stop requested",
           createdAt: sql`statement_timestamp()`,
         });
 
-        return toSession(updated);
+        return { session: toSession(updated) };
       });
+      if ("error" in outcome) throw new SessionsError(outcome.error);
+      return outcome.session;
+    },
+
+    async activeSessions(actor, workspaceId) {
+      const caller = requireActor(actor);
+      // A read in database time: it never renews a lease or materializes expiry. Projects
+      // the caller cannot read are omitted, so the listing is not an enumeration oracle.
+      return db.transaction(
+        async (tx) => {
+          let projectIds: string[];
+          if (caller.kind === "agent") {
+            if (caller.identity.workspaceId !== workspaceId) return [];
+            const ceiling = await projectAccessCeiling(
+              tx,
+              workspaceId,
+              caller.identity.humanId,
+              caller.identity.projects.map((grant) => grant.projectId),
+            );
+            projectIds = caller.identity.projects
+              .filter((grant) => projectAccessAtLeast(grant.level, ProjectAccessLevel.enum.read))
+              .filter((grant) => {
+                const current = ceiling.get(grant.projectId);
+                return (
+                  current !== null &&
+                  current !== undefined &&
+                  projectAccessAtLeast(current, ProjectAccessLevel.enum.read)
+                );
+              })
+              .map((grant) => grant.projectId);
+          } else {
+            if (!(await humanStillHasWorkspaceAccess(tx, workspaceId, caller.account.humanId))) {
+              return [];
+            }
+            const rows = await tx
+              .select({ id: projects.id })
+              .from(projects)
+              .where(eq(projects.workspaceId, workspaceId));
+            if (rows.length === 0) return [];
+            const ceiling = await projectAccessCeiling(
+              tx,
+              workspaceId,
+              caller.account.humanId,
+              rows.map((row) => row.id),
+            );
+            projectIds = rows
+              .filter((row) => {
+                const level = ceiling.get(row.id);
+                return (
+                  level !== null &&
+                  level !== undefined &&
+                  projectAccessAtLeast(level, ProjectAccessLevel.enum.read)
+                );
+              })
+              .map((row) => row.id);
+          }
+          if (projectIds.length === 0) return [];
+          const rows = await tx
+            .select({ ...sessionColumns, projectId: issues.projectId })
+            .from(workSessions)
+            .innerJoin(issues, eq(workSessions.issueId, issues.id))
+            .where(
+              and(
+                eq(workSessions.workspaceId, workspaceId),
+                eq(workSessions.status, WorkSessionStatus.enum.active),
+                liveLease,
+                inArray(issues.projectId, projectIds),
+              ),
+            )
+            .orderBy(desc(workSessions.createdAt));
+          return rows.map((row) => Object.assign(toSession(row), { projectId: row.projectId }));
+        },
+        { accessMode: "read only" },
+      );
     },
 
     async resume(actor, input) {

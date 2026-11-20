@@ -323,6 +323,13 @@ test("clicking Stop agent in the browser transitions the session badge to stoppi
     await page.getByRole("button", { name: "Stop agent" }).click();
     await expect(badge).toHaveText("stopping");
 
+    // The agents view lists only live sessions and shows the same stopping badge.
+    await page.goto(`/workspaces/${workspaceId}`);
+    const agentsBadge = page.locator(
+      `[data-agent-session-id][data-issue-id="${issueId}"] [data-session-status]`,
+    );
+    await expect(agentsBadge).toHaveText("stopping");
+
     const current = await api.get(`/api/issues/${issueId}/work-sessions`);
     expect(asRecord(await current.json())).toMatchObject({
       stopRequested: true,

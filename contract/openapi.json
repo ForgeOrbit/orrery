@@ -2345,6 +2345,86 @@
           "$ref": "#/components/schemas/WorkSession"
         }
       },
+      "ActiveWorkSessionsResponse": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ActiveWorkSession"
+        }
+      },
+      "ActiveWorkSession": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "workspaceId": {
+            "type": "string"
+          },
+          "issueId": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/WorkSessionStatus"
+          },
+          "leaseExpiresAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "progress": {
+            "type": "string"
+          },
+          "progressUpdatedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "stopRequested": {
+            "type": "boolean"
+          },
+          "stopRequestedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "stopReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "endedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "projectId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "agentId",
+          "runId",
+          "workspaceId",
+          "issueId",
+          "status",
+          "leaseExpiresAt",
+          "progress",
+          "progressUpdatedAt",
+          "stopRequested",
+          "stopRequestedAt",
+          "stopReason",
+          "createdAt",
+          "updatedAt",
+          "endedAt",
+          "projectId"
+        ]
+      },
       "Question": {
         "type": "object",
         "properties": {
@@ -7757,6 +7837,56 @@
           },
           "404": {
             "description": "No such issue is in scope for the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspaces/{workspaceId}/work-sessions/active": {
+      "get": {
+        "summary": "Active work sessions in a workspace",
+        "description": "The live sessions in a workspace that the caller can read, evaluated in database time and including any stop request. A read only: it never renews a lease. Projects without access are omitted, so the listing cannot enumerate issues.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The active sessions, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActiveWorkSessionsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The workspace id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the agent key is invalid or revoked",
             "content": {
               "application/problem+json": {
                 "schema": {

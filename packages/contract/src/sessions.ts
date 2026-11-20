@@ -57,6 +57,19 @@ export const WorkSessionsResponse = z
   .meta({ id: "WorkSessionsResponse" });
 export type WorkSessionsResponse = z.infer<typeof WorkSessionsResponse>;
 
+// The agents view needs the owning project to decide who may stop a session, and Work
+// Session rows carry only the issue. The workspace-level listing enriches the session
+// with that id; no other Work Session response changes shape.
+export const ActiveWorkSession = WorkSession.extend({ projectId: z.string() }).meta({
+  id: "ActiveWorkSession",
+});
+export type ActiveWorkSession = z.infer<typeof ActiveWorkSession>;
+
+export const ActiveWorkSessionsResponse = z
+  .array(ActiveWorkSession)
+  .meta({ id: "ActiveWorkSessionsResponse" });
+export type ActiveWorkSessionsResponse = z.infer<typeof ActiveWorkSessionsResponse>;
+
 // A claim names the issue and the run that coordinates it. Helpers on the same issue pass
 // the same runId and join the existing session instead of registering a second one. A
 // parent run can claim several issues, each in its own session.
@@ -111,7 +124,14 @@ export type GetWorkSessionInput = z.infer<typeof GetWorkSessionInput>;
 export const RequestStopWorkSessionInput = z
   .object({
     issueId: z.string().trim().min(1).max(200),
-    reason: z.string().trim().max(2000).optional(),
+    reason: z
+      .string()
+      .trim()
+      .max(2000)
+      .optional()
+      // A blank reason is no reason: normalize it away so a stop request never stores an
+      // empty string or writes an empty activity summary.
+      .transform((value) => (value === undefined || value === "" ? undefined : value)),
   })
   .meta({ id: "RequestStopWorkSessionInput" });
 export type RequestStopWorkSessionInput = z.infer<typeof RequestStopWorkSessionInput>;
