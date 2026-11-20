@@ -14,9 +14,11 @@ export const AgentKeyValidity = z
   .meta({ id: "AgentKeyValidity" });
 export type AgentKeyValidity = z.infer<typeof AgentKeyValidity>;
 
-// Credential lifecycle events. No secret is ever stored on an event.
+// Credential lifecycle events. No secret is ever stored on an event. Rotation writes
+// one `agent_key_rotated` event on the replacement key; the new key's `replacesKeyId`
+// names the source key without ever naming or re-showing its secret (#35).
 export const AgentKeyEventType = z
-  .enum(["agent_key_created", "agent_key_revoked"])
+  .enum(["agent_key_created", "agent_key_revoked", "agent_key_rotated"])
   .meta({ id: "AgentKeyEventType" });
 export type AgentKeyEventType = z.infer<typeof AgentKeyEventType>;
 
@@ -57,6 +59,9 @@ export const AgentKey = z
     expiresAt: Timestamp.nullable(),
     revokedAt: Timestamp.nullable(),
     revokedByHumanId: z.string().nullable(),
+    // Set only on a replacement: the id of the key this one replaced. Ids are not
+    // secrets, so the lineage is safe to show in listings and audit views (#35).
+    replacesKeyId: z.string().nullable(),
     projects: z.array(AgentKeyProject),
   })
   .meta({ id: "AgentKey" });
@@ -86,8 +91,21 @@ export const CreateAgentKeyRequest = z
   .meta({ id: "CreateAgentKeyRequest" });
 export type CreateAgentKeyRequest = z.infer<typeof CreateAgentKeyRequest>;
 
+// Rotation creates a replacement for one existing key (issue #35). Omitted fields are
+// taken from the source key: its validity and its project grants. Explicit grants are
+// validated exactly like issuance; preserved grants are re-capped by the human's current
+// access. The replacement gets its own fresh expiry, independent of the source key.
+export const RotateAgentKeyRequest = z
+  .object({
+    validity: AgentKeyValidity.optional(),
+    projects: z.array(AgentKeyGrant).optional(),
+  })
+  .meta({ id: "RotateAgentKeyRequest" });
+export type RotateAgentKeyRequest = z.infer<typeof RotateAgentKeyRequest>;
+
 // The only response that ever carries the secret. It is not a stored resource and is
-// shown exactly once, at issue time.
+// shown exactly once, at issue or rotation time. On rotation it is the *new* secret;
+// the source key's secret is never fetched, repeated, or logged.
 export const CreateAgentKeyResponse = z
   .object({ key: AgentKey, secret: z.string() })
   .meta({ id: "CreateAgentKeyResponse" });

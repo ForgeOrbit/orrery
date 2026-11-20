@@ -305,6 +305,12 @@
               "null"
             ]
           },
+          "replacesKeyId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "projects": {
             "type": "array",
             "items": {
@@ -323,6 +329,7 @@
           "expiresAt",
           "revokedAt",
           "revokedByHumanId",
+          "replacesKeyId",
           "projects"
         ]
       },
@@ -405,6 +412,20 @@
           "projectId",
           "level"
         ]
+      },
+      "RotateAgentKeyRequest": {
+        "type": "object",
+        "properties": {
+          "validity": {
+            "$ref": "#/components/schemas/AgentKeyValidity"
+          },
+          "projects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentKeyGrant"
+            }
+          }
+        }
       },
       "AgentKeysResponse": {
         "type": "object",
@@ -2698,6 +2719,86 @@
           },
           "401": {
             "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/keys/{keyId}/rotate": {
+      "post": {
+        "summary": "Replace one of the human's own keys with an overlapping replacement",
+        "description": "Creates a second key for the same agent and workspace. Both keys work during the overlap, and each has its own expiry: revoking or letting either one expire never affects the other. Omitted validity and project grants are preserved from the source key; the replacement's grants are re-capped by the human owner's current access. Only the replacement's secret is returned, once. A revoked, expired, foreign, or inaccessible source key is refused.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "keyId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RotateAgentKeyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The replacement key and its secret, shown once",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateAgentKeyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid, or a grant is above your current access",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such key belongs to you, or its workspace is no longer accessible",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The key is already revoked or expired and cannot be rotated",
             "content": {
               "application/problem+json": {
                 "schema": {

@@ -1,5 +1,5 @@
 {
-  "id": "23ff2e19-197a-49ac-842c-f691265dd218",
+  "id": "a2308998-4cc3-4f19-8537-abf86f0b91ad",
   "prevId": "e1a72df1-cec9-4d8d-81fd-addd93e3fedc",
   "version": "7",
   "dialect": "postgresql",
@@ -226,6 +226,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "replaces_key_id": {
+          "name": "replaces_key_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -307,6 +313,15 @@
           "columnsFrom": ["revoked_by_human_id"],
           "columnsTo": ["id"],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "agent_api_keys_replaces_key_id_agent_api_keys_id_fk": {
+          "name": "agent_api_keys_replaces_key_id_agent_api_keys_id_fk",
+          "tableFrom": "agent_api_keys",
+          "tableTo": "agent_api_keys",
+          "columnsFrom": ["replaces_key_id"],
+          "columnsTo": ["id"],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -442,7 +457,7 @@
       "checkConstraints": {
         "agent_key_events_type": {
           "name": "agent_key_events_type",
-          "value": "\"agent_key_events\".\"type\" in ('agent_key_created', 'agent_key_revoked')"
+          "value": "\"agent_key_events\".\"type\" in ('agent_key_created', 'agent_key_revoked', 'agent_key_rotated')"
         }
       },
       "isRLSEnabled": false
@@ -1187,13 +1202,6 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
-        },
-        "needs_input": {
-          "name": "needs_input",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
         }
       },
       "indexes": {
@@ -2430,217 +2438,6 @@
         "runs_status": {
           "name": "runs_status",
           "value": "\"runs\".\"status\" in ('active', 'ended')"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.work_sessions": {
-      "name": "work_sessions",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "agent_id": {
-          "name": "agent_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "run_id": {
-          "name": "run_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "issue_id": {
-          "name": "issue_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'active'"
-        },
-        "lease_expires_at": {
-          "name": "lease_expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "progress": {
-          "name": "progress",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "progress_updated_at": {
-          "name": "progress_updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "ended_at": {
-          "name": "ended_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "one_active_work_session_per_issue": {
-          "name": "one_active_work_session_per_issue",
-          "columns": [
-            {
-              "expression": "issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"work_sessions\".\"status\" = 'active'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "work_sessions_agent_created": {
-          "name": "work_sessions_agent_created",
-          "columns": [
-            {
-              "expression": "agent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "work_sessions_run_created": {
-          "name": "work_sessions_run_created",
-          "columns": [
-            {
-              "expression": "run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "work_sessions_issue_created": {
-          "name": "work_sessions_issue_created",
-          "columns": [
-            {
-              "expression": "issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "work_sessions_agent_id_agents_id_fk": {
-          "name": "work_sessions_agent_id_agents_id_fk",
-          "tableFrom": "work_sessions",
-          "tableTo": "agents",
-          "columnsFrom": ["agent_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "work_sessions_run_id_runs_id_fk": {
-          "name": "work_sessions_run_id_runs_id_fk",
-          "tableFrom": "work_sessions",
-          "tableTo": "runs",
-          "columnsFrom": ["run_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "work_sessions_workspace_id_workspaces_id_fk": {
-          "name": "work_sessions_workspace_id_workspaces_id_fk",
-          "tableFrom": "work_sessions",
-          "tableTo": "workspaces",
-          "columnsFrom": ["workspace_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "work_sessions_issue_id_issues_id_fk": {
-          "name": "work_sessions_issue_id_issues_id_fk",
-          "tableFrom": "work_sessions",
-          "tableTo": "issues",
-          "columnsFrom": ["issue_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "work_sessions_status": {
-          "name": "work_sessions_status",
-          "value": "\"work_sessions\".\"status\" in ('active', 'completed', 'released', 'expired')"
         }
       },
       "isRLSEnabled": false

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Orrery Formal Verification Model Checker (M1-M13).
+Orrery Formal Verification Model Checker (M1-M16).
 
 Extracts critical concurrency, locking, and state-transition guards directly from
 Orrery's server source and SQL migrations, then runs an exhaustive BFS finite-state
@@ -843,7 +843,81 @@ def extract_code_facts() -> dict[str, Any]:
         and 'throw new RecoveryError("not_system_administrator")' in rec_local_fn
     )
 
-    # M16 (#36): work sessions, claims and five-minute leases. Every guard is read from
+    # M16 (#35): rotation. Each guard is read from the decision that owns it — the
+    # service method, its thin REST route, the key tables, the migration, and the shared
+    # contract — so deleting one flips the corresponding bounded attempt below.
+    ag_rest = read_text("apps/server/src/features/agents/rest.ts")
+    ag_contract = read_text("packages/contract/src/agents.ts")
+    mig_0021 = read_text("db/migrations/0021_demonic_warstar.sql")
+    rotate_fn = slice_between(ag_src, "async rotateKey(", "async listKeys(")
+    rotate_prelude = rotate_fn.split("const [source]", 1)[0]
+    source_select = slice_between(rotate_fn, "const [source] = await tx", ".limit(1)")
+    rotate_insert = slice_between(rotate_fn, ".insert(agentApiKeys)", ".returning(")
+    rotate_route = slice_between(ag_rest, "const rotateKey = createRoute(", "const listKeys = createRoute(")
+    keys_table = slice_between(ag_schema, "export const agentApiKeys = pgTable(", "// The selected projects a key may act on")
+
+    m16_serialized = "await lockWorkspaceOwnershipWrites(tx)" in rotate_prelude
+    m16_source_ownership = (
+        "eq(agents.humanId, actor.humanId)" in source_select
+        and 'throw new AgentsError("key_not_found")' in rotate_fn
+    )
+    m16_revoked_refused = (
+        "source.key.revokedAt !== null" in rotate_fn
+        and 'throw new AgentsError("source_key_revoked")' in rotate_fn
+    )
+    m16_expired_refused = (
+        "gt(agentApiKeys.expiresAt, sql`now()`)" in rotate_fn
+        and 'throw new AgentsError("source_key_expired")' in rotate_fn
+    )
+    m16_workspace_access = (
+        "humanCanUseWorkspace(tx, source.key.workspaceId, actor.humanId)" in rotate_fn
+        and 'throw new AgentsError("workspace_not_found")' in rotate_fn
+    )
+    m16_same_agent_workspace = (
+        "agentId: source.key.agentId" in rotate_insert
+        and "workspaceId: source.key.workspaceId" in rotate_insert
+        and "replacesKeyId: keyId" in rotate_insert
+    )
+    m16_independent_secret = (
+        "const secret = newSecret()" in rotate_fn
+        and "tokenHash: tokenHash(secret)" in rotate_insert
+        and "tokenHash" not in source_select
+        and "secret:" not in rotate_insert
+    )
+    m16_independent_expiry = (
+        "expiresAt: expiryFor(validity)" in rotate_insert
+        and "now() + make_interval(days =>" in ag_src
+        and "expiresAt: source" not in rotate_insert
+    )
+    m16_grants_capped = (
+        "projectAccessCeiling(" in rotate_fn
+        and "projectAccessAtLeast(humanLevel, grant.level)" in rotate_fn
+        and "level: humanLevel" in rotate_fn
+        and 'throw new AgentsError("invalid_key_grant")' in rotate_fn
+    )
+    m16_no_cascade = (
+        '"replaces_key_id"' in keys_table
+        and 'onDelete: "set null"' in keys_table
+        and "ON DELETE set null" in mig_0021
+        and "ON DELETE CASCADE" not in mig_0021
+    )
+    m16_event = (
+        "AgentKeyEventType.enum.agent_key_rotated" in rotate_fn
+        and '"agent_key_rotated"' in ag_contract
+        and "insert(agentKeyEvents)" in record_fn
+        and m11_events_without_secret
+    )
+    m16_history_surface = (
+        "type: row.type" in hist_key_fn
+        and "loadKeyEvents(" in hist_ws_fn
+        and '"agent_key_rotated"' in ag_contract
+    )
+    m16_http_problems = (
+        "400: problem(" in rotate_route
+        and "409: problem(" in rotate_route
+        and "201:" in rotate_route
+    )
+    # M17 (#36): work sessions, claims and five-minute leases. Every guard is read from
     # the service, the fenced projects write, the schema/migration and the adapters, so
     # removing a row lock, the unique index, the lazy expiry or the session gate flips the
     # model to a shortest counterexample naming the exact TS function.
@@ -851,7 +925,7 @@ def extract_code_facts() -> dict[str, Any]:
     sess_rest_src = read_text("apps/server/src/features/work-sessions/rest.ts")
     sess_mcp_src = read_text("apps/server/src/features/work-sessions/mcp.ts")
     sess_index_src = read_text("apps/server/src/features/work-sessions/index.ts")
-    mig_0021 = read_text("db/migrations/0021_wild_scarlet_witch.sql")
+    mig_0021 = read_text("db/migrations/0022_spooky_barracuda.sql")
     lock_issue_fn = slice_between(sess_src, "async function lockIssue(", "// Lazy expiry")
     expire_fn = slice_between(sess_src, "async function expireStale(", "const fiveMinutes")
     claim_fn = slice_between(sess_src, "async claim(actor, input)", "async renew(actor, issueId)")
@@ -862,34 +936,34 @@ def extract_code_facts() -> dict[str, Any]:
     update_issue_fn = slice_between(proj_src, "async updateIssue(actorArg, issueId, input)", "async listComments(")
     work_sessions_table = slice_between(schema_src, "export const workSessions = pgTable(", "// A basic Markdown knowledge entry")
 
-    m16_unique_index = (
+    m17_unique_index = (
         "one_active_work_session_per_issue" in mig_0021
         and "one_active_work_session_per_issue" in work_sessions_table
     )
-    m16_issue_lock = (
+    m17_issue_lock = (
         '.for("update")' in lock_issue_fn
         and "lockIssue(tx" in claim_fn
         and "lockIssue(tx" in live_fn
         and '.for("update")' in update_issue_fn
     )
-    m16_lazy_expiry = (
+    m17_lazy_expiry = (
         "lte(workSessions.leaseExpiresAt, sql`statement_timestamp()`)" in expire_fn
         and "status: WorkSessionStatus.enum.expired" in expire_fn
         and "expireStale(tx" in claim_fn
         and "expireStale(tx" in live_fn
     )
-    m16_db_time_lease = "statement_timestamp() + interval '5 minutes'" in sess_src
-    m16_progress_independent = (
+    m17_db_time_lease = "statement_timestamp() + interval '5 minutes'" in sess_src
+    m17_progress_independent = (
         '"progress"' in work_sessions_table
         and "progress:" not in expire_fn
         and "progressUpdatedAt:" not in expire_fn
     )
-    m16_fenced_write = (
+    m17_fenced_write = (
         "sessionGate(tx, actor.identity.agentId" in update_issue_fn
         and 'throw new ProjectsError("session_required")' in update_issue_fn
         and "agentHoldsSession:" in sess_index_src
     )
-    m16_gate_no_claim = (
+    m17_gate_no_claim = (
         "gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`)" in gate_fn
         and "eq(workSessions.status, WorkSessionStatus.enum.active)" in gate_fn
         and ".insert(workSessions)" not in gate_fn
@@ -897,44 +971,44 @@ def extract_code_facts() -> dict[str, Any]:
     )
     # The gate runs inside projects' already issue-locked transaction; a second
     # db.transaction there would take another pool connection and can starve/deadlock.
-    m16_no_nested_tx = (
+    m17_no_nested_tx = (
         "expireCommitted(" not in gate_fn
         and "db.transaction(" not in gate_fn
     )
-    m16_renew_active = (
+    m17_renew_active = (
         "eq(workSessions.status, WorkSessionStatus.enum.active)" in live_fn
         and 'throw new SessionsError("session_required")' in live_fn
     )
-    m16_recheck_access = (
+    m17_recheck_access = (
         "requireAccess(" in live_fn
         and "projectAccessCeiling" in sess_src
         and '"insufficient_access"' in sess_src
     )
-    m16_session_identity = (
+    m17_session_identity = (
         "agentId: identity.agentId" in claim_fn
         and "runId: input.runId" in claim_fn
         and "workspaceId: identity.workspaceId" in claim_fn
         and "keyId" not in claim_fn
     )
-    m16_helper_shares = (
+    m17_helper_shares = (
         "return toSession(existing)" in claim_fn
         and "existing.runId === input.runId" in claim_fn
     )
-    m16_ready_db_time = (
+    m17_ready_db_time = (
         "gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`)" in ready_fn
         and "eq(issues.needsInput, false)" in ready_fn
         and "isNull(workSessions.id)" in ready_fn
     )
-    m16_unfenced = (
+    m17_unfenced = (
         "sessionGate(tx" in update_issue_fn
         and proj_src.count("sessionGate(") == 1
     )
-    m16_adapters = (
+    m17_adapters = (
         "await authenticate(request)" in sess_mcp_src
         and "isAgentError(error)" in sess_rest_src
         and "SessionsError" in sess_rest_src
     )
-    m16_tools = all(
+    m17_tools = all(
         name in tools_src
         for name in (
             "claim_issue",
@@ -946,7 +1020,7 @@ def extract_code_facts() -> dict[str, Any]:
             "list_work_sessions",
         )
     )
-    m16_problems = sess_rest_src.count("400: problem(") >= 5
+    m17_problems = sess_rest_src.count("400: problem(") >= 5
 
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
@@ -1061,23 +1135,36 @@ def extract_code_facts() -> dict[str, Any]:
         "m15_http_problems": m15_http_problems,
         "m15_revokes_pending_tokens": m15_revokes_pending_tokens,
         "m15_admin_only_local": m15_admin_only_local,
-        "m16_unique_index": m16_unique_index,
-        "m16_issue_lock": m16_issue_lock,
-        "m16_lazy_expiry": m16_lazy_expiry,
-        "m16_db_time_lease": m16_db_time_lease,
-        "m16_progress_independent": m16_progress_independent,
-        "m16_fenced_write": m16_fenced_write,
-        "m16_gate_no_claim": m16_gate_no_claim,
-        "m16_no_nested_tx": m16_no_nested_tx,
-        "m16_renew_active": m16_renew_active,
-        "m16_recheck_access": m16_recheck_access,
-        "m16_session_identity": m16_session_identity,
-        "m16_helper_shares": m16_helper_shares,
-        "m16_ready_db_time": m16_ready_db_time,
-        "m16_unfenced": m16_unfenced,
-        "m16_adapters": m16_adapters,
-        "m16_tools": m16_tools,
-        "m16_problems": m16_problems,
+        "m16_serialized": m16_serialized,
+        "m16_source_ownership": m16_source_ownership,
+        "m16_revoked_refused": m16_revoked_refused,
+        "m16_expired_refused": m16_expired_refused,
+        "m16_workspace_access": m16_workspace_access,
+        "m16_same_agent_workspace": m16_same_agent_workspace,
+        "m16_independent_secret": m16_independent_secret,
+        "m16_independent_expiry": m16_independent_expiry,
+        "m16_grants_capped": m16_grants_capped,
+        "m16_no_cascade": m16_no_cascade,
+        "m16_event": m16_event,
+        "m16_history_surface": m16_history_surface,
+        "m16_http_problems": m16_http_problems,
+        "m17_unique_index": m17_unique_index,
+        "m17_issue_lock": m17_issue_lock,
+        "m17_lazy_expiry": m17_lazy_expiry,
+        "m17_db_time_lease": m17_db_time_lease,
+        "m17_progress_independent": m17_progress_independent,
+        "m17_fenced_write": m17_fenced_write,
+        "m17_gate_no_claim": m17_gate_no_claim,
+        "m17_no_nested_tx": m17_no_nested_tx,
+        "m17_renew_active": m17_renew_active,
+        "m17_recheck_access": m17_recheck_access,
+        "m17_session_identity": m17_session_identity,
+        "m17_helper_shares": m17_helper_shares,
+        "m17_ready_db_time": m17_ready_db_time,
+        "m17_unfenced": m17_unfenced,
+        "m17_adapters": m17_adapters,
+        "m17_tools": m17_tools,
+        "m17_problems": m17_problems,
     }
 
 
@@ -2246,6 +2333,155 @@ def check_m15(facts: dict[str, Any]) -> CheckResult:
     )
 
 
+def check_m16(facts: dict[str, Any]) -> CheckResult:
+    # #35 rotation. Bounded attempts over the replacement's lifecycle: every attempt is
+    # a direct probe of one extracted guard, with the outcome when that guard is missing.
+    # Overlap, independent expiry, old-revoke isolation, password-reset independence, and
+    # the secret-free replacement event are each named in the code's own API/TS words.
+    overlap = facts["m16_same_agent_workspace"] and facts["m16_independent_secret"]
+    attempts: list[tuple[str, str, bool, str]] = [
+        (
+            "POST /api/agents/keys/<live key>/rotate creates a replacement for the same agent and workspace",
+            "same_target",
+            overlap and facts["m16_serialized"],
+            "other_target",
+        ),
+        (
+            "POST rotate mints a new secret and never repeats the source secret",
+            "new_secret_only",
+            facts["m16_independent_secret"],
+            "old_secret_reused",
+        ),
+        (
+            "Both keys authenticate during the overlap",
+            "both_live",
+            overlap,
+            "only_source_live",
+        ),
+        (
+            "DELETE the source key leaves the replacement authenticating",
+            "new_live",
+            facts["m16_no_cascade"],
+            "new_revoked",
+        ),
+        (
+            "DELETE the replacement leaves the source authenticating",
+            "old_live",
+            facts["m16_no_cascade"],
+            "old_revoked",
+        ),
+        (
+            "Letting the source key expire does not expire the replacement",
+            "new_live",
+            facts["m16_independent_expiry"],
+            "new_expired",
+        ),
+        (
+            "Letting the replacement expire does not expire the source",
+            "old_live",
+            facts["m16_independent_expiry"],
+            "old_expired",
+        ),
+        (
+            "The replacement expiry is computed from now, not copied from the source",
+            "fresh_expiry",
+            facts["m16_independent_expiry"],
+            "copied_expiry",
+        ),
+        (
+            "A password reset leaves both the source and replacement keys authenticating",
+            "both_live",
+            facts["m15_agent_keys_untouched"],
+            "keys_swept",
+        ),
+        ("POST rotate on a revoked key is refused", "refused", facts["m16_revoked_refused"], "rotated"),
+        (
+            "POST rotate on an expired key is refused in database time",
+            "refused",
+            facts["m16_expired_refused"],
+            "rotated",
+        ),
+        (
+            "POST rotate on another human's key is refused",
+            "refused",
+            facts["m16_source_ownership"],
+            "rotated",
+        ),
+        (
+            "POST rotate on a key whose workspace the human lost is refused",
+            "refused",
+            facts["m16_workspace_access"],
+            "rotated",
+        ),
+        (
+            "POST rotate racing removeMember leaves no unrevoked replacement for a removed member",
+            "no_orphan",
+            facts["m16_serialized"],
+            "orphan_key",
+        ),
+        (
+            "Preserved grants above current human access are capped and explicit grants validated",
+            "capped",
+            facts["m16_grants_capped"],
+            "stale_authority",
+        ),
+        (
+            "Rotation writes one secret-free agent_key_rotated event on the replacement",
+            "event_no_secret",
+            facts["m16_event"],
+            "no_event",
+        ),
+        (
+            "The #32 history view surfaces agent_key_rotated without a secret",
+            "surfaced",
+            facts["m16_history_surface"],
+            "hidden",
+        ),
+        (
+            "The validated rotation route declares a 400 Problem",
+            "problem",
+            facts["m16_http_problems"],
+            "no_problem",
+        ),
+    ]
+    init = ("start",)
+
+    def next_states(state):
+        if state != ("start",):
+            return []
+        return [
+            (f"{label} -> {expected if guard else wrong}", ("probed", idx, expected if guard else wrong))
+            for idx, (label, expected, guard, wrong) in enumerate(attempts)
+        ]
+
+    def inv(state):
+        if state[0] != "probed":
+            return True, ""
+        label, expected, _, _ = attempts[state[1]]
+        if state[2] != expected:
+            return False, f"{label} returned {state[2]}, expected {expected}"
+        return True, ""
+
+    return bfs_check(
+        "M16",
+        "Agent Key Rotation (#35)",
+        "Rotation overlaps the old and new keys with independent expiry and revocation, survives a password reset, caps grants by current access, and records a secret-free event that history surfaces",
+        "safety",
+        init,
+        next_states,
+        inv,
+        [
+            "apps/server/src/features/agents/service.ts",
+            "apps/server/src/features/agents/rest.ts",
+            "apps/server/src/features/history/service.ts",
+            "apps/server/src/features/recovery/service.ts",
+            "packages/contract/src/agents.ts",
+            "apps/server/src/db/schema.ts",
+            "db/migrations/0021_demonic_warstar.sql",
+        ],
+    )
+
+
 def check_m14(facts: dict[str, Any]) -> CheckResult:
     # #34: run identity is isolated per agent/workspace/harness/session, a resume reuses
     # the run, children link to their parent, model changes are events, and missing
@@ -2326,27 +2562,27 @@ def check_m14(facts: dict[str, Any]) -> CheckResult:
     )
 
 
-def check_m16(facts: dict[str, Any]) -> CheckResult:
+def check_m17(facts: dict[str, Any]) -> CheckResult:
     """#36: one active claim per issue, DB-time five-minute expiry, progress kept, and
     fenced agent writes. Two agents (A, B) and two issues keep the state space small;
     every transition consults a guard extracted from the live service, projects fence and
     schema, so a deleted guard produces a shortest trace naming the exact operation."""
-    unique = facts["m16_unique_index"]
-    lock = facts["m16_issue_lock"]
-    lazy = facts["m16_lazy_expiry"]
-    db_time = facts["m16_db_time_lease"]
-    keep_progress = facts["m16_progress_independent"]
-    fenced = facts["m16_fenced_write"]
-    no_claim = facts["m16_gate_no_claim"]
-    no_nested = facts["m16_no_nested_tx"]
-    renew_active = facts["m16_renew_active"]
-    recheck = facts["m16_recheck_access"]
-    identity = facts["m16_session_identity"]
-    shared = facts["m16_helper_shares"]
-    ready_db = facts["m16_ready_db_time"]
-    unfenced = facts["m16_unfenced"]
-    adapters = facts["m16_adapters"]
-    tools_ok = facts["m16_tools"] and facts["m16_problems"]
+    unique = facts["m17_unique_index"]
+    lock = facts["m17_issue_lock"]
+    lazy = facts["m17_lazy_expiry"]
+    db_time = facts["m17_db_time_lease"]
+    keep_progress = facts["m17_progress_independent"]
+    fenced = facts["m17_fenced_write"]
+    no_claim = facts["m17_gate_no_claim"]
+    no_nested = facts["m17_no_nested_tx"]
+    renew_active = facts["m17_renew_active"]
+    recheck = facts["m17_recheck_access"]
+    identity = facts["m17_session_identity"]
+    shared = facts["m17_helper_shares"]
+    ready_db = facts["m17_ready_db_time"]
+    unfenced = facts["m17_unfenced"]
+    adapters = facts["m17_adapters"]
+    tools_ok = facts["m17_tools"] and facts["m17_problems"]
 
     KEYS = ("owner", "status", "lease", "progress", "needs")
 
@@ -2510,7 +2746,7 @@ def check_m16(facts: dict[str, Any]) -> CheckResult:
         return True, ""
 
     return bfs_check(
-        "M16",
+        "M17",
         "Work Sessions and Claims (#36)",
         "At most one active session per issue; five-minute DB-time expiry releases only that claim and keeps progress; fenced agent writes and renewal need a live session held by the agent; a downgrade stops both; ready work omits claimed and Needs input issues",
         "safety",
@@ -2527,7 +2763,7 @@ def check_m16(facts: dict[str, Any]) -> CheckResult:
             "packages/contract/src/sessions.ts",
             "packages/contract/src/mcp-tools.ts",
             "apps/server/src/db/schema.ts",
-            "db/migrations/0021_wild_scarlet_witch.sql",
+            "db/migrations/0022_spooky_barracuda.sql",
         ],
     )
 
@@ -2552,6 +2788,7 @@ def main() -> None:
         check_m14(facts),
         check_m15(facts),
         check_m16(facts),
+        check_m17(facts),
     ]
 
     if "--json" in sys.argv:

@@ -3,13 +3,20 @@ import { AgentKeyValidity, ProjectAccessLevel, type Agent, type AgentKey } from 
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { projectsQuery } from "../projects/index.ts";
-import { createAgent, issueAgentKey, ownerRevokeAgentKey, revokeAgentKey } from "./commands.ts";
+import {
+  createAgent,
+  issueAgentKey,
+  ownerRevokeAgentKey,
+  revokeAgentKey,
+  rotateAgentKey,
+} from "./commands.ts";
 import { agentKeysQuery, agentsQuery, workspaceAgentKeysQuery } from "./queries.ts";
 
 // Agents and their keys (issue #30). An agent is registered under the signed-in human,
 // then a key binds it to this workspace and selected projects. The level offered in the
 // form is capped by the human's current level on each project; the server rechecks that
-// ceiling at issue and on every authenticated request. A key's secret is shown once.
+// ceiling at issue and on every authenticated request. A key's secret is shown once;
+// rotating a key mints an overlapping replacement and shows only the new secret once.
 // Every list, including the owner's view of other humans' keys, is secret-free.
 
 const validityOptions = [
@@ -42,6 +49,25 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
   const allKeys = new Map<string, AgentKey>();
   for (const key of mine) allKeys.set(key.id, key);
   for (const key of workspaceKeys.data ?? []) allKeys.set(key.id, key);
+
+  async function rotate(key: AgentKey) {
+    setBusyKey(key.id);
+    setError(undefined);
+    try {
+      // Omitted options preserve the source's validity and grants; the server re-caps
+      // those grants by the human's current access and returns a fresh one-time secret.
+      const replacement = await rotateAgentKey(key.id);
+      setSecret(replacement.secret);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not rotate the key.");
+    } finally {
+      setBusyKey(undefined);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: agentKeysQuery(workspaceId).queryKey }),
+        queryClient.invalidateQueries({ queryKey: workspaceAgentKeysQuery(workspaceId).queryKey }),
+      ]);
+    }
+  }
 
   async function revoke(key: AgentKey, owner: boolean) {
     setBusyKey(key.id);
@@ -113,13 +139,22 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
                   Revoked
                 </button>
               ) : ownIds.has(key.id) ? (
-                <button
-                  type="button"
-                  disabled={busyKey === key.id}
-                  onClick={() => void revoke(key, false)}
-                >
-                  Revoke
-                </button>
+                <>
+                  <button
+                    type="button"
+                    disabled={busyKey === key.id}
+                    onClick={() => void rotate(key)}
+                  >
+                    Rotate
+                  </button>{" "}
+                  <button
+                    type="button"
+                    disabled={busyKey === key.id}
+                    onClick={() => void revoke(key, false)}
+                  >
+                    Revoke
+                  </button>
+                </>
               ) : (
                 isOwner && (
                   <button
