@@ -5,12 +5,11 @@ import { createAgentsRest, routes } from "./rest.ts";
 import { type AgentsDeps, createAgentsService } from "./service.ts";
 
 export { routes as agentsRoutes };
-export { createAgentKeyReader, type AgentKeyReader } from "./rest.ts";
 export type { AgentsService, AgentsError, AgentsErrorKind } from "./service.ts";
 
-export type AgentsDepsWithAccounts = AgentsDeps & { sessionReader: SessionReader };
-
-export function createAgentsFeature(deps: AgentsDepsWithAccounts): Feature {
+// Management routes borrow accounts' session reader; bearer-header parsing stays inside
+// rest.ts, and the service alone decides whether a presented credential authenticates.
+export function createAgentsFeature(deps: AgentsDeps & { sessionReader: SessionReader }): Feature {
   const service = createAgentsService(deps);
   return { name: "agents", rest: createAgentsRest(service, deps.sessionReader) };
 }

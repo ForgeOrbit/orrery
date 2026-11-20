@@ -83,6 +83,7 @@ const listKeys = createRoute({
       description: "The keys",
       content: { "application/json": { schema: AgentKeysResponse } },
     },
+    400: problem("The request is invalid"),
     401: problem("Not signed in"),
   },
 });
@@ -97,7 +98,8 @@ const revokeKey = createRoute({
     "Revocation takes effect on the next request, including for a Never key. The secret is neither required nor returned.",
   request: { params: keyParams },
   responses: {
-    204: { description: "The key was revoked" },
+    204: { description: "The key was revoked; repeating the call writes no second event" },
+    400: problem("The key id is invalid"),
     401: problem("Not signed in"),
     404: problem("No such key belongs to you"),
   },
@@ -121,6 +123,7 @@ const workspaceKeys = createRoute({
       description: "The workspace's keys",
       content: { "application/json": { schema: AgentKeysResponse } },
     },
+    400: problem("The workspace id is invalid"),
     401: problem("Not signed in"),
     403: problem("Only a workspace owner can list these keys"),
   },
@@ -134,7 +137,8 @@ const ownerRevokeKey = createRoute({
     "A workspace owner can revoke any key scoped to that workspace without seeing its secret. The workspace is part of the key lookup, so a key in another workspace cannot be affected. A non-owner answers 403.",
   request: { params: workspaceKeyParams },
   responses: {
-    204: { description: "The key was revoked" },
+    204: { description: "The key was revoked; repeating the call writes no second event" },
+    400: problem("The workspace or key id is invalid"),
     401: problem("Not signed in"),
     403: problem("Only a workspace owner can revoke these keys"),
     404: problem("No such key in this workspace"),
@@ -146,14 +150,15 @@ const identity = createRoute({
   path: "/api/agents/me",
   summary: "Resolve the agent behind a bearer API key",
   description:
-    "Authenticates an `Authorization: Bearer <key>` header and returns the agent identity, the one workspace the key is scoped to, and the effective project access after the human owner's current access has capped the key's grants. An optional `workspaceId` or `projectId` makes a cross-workspace or out-of-scope request fail here, on the server. Revoked, expired, and inactive-owner keys fail; Never skips only the expiry check. The secret is never echoed.",
+    "Authenticates an `Authorization: Bearer <key>` header and returns the agent identity, the one workspace the key is scoped to, and the effective project access after the human owner's current access has capped the key's grants. An optional `workspaceId` or `projectId` makes a cross-workspace or out-of-scope request fail here, on the server. Revoked keys, expired keys, and keys whose human owner can no longer use the workspace all fail; Never skips only the expiry check. The secret is never echoed.",
   request: { query: AgentIdentityQuery },
   responses: {
     200: {
       description: "The agent identity and its effective access",
       content: { "application/json": { schema: AgentIdentity } },
     },
-    401: problem("The key is invalid, revoked, expired, or its owner is inactive"),
+    400: problem("The query is invalid"),
+    401: problem("The key is invalid, revoked, expired, or its workspace is no longer accessible"),
     403: problem("The key is not scoped to this workspace or project"),
   },
 });
@@ -181,7 +186,7 @@ const statusFor = {
   invalid_key: 401,
   key_revoked: 401,
   key_expired: 401,
-  key_owner_inactive: 401,
+  key_workspace_inaccessible: 401,
   key_out_of_scope: 403,
   insufficient_agent_access: 403,
 } as const satisfies Record<AgentsErrorKind, number>;
@@ -221,17 +226,17 @@ const identityKinds = [
   "invalid_key",
   "key_revoked",
   "key_expired",
-  "key_owner_inactive",
+  "key_workspace_inaccessible",
   "key_out_of_scope",
   "insufficient_agent_access",
 ] as const;
 
 // A bearer key is a transport detail of this feature: the header is read here, and the
-// service alone decides whether the key authenticates. No other feature learns how the
-// header is spelled.
-export type AgentKeyReader = (c: Context) => string | null;
+// service alone decides whether the key authenticates. It stays internal to rest.ts —
+// no other feature learns how the header is spelled.
+type AgentKeyReader = (c: Context) => string | null;
 
-export function createAgentKeyReader(): AgentKeyReader {
+function createAgentKeyReader(): AgentKeyReader {
   return (c) => {
     const header = c.req.header("Authorization");
     if (header === undefined) return null;
@@ -316,16 +321,10 @@ export function createAgentsRest(service: AgentsService, sessionReader: SessionR
   });
 
   app.openapi(identity, async (c) => {
-    const token = readKey(c);
-    if (token === null) {
-      return problemResponse(c, {
-        status: 401,
-        code: "invalid_key",
-        title: "The API key is not valid.",
-      });
-    }
     try {
-      return c.json(await service.authenticate(token, c.req.valid("query")), 200);
+      // The service decides whether a missing header is authentication failure, just as
+      // it decides whether a missing session cookie is for the session-based routes.
+      return c.json(await service.authenticate(readKey(c), c.req.valid("query")), 200);
     } catch (error) {
       return failure(c, error, identityKinds);
     }

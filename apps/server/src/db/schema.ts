@@ -36,9 +36,6 @@ export const humans = pgTable(
     email: text("email").notNull().unique(),
     passwordHash: text("password_hash").notNull(),
     emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
-    // Deactivation (a later slice) keeps authorship but disables access. The agent-key
-    // path already checks it, so an old key cannot survive a deactivated owner.
-    isActive: boolean("is_active").notNull().default(true),
     isSystemAdministrator: boolean("is_system_administrator").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

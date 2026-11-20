@@ -258,6 +258,9 @@
           "agentId": {
             "type": "string"
           },
+          "agentName": {
+            "type": "string"
+          },
           "workspaceId": {
             "type": "string"
           },
@@ -312,6 +315,7 @@
         "required": [
           "id",
           "agentId",
+          "agentName",
           "workspaceId",
           "createdByHumanId",
           "validity",
@@ -339,12 +343,16 @@
           "projectId": {
             "type": "string"
           },
+          "projectName": {
+            "type": "string"
+          },
           "level": {
             "$ref": "#/components/schemas/ProjectAccessLevel"
           }
         },
         "required": [
           "projectId",
+          "projectName",
           "level"
         ]
       },
@@ -373,7 +381,7 @@
           "projects": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/AgentKeyProject"
+              "$ref": "#/components/schemas/AgentKeyGrant"
             }
           }
         },
@@ -381,6 +389,21 @@
           "agentId",
           "workspaceId",
           "projects"
+        ]
+      },
+      "AgentKeyGrant": {
+        "type": "object",
+        "properties": {
+          "projectId": {
+            "type": "string"
+          },
+          "level": {
+            "$ref": "#/components/schemas/ProjectAccessLevel"
+          }
+        },
+        "required": [
+          "projectId",
+          "level"
         ]
       },
       "AgentKeysResponse": {
@@ -1945,6 +1968,16 @@
               }
             }
           },
+          "400": {
+            "description": "The request is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "401": {
             "description": "Not signed in",
             "content": {
@@ -1976,7 +2009,17 @@
         ],
         "responses": {
           "204": {
-            "description": "The key was revoked"
+            "description": "The key was revoked; repeating the call writes no second event"
+          },
+          "400": {
+            "description": "The key id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           },
           "401": {
             "description": "Not signed in",
@@ -2024,6 +2067,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AgentKeysResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The workspace id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -2079,7 +2132,17 @@
         ],
         "responses": {
           "204": {
-            "description": "The key was revoked"
+            "description": "The key was revoked; repeating the call writes no second event"
+          },
+          "400": {
+            "description": "The workspace or key id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           },
           "401": {
             "description": "Not signed in",
@@ -2117,7 +2180,7 @@
     "/api/agents/me": {
       "get": {
         "summary": "Resolve the agent behind a bearer API key",
-        "description": "Authenticates an `Authorization: Bearer <key>` header and returns the agent identity, the one workspace the key is scoped to, and the effective project access after the human owner's current access has capped the key's grants. An optional `workspaceId` or `projectId` makes a cross-workspace or out-of-scope request fail here, on the server. Revoked, expired, and inactive-owner keys fail; Never skips only the expiry check. The secret is never echoed.",
+        "description": "Authenticates an `Authorization: Bearer <key>` header and returns the agent identity, the one workspace the key is scoped to, and the effective project access after the human owner's current access has capped the key's grants. An optional `workspaceId` or `projectId` makes a cross-workspace or out-of-scope request fail here, on the server. Revoked keys, expired keys, and keys whose human owner can no longer use the workspace all fail; Never skips only the expiry check. The secret is never echoed.",
         "parameters": [
           {
             "schema": {
@@ -2149,8 +2212,18 @@
               }
             }
           },
+          "400": {
+            "description": "The query is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "401": {
-            "description": "The key is invalid, revoked, expired, or its owner is inactive",
+            "description": "The key is invalid, revoked, expired, or its workspace is no longer accessible",
             "content": {
               "application/problem+json": {
                 "schema": {

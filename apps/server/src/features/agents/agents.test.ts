@@ -126,7 +126,7 @@ async function cookieFor(app: Hono, email: string, password: string) {
   return cookie;
 }
 
-async function insertHuman(email: string, isActive = true) {
+async function insertHuman(email: string) {
   const [human] = await database.db
     .insert(humans)
     .values({
@@ -134,7 +134,6 @@ async function insertHuman(email: string, isActive = true) {
       email,
       passwordHash: "scrypt$anything",
       emailVerifiedAt: sql`now()`,
-      isActive,
     })
     .returning();
   if (human === undefined) throw new Error("the human was not created");
@@ -199,6 +198,17 @@ async function membership(workspaceId: string, humanId: string, isOwner = false)
     humanId,
     isOwner,
   });
+}
+
+async function removeMembership(workspaceId: string, humanId: string) {
+  await database.db
+    .delete(workspaceMemberships)
+    .where(
+      and(
+        eq(workspaceMemberships.workspaceId, workspaceId),
+        eq(workspaceMemberships.humanId, humanId),
+      ),
+    );
 }
 
 async function project(workspaceId: string, name: string, createdByHumanId: string) {
@@ -448,7 +458,7 @@ describe("workspace-scoped agent API keys", () => {
     await expectProblem(after, 401, "key_expired");
   });
 
-  it("caps a key dynamically by the human owner's current project access, including Never", async () => {
+  it("enforces the human's level at issue and caps dynamically when it is lowered, including Never", async () => {
     const app = await makeApp();
     await bootstrapAdmin(app);
     const [admin] = await database.db.select().from(humans).where(eq(humans.email, ADMIN_EMAIL));
@@ -460,20 +470,38 @@ describe("workspace-scoped agent API keys", () => {
     const p = await project(workspace.id, "Team project", admin.id);
     await grant(p.id, member.id, "contribute");
     const agentId = await makeAgent(app, memberCookie, "member-bot");
+
+    // Issuing above the human's current access is refused, so a later promotion cannot
+    // silently raise an old key.
+    const tooHigh = await postJson(
+      app,
+      "/api/agents/keys",
+      {
+        agentId,
+        workspaceId: workspace.id,
+        validity: "never",
+        projects: [{ projectId: p.id, level: "manage" }],
+      },
+      memberCookie,
+    );
+    await expectProblem(tooHigh, 400, "invalid_key_grant");
+
     const issued = await issueKey(app, memberCookie, {
       agentId,
       workspaceId: workspace.id,
       validity: "never",
-      projects: [{ projectId: p.id, level: "manage" }],
+      projects: [{ projectId: p.id, level: "contribute" }],
     });
     expect(issued.key.validity).toBe("never");
     expect(issued.key.expiresAt).toBeNull();
 
     let me = await getJson(app, "/api/agents/me?projectId=" + p.id, undefined, issued.secret);
     expect(me.status).toBe(200);
-    // The key asked for Manage but the human only has Contribute; the ceiling wins.
-    expect(await me.json()).toMatchObject({ projects: [{ projectId: p.id, level: "contribute" }] });
+    expect(await me.json()).toMatchObject({
+      projects: [{ projectId: p.id, projectName: "Team project", level: "contribute" }],
+    });
 
+    // Demotion takes effect on the very next request, without reissuing the key.
     await setGrant(p.id, member.id, "read");
     me = await getJson(app, "/api/agents/me?projectId=" + p.id, undefined, issued.secret);
     expect(await me.json()).toMatchObject({ projects: [{ projectId: p.id, level: "read" }] });
@@ -482,10 +510,15 @@ describe("workspace-scoped agent API keys", () => {
     const denied = await getJson(app, "/api/agents/me?projectId=" + p.id, undefined, issued.secret);
     await expectProblem(denied, 403, "insufficient_agent_access");
 
-    // Never skips expiry only: an inactive human still cannot use the key.
-    await database.db.update(humans).set({ isActive: false }).where(eq(humans.id, member.id));
-    const inactive = await getJson(app, "/api/agents/me", undefined, issued.secret);
-    await expectProblem(inactive, 401, "key_owner_inactive");
+    // Never skips expiry only: leaving the workspace still stops a Never key immediately.
+    await removeMembership(workspace.id, member.id);
+    const removed = await getJson(
+      app,
+      `/api/agents/me?workspaceId=${workspace.id}`,
+      undefined,
+      issued.secret,
+    );
+    await expectProblem(removed, 401, "key_workspace_inaccessible");
   });
 
   it("revokes keys without secrets, and an owner's revocation is isolated to their workspace", async () => {
@@ -521,6 +554,8 @@ describe("workspace-scoped agent API keys", () => {
     expect(listed.status).toBe(200);
     const listedBody = await listed.json();
     expect(JSON.stringify(listedBody)).toContain(teamKey.key.id);
+    expect(JSON.stringify(listedBody)).toContain(teamKey.key.agentName);
+    expect(JSON.stringify(listedBody)).toContain(teamKey.key.projects[0]?.projectName ?? "");
     expect(JSON.stringify(listedBody)).not.toContain(teamKey.secret);
     expect(JSON.stringify(listedBody)).not.toContain(ownKey.secret);
 
@@ -530,6 +565,13 @@ describe("workspace-scoped agent API keys", () => {
       adminCookie,
     );
     expect(ownerRevoke.status).toBe(204);
+    // A retry is idempotent: it answers 204 but writes no second revocation event.
+    const repeatOwnerRevoke = await deleteRequest(
+      app,
+      `/api/workspaces/${team.id}/agent-keys/${teamKey.key.id}`,
+      adminCookie,
+    );
+    expect(repeatOwnerRevoke.status).toBe(204);
 
     // The revoked key fails; the human's key in another workspace still works.
     const refused = await getJson(app, "/api/agents/me", undefined, teamKey.secret);
@@ -548,6 +590,12 @@ describe("workspace-scoped agent API keys", () => {
     // The human can revoke their own remaining key.
     const ownRevoke = await deleteRequest(app, `/api/agents/keys/${ownKey.key.id}`, memberCookie);
     expect(ownRevoke.status).toBe(204);
+    const repeatOwnRevoke = await deleteRequest(
+      app,
+      `/api/agents/keys/${ownKey.key.id}`,
+      memberCookie,
+    );
+    expect(repeatOwnRevoke.status).toBe(204);
     await expectProblem(
       await getJson(app, "/api/agents/me", undefined, ownKey.secret),
       401,

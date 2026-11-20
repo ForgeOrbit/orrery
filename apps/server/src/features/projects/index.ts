@@ -7,6 +7,7 @@ import { type ProjectsDeps, createProjectsService } from "./service.ts";
 import { createProjectsRest, routes } from "./rest.ts";
 
 export { routes as projectsRoutes };
+export { projectAccessAtLeast } from "./service.ts";
 export type { ProjectsService } from "./service.ts";
 
 export type ProjectsDepsWithAccounts = ProjectsDeps & { sessionReader: SessionReader };

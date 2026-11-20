@@ -14,8 +14,11 @@ owner can revoke any key scoped to their workspace without seeing its secret.
 - `agents-authenticate` `GET /api/agents/me` with `Authorization: Bearer <key>` resolves the
   agent identity and effective access. `workspaceId`/`projectId` query parameters make a
   cross-workspace or out-of-scope request answer 403.
-- `agents-refuse` a revoked, expired, or inactive-owner key answers 401 with a stable code;
-  `never` skips only the expiry check, not revocation, activity, or access checks.
+- `agents-refuse` a revoked, expired, or workspace-removed key answers 401 with a stable
+  code; `never` skips only the expiry check, not revocation, membership, or access checks.
+  Issuing above the human's current project level answers 400 `invalid_key_grant`.
+- `agents-self-revoke` `DELETE /api/agents/keys/:keyId` lets the human revoke their own key;
+  repeating it writes no second audit event and the key is refused on `/api/agents/me`.
 - `agents-owner-revoke` `GET`/`DELETE /api/workspaces/:id/agent-keys[/:keyId]` is owner-only,
   secret-free, and scoped to that workspace; a key elsewhere answers 404 `key_not_found`.
 
@@ -81,8 +84,12 @@ $RUN_DIR /workspaces/$WS --slug agents-page --expect-role "heading:Agents"`.
 
 - `GET /api/agents/me` has no session fallback: without a bearer header it answers 401
   `invalid_key` even when a cookie is present.
-- An issued key's `projects` are the *requested* levels; the identity response reports the
-  effective levels after the human-access ceiling. A `manage` request by a contributor
-  resolves to `contribute`.
+- An issued key's `projects` carry the requested levels and readable names; the identity
+  response reports the effective levels after the human-access ceiling. Issuance refuses a
+  level above the human's current one, and demotion after issuance caps the key immediately.
+- Removing the human from the key's workspace stops the key on the next request, even for a
+  Never key; the membership check is part of bearer authentication, not just the UI.
+- The web form caps each project's selectable level at the human's current level, and key
+  listings show agent/project names and a disabled Revoke control for revoked keys.
 - The compose e2e suite (`tests/e2e/zz-agents.spec.ts`) covers the two-human owner
-  revocation path that this single-admin recipe cannot reach.
+  revocation path and human self-revocation that this single-admin recipe cannot reach.

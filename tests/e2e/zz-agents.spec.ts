@@ -165,6 +165,24 @@ test("issues a key and resolves the agent identity from a bearer REST request", 
   expect(JSON.stringify(await listed.json())).not.toContain(issued.secret);
 });
 
+test("refuses a key the human revoked themselves", async () => {
+  const personal = await personalWorkspaceOf(api);
+  const created = await api.post(`/api/workspaces/${personal}/projects`, {
+    data: { name: `Self-revoke project ${randomUUID()}` },
+  });
+  expect(created.status()).toBe(201);
+  const projectId = idOf(await created.json(), "project");
+  const agentId = await createAgent(api, `self-revoke-bot-${randomUUID()}`);
+  const issued = await issueKey(api, agentId, personal, projectId);
+  expect((await bearerGet(api, "/api/agents/me", issued.secret)).status()).toBe(200);
+
+  const revoked = await api.delete(`/api/agents/keys/${issued.id}`);
+  expect(revoked.status()).toBe(204);
+  const refused = await bearerGet(api, "/api/agents/me", issued.secret);
+  expect(refused.status()).toBe(401);
+  expect(await refused.json()).toMatchObject({ status: 401, code: "key_revoked" });
+});
+
 test("refuses a key used in another workspace or on a project outside its scope", async () => {
   const personal = await personalWorkspaceOf(api);
   const created = await api.post(`/api/workspaces/${personal}/projects`, {

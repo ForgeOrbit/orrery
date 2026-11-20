@@ -164,6 +164,14 @@ export async function projectAccessCeilingInTransaction(
   return ceiling;
 }
 
+// The one level comparison, shared with features that borrow this policy (agent keys).
+export function projectAccessAtLeast(
+  actual: ProjectAccessLevel,
+  required: ProjectAccessLevel,
+): boolean {
+  return ACCESS_RANK[actual] >= ACCESS_RANK[required];
+}
+
 function requireLevel(
   facts: AccessFacts,
   humanId: string,
@@ -172,7 +180,7 @@ function requireLevel(
 ): ProjectAccessLevel {
   const level = resolveAccessLevel(facts, humanId);
   if (level === null) throw new ProjectsError(missingKind);
-  if (ACCESS_RANK[level] < ACCESS_RANK[required]) {
+  if (!projectAccessAtLeast(level, required)) {
     throw new ProjectsError("insufficient_project_access");
   }
   return level;

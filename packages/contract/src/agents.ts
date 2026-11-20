@@ -41,7 +41,7 @@ export type CreateAgentRequest = z.infer<typeof CreateAgentRequest>;
 // One project grant on a key. The level is the ceiling requested for this project; the
 // agent's effective level is the lower of this and the human owner's current level.
 export const AgentKeyProject = z
-  .object({ projectId: z.string(), level: ProjectAccessLevel })
+  .object({ projectId: z.string(), projectName: z.string(), level: ProjectAccessLevel })
   .meta({ id: "AgentKeyProject" });
 export type AgentKeyProject = z.infer<typeof AgentKeyProject>;
 
@@ -49,6 +49,7 @@ export const AgentKey = z
   .object({
     id: z.string(),
     agentId: z.string(),
+    agentName: z.string(),
     workspaceId: z.string(),
     createdByHumanId: z.string(),
     validity: AgentKeyValidity,
@@ -66,6 +67,13 @@ export const AgentKeysResponse = z
   .meta({ id: "AgentKeysResponse" });
 export type AgentKeysResponse = z.infer<typeof AgentKeysResponse>;
 
+// The request names projects by id and level; the readable name is server-owned and
+// only appears in responses, so a client cannot spoof a label.
+export const AgentKeyGrant = z
+  .object({ projectId: z.string(), level: ProjectAccessLevel })
+  .meta({ id: "AgentKeyGrant" });
+export type AgentKeyGrant = z.infer<typeof AgentKeyGrant>;
+
 export const CreateAgentKeyRequest = z
   .object({
     agentId: z.string().min(1),
@@ -73,7 +81,7 @@ export const CreateAgentKeyRequest = z
     // Ninety days is the normal path; the default is applied here, once, for every
     // client (browser, REST, MCP).
     validity: AgentKeyValidity.default("90"),
-    projects: z.array(AgentKeyProject),
+    projects: z.array(AgentKeyGrant),
   })
   .meta({ id: "CreateAgentKeyRequest" });
 export type CreateAgentKeyRequest = z.infer<typeof CreateAgentKeyRequest>;

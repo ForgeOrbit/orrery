@@ -11,7 +11,7 @@ import {
   type CreateAgentKeyResponse,
   type CreateAgentRequest,
 } from "@orrery/contract";
-import { and, eq, gt, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
 import { uniqueConstraintName } from "../../platform/errors.ts";
@@ -21,17 +21,17 @@ import {
   agentApiKeys,
   agentKeyEvents,
   agents,
-  humans,
+  projects,
   workspaceMemberships,
   workspaces,
 } from "../../db/schema.ts";
-import type { SessionAccount, SessionReader } from "../accounts/index.ts";
+import type { SessionAccount } from "../accounts/index.ts";
+import { projectAccessAtLeast } from "../projects/index.ts";
 
 // The service is the only file in this feature that decides anything. rest.ts validates
 // and maps results; every rule about who may act, which workspace a key can reach, and
-// how a human's current access caps an agent lives here.
-
-const ACCESS_RANK: Record<ProjectAccessLevel, number> = { read: 1, contribute: 2, manage: 3 };
+// how a human's current access caps an agent lives here. Project level ranking is the
+// projects feature's, not a second copy here.
 
 // The offered lifetimes in days. "never" has no row here: its key has a null expiry and
 // skips only the time check, never the access checks.
@@ -58,7 +58,7 @@ export type AgentsErrorKind =
   | "invalid_key"
   | "key_revoked"
   | "key_expired"
-  | "key_owner_inactive"
+  | "key_workspace_inaccessible"
   | "key_out_of_scope"
   | "insufficient_agent_access";
 
@@ -73,7 +73,7 @@ const messages: Record<AgentsErrorKind, string> = {
   invalid_key: "The API key is not valid.",
   key_revoked: "The API key has been revoked.",
   key_expired: "The API key has expired.",
-  key_owner_inactive: "The human who owns this key is inactive.",
+  key_workspace_inaccessible: "The human who owns this key can no longer use its workspace.",
   key_out_of_scope: "The API key is not scoped to this workspace.",
   insufficient_agent_access: "The agent has no access to this project.",
 };
@@ -93,6 +93,13 @@ function requireAccount(account: SessionAccount | null): SessionAccount {
   return account;
 }
 
+// A missing bearer credential is an authentication decision, so it belongs here beside
+// requireAccount: rest.ts only reads the header and passes what it found.
+function requireKey(token: string | null): string {
+  if (token === null) throw new AgentsError("invalid_key");
+  return token;
+}
+
 // A project ceiling decided by the projects feature's one resolver, borrowed through
 // the feature's public interface. Agents never grow a second project-level policy.
 export type ProjectAccessCeiling = (
@@ -104,7 +111,6 @@ export type ProjectAccessCeiling = (
 
 export interface AgentsDeps {
   db: PostgresJsDatabase;
-  sessionReader: SessionReader;
   projectAccessCeiling: ProjectAccessCeiling;
 }
 
@@ -132,7 +138,7 @@ export interface AgentsService {
   ): Promise<AgentKey>;
   // Bearer authentication: resolve the agent behind a key, capped by its human owner's
   // current access. An optional target makes a cross-workspace request fail on the server.
-  authenticate(token: string, target?: AgentKeyTarget): Promise<AgentIdentity>;
+  authenticate(token: string | null, target?: AgentKeyTarget): Promise<AgentIdentity>;
 }
 
 // The human's current authority over a shared workspace; a personal workspace's owner
@@ -147,7 +153,6 @@ async function humanCanUseWorkspace(
     .select({
       personalOwnerHumanId: workspaces.personalOwnerHumanId,
       membershipId: workspaceMemberships.id,
-      humanActive: humans.isActive,
     })
     .from(workspaces)
     .leftJoin(
@@ -157,10 +162,9 @@ async function humanCanUseWorkspace(
         eq(workspaceMemberships.humanId, humanId),
       ),
     )
-    .innerJoin(humans, eq(humans.id, humanId))
     .where(eq(workspaces.id, workspaceId))
     .limit(1);
-  if (row === undefined || !row.humanActive) return false;
+  if (row === undefined) return false;
   return row.personalOwnerHumanId === humanId || row.membershipId !== null;
 }
 
@@ -209,6 +213,7 @@ async function recordEvent(
 type KeyRow = {
   id: string;
   agentId: string;
+  agentName: string;
   workspaceId: string;
   createdByHumanId: string;
   validity: AgentKeyValidity;
@@ -232,10 +237,11 @@ function keyRowColumns() {
   };
 }
 
-function toKey(row: KeyRow, projects: AgentKeyProject[]): AgentKey {
+function toKey(row: KeyRow, grants: AgentKeyProject[]): AgentKey {
   return {
     id: row.id,
     agentId: row.agentId,
+    agentName: row.agentName,
     workspaceId: row.workspaceId,
     createdByHumanId: row.createdByHumanId,
     validity: AgentKeyValidity.parse(row.validity),
@@ -243,7 +249,7 @@ function toKey(row: KeyRow, projects: AgentKeyProject[]): AgentKey {
     expiresAt: row.expiresAt?.toISOString() ?? null,
     revokedAt: row.revokedAt?.toISOString() ?? null,
     revokedByHumanId: row.revokedByHumanId,
-    projects,
+    projects: grants,
   };
 }
 
@@ -258,14 +264,17 @@ async function loadKeyProjects(
     .select({
       keyId: agentApiKeyProjects.keyId,
       projectId: agentApiKeyProjects.projectId,
+      projectName: projects.name,
       level: agentApiKeyProjects.level,
     })
     .from(agentApiKeyProjects)
+    .innerJoin(projects, eq(projects.id, agentApiKeyProjects.projectId))
     .where(inArray(agentApiKeyProjects.keyId, [...keyIds]));
   for (const row of rows) {
     const list = byKey.get(row.keyId) ?? [];
     list.push({
       projectId: row.projectId,
+      projectName: row.projectName,
       level: ProjectAccessLevel.parse(row.level),
     });
     byKey.set(row.keyId, list);
@@ -273,39 +282,51 @@ async function loadKeyProjects(
   return byKey;
 }
 
-async function projectKey(tx: DbTransaction, keyId: string): Promise<AgentKey> {
-  const [row] = await tx
-    .select(keyRowColumns())
+// Keys and their grants are always loaded together, with readable names: an owner
+// listing another human's keys needs the agent and project names, not raw ids.
+async function loadKeys(tx: DbTransaction, where: SQL | undefined): Promise<AgentKey[]> {
+  const rows = await tx
+    .select({ ...keyRowColumns(), agentName: agents.name })
     .from(agentApiKeys)
-    .where(eq(agentApiKeys.id, keyId))
-    .limit(1);
-  if (row === undefined) throw new AgentsError("key_not_found");
-  const projects = await loadKeyProjects(tx, [keyId]);
-  return toKey(
-    { ...row, validity: AgentKeyValidity.parse(row.validity) },
-    projects.get(keyId) ?? [],
+    .innerJoin(agents, eq(agents.id, agentApiKeys.agentId))
+    .where(where);
+  const projectsByKey = await loadKeyProjects(
+    tx,
+    rows.map((row) => row.id),
   );
+  return rows.map((row) => toKey(row, projectsByKey.get(row.id) ?? []));
+}
+
+async function projectKey(tx: DbTransaction, keyId: string): Promise<AgentKey> {
+  const [key] = await loadKeys(tx, eq(agentApiKeys.id, keyId));
+  if (key === undefined) throw new AgentsError("key_not_found");
+  return key;
 }
 
 // Revoke in database time and write the event in one transaction. Both the human owner
 // and a workspace owner go through this, so revocation has one implementation; only the
-// authorization and the workspace scope differ.
+// authorization and the workspace scope differ. The conditional update plus RETURNING
+// makes retries idempotent: an already-revoked key changes nothing and writes no second
+// audit event.
 async function revokeInTransaction(
   tx: DbTransaction,
   keyId: string,
   actorHumanId: string,
 ): Promise<AgentKey> {
-  await tx
+  const updated = await tx
     .update(agentApiKeys)
     .set({ revokedAt: sql`now()`, revokedByHumanId: actorHumanId })
-    .where(and(eq(agentApiKeys.id, keyId), isNull(agentApiKeys.revokedAt)));
+    .where(and(eq(agentApiKeys.id, keyId), isNull(agentApiKeys.revokedAt)))
+    .returning({ id: agentApiKeys.id });
   const key = await projectKey(tx, keyId);
-  await recordEvent(
-    tx,
-    AgentKeyEventType.enum.agent_key_revoked,
-    { id: key.id, agentId: key.agentId, workspaceId: key.workspaceId },
-    actorHumanId,
-  );
+  if (updated.length > 0) {
+    await recordEvent(
+      tx,
+      AgentKeyEventType.enum.agent_key_revoked,
+      { id: key.id, agentId: key.agentId, workspaceId: key.workspaceId },
+      actorHumanId,
+    );
+  }
   return key;
 }
 
@@ -323,11 +344,9 @@ async function resolveKeyInTransaction(
       key: keyRowColumns(),
       agentName: agents.name,
       humanId: agents.humanId,
-      humanActive: humans.isActive,
     })
     .from(agentApiKeys)
     .innerJoin(agents, eq(agents.id, agentApiKeys.agentId))
-    .innerJoin(humans, eq(humans.id, agents.humanId))
     .where(eq(agentApiKeys.tokenHash, tokenHash(token)))
     .limit(1);
   if (row === undefined) throw new AgentsError("invalid_key");
@@ -335,10 +354,15 @@ async function resolveKeyInTransaction(
   // Revocation wins over everything, including "Never": it is checked on every request
   // and takes effect immediately, independently of any connection state.
   if (row.key.revokedAt !== null) throw new AgentsError("key_revoked");
-  if (!row.humanActive) throw new AgentsError("key_owner_inactive");
+
+  // Membership is an access check, not a transport detail: removing the human from the
+  // key's workspace stops the key immediately, even a Never key with no project grants.
+  if (!(await humanCanUseWorkspace(tx, row.key.workspaceId, row.humanId))) {
+    throw new AgentsError("key_workspace_inaccessible");
+  }
 
   // Expiry is evaluated in database time. "Never" has a null expiry and skips only this
-  // check; it is still subject to revocation, active status, and every access check.
+  // check; it is still subject to revocation, membership, and every access check.
   if (AgentKeyValidity.parse(row.key.validity) !== AgentKeyValidity.enum.never) {
     const [live] = await tx
       .select({ id: agentApiKeys.id })
@@ -371,7 +395,8 @@ async function resolveKeyInTransaction(
     if (humanLevel === undefined || humanLevel === null) continue;
     effective.push({
       projectId: grant.projectId,
-      level: ACCESS_RANK[humanLevel] >= ACCESS_RANK[grant.level] ? grant.level : humanLevel,
+      projectName: grant.projectName,
+      level: projectAccessAtLeast(humanLevel, grant.level) ? grant.level : humanLevel,
     });
   }
 
@@ -440,7 +465,7 @@ export function createAgentsService({ db, projectAccessCeiling }: AgentsDeps): A
       const validity = AgentKeyValidity.parse(input.validity ?? AgentKeyValidity.enum["90"]);
       return db.transaction(async (tx) => {
         const [agent] = await tx
-          .select({ id: agents.id })
+          .select({ id: agents.id, name: agents.name })
           .from(agents)
           .where(and(eq(agents.id, input.agentId), eq(agents.humanId, actor.humanId)))
           .limit(1);
@@ -450,11 +475,10 @@ export function createAgentsService({ db, projectAccessCeiling }: AgentsDeps): A
           throw new AgentsError("workspace_not_found");
         }
 
-        // Issuance needs a current project access, but the requested level is only a
-        // ceiling: it may be higher than the human's level, and the effective access is
-        // then capped down to what the human can actually do right now. This is what
-        // makes the cap dynamic — lowering the human's access later lowers the agent
-        // without reissuing the key.
+        // The human's current access is the ceiling at issuance as well: the key cannot
+        // be created above it, so a later promotion cannot silently raise an old key.
+        // At authentication the same ceiling is re-evaluated, so a demotion or removal
+        // still caps the agent immediately without reissuing the key.
         const requested = input.projects;
         const ceiling = await projectAccessCeiling(
           tx,
@@ -464,14 +488,18 @@ export function createAgentsService({ db, projectAccessCeiling }: AgentsDeps): A
         );
         for (const grant of requested) {
           const humanLevel = ceiling.get(grant.projectId);
-          if (humanLevel === undefined || humanLevel === null) {
+          if (
+            humanLevel === undefined ||
+            humanLevel === null ||
+            !projectAccessAtLeast(humanLevel, grant.level)
+          ) {
             throw new AgentsError("invalid_key_grant");
           }
         }
 
         const secret = newSecret();
         const id = randomUUID();
-        const [row] = await tx
+        const [inserted] = await tx
           .insert(agentApiKeys)
           .values({
             id,
@@ -486,7 +514,8 @@ export function createAgentsService({ db, projectAccessCeiling }: AgentsDeps): A
                 : sql`now() + make_interval(days => ${VALIDITY_DAYS[validity]})`,
           })
           .returning(keyRowColumns());
-        if (row === undefined) throw new AgentsError("invalid_key_grant");
+        if (inserted === undefined) throw new AgentsError("invalid_key_grant");
+        const row = { ...inserted, agentName: agent.name };
 
         if (requested.length > 0) {
           await tx.insert(agentApiKeyProjects).values(
@@ -504,33 +533,21 @@ export function createAgentsService({ db, projectAccessCeiling }: AgentsDeps): A
           { id, agentId: agent.id, workspaceId: input.workspaceId },
           actor.humanId,
         );
-        return { key: toKey(row, requested), secret };
+        const stored = await loadKeyProjects(tx, [id]);
+        return { key: toKey(row, stored.get(id) ?? []), secret };
       });
     },
 
     async listKeys(account, workspaceId) {
       const actor = requireAccount(account);
-      return db.transaction(async (tx) => {
-        const rows = await tx
-          .select(keyRowColumns())
-          .from(agentApiKeys)
-          .innerJoin(agents, eq(agents.id, agentApiKeys.agentId))
-          .where(
-            workspaceId === undefined
-              ? eq(agents.humanId, actor.humanId)
-              : and(eq(agents.humanId, actor.humanId), eq(agentApiKeys.workspaceId, workspaceId)),
-          );
-        const projects = await loadKeyProjects(
+      return db.transaction((tx) =>
+        loadKeys(
           tx,
-          rows.map((row) => row.id),
-        );
-        return rows.map((row) =>
-          toKey(
-            { ...row, validity: AgentKeyValidity.parse(row.validity) },
-            projects.get(row.id) ?? [],
-          ),
-        );
-      });
+          workspaceId === undefined
+            ? eq(agents.humanId, actor.humanId)
+            : and(eq(agents.humanId, actor.humanId), eq(agentApiKeys.workspaceId, workspaceId)),
+        ),
+      );
     },
 
     async revokeKey(account, keyId) {
@@ -553,20 +570,7 @@ export function createAgentsService({ db, projectAccessCeiling }: AgentsDeps): A
         // The owner sees every key scoped to this workspace, whoever issued it. The
         // query never selects token_hash, so the secret cannot leak through this view.
         await requireWorkspaceOwner(tx, workspaceId, actor.humanId);
-        const rows = await tx
-          .select(keyRowColumns())
-          .from(agentApiKeys)
-          .where(eq(agentApiKeys.workspaceId, workspaceId));
-        const projects = await loadKeyProjects(
-          tx,
-          rows.map((row) => row.id),
-        );
-        return rows.map((row) =>
-          toKey(
-            { ...row, validity: AgentKeyValidity.parse(row.validity) },
-            projects.get(row.id) ?? [],
-          ),
-        );
+        return loadKeys(tx, eq(agentApiKeys.workspaceId, workspaceId));
       });
     },
 
@@ -587,8 +591,9 @@ export function createAgentsService({ db, projectAccessCeiling }: AgentsDeps): A
     },
 
     async authenticate(token, target) {
+      const presented = requireKey(token);
       return db.transaction((tx) =>
-        resolveKeyInTransaction(tx, projectAccessCeiling, token, target),
+        resolveKeyInTransaction(tx, projectAccessCeiling, presented, target),
       );
     },
   };
