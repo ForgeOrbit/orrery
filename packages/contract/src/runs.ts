@@ -48,10 +48,21 @@ export type RunChildRef = z.infer<typeof RunChildRef>;
 export const RunReportInput = z
   .object({
     event: RunEventType.default("run_heartbeat"),
-    runKey: RunKey.optional(),
+    // Explicit null is allowed: issue #29's check-in contract sends `runKey: null` when
+    // only an explicit runId is known. Correlation order is runId, then runKey, then
+    // unknown — never a transport session id.
+    runKey: RunKey.nullable().optional(),
     runId: z.string().trim().min(1).max(200).nullable().optional(),
+    // Top-level fields are the hook shape. `reported` is the MCP shape from #29; both
+    // are accepted and resolve to the same stored metadata.
     model: z.string().trim().min(1).max(200).nullable().optional(),
     harnessVersion: z.string().trim().min(1).max(200).nullable().optional(),
+    reported: z
+      .object({
+        model: z.string().trim().min(1).max(200).nullable().optional(),
+        harnessVersion: z.string().trim().min(1).max(200).nullable().optional(),
+      })
+      .optional(),
     agentId: z.string().trim().min(1).max(200).nullable().optional(),
     agentType: z.string().trim().min(1).max(200).nullable().optional(),
     child: RunChildRef.optional(),
@@ -135,8 +146,10 @@ export const RunChild = z
   .meta({ id: "RunChild" });
 export type RunChild = z.infer<typeof RunChild>;
 
-// The workspace view: a run with its model history and child workers, for display.
+// The workspace view: a run with its readable agent name, model history and child
+// workers, for display. The name is joined from the agent row, never reported by a hook.
 export const RunDetail = Run.extend({
+  agentName: z.string(),
   modelHistory: z.array(RunModelChange),
   children: z.array(RunChild),
 }).meta({ id: "RunDetail" });

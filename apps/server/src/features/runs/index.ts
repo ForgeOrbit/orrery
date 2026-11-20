@@ -1,6 +1,7 @@
 // Public interface of the runs feature. Other code imports only this file.
 import type { Feature } from "../../platform/feature.ts";
 import type { SessionReader } from "../accounts/index.ts";
+import type { AgentAuthenticator } from "../agents/index.ts";
 import { createRunsMcp } from "./mcp.ts";
 import { createRunsRest, routes } from "./rest.ts";
 import { type RunsDeps, type RunsService, createRunsService } from "./service.ts";
@@ -9,20 +10,22 @@ export { routes as runsRoutes };
 export { RunsError } from "./service.ts";
 export type { RunsErrorKind, RunsService } from "./service.ts";
 
-export type RunsFeatureDeps = RunsDeps & { sessionReader: SessionReader };
+export type RunsFeatureDeps = RunsDeps & {
+  sessionReader: SessionReader;
+  authenticate: AgentAuthenticator;
+};
 
 export interface RunsFeature extends Feature {
   service: RunsService;
 }
 
 export function createRunsFeature(deps: RunsFeatureDeps): RunsFeature {
-  const service = createRunsService(deps);
+  const service = createRunsService({ db: deps.db });
   return {
     name: "runs",
-    rest: createRunsRest(service, deps.sessionReader),
-    // Run reporting borrows the agents authenticator passed to the service; the adapter
-    // itself never reads or interprets a credential.
-    registerTools: createRunsMcp(service),
+    // The adapters own authentication; the service decides everything after identity.
+    rest: createRunsRest(service, deps.sessionReader, deps.authenticate),
+    registerTools: createRunsMcp(service, deps.authenticate),
     service,
   };
 }

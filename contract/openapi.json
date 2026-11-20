@@ -1691,6 +1691,27 @@
             "minLength": 1,
             "maxLength": 200
           },
+          "reported": {
+            "type": "object",
+            "properties": {
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "harnessVersion": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "minLength": 1,
+                "maxLength": 200
+              }
+            }
+          },
           "agentId": {
             "type": [
               "string",
@@ -1892,6 +1913,9 @@
               }
             ]
           },
+          "agentName": {
+            "type": "string"
+          },
           "modelHistory": {
             "type": "array",
             "items": {
@@ -1918,6 +1942,7 @@
           "updatedAt",
           "endedAt",
           "lastHeartbeatAt",
+          "agentName",
           "modelHistory",
           "children"
         ]
@@ -5593,16 +5618,6 @@
           },
           "401": {
             "description": "The key is invalid, revoked, expired, or its workspace is no longer accessible",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "The key is not scoped to this workspace",
             "content": {
               "application/problem+json": {
                 "schema": {

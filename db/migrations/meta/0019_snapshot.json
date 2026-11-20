@@ -1,5 +1,5 @@
 {
-  "id": "c6a0d155-0086-485e-8ad8-752191ec9339",
+  "id": "e143e072-0dc9-4f4a-a092-fd272fbd7b92",
   "prevId": "fa0078c0-3e1b-468e-a47c-22e6a2576d5a",
   "version": "7",
   "dialect": "postgresql",
@@ -1938,25 +1938,26 @@
               "nulls": "last"
             },
             {
-              "expression": "coalesce(\"agent_id\", '')",
+              "expression": "agent_id",
+              "isExpression": false,
               "asc": true,
-              "isExpression": true,
               "nulls": "last"
             },
             {
-              "expression": "coalesce(\"agent_type\", '')",
+              "expression": "agent_type",
+              "isExpression": false,
               "asc": true,
-              "isExpression": true,
               "nulls": "last"
             },
             {
-              "expression": "coalesce(\"child_run_id\", '')",
+              "expression": "child_run_id",
+              "isExpression": false,
               "asc": true,
-              "isExpression": true,
               "nulls": "last"
             }
           ],
           "isUnique": true,
+          "where": "\"run_children\".\"agent_id\" is not null or \"run_children\".\"child_run_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -1991,6 +1992,15 @@
           "columnsFrom": ["run_id"],
           "columnsTo": ["id"],
           "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "run_children_child_run_id_runs_id_fk": {
+          "name": "run_children_child_run_id_runs_id_fk",
+          "tableFrom": "run_children",
+          "tableTo": "runs",
+          "columnsFrom": ["child_run_id"],
+          "columnsTo": ["id"],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -2184,19 +2194,20 @@
               "nulls": "last"
             },
             {
-              "expression": "coalesce(\"harness\", '')",
+              "expression": "harness",
+              "isExpression": false,
               "asc": true,
-              "isExpression": true,
               "nulls": "last"
             },
             {
-              "expression": "coalesce(\"native_session_id\", '')",
+              "expression": "native_session_id",
+              "isExpression": false,
               "asc": true,
-              "isExpression": true,
               "nulls": "last"
             }
           ],
           "isUnique": true,
+          "where": "\"runs\".\"harness\" is not null and \"runs\".\"native_session_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}

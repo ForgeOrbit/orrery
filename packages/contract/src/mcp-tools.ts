@@ -134,7 +134,7 @@ const updateKnowledge = {
 const runCheckin = {
   name: "orrery_run_checkin",
   description:
-    "Report a harness conversation's identity and metadata. Correlate by an explicit runId or by the harness's (harness, nativeSessionId) key; a new key starts a run, the same key resumes it. Model and harness version are stored only as reported — missing values stay unknown. This tool does not claim work or renew a lease.",
+    "Report a harness conversation's identity and metadata. Correlate by an explicit runId or by the harness's (harness, nativeSessionId) key — send runKey as null when only a runId is known; a new key starts a run, the same key resumes it. Report model and harnessVersion directly or under `reported` (#29); they are stored only as reported and missing values stay unknown. This tool does not claim work or renew a lease.",
   input: RunReportInput,
   output: RunReportResponse,
 };

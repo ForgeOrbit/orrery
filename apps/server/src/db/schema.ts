@@ -13,6 +13,7 @@ import {
 } from "@orrery/contract";
 import { sql } from "drizzle-orm";
 import {
+  type AnyPgColumn,
   boolean,
   check,
   index,
@@ -596,8 +597,9 @@ export const agentKeyEvents = pgTable(
 // key identifies the agent and scopes the workspace; the harness's native session id
 // distinguishes concurrent conversations and survives a resume. Reported fields that a
 // harness did not provide stay null so the UI can say `unknown` instead of inventing a
-// value. The unique index uses coalesce so the DB enforces identity even if a reporter
-// omits a field, and so two clients sharing one key still get distinct rows.
+// value. A partial unique index enforces identity only when both harness and native
+// session id were reported: two anonymous runs stay distinct instead of colliding on a
+// sentinel, while two clients sharing one key's session id still get one row.
 export const runs = pgTable(
   "runs",
   {
@@ -620,12 +622,9 @@ export const runs = pgTable(
   },
   (t) => [
     check("runs_status", sql`${t.status} in (${sql.raw(sqlLiteralList(RunStatus))})`),
-    uniqueIndex("one_run_per_agent_workspace_harness_session").on(
-      t.agentId,
-      t.workspaceId,
-      sql`coalesce(${t.harness}, '')`,
-      sql`coalesce(${t.nativeSessionId}, '')`,
-    ),
+    uniqueIndex("one_run_per_agent_workspace_harness_session")
+      .on(t.agentId, t.workspaceId, t.harness, t.nativeSessionId)
+      .where(sql`${t.harness} is not null and ${t.nativeSessionId} is not null`),
     index("runs_workspace_created").on(t.workspaceId, t.createdAt),
     index("runs_agent_created").on(t.agentId, t.createdAt),
   ],
@@ -650,7 +649,10 @@ export const runModelChanges = pgTable(
 
 // A child worker observed inside a parent run. Codex and Claude report child
 // attribution in hooks on the parent's session; repeated events update this row in
-// place. Every attribution field is nullable, so an unreported one displays `unknown`.
+// place when an identity was reported. Every attribution field is nullable, so an
+// unreported one displays `unknown`, and two anonymous children stay distinct. A named
+// child run must belong to the same agent and workspace (checked in the service) and is
+// linked here by a foreign key that clears the link if that run is ever deleted.
 export const runChildren = pgTable(
   "run_children",
   {
@@ -660,7 +662,9 @@ export const runChildren = pgTable(
       .references(() => runs.id, { onDelete: "cascade" }),
     agentId: text("agent_id"),
     agentType: text("agent_type"),
-    childRunId: text("child_run_id"),
+    childRunId: text("child_run_id").references((): AnyPgColumn => runs.id, {
+      onDelete: "set null",
+    }),
     model: text("model"),
     status: text("status").$type<RunStatus>().notNull().default(RunStatus.enum.active),
     startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
@@ -668,12 +672,11 @@ export const runChildren = pgTable(
   },
   (t) => [
     check("run_children_status", sql`${t.status} in (${sql.raw(sqlLiteralList(RunStatus))})`),
-    uniqueIndex("one_child_per_run_and_reported_identity").on(
-      t.runId,
-      sql`coalesce(${t.agentId}, '')`,
-      sql`coalesce(${t.agentType}, '')`,
-      sql`coalesce(${t.childRunId}, '')`,
-    ),
+    // Only a named child has a stable identity. Two children with neither an agent id
+    // nor a child run id are anonymous observations: both rows are kept, not collapsed.
+    uniqueIndex("one_child_per_run_and_reported_identity")
+      .on(t.runId, t.agentId, t.agentType, t.childRunId)
+      .where(sql`${t.agentId} is not null or ${t.childRunId} is not null`),
     index("run_children_run_started").on(t.runId, t.startedAt),
   ],
 );

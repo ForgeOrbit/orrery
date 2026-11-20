@@ -44,7 +44,8 @@ function Children({ workers }: { workers: readonly RunChild[] }) {
 function RunItem({ run }: { run: RunDetail }) {
   return (
     <li data-run-id={run.id} data-harness={unknown(run.harness)} data-model={unknown(run.model)}>
-      <strong data-run-label>Run {run.id}</strong> · harness {unknown(run.harness)}
+      <strong data-run-label>Run {run.id}</strong> · agent{" "}
+      <span data-agent-name>{run.agentName}</span> · harness {unknown(run.harness)}
       {run.harnessVersion !== null && <> {run.harnessVersion}</>} · model {unknown(run.model)} ·{" "}
       {run.status}
       <h4>Model changes</h4>

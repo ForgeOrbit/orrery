@@ -1,12 +1,13 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { RunReportInput, runTools } from "@orrery/contract";
+import { isAgentError, type AgentAuthenticator } from "../agents/index.ts";
 import { RunsError, type RunsService } from "./service.ts";
 
-// MCP transport adapter for run reporting (issue #34). It validates the shared schema,
-// passes the original request to the service — which re-authenticates the bearer key on
-// every call — and maps the result. No policy lives here, and no lease is granted.
+// MCP transport adapter for run reporting (issue #34). It authenticates the bearer key
+// on every call, validates the shared schema, calls the service with the identity, and
+// maps the result. No policy lives here, and no lease is granted.
 
-export function createRunsMcp(service: RunsService) {
+export function createRunsMcp(service: RunsService, authenticate: AgentAuthenticator) {
   return (server: McpServer, request: Request): void => {
     for (const tool of runTools) {
       server.registerTool(
@@ -18,22 +19,22 @@ export function createRunsMcp(service: RunsService) {
         },
         async (rawArgs) => {
           try {
+            const identity = await authenticate(request);
             const parsed = RunReportInput.parse(rawArgs);
-            const result = await service.report(request, parsed);
+            const result = await service.report(identity, parsed);
             return {
               content: [{ type: "text" as const, text: JSON.stringify(result) }],
               structuredContent: result,
             };
           } catch (error) {
-            if (error instanceof RunsError) {
+            // A key revoked after the client connected is refused on the next call, with
+            // the agents feature's own stable code — no service-local copy of its kinds.
+            if (isAgentError(error) || error instanceof RunsError) {
+              const code = error.kind;
+              const message = error.message;
               return {
-                content: [
-                  {
-                    type: "text" as const,
-                    text: JSON.stringify({ code: error.kind, message: error.message }),
-                  },
-                ],
-                structuredContent: { code: error.kind, message: error.message },
+                content: [{ type: "text" as const, text: JSON.stringify({ code, message }) }],
+                structuredContent: { code, message },
                 isError: true,
               };
             }

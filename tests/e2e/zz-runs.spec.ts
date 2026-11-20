@@ -94,8 +94,8 @@ test("two clients sharing a key stay distinct; resume reuses a run; children and
     const first = await checkin(a, {
       event: "run_started",
       runKey: { harness: "codex", nativeSessionId: sessionA },
-      model: "gpt-6.2-sol",
-      harnessVersion: "0.171.0",
+      // Issue #29's MCP shape: reported metadata is nested, not top-level.
+      reported: { model: "gpt-6.2-sol", harnessVersion: "0.171.0" },
     });
     expect(first.isError).toBe(false);
     const runA = requiredText(field(first.data, "runId"), "run A id");
@@ -123,6 +123,7 @@ test("two clients sharing a key stay distinct; resume reuses a run; children and
     expect(field(child.data, "runId")).toBe(runB);
 
     // A fresh handshake for the same native session id is a resume, not a new run.
+    // An explicit runId with `runKey: null` (also from #29) correlates identically.
     const resumedClient = await connect(secret);
     try {
       const resumed = await checkin(resumedClient, {
@@ -131,6 +132,14 @@ test("two clients sharing a key stay distinct; resume reuses a run; children and
       });
       expect(resumed.isError).toBe(false);
       expect(field(resumed.data, "runId")).toBe(runA);
+      const byRunId = await checkin(resumedClient, {
+        event: "run_heartbeat",
+        runId: runA,
+        runKey: null,
+        checkIn: { sequence: 21, at: new Date().toISOString() },
+      });
+      expect(byRunId.isError).toBe(false);
+      expect(field(byRunId.data, "runId")).toBe(runA);
     } finally {
       await resumedClient.close();
     }
@@ -152,6 +161,7 @@ test("two clients sharing a key stay distinct; resume reuses a run; children and
     const firstRun = mine.find((run) => field(run, "id") === runA);
     const secondRun = mine.find((run) => field(run, "id") === runB);
     expect(firstRun).toMatchObject({ harness: "codex", model: "gpt-7", status: "active" });
+    expect(field(firstRun, "agentName")).toMatch(/^runs-e2e-/);
     expect(asArray(field(firstRun, "modelHistory"))).toHaveLength(1);
     expect(secondRun).toMatchObject({ harness: "claude-code", model: null });
     expect(asArray(field(secondRun, "children"))).toHaveLength(1);

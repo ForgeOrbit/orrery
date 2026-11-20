@@ -37,12 +37,13 @@ CREATE TABLE "runs" (
 );
 --> statement-breakpoint
 ALTER TABLE "run_children" ADD CONSTRAINT "run_children_run_id_runs_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."runs"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "run_children" ADD CONSTRAINT "run_children_child_run_id_runs_id_fk" FOREIGN KEY ("child_run_id") REFERENCES "public"."runs"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "run_model_changes" ADD CONSTRAINT "run_model_changes_run_id_runs_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."runs"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "runs_agent_id_agents_id_fk" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "runs_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-CREATE UNIQUE INDEX "one_child_per_run_and_reported_identity" ON "run_children" USING btree ("run_id",coalesce("agent_id", ''),coalesce("agent_type", ''),coalesce("child_run_id", ''));--> statement-breakpoint
+CREATE UNIQUE INDEX "one_child_per_run_and_reported_identity" ON "run_children" USING btree ("run_id","agent_id","agent_type","child_run_id") WHERE "run_children"."agent_id" is not null or "run_children"."child_run_id" is not null;--> statement-breakpoint
 CREATE INDEX "run_children_run_started" ON "run_children" USING btree ("run_id","started_at");--> statement-breakpoint
 CREATE INDEX "run_model_changes_run_created" ON "run_model_changes" USING btree ("run_id","created_at");--> statement-breakpoint
-CREATE UNIQUE INDEX "one_run_per_agent_workspace_harness_session" ON "runs" USING btree ("agent_id","workspace_id",coalesce("harness", ''),coalesce("native_session_id", ''));--> statement-breakpoint
+CREATE UNIQUE INDEX "one_run_per_agent_workspace_harness_session" ON "runs" USING btree ("agent_id","workspace_id","harness","native_session_id") WHERE "runs"."harness" is not null and "runs"."native_session_id" is not null;--> statement-breakpoint
 CREATE INDEX "runs_workspace_created" ON "runs" USING btree ("workspace_id","created_at");--> statement-breakpoint
 CREATE INDEX "runs_agent_created" ON "runs" USING btree ("agent_id","created_at");

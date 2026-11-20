@@ -6,12 +6,13 @@ import {
   type RunDetail,
   type RunReportInput,
 } from "@orrery/contract";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { Hono } from "hono";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
   humans,
+  runModelChanges,
   runs as runRows,
   workspaceMemberships,
   workspaces,
@@ -40,6 +41,7 @@ let pg: StartedPostgreSqlContainer;
 let database: Database;
 let app: Hono;
 let runsService: RunsService;
+let agentAuthenticator: AgentAuthenticator;
 let adminCookie: string;
 let adminHumanId: string;
 let workspaceId: string;
@@ -76,8 +78,9 @@ const bearerRequest = (token: string) =>
     headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
   });
 
-const report = (input: RunReportInput, token = secret) =>
-  runsService.report(bearerRequest(token), input);
+// Adapters authenticate; the service receives the identity, exactly as in production.
+const report = async (input: RunReportInput, token = secret) =>
+  runsService.report(await agentAuthenticator(bearerRequest(token)), input);
 
 function adminAccount() {
   return {
@@ -123,6 +126,7 @@ beforeAll(async () => {
       ["read", "contribute", "manage"].indexOf(required),
   });
   authenticator = agentsFeature.authenticator;
+  agentAuthenticator = agentsFeature.authenticator;
   const runsFeature = createRunsFeature({
     db: database.db,
     sessionReader: accounts.sessionReader,
@@ -181,7 +185,11 @@ async function bootstrap() {
   adminHumanId = human.personalOwnerHumanId;
   workspaceId = human.id;
 
-  const created = await postJson("/api/agents", { name: `runs-bot-${randomUUID()}` }, adminCookie);
+  const created = await postJson(
+    "/api/agents",
+    { name: `runs-agent-${randomUUID()}` },
+    adminCookie,
+  );
   expect(created.status).toBe(201);
   agentId = idOf(await created.json(), "agent");
   const issued = await postJson(
@@ -227,6 +235,7 @@ describe("runs service against real Postgres", () => {
         .toSorted((left, right) => (left ?? "").localeCompare(right ?? "")),
     ).toEqual(["session-A", "session-B"]);
     expect(listed.every((run) => run.agentId === agentId)).toBe(true);
+    expect(listed.every((run) => run.agentName.startsWith("runs-agent-"))).toBe(true);
     const [stored] = await database.db.select().from(runRows);
     expect(stored?.agentId).toBe(agentId);
   });
@@ -240,6 +249,127 @@ describe("runs service against real Postgres", () => {
     ]);
     expect(x.runId).toBe(y.runId);
     expect(await listedRuns()).toHaveLength(1);
+  });
+
+  it("writes one clean model-change history row for two simultaneous model reports", async () => {
+    await bootstrap();
+    const first = await report({
+      event: "run_started",
+      runKey: { harness: "codex", nativeSessionId: "race-model" },
+      model: "gpt-6.2-sol",
+    });
+    const runId = first.runId ?? "";
+    await Promise.all([
+      report({ event: "run_heartbeat", runId, model: "gpt-7" }),
+      report({ event: "run_heartbeat", runId, model: "gpt-7" }),
+    ]);
+    const changes = await database.db
+      .select()
+      .from(runModelChanges)
+      .where(eq(runModelChanges.runId, runId));
+    expect(changes).toHaveLength(1);
+    expect(changes[0]).toMatchObject({ fromModel: "gpt-6.2-sol", toModel: "gpt-7" });
+    const listed = await listedRuns();
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.model).toBe("gpt-7");
+    expect(listed[0]?.modelHistory).toHaveLength(1);
+  });
+
+  it("rejects a child runId that is a self-loop or outside the agent/workspace scope", async () => {
+    await bootstrap();
+    const parent = await report({
+      event: "run_started",
+      runKey: { harness: "codex", nativeSessionId: "child-scope" },
+    });
+    const parentId = parent.runId ?? "";
+    const childRef = { agentId: "child-a", agentType: "general-purpose" };
+
+    // A child cannot be its own parent.
+    await expect(
+      report({ event: "child_started", runId: parentId, child: { ...childRef, runId: parentId } }),
+    ).rejects.toMatchObject({ kind: "run_not_found" });
+
+    // A run belonging to a different agent in the same workspace is out of scope.
+    const [foreignAgent] = await database.db
+      .insert(agents)
+      .values({ id: randomUUID(), humanId: adminHumanId, name: `foreign-${randomUUID()}` })
+      .returning();
+    if (foreignAgent === undefined) throw new Error("the foreign agent was not created");
+    const [foreignRun] = await database.db
+      .insert(runRows)
+      .values({
+        id: randomUUID(),
+        agentId: foreignAgent.id,
+        workspaceId,
+        harness: "codex",
+        nativeSessionId: "foreign-agent-run",
+      })
+      .returning();
+    if (foreignRun === undefined) throw new Error("the foreign run was not created");
+    await expect(
+      report({
+        event: "child_started",
+        runId: parentId,
+        child: { ...childRef, runId: foreignRun.id },
+      }),
+    ).rejects.toMatchObject({ kind: "run_not_found" });
+
+    // A run in another workspace, even for the same agent, is out of scope.
+    const otherWorkspace = await database.db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(workspaces)
+        .values({ id: randomUUID(), kind: "shared", name: "Other team" })
+        .returning();
+      if (created === undefined) throw new Error("the other workspace was not created");
+      await tx.insert(workspaceMemberships).values({
+        id: randomUUID(),
+        workspaceId: created.id,
+        humanId: adminHumanId,
+        isOwner: true,
+      });
+      return created;
+    });
+    const [otherRun] = await database.db
+      .insert(runRows)
+      .values({
+        id: randomUUID(),
+        agentId,
+        workspaceId: otherWorkspace.id,
+        harness: "codex",
+        nativeSessionId: "other-workspace-run",
+      })
+      .returning();
+    if (otherRun === undefined) throw new Error("the other run was not created");
+    await expect(
+      report({
+        event: "child_started",
+        runId: parentId,
+        child: { ...childRef, runId: otherRun.id },
+      }),
+    ).rejects.toMatchObject({ kind: "run_not_found" });
+
+    // A child run in the same agent/workspace scope is accepted and linked by FK.
+    const [sibling] = await database.db
+      .insert(runRows)
+      .values({
+        id: randomUUID(),
+        agentId,
+        workspaceId,
+        harness: "codex",
+        nativeSessionId: "sibling-run",
+      })
+      .returning();
+    if (sibling === undefined) throw new Error("the sibling run was not created");
+    const ok = await report({
+      event: "child_started",
+      runId: parentId,
+      child: { ...childRef, runId: sibling.id },
+    });
+    expect(ok.runId).toBe(parentId);
+    const listed = await listedRuns();
+    const children = listed.find((run) => run.id === parentId)?.children ?? [];
+    expect(children).toHaveLength(1);
+    expect(children[0]?.childRunId).toBe(sibling.id);
   });
 
   it("links child workers to the parent run and records model changes, leaving missing values unknown", async () => {
