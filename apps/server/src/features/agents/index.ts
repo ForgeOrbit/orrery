@@ -1,25 +1,36 @@
 // Public interface of the agents feature. Other code imports only this file.
 import type { Feature } from "../../platform/feature.ts";
 import type { SessionReader } from "../accounts/index.ts";
-import type { ProjectsService } from "../projects/index.ts";
-import { createAgentsMcp } from "./mcp.ts";
+import { type AgentAuthenticator, readBearerToken } from "./auth.ts";
 import { createAgentsRest, routes } from "./rest.ts";
-import { type AgentsDeps, createAgentsService } from "./service.ts";
+import { type AgentsDeps, type AgentsService, createAgentsService } from "./service.ts";
 
 export { routes as agentsRoutes };
-export type { AgentsService, AgentsError, AgentsErrorKind } from "./service.ts";
+export { AgentsError } from "./service.ts";
+export { isAgentError, readBearerToken } from "./auth.ts";
+export type { AgentAuthenticator } from "./auth.ts";
+export type { AgentsService, AgentsErrorKind } from "./service.ts";
+
+export function createAgentAuthenticator(service: AgentsService): AgentAuthenticator {
+  return async (request) => {
+    const token = readBearerToken(request.headers.get("authorization"));
+    return token === null ? null : service.authenticate(token);
+  };
+}
 
 // Management routes borrow accounts' session reader; bearer-header parsing stays inside
-// rest.ts, and the service alone decides whether a presented credential authenticates.
+// this feature, and the service alone decides whether a presented credential authenticates.
+export interface AgentsFeature extends Feature {
+  authenticator: AgentAuthenticator;
+}
+
 export function createAgentsFeature(
-  deps: AgentsDeps & { sessionReader: SessionReader; projects: ProjectsService },
-): Feature {
+  deps: AgentsDeps & { sessionReader: SessionReader },
+): AgentsFeature {
   const service = createAgentsService(deps);
   return {
     name: "agents",
     rest: createAgentsRest(service, deps.sessionReader),
-    // The project-work tools authenticate a bearer key and call the projects service;
-    // they are the only MCP surface an agent key can reach.
-    registerTools: createAgentsMcp(service, deps.projects),
+    authenticator: createAgentAuthenticator(service),
   };
 }

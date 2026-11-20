@@ -25,13 +25,8 @@ import { createLogger, type Logger } from "../../platform/log.ts";
 import { migrate } from "../../platform/migrate.ts";
 import { tokenHash } from "../../platform/tokens.ts";
 import { createAccountsFeature } from "../accounts/index.ts";
-import {
-  createProjectsFeature,
-  ProjectsError,
-  type ProjectsErrorKind,
-  type ProjectsService,
-} from "../projects/index.ts";
-import { createAgentsFeature } from "./index.ts";
+import { createProjectsFeature, ProjectsError, type ProjectsErrorKind } from "../projects/index.ts";
+import { createAgentsFeature, type AgentAuthenticator } from "./index.ts";
 
 // Real Postgres (AGENTS.md): key scoping, revocation, expiry, the dynamic human-access
 // ceiling, and credential audit events are database behavior. The black-box e2e suite
@@ -105,6 +100,7 @@ async function makeApp(): Promise<Hono> {
   const projectsFeature = createProjectsFeature({
     db: database.db,
     sessionReader: accounts.sessionReader,
+    agentAuthenticator: async () => null,
   });
   return createApp({
     features: [
@@ -115,7 +111,9 @@ async function makeApp(): Promise<Hono> {
         sessionReader: accounts.sessionReader,
         projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
           projectsFeature.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
-        projects: projectsFeature.service,
+        projectAccessAtLeast: (actual, required) =>
+          ["read", "contribute", "manage"].indexOf(actual) >=
+          ["read", "contribute", "manage"].indexOf(required),
       }),
     ],
     publicUrl: PUBLIC_URL,
@@ -123,7 +121,7 @@ async function makeApp(): Promise<Hono> {
   });
 }
 
-async function makeProjectWorkApp(): Promise<{ app: Hono; projects: ProjectsService }> {
+async function makeProjectWorkApp() {
   const accounts = createAccountsFeature({
     db: database.db,
     setupSecret: SECRET,
@@ -132,6 +130,7 @@ async function makeProjectWorkApp(): Promise<{ app: Hono; projects: ProjectsServ
   const projectsFeature = createProjectsFeature({
     db: database.db,
     sessionReader: accounts.sessionReader,
+    agentAuthenticator: async () => null,
   });
   const app = createApp({
     features: [
@@ -142,13 +141,52 @@ async function makeProjectWorkApp(): Promise<{ app: Hono; projects: ProjectsServ
         sessionReader: accounts.sessionReader,
         projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
           projectsFeature.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
-        projects: projectsFeature.service,
+        projectAccessAtLeast: (actual, required) =>
+          ["read", "contribute", "manage"].indexOf(actual) >=
+          ["read", "contribute", "manage"].indexOf(required),
       }),
     ],
     publicUrl: PUBLIC_URL,
     log: silentLogger,
   });
   return { app, projects: projectsFeature.service };
+}
+
+// The real feature wiring for bearer-backed project REST routes: projects borrows the
+// agents authenticator through one late-bound seam, as features/index.ts does.
+async function makeBearerApp() {
+  const accounts = createAccountsFeature({
+    db: database.db,
+    setupSecret: SECRET,
+    publicUrl: PUBLIC_URL,
+  });
+  let authenticator: AgentAuthenticator | undefined;
+  const projectsFeature = createProjectsFeature({
+    db: database.db,
+    sessionReader: accounts.sessionReader,
+    agentAuthenticator: (request) => {
+      if (authenticator === undefined) throw new Error("authenticator not wired");
+      return authenticator(request);
+    },
+  });
+  const agentsFeature = createAgentsFeature({
+    db: database.db,
+    sessionReader: accounts.sessionReader,
+    projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
+      projectsFeature.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
+    projectAccessAtLeast: (actual, required) =>
+      ["read", "contribute", "manage"].indexOf(actual) >=
+      ["read", "contribute", "manage"].indexOf(required),
+  });
+  authenticator = agentsFeature.authenticator;
+  return {
+    app: createApp({
+      features: [accounts, projectsFeature, agentsFeature],
+      publicUrl: PUBLIC_URL,
+      log: silentLogger,
+    }),
+    projects: projectsFeature.service,
+  };
 }
 
 async function adminId(): Promise<string> {
@@ -757,8 +795,20 @@ describe("workspace-scoped agent API keys", () => {
         displayName: identity.name,
       });
       expect(issue.createdBy.humanId).toBeFalsy();
+      const editedIssue = await projectsService.updateIssue(actor, issue.id, {
+        title: "Edited by the agent",
+        body: "New **body** by the agent.",
+      });
+      expect(editedIssue).toMatchObject({
+        title: "Edited by the agent",
+        body: "New **body** by the agent.",
+      });
+      expect(editedIssue.updatedBy).toMatchObject({ agentId });
       const closed = await projectsService.updateIssue(actor, issue.id, { status: "closed" });
       expect(closed.updatedBy).toMatchObject({ agentId });
+      const reopened = await projectsService.updateIssue(actor, issue.id, { status: "open" });
+      expect(reopened).toMatchObject({ status: "open", closedAt: null });
+      expect(reopened.updatedBy).toMatchObject({ agentId });
       const comment = await projectsService.createComment(actor, issue.id, {
         body: "Agent comment",
       });
@@ -797,7 +847,9 @@ describe("workspace-scoped agent API keys", () => {
       expect(activities.map((event) => event.type)).toEqual(
         expect.arrayContaining([
           "issue_created",
+          "issue_edited",
           "issue_closed",
+          "issue_reopened",
           "issue_commented",
           "knowledge_created",
           "knowledge_edited",
@@ -930,6 +982,53 @@ describe("workspace-scoped agent API keys", () => {
         await rejection(projectsService.createIssue(actor, otherProject.id, { title: "No" })),
         "project_not_found",
       );
+    });
+
+    it("refuses a list_projects request aimed at another workspace the owner belongs to", async () => {
+      const { app, projects: projectsService } = await makeBearerApp();
+      await bootstrapAdmin(app);
+      const admin = await adminId();
+      const cookie = await cookieFor(app, ADMIN_EMAIL, ADMIN_PASSWORD);
+      const scopedWorkspace = await personalWorkspaceOf(admin);
+      // Workspace B is one the key's human owner is a member of (its owner), so a
+      // membership oracle would answer 200 here instead of denying the out-of-scope key.
+      const otherWorkspace = await sharedWorkspace("Other owned team", admin);
+      const created = await postJson(
+        app,
+        `/api/workspaces/${scopedWorkspace.id}/projects`,
+        { name: "Scoped" },
+        cookie,
+      );
+      const projectId = idOf(await created.json(), "project");
+      const agentId = await makeAgent(app, cookie, "list-scoped-bot");
+      const key = await issueKey(app, cookie, {
+        agentId,
+        workspaceId: scopedWorkspace.id,
+        projects: [{ projectId, level: "read" }],
+      });
+      const identity = await identityFor(app, key.secret);
+      const actor = { kind: "agent" as const, identity };
+
+      expectProjectsError(
+        await rejection(projectsService.listProjects(actor, otherWorkspace.id)),
+        "workspace_not_found",
+      );
+      // The same denial over REST, with the same bearer key.
+      const rest = await getJson(
+        app,
+        `/api/workspaces/${otherWorkspace.id}/projects`,
+        undefined,
+        key.secret,
+      );
+      await expectProblem(rest, 404, "workspace_not_found");
+      // Sanity: the in-scope listing still works.
+      const inScope = await getJson(
+        app,
+        `/api/workspaces/${scopedWorkspace.id}/projects`,
+        undefined,
+        key.secret,
+      );
+      expect(inScope.status).toBe(200);
     });
 
     it("caps an agent by its owner's current human access and ends access on removal", async () => {

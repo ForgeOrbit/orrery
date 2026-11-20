@@ -87,7 +87,7 @@ def extract_code_facts() -> dict[str, Any]:
 
     # #33 (agent project work through MCP) reads its own transport, contract, and schema
     # sources so removing a guard or registering an admin tool flips the model below.
-    mcp_src = read_text("apps/server/src/features/agents/mcp.ts")
+    mcp_src = read_text("apps/server/src/features/projects/mcp.ts")
     tools_src = read_text("packages/contract/src/mcp-tools.ts")
     proj_rest_src = read_text("apps/server/src/features/projects/rest.ts")
     mig_0017 = read_text("db/migrations/0017_rapid_talon.sql")
@@ -494,10 +494,16 @@ def extract_code_facts() -> dict[str, Any]:
         and "actorHumanId: text(\"actor_human_id\").references(() => humans.id)" in ag_schema
         and "actorAgentId: text(\"actor_agent_id\").references(() => agents.id)" in ag_schema
     )
+    list_projects_service = slice_between(proj_src, "async listProjects(", "async getProject(")
+    m12_list_scope = (
+        "actor.kind === \"agent\" && workspaceId !== actor.identity.workspaceId"
+        in list_projects_service
+        and 'throw new ProjectsError("workspace_not_found")' in list_projects_service
+    )
     m12_mcp_reauth = (
-        "service.authenticate(readBearer(request))" in mcp_src
-        and "kind: \"agent\"" in mcp_src
-        and "readBearer(request)" in mcp_src
+        "await authenticate(request)" in mcp_src
+        and 'kind: "agent"' in mcp_src
+        and "tool.input.parse(rawArgs)" in mcp_src
     )
     tool_names = re.findall(r'name: "([a-z_]+)"', tools_src)
     m12_tools_exist = all(
@@ -511,10 +517,20 @@ def extract_code_facts() -> dict[str, Any]:
         not any(word in name for word in ["member", "invit", "workspace", "access", "setting", "key", "admin", "grant"])
         for name in tool_names
     )
-    m12_rest_no_bearer = (
-        "Authorization" not in proj_rest_src
-        and "humanActor" in proj_rest_src
-        and "{ kind: \"human\", account }" in proj_rest_src
+    list_projects_rest = slice_between(proj_rest_src, "app.openapi(listProjects,", "  });")
+    create_project_rest = slice_between(proj_rest_src, "app.openapi(createProject,", "  });")
+    set_access_rest = slice_between(proj_rest_src, "app.openapi(setProjectAccess,", "  });")
+    m12_rest_bearer = (
+        "await workActor(c)" in list_projects_rest
+        and "agentAuthenticator(c.req.raw)" in proj_rest_src
+        and 'if (identity !== null) return { kind: "agent", identity };' in proj_rest_src
+        and "isAgentError(error)" in proj_rest_src
+    )
+    m12_rest_admin_session = (
+        "await workActor(c)" not in create_project_rest
+        and "await workActor(c)" not in set_access_rest
+        and "await sessionReader(c)" in create_project_rest
+        and "await sessionReader(c)" in set_access_rest
     )
 
     return {
@@ -583,7 +599,9 @@ def extract_code_facts() -> dict[str, Any]:
         "m12_mcp_reauth": m12_mcp_reauth,
         "m12_tools_exist": m12_tools_exist,
         "m12_no_admin_tools": m12_no_admin_tools,
-        "m12_rest_no_bearer": m12_rest_no_bearer,
+        "m12_rest_bearer": m12_rest_bearer,
+        "m12_rest_admin_session": m12_rest_admin_session,
+        "m12_list_scope": m12_list_scope,
     }
 
 
@@ -1363,23 +1381,28 @@ def check_m12(facts: dict[str, Any]) -> CheckResult:
 
     attempts: list[tuple[str, str, bool, str]] = [
         ("MCP create_issue with a Contribute key", "committed", gate and facts["m12_tools_exist"], "refused"),
-        ("MCP update_issue/close with a Contribute key", "committed", gate, "refused"),
+        ("MCP edit title/body, close, and reopen with a Contribute key", "committed", gate, "refused"),
         ("MCP create_comment with a Contribute key", "committed", gate, "refused"),
         ("MCP create/update_knowledge with a Contribute key", "committed", gate, "refused"),
+        ("REST work routes accept the same bearer key", "same_work_actor", gate and facts["m12_rest_bearer"], "not_signed_in"),
         ("MCP list/get issue and knowledge with a Read key", "inspected", gate, "refused"),
         ("MCP create_issue with a Read key", "refused", gate, "committed"),
         ("MCP update_issue/close with a Read key", "refused", gate, "committed"),
         ("MCP create_comment with a Read key", "refused", gate, "committed"),
         ("MCP create/update_knowledge with a Read key", "refused", gate, "committed"),
+        ("REST mutation with a Read key", "refused", gate and facts["m12_rest_bearer"], "committed"),
         ("REST and MCP Read denials share one stable code", "insufficient_project_access", gate, "divergent"),
         ("MCP write on a project in another workspace", "refused", scope, "committed"),
         ("MCP write on a project outside the key grants", "refused", scope, "committed"),
+        ("MCP list_projects targeting another workspace the owner belongs to", "refused", facts["m12_list_scope"], "empty_list"),
+        ("REST list projects in another workspace the owner belongs to", "refused", facts["m12_list_scope"] and facts["m12_rest_bearer"], "empty_list"),
         ("MCP call with a key revoked after the client connected", "refused", reauth, "committed"),
+        ("REST call with a revoked key", "refused", reauth and facts["m12_rest_bearer"], "committed"),
         ("MCP call with a key whose human grant was lowered", "refused", reauth and gate, "committed"),
         ("MCP write records the agent as actor, never its human owner", "actor=agent", audit, "actor=human"),
         ("stored issue/activity row has exactly one actor identity", "one_actor", facts["m12_actor_constraint"], "two_actors"),
         ("MCP tool list offers membership, invitation, or installation administration", "refused", facts["m12_no_admin_tools"], "exposed"),
-        ("bearer key accepted on a human REST membership/settings route", "refused", facts["m12_rest_no_bearer"], "accepted"),
+        ("bearer key accepted on a REST project-admin or workspace/settings route", "refused", facts["m12_rest_admin_session"], "accepted"),
     ]
     init = ("start",)
 
@@ -1402,7 +1425,7 @@ def check_m12(facts: dict[str, Any]) -> CheckResult:
     return bfs_check(
         "M12",
         "Agent Project Work Through MCP (#33)",
-        "One gate decides REST and MCP project work, agents are the recorded actors, and no key reaches membership or administration",
+        "One gate decides REST and MCP project work, agents are the recorded actors, a key is scoped to one workspace, and no key reaches membership or administration",
         "safety",
         init,
         next_states,
@@ -1410,7 +1433,8 @@ def check_m12(facts: dict[str, Any]) -> CheckResult:
         [
             "apps/server/src/features/projects/service.ts",
             "apps/server/src/features/projects/rest.ts",
-            "apps/server/src/features/agents/mcp.ts",
+            "apps/server/src/features/projects/mcp.ts",
+            "apps/server/src/features/agents/auth.ts",
             "packages/contract/src/mcp-tools.ts",
             "apps/server/src/db/schema.ts",
             "db/migrations/0017_rapid_talon.sql",

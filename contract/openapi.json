@@ -3886,7 +3886,7 @@
     "/api/workspaces/{workspaceId}/projects": {
       "get": {
         "summary": "The projects the caller can access in a workspace",
-        "description": "A personal workspace's owner sees its projects. A shared workspace's owner sees every project; an ordinary member sees only the projects explicitly granted to them. Membership alone never reveals a project. A workspace outside the caller's access answers exactly like a missing one.",
+        "description": "A personal workspace's owner sees its projects. A shared workspace's owner sees every project; an ordinary member sees only the projects explicitly granted to them. Membership alone never reveals a project. A workspace outside the caller's access answers exactly like a missing one. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
         "parameters": [
           {
             "schema": {
@@ -3921,7 +3921,7 @@
             }
           },
           "401": {
-            "description": "Not signed in",
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4024,7 +4024,7 @@
     "/api/projects/{projectId}": {
       "get": {
         "summary": "One project the caller can access",
-        "description": "A project's own view. A project outside the caller's access answers exactly like a missing one, so ids cannot be enumerated.",
+        "description": "A project's own view. A project outside the caller's access answers exactly like a missing one, so ids cannot be enumerated. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
         "parameters": [
           {
             "schema": {
@@ -4059,7 +4059,7 @@
             }
           },
           "401": {
-            "description": "Not signed in",
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4403,7 +4403,7 @@
     "/api/projects/{projectId}/issues": {
       "get": {
         "summary": "The issues in a project",
-        "description": "Every issue in the project, oldest number first, with its author and last editor.",
+        "description": "Every issue in the project, oldest number first, with its author and last editor.A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
         "parameters": [
           {
             "schema": {
@@ -4438,7 +4438,7 @@
             }
           },
           "401": {
-            "description": "Not signed in",
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4461,7 +4461,7 @@
       },
       "post": {
         "summary": "Create an issue in a project",
-        "description": "Contribute or Manage. The issue gets the project's next local number, starts open, and records its creator. The creation is recorded in the project's activity.",
+        "description": "Contribute or Manage. The issue gets the project's next local number, starts open, and records its creator. The creation is recorded in the project's activity. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
         "parameters": [
           {
             "schema": {
@@ -4506,7 +4506,7 @@
             }
           },
           "401": {
-            "description": "Not signed in",
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4541,7 +4541,7 @@
     "/api/issues/{issueId}": {
       "get": {
         "summary": "One issue the caller can access",
-        "description": "The issue's title, Markdown body, status, and authorship.",
+        "description": "The issue's title, Markdown body, status, and authorship.A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
         "parameters": [
           {
             "schema": {
@@ -4576,7 +4576,7 @@
             }
           },
           "401": {
-            "description": "Not signed in",
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4599,7 +4599,7 @@
       },
       "patch": {
         "summary": "Edit, close, or reopen an issue",
-        "description": "Contribute or Manage. Every field is optional. A title or body change records an edit; a status change records a close or a reopen. A request that changes nothing returns the issue unchanged and records no event.",
+        "description": "Contribute or Manage. Every field is optional. A title or body change records an edit; a status change records a close or a reopen. A request that changes nothing returns the issue unchanged and records no event. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
         "parameters": [
           {
             "schema": {
@@ -4644,7 +4644,7 @@
             }
           },
           "401": {
-            "description": "Not signed in",
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4679,7 +4679,7 @@
     "/api/issues/{issueId}/comments": {
       "get": {
         "summary": "The comments on an issue",
-        "description": "The issue's comments in the order they were written, each with its author.",
+        "description": "The issue's comments in the order they were written, each with its author.A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
         "parameters": [
           {
             "schema": {
@@ -4714,7 +4714,7 @@
             }
           },
           "401": {
-            "description": "Not signed in",
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4737,7 +4737,7 @@
       },
       "post": {
         "summary": "Comment on an issue",
-        "description": "Contribute or Manage. A comment needs no work session (#20), only project access. It records its author and appears in the project's activity.",
+        "description": "Contribute or Manage. A comment needs no work session (#20), only project access. It records its author and appears in the project's activity. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
         "parameters": [
           {
             "schema": {
@@ -4782,7 +4782,7 @@
             }
           },
           "401": {
-            "description": "Not signed in",
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4817,7 +4817,7 @@
     "/api/projects/{projectId}/activity": {
       "get": {
         "summary": "A project's activity",
-        "description": "Project creation, issue creation, edits, comments, closes, reopens, and knowledge creation and edits, in the order they happened, each with the human who caused it.",
+        "description": "Project creation, issue creation, edits, comments, closes, reopens, and knowledge creation and edits, in the order they happened, each with the human who caused it. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
         "parameters": [
           {
             "schema": {
@@ -4852,7 +4852,7 @@
             }
           },
           "401": {
-            "description": "Not signed in",
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4877,7 +4877,7 @@
     "/api/projects/{projectId}/knowledge": {
       "get": {
         "summary": "The basic Markdown knowledge entries in a project",
-        "description": "A title and a Markdown body per entry, with who created and last edited it. This is the basic entry from #26, not the full vault editor (#6).",
+        "description": "A title and a Markdown body per entry, with who created and last edited it. This is the basic entry from #26, not the full vault editor (#6). A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
         "parameters": [
           {
             "schema": {
@@ -4912,7 +4912,7 @@
             }
           },
           "401": {
-            "description": "Not signed in",
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4935,7 +4935,7 @@
       },
       "post": {
         "summary": "Create a basic Markdown knowledge entry",
-        "description": "Contribute or Manage. Stores the title and Markdown body as written, records the creator, and adds a creation event to the project's activity.",
+        "description": "Contribute or Manage. Stores the title and Markdown body as written, records the creator, and adds a creation event to the project's activity. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
         "parameters": [
           {
             "schema": {
@@ -4980,7 +4980,7 @@
             }
           },
           "401": {
-            "description": "Not signed in",
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5015,7 +5015,7 @@
     "/api/knowledge/{entryId}": {
       "get": {
         "summary": "One knowledge entry the caller can access",
-        "description": "The entry's title, Markdown body, and authorship.",
+        "description": "The entry's title, Markdown body, and authorship.A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
         "parameters": [
           {
             "schema": {
@@ -5050,7 +5050,7 @@
             }
           },
           "401": {
-            "description": "Not signed in",
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5073,7 +5073,7 @@
       },
       "patch": {
         "summary": "Edit a basic Markdown knowledge entry",
-        "description": "Contribute or Manage. Every field is optional. A real change records the editor and adds an edit event; a no-op returns the entry unchanged.",
+        "description": "Contribute or Manage. Every field is optional. A real change records the editor and adds an edit event; a no-op returns the entry unchanged. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
         "parameters": [
           {
             "schema": {
@@ -5118,7 +5118,7 @@
             }
           },
           "401": {
-            "description": "Not signed in",
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
             "content": {
               "application/problem+json": {
                 "schema": {

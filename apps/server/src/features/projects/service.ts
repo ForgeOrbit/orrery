@@ -240,6 +240,16 @@ function agentIdOf(actor: WorkActor): string | null {
   return actor.kind === "agent" ? actor.identity.agentId : null;
 }
 
+// An agent has no human id to join on. Use a false predicate rather than a made-up
+// sentinel id, so an agent query cannot accidentally match a row.
+function humanIdMatch(actor: WorkActor, table: "membership" | "grant") {
+  const humanId = humanIdOf(actor);
+  if (humanId === null) return sql`false`;
+  const column =
+    table === "membership" ? workspaceMemberships.humanId : projectAccessGrants.humanId;
+  return eq(column, humanId);
+}
+
 // The display actor for a write: the human's email or the agent's name. An agent action
 // never carries its owner's human id or email, so history cannot misattribute it.
 function actorForWrite(actor: WorkActor): Actor {
@@ -620,7 +630,8 @@ async function requireProject(
 ) {
   // The human joins still run for an agent (with an id that matches nothing); the agent's
   // level comes from its key, so a human grant can never leak into an agent's decision.
-  const humanId = humanIdOf(actor) ?? "";
+  const membershipMatch = humanIdMatch(actor, "membership");
+  const grantMatch = humanIdMatch(actor, "grant");
   const [row] = await tx
     .select({
       ...projectColumns,
@@ -634,15 +645,9 @@ async function requireProject(
     .innerJoin(projectCreator, eq(projectCreator.id, projects.createdByHumanId))
     .leftJoin(
       workspaceMemberships,
-      and(
-        eq(workspaceMemberships.workspaceId, projects.workspaceId),
-        eq(workspaceMemberships.humanId, humanId),
-      ),
+      and(eq(workspaceMemberships.workspaceId, projects.workspaceId), membershipMatch),
     )
-    .leftJoin(
-      projectAccessGrants,
-      and(eq(projectAccessGrants.projectId, projects.id), eq(projectAccessGrants.humanId, humanId)),
-    )
+    .leftJoin(projectAccessGrants, and(eq(projectAccessGrants.projectId, projects.id), grantMatch))
     .where(eq(projects.id, projectId))
     .limit(1);
 
@@ -669,7 +674,8 @@ async function requireIssue(
   actor: WorkActor,
   required: ProjectAccessLevel,
 ) {
-  const humanId = humanIdOf(actor) ?? "";
+  const membershipMatch = humanIdMatch(actor, "membership");
+  const grantMatch = humanIdMatch(actor, "grant");
   const [row] = await tx
     .select({
       ...issueColumns,
@@ -688,15 +694,9 @@ async function requireIssue(
     .leftJoin(issueAgentEditor, eq(issueAgentEditor.id, issues.updatedByAgentId))
     .leftJoin(
       workspaceMemberships,
-      and(
-        eq(workspaceMemberships.workspaceId, projects.workspaceId),
-        eq(workspaceMemberships.humanId, humanId),
-      ),
+      and(eq(workspaceMemberships.workspaceId, projects.workspaceId), membershipMatch),
     )
-    .leftJoin(
-      projectAccessGrants,
-      and(eq(projectAccessGrants.projectId, projects.id), eq(projectAccessGrants.humanId, humanId)),
-    )
+    .leftJoin(projectAccessGrants, and(eq(projectAccessGrants.projectId, projects.id), grantMatch))
     .where(eq(issues.id, issueId))
     .limit(1);
 
@@ -710,7 +710,8 @@ async function requireKnowledge(
   actor: WorkActor,
   required: ProjectAccessLevel,
 ) {
-  const humanId = humanIdOf(actor) ?? "";
+  const membershipMatch = humanIdMatch(actor, "membership");
+  const grantMatch = humanIdMatch(actor, "grant");
   const [row] = await tx
     .select({
       ...knowledgeColumns,
@@ -732,15 +733,9 @@ async function requireKnowledge(
     .leftJoin(knowledgeAgentEditor, eq(knowledgeAgentEditor.id, knowledgeEntries.updatedByAgentId))
     .leftJoin(
       workspaceMemberships,
-      and(
-        eq(workspaceMemberships.workspaceId, projects.workspaceId),
-        eq(workspaceMemberships.humanId, humanId),
-      ),
+      and(eq(workspaceMemberships.workspaceId, projects.workspaceId), membershipMatch),
     )
-    .leftJoin(
-      projectAccessGrants,
-      and(eq(projectAccessGrants.projectId, projects.id), eq(projectAccessGrants.humanId, humanId)),
-    )
+    .leftJoin(projectAccessGrants, and(eq(projectAccessGrants.projectId, projects.id), grantMatch))
     .where(eq(knowledgeEntries.id, entryId))
     .limit(1);
 
@@ -1064,10 +1059,14 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
     // workspace; it does not reveal the projects themselves.
     async listProjects(actorArg, workspaceId) {
       const actor = requireActor(actorArg);
+      // A key is scoped to one workspace. Refuse another workspace id before any lookup:
+      // answering empty for a workspace the owner happens to belong to would both bypass
+      // the scope and leak the owner's membership through a 200-vs-404 oracle.
+      if (actor.kind === "agent" && workspaceId !== actor.identity.workspaceId) {
+        throw new ProjectsError("workspace_not_found");
+      }
       return db.transaction(
         async (tx) => {
-          // The key's workspace is the only one an agent can name; the human-member
-          // lookup still applies to its owner, keeping one workspace-access rule.
           // The key's human owner is whose workspace membership is checked; the
           // project levels still come from the key, not from that membership's grants.
           const humanId = actor.kind === "human" ? actor.account.humanId : actor.identity.humanId;

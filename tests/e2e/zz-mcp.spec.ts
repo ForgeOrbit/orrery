@@ -1,8 +1,7 @@
-// Agent project work through MCP (issue #33), black-box against a running Orrery. A real
-// MCP protocol client uses a workspace-scoped API key to run the issue/knowledge cycle,
-// then proves Read keys, out-of-scope keys, and revoked keys are refused. The same
-// operations are read back over REST, and no membership or administration tool is exposed.
-// Nothing here imports server code.
+// Agent project work through MCP and REST (issue #33), black-box against a running Orrery.
+// The same agent keys are used with a real MCP protocol client and with bearer-authenticated
+// HTTP requests, so REST and MCP must expose the same operations and the same denials. No
+// membership, project access, or installation administration is reachable by a key.
 //
 //   docker compose --profile mail-test up -d --build --wait
 //   ORRERY_URL=http://localhost:8080 pnpm test:e2e
@@ -29,6 +28,24 @@ const idOf = (value: unknown, what: string): string =>
 const asRecord = (value: unknown): Record<string, unknown> =>
   typeof value === "object" && value !== null ? Object.fromEntries(Object.entries(value)) : {};
 const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+
+// Plain HTTP with only a bearer header: no cookie jar can accidentally authorize a call.
+const bearerRequest = (secret: string) => ({
+  get: (path: string) =>
+    fetch(new URL(path, baseUrl), { headers: { Authorization: `Bearer ${secret}` } }),
+  post: (path: string, body: unknown) =>
+    fetch(new URL(path, baseUrl), {
+      method: "POST",
+      headers: { "content-type": "application/json", Authorization: `Bearer ${secret}` },
+      body: JSON.stringify(body),
+    }),
+  patch: (path: string, body: unknown) =>
+    fetch(new URL(path, baseUrl), {
+      method: "PATCH",
+      headers: { "content-type": "application/json", Authorization: `Bearer ${secret}` },
+      body: JSON.stringify(body),
+    }),
+});
 
 async function personalWorkspaceOf(client: APIRequestContext): Promise<string> {
   const res = await client.get("/api/workspaces");
@@ -61,6 +78,27 @@ async function issueKey(
   return { id: idOf(field(body, "key"), "key"), secret };
 }
 
+type CallResult = { isError: boolean; data: Record<string, unknown> };
+
+async function connect(secret: string): Promise<Client> {
+  const client = new Client({ name: "orrery-e2e-mcp", version: "0" });
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL("/mcp", baseUrl), {
+      authProvider: { token: async () => secret },
+    }),
+  );
+  return client;
+}
+
+async function call(
+  client: Client,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<CallResult> {
+  const result = await client.callTool({ name, arguments: args });
+  return { isError: result.isError === true, data: asRecord(result.structuredContent) };
+}
+
 async function caughtWorkspaceToken(workspaceName: string): Promise<string | undefined> {
   const list = await api.get(`${mailpit}/api/v1/messages`);
   const body: unknown = await list.json();
@@ -89,28 +127,6 @@ async function caughtWorkspaceToken(workspaceName: string): Promise<string | und
   return undefined;
 }
 
-type CallResult = { isError: boolean; data: Record<string, unknown> };
-
-async function connect(secret: string): Promise<Client> {
-  const client = new Client({ name: "orrery-e2e-mcp", version: "0" });
-  await client.connect(
-    new StreamableHTTPClientTransport(new URL("/mcp", baseUrl), {
-      authProvider: { token: async () => secret },
-    }),
-  );
-  return client;
-}
-
-async function call(
-  client: Client,
-  name: string,
-  args: Record<string, unknown>,
-): Promise<CallResult> {
-  const result = await client.callTool({ name, arguments: args });
-  const data = asRecord(result.structuredContent);
-  return { isError: result.isError === true, data };
-}
-
 let api: APIRequestContext;
 let memberApi: APIRequestContext;
 
@@ -131,14 +147,12 @@ test.afterAll(async () => {
   await memberApi?.dispose();
 });
 
-test("exposes project work only: no membership, access, or administration tools", async () => {
+test("offers project work only: no membership, access, or administration tools", async () => {
   const agentId = await createAgent(api, `mcp-tools-bot-${randomUUID()}`);
-  const workspaceId = await personalWorkspaceOf(api);
-  const key = await issueKey(api, agentId, workspaceId, []);
+  const key = await issueKey(api, agentId, await personalWorkspaceOf(api), []);
   const client = await connect(key.secret);
   try {
-    const listed = await client.listTools();
-    const names = listed.tools.map((tool) => tool.name);
+    const names = (await client.listTools()).tools.map((tool) => tool.name);
     expect(names).toEqual(
       expect.arrayContaining([
         "list_projects",
@@ -164,7 +178,7 @@ test("exposes project work only: no membership, access, or administration tools"
   }
 });
 
-test("runs the Contribute issue and knowledge cycle over MCP and reads it back over REST", async () => {
+test("a Contribute key runs the full issue and knowledge cycle over MCP and REST", async () => {
   const workspaceId = await personalWorkspaceOf(api);
   const created = await api.post(`/api/workspaces/${workspaceId}/projects`, {
     data: { name: `MCP project ${randomUUID()}` },
@@ -175,65 +189,117 @@ test("runs the Contribute issue and knowledge cycle over MCP and reads it back o
   const agentId = await createAgent(api, agentName);
   const key = await issueKey(api, agentId, workspaceId, [{ projectId, level: "contribute" }]);
   const client = await connect(key.secret);
+  const rest = bearerRequest(key.secret);
   try {
-    const issueResult = await call(client, "create_issue", {
+    // --- MCP: create, edit title/body, comment, close, reopen, knowledge create/edit.
+    const createdIssue = await call(client, "create_issue", {
       projectId,
       title: "An MCP issue",
       body: "Created by an agent key.",
     });
-    expect(issueResult.isError).toBe(false);
-    const issue = asRecord(issueResult.data.issue);
-    expect(issue).toMatchObject({ status: "open", number: 1 });
-    expect(field(issue, "createdBy")).toMatchObject({
-      agentId,
-      displayName: agentName,
-    });
+    expect(createdIssue.isError).toBe(false);
+    const issue = asRecord(createdIssue.data.issue);
+    expect(field(issue, "createdBy")).toMatchObject({ agentId, displayName: agentName });
     const issueId = requiredText(field(issue, "id"), "the issue id");
 
-    const closed = await call(client, "update_issue", { issueId, status: "closed" });
-    expect(closed.isError).toBe(false);
-    expect(field(closed.data.issue, "status")).toBe("closed");
-    expect(field(field(closed.data.issue, "updatedBy"), "agentId")).toBe(agentId);
+    const edited = await call(client, "update_issue", {
+      issueId,
+      title: "Edited over MCP",
+      body: "A new body.",
+    });
+    expect(edited.isError).toBe(false);
+    expect(field(edited.data.issue, "title")).toBe("Edited over MCP");
+    expect(field(edited.data.issue, "updatedBy")).toMatchObject({ agentId });
 
-    const comment = await call(client, "create_comment", { issueId, body: "Agent comment" });
-    expect(comment.isError).toBe(false);
-    expect(field(field(comment.data.comment, "author"), "agentId")).toBe(agentId);
+    const commented = await call(client, "create_comment", { issueId, body: "Agent comment" });
+    expect(commented.isError).toBe(false);
+    expect(field(field(commented.data.comment, "author"), "agentId")).toBe(agentId);
+
+    const closed = await call(client, "update_issue", { issueId, status: "closed" });
+    expect(field(closed.data.issue, "status")).toBe("closed");
+    const reopened = await call(client, "update_issue", { issueId, status: "open" });
+    expect(field(reopened.data.issue, "status")).toBe("open");
+    expect(field(reopened.data.issue, "closedAt")).toBeNull();
+    expect(field(reopened.data.issue, "updatedBy")).toMatchObject({ agentId });
 
     const entry = await call(client, "create_knowledge", { projectId, title: "Agent note" });
-    expect(entry.isError).toBe(false);
     const entryId = requiredText(field(entry.data.entry, "id"), "the knowledge id");
-    const edited = await call(client, "update_knowledge", { entryId, body: "More detail" });
-    expect(edited.isError).toBe(false);
-    expect(field(field(edited.data.entry, "updatedBy"), "agentId")).toBe(agentId);
+    const editedEntry = await call(client, "update_knowledge", { entryId, body: "More detail" });
+    expect(editedEntry.isError).toBe(false);
+    expect(field(field(editedEntry.data.entry, "updatedBy"), "agentId")).toBe(agentId);
 
     const activity = await call(client, "list_activity", { projectId });
-    expect(activity.isError).toBe(false);
-    const events = asArray(field(activity.data, "activity"));
-    const agentEvents = events.filter((event) => field(event, "type") !== "project_created");
-    expect(agentEvents.length).toBeGreaterThan(0);
-    for (const event of agentEvents) {
-      expect(field(field(event, "actor"), "agentId")).toBe(agentId);
-      expect(field(field(event, "actor"), "humanId")).toBeFalsy();
-    }
+    const types = asArray(field(activity.data, "activity")).map((event) => field(event, "type"));
+    expect(types).toEqual(
+      expect.arrayContaining([
+        "issue_created",
+        "issue_edited",
+        "issue_closed",
+        "issue_reopened",
+        "issue_commented",
+        "knowledge_created",
+        "knowledge_edited",
+      ]),
+    );
 
-    // The same resources read over REST carry the same agent actor: REST and MCP agree.
-    const restIssue = await api.get(`/api/issues/${issueId}`);
-    expect(restIssue.status()).toBe(200);
-    expect(field(await restIssue.json(), "createdBy")).toMatchObject({ agentId });
+    // --- REST with the very same key: the same operations and the same agent actor.
+    const restIssues = await rest.get(`/api/projects/${projectId}/issues`);
+    expect(restIssues.status).toBe(200);
+    const listed = asArray(await restIssues.json());
+    expect(listed.some((item) => field(item, "id") === issueId)).toBe(true);
+
+    const restCreated = await rest.post(`/api/projects/${projectId}/issues`, {
+      title: "A REST issue",
+      body: "Created by the same key.",
+    });
+    expect(restCreated.status).toBe(201);
+    const restIssue = asRecord(await restCreated.json());
+    const restIssueId = idOf(restIssue, "issue");
+    expect(field(restIssue, "createdBy")).toMatchObject({ agentId });
+
+    const restEdited = await rest.patch(`/api/issues/${restIssueId}`, {
+      title: "Edited over REST",
+      body: "REST body.",
+    });
+    expect(restEdited.status).toBe(200);
+    expect(field(await restEdited.json(), "title")).toBe("Edited over REST");
+    const restClosed = await rest.patch(`/api/issues/${restIssueId}`, { status: "closed" });
+    expect(restClosed.status).toBe(200);
+    const restReopened = await rest.patch(`/api/issues/${restIssueId}`, { status: "open" });
+    expect(restReopened.status).toBe(200);
+    expect(field(await restReopened.json(), "closedAt")).toBeNull();
+    const restComment = await rest.post(`/api/issues/${restIssueId}/comments`, {
+      body: "REST comment",
+    });
+    expect(restComment.status).toBe(201);
+    expect(field(field(await restComment.json(), "author"), "agentId")).toBe(agentId);
+
+    const restEntry = await rest.post(`/api/projects/${projectId}/knowledge`, {
+      title: "REST note",
+    });
+    expect(restEntry.status).toBe(201);
+    const restEntryId = idOf(asRecord(await restEntry.json()), "knowledge");
+    const restEntryEdit = await rest.patch(`/api/knowledge/${restEntryId}`, {
+      body: "REST detail",
+    });
+    expect(restEntryEdit.status).toBe(200);
+    expect(field(field(await restEntryEdit.json(), "updatedBy"), "agentId")).toBe(agentId);
+
+    // MCP sees what REST wrote, through the same service.
+    const afterRest = await call(client, "get_issue", { issueId: restIssueId });
+    expect(field(afterRest.data.issue, "title")).toBe("Edited over REST");
   } finally {
     await client.close();
   }
 });
 
-test("a Read key inspects but cannot change work, matching a human Read REST denial", async () => {
+test("a Read key inspects over MCP and REST but cannot change work on either", async () => {
   const workspaceName = `MCP read team ${randomUUID()}`;
   const workspaceRes = await api.post("/api/workspaces", { data: { name: workspaceName } });
-  expect(workspaceRes.status()).toBe(201);
   const workspaceId = idOf(await workspaceRes.json(), "workspace");
   const created = await api.post(`/api/workspaces/${workspaceId}/projects`, {
     data: { name: `MCP read project ${randomUUID()}` },
   });
-  expect(created.status()).toBe(201);
   const projectId = idOf(await created.json(), "project");
   const writer = await createAgent(api, `mcp-seed-${randomUUID()}`);
   const writerKey = await issueKey(api, writer, workspaceId, [{ projectId, level: "contribute" }]);
@@ -255,30 +321,49 @@ test("a Read key inspects but cannot change work, matching a human Read REST den
   const reader = await createAgent(api, `mcp-reader-${randomUUID()}`);
   const readerKey = await issueKey(api, reader, workspaceId, [{ projectId, level: "read" }]);
   const client = await connect(readerKey.secret);
+  const rest = bearerRequest(readerKey.secret);
   try {
+    expect((await call(client, "list_projects", { workspaceId })).isError).toBe(false);
     expect((await call(client, "list_issues", { projectId })).isError).toBe(false);
     expect((await call(client, "get_issue", { issueId })).isError).toBe(false);
     expect((await call(client, "list_comments", { issueId })).isError).toBe(false);
     expect((await call(client, "list_knowledge", { projectId })).isError).toBe(false);
     expect((await call(client, "list_activity", { projectId })).isError).toBe(false);
 
-    const denials = await Promise.all([
+    expect((await rest.get(`/api/projects/${projectId}/issues`)).status).toBe(200);
+    expect((await rest.get(`/api/issues/${issueId}`)).status).toBe(200);
+    expect((await rest.get(`/api/projects/${projectId}/knowledge`)).status).toBe(200);
+
+    const mcpDenials = await Promise.all([
       call(client, "create_issue", { projectId, title: "No" }),
       call(client, "update_issue", { issueId, status: "closed" }),
       call(client, "create_comment", { issueId, body: "No" }),
       call(client, "create_knowledge", { projectId, title: "No" }),
       call(client, "update_knowledge", { entryId, body: "No" }),
     ]);
-    for (const denial of denials) {
+    for (const denial of mcpDenials) {
       expect(denial.isError).toBe(true);
       expect(field(denial.data, "code")).toBe("insufficient_project_access");
+    }
+    const restDenials = await Promise.all([
+      rest.post(`/api/projects/${projectId}/issues`, { title: "No" }),
+      rest.patch(`/api/issues/${issueId}`, { status: "closed" }),
+      rest.post(`/api/issues/${issueId}/comments`, { body: "No" }),
+      rest.post(`/api/projects/${projectId}/knowledge`, { title: "No" }),
+      rest.patch(`/api/knowledge/${entryId}`, { body: "No" }),
+    ]);
+    for (const denial of restDenials) {
+      expect(denial.status).toBe(403);
+      expect(await denial.json()).toMatchObject({
+        status: 403,
+        code: "insufficient_project_access",
+      });
     }
   } finally {
     await client.close();
   }
 
-  // The equivalent human REST write denial has the same stable code: invite a member
-  // with Read on this project and try the same close directly over REST.
+  // A human with Read on the same project gets the identical REST denial.
   const invited = await api.post(`/api/workspaces/${workspaceId}/invitations`, {
     data: { email: MEMBER_EMAIL, projectGrants: [{ projectId, level: "read" }] },
   });
@@ -297,58 +382,92 @@ test("a Read key inspects but cannot change work, matching a human Read REST den
     data: { status: "closed" },
   });
   expect(humanDenied.status()).toBe(403);
-  expect(await humanDenied.json()).toMatchObject({
-    status: 403,
-    code: "insufficient_project_access",
-  });
-  // A bearer key is not accepted on human REST routes at all. Use a fresh context so no
-  // signed-in cookie can accidentally authorize the request.
-  const bearerOnly = await request.newContext({ baseURL: baseUrl });
-  try {
-    const bearerWrite = await bearerOnly.patch(`/api/issues/${issueId}`, {
-      data: { status: "closed" },
-      headers: { Authorization: `Bearer ${readerKey.secret}` },
-    });
-    expect(bearerWrite.status()).toBe(401);
-  } finally {
-    await bearerOnly.dispose();
-  }
+  expect(await humanDenied.json()).toMatchObject({ code: "insufficient_project_access" });
 });
 
-test("refuses out-of-scope projects and a revoked key over MCP", async () => {
+test("keys scoped to one workspace and project are denied on the other over MCP and REST", async () => {
   const workspaceId = await personalWorkspaceOf(api);
   const scoped = await api.post(`/api/workspaces/${workspaceId}/projects`, {
     data: { name: `MCP scoped ${randomUUID()}` },
   });
-  expect(scoped.status()).toBe(201);
   const scopedId = idOf(await scoped.json(), "project");
   const outside = await api.post(`/api/workspaces/${workspaceId}/projects`, {
     data: { name: `MCP outside ${randomUUID()}` },
   });
-  expect(outside.status()).toBe(201);
   const outsideId = idOf(await outside.json(), "project");
+  // Workspace B is owned by the key's human owner, so a membership oracle would answer
+  // 200 with an empty list here. The key is scoped to the personal workspace A instead.
+  const other = await api.post("/api/workspaces", { data: { name: `MCP other ${randomUUID()}` } });
+  const otherId = idOf(await other.json(), "workspace");
 
   const agentId = await createAgent(api, `mcp-scoped-${randomUUID()}`);
   const key = await issueKey(api, agentId, workspaceId, [
     { projectId: scopedId, level: "contribute" },
   ]);
   const client = await connect(key.secret);
+  const rest = bearerRequest(key.secret);
   try {
-    const outOfScope = await call(client, "create_issue", { projectId: outsideId, title: "No" });
-    expect(outOfScope.isError).toBe(true);
-    expect(field(outOfScope.data, "code")).toBe("project_not_found");
+    const mcpCross = await call(client, "list_projects", { workspaceId: otherId });
+    expect(mcpCross.isError).toBe(true);
+    expect(field(mcpCross.data, "code")).toBe("workspace_not_found");
+    const restCross = await rest.get(`/api/workspaces/${otherId}/projects`);
+    expect(restCross.status).toBe(404);
+    expect(await restCross.json()).toMatchObject({ code: "workspace_not_found" });
+
+    const mcpOutside = await call(client, "create_issue", { projectId: outsideId, title: "No" });
+    expect(mcpOutside.isError).toBe(true);
+    expect(field(mcpOutside.data, "code")).toBe("project_not_found");
+    const restOutside = await rest.post(`/api/projects/${outsideId}/issues`, { title: "No" });
+    expect(restOutside.status).toBe(404);
+    expect(await restOutside.json()).toMatchObject({ code: "project_not_found" });
   } finally {
     await client.close();
   }
+});
+
+test("a revoked key is refused on the next MCP call and the next REST call", async () => {
+  const workspaceId = await personalWorkspaceOf(api);
+  const created = await api.post(`/api/workspaces/${workspaceId}/projects`, {
+    data: { name: `MCP revoke ${randomUUID()}` },
+  });
+  const projectId = idOf(await created.json(), "project");
+  const agentId = await createAgent(api, `mcp-revoked-${randomUUID()}`);
+  const key = await issueKey(api, agentId, workspaceId, [{ projectId, level: "read" }]);
 
   const revoked = await api.delete(`/api/agents/keys/${key.id}`);
   expect(revoked.status()).toBe(204);
-  const revokedClient = await connect(key.secret);
+  const client = await connect(key.secret);
   try {
-    const denied = await call(revokedClient, "list_projects", { workspaceId });
+    const denied = await call(client, "list_projects", { workspaceId });
     expect(denied.isError).toBe(true);
     expect(field(denied.data, "code")).toBe("key_revoked");
   } finally {
-    await revokedClient.close();
+    await client.close();
   }
+  const rest = await bearerRequest(key.secret).get(`/api/projects/${projectId}/issues`);
+  expect(rest.status).toBe(401);
+  expect(await rest.json()).toMatchObject({ code: "key_revoked" });
+});
+
+test("agent keys cannot reach membership, project access, or installation settings over REST", async () => {
+  const workspaceId = await personalWorkspaceOf(api);
+  const created = await api.post(`/api/workspaces/${workspaceId}/projects`, {
+    data: { name: `MCP admin ${randomUUID()}` },
+  });
+  const projectId = idOf(await created.json(), "project");
+  const agentId = await createAgent(api, `mcp-admin-${randomUUID()}`);
+  const key = await issueKey(api, agentId, workspaceId, [{ projectId, level: "manage" }]);
+  const rest = bearerRequest(key.secret);
+  for (const path of [
+    `/api/projects/${projectId}/access`,
+    `/api/workspaces/${workspaceId}/members`,
+    "/api/settings/smtp",
+  ]) {
+    const res = await rest.get(path);
+    expect(res.status).toBe(401);
+  }
+  const write = await rest.post(`/api/workspaces/${workspaceId}/projects`, { name: "No" });
+  expect(write.status).toBe(401);
+  const configure = await rest.patch(`/api/projects/${projectId}`, { name: "No" });
+  expect(configure.status).toBe(401);
 });

@@ -26,7 +26,6 @@ import {
   workspaces,
 } from "../../db/schema.ts";
 import type { SessionAccount } from "../accounts/index.ts";
-import { projectAccessAtLeast } from "../projects/index.ts";
 
 // The service is the only file in this feature that decides anything. rest.ts validates
 // and maps results; every rule about who may act, which workspace a key can reach, and
@@ -109,9 +108,17 @@ export type ProjectAccessCeiling = (
   projectIds: readonly string[],
 ) => Promise<Map<string, ProjectAccessLevel | null>>;
 
+export type ProjectAccessAtLeast = (
+  actual: ProjectAccessLevel,
+  required: ProjectAccessLevel,
+) => boolean;
+
+// Both resolvers are borrowed through the feature registry, so agents never imports a
+// projects internal file and projects remains free to own the one ranking rule.
 export interface AgentsDeps {
   db: PostgresJsDatabase;
   projectAccessCeiling: ProjectAccessCeiling;
+  projectAccessAtLeast: ProjectAccessAtLeast;
 }
 
 export interface AgentKeyTarget {
@@ -336,6 +343,7 @@ async function revokeInTransaction(
 async function resolveKeyInTransaction(
   tx: DbTransaction,
   projectAccessCeiling: ProjectAccessCeiling,
+  projectAccessAtLeast: ProjectAccessAtLeast,
   token: string,
   target?: AgentKeyTarget,
 ): Promise<AgentIdentity> {
@@ -418,7 +426,11 @@ async function resolveKeyInTransaction(
   };
 }
 
-export function createAgentsService({ db, projectAccessCeiling }: AgentsDeps): AgentsService {
+export function createAgentsService({
+  db,
+  projectAccessCeiling,
+  projectAccessAtLeast,
+}: AgentsDeps): AgentsService {
   return {
     async createAgent(account, input) {
       const actor = requireAccount(account);
@@ -593,7 +605,7 @@ export function createAgentsService({ db, projectAccessCeiling }: AgentsDeps): A
     async authenticate(token, target) {
       const presented = requireKey(token);
       return db.transaction((tx) =>
-        resolveKeyInTransaction(tx, projectAccessCeiling, presented, target),
+        resolveKeyInTransaction(tx, projectAccessCeiling, projectAccessAtLeast, presented, target),
       );
     },
   };
