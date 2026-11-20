@@ -224,7 +224,7 @@ test("fallback_allowed authorizes the fallback and keeps a checking-in claim", a
     expect(field(afterLate, "answer")).toBeNull();
 
     // With no live claim, Needs input is clear so the issue is ready work again.
-    const stopped = await call(client, "stop_session", { issueId, outcome: "completed" });
+    const stopped = await call(client, "stop_session", { issueId, outcome: "released" });
     expect(stopped.isError).toBe(false);
     const ready = await call(client, "ready_work", { projectId });
     expect(ready.isError).toBe(false);
