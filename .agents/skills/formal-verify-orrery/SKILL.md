@@ -1,6 +1,6 @@
 ---
 name: formal-verify-orrery
-description: Formally model-check Orrery's stateful server invariants (workspace ownership & locks, workspace/installation invitation lifecycles, concurrent project issue/knowledge updates, email verification token rotation, bootstrap singleton, workspace non-enumeration, and #28 permission delegation with inviter authority) via exhaustive BFS state-space exploration. Use before merging any change to apps/server/src/features/{accounts,invitations,projects,settings,workspaces}/service.ts or db/migrations/0007..0008,0015, or when asked to formally verify Orrery.
+description: Formally model-check Orrery's stateful server invariants (workspace ownership & locks, workspace/installation invitation lifecycles, concurrent project issue/knowledge updates, email verification token rotation, bootstrap singleton, workspace non-enumeration, #28 permission delegation with inviter authority, and #30 workspace-scoped agent API keys) via exhaustive BFS state-space exploration. Use before merging any change to apps/server/src/features/{accounts,agents,invitations,projects,settings,workspaces}/service.ts, apps/server/src/db/schema.ts, or db/migrations/0007..0008,0012..0017, or when asked to formally verify Orrery.
 ---
 
 # Formal Verify Orrery
@@ -9,21 +9,25 @@ Exhaustive finite-state model checking for Orrery's highest-stakes concurrency, 
 
 ## Sync Commit & Coverage Record
 
-- **Last verified commit:** `47469bc`
+- **Last verified commit:** `030b59b`
 - **Check whether a change touches verified code:**
   ```bash
-  git diff --name-only 47469bc -- \
+  git diff --name-only 030b59b -- \
     apps/server/src/features/workspaces/service.ts \
     apps/server/src/features/projects/service.ts \
     apps/server/src/features/invitations/service.ts \
     apps/server/src/features/accounts/service.ts \
+    apps/server/src/features/agents/service.ts \
+    apps/server/src/db/schema.ts \
     apps/server/src/features/settings/service.ts \
     db/migrations/0007_workspace_owner_guards.sql \
     db/migrations/0008_workspace_ownership_write_order.sql \
     db/migrations/0012_project_access_scope.sql \
     db/migrations/0013_numerous_doorman.sql \
     db/migrations/0014_backfill_expired_invitation_timestamps.sql \
-    db/migrations/0015_married_human_fly.sql
+    db/migrations/0015_married_human_fly.sql \
+    db/migrations/0016_clumsy_masked_marvel.sql \
+    db/migrations/0017_dashing_squirrel_girl.sql
   ```
   If that command prints any file, run the verifier below before declaring the change done. Move the sync commit forward **only** after confirming the model in `scripts/verify.py` still accurately reflects the code at the new commit.
 
@@ -65,6 +69,7 @@ We use a **zero-dependency Python 3 exhaustive BFS model checker** paired with s
 | **M8** | `projects/service.ts` (`setProjectAccess`, `removeProjectAccess`, `revokeMemberProjectAccess`), `workspaces/service.ts` (`removeMember`), `0012` | No orphaned project grant survives a concurrent member removal. | A removed member's old project access reviving on rejoin. | 1 member, 1 grant, grant/remove race. |
 | **M9** | `workspaces/service.ts` (`invite`, `resendInvitation`, `redeemWorkspaceInvitation`, `acceptInvitation`, `registerThroughInvitation`), `projects/service.ts` (`applyInvitationGrantsInTransaction`) | Under the atomic-transition assumption, valid scope survives resend, stale scope is not previewed, rotated, or granted, and an older offer cannot be resent after its recipient joins. | A stale invitation creating cross-workspace access, or a resend silently dropping the offered scope. | 1 offer, invited/other project workspace, 2 acceptance paths, 0–1 resend. |
 | **M10** | `workspaces/service.ts` (`updateMemberCapability`, `removeMember`, `invite`, `invitations`, `resendInvitation`, `revokeInvitation`, `requireProjectManageScope`, `requireInviterStillAuthorized`, `redeemWorkspaceInvitation`, `acceptInvitation`, `registerThroughInvitation`) | Only owners appoint or remove permission managers; a manager cannot modify an owner, themselves, or a capability they lack; a delegated remover cannot remove an owner or permission manager; a delegated inviter may offer only projects they Manage, sees only offers within that scope, and can revoke their own offer after losing Manage; a dead pending offer is superseded rather than blocking an address; a pending offer fails at both redemption paths once the inviter's capability, membership, verified email, or project Manage is withdrawn. | Uncontrolled spread of permission management, delegated removal of protected members, leaked unshared project offers, seven-day re-invite deadlocks, and stale invitations creating access after authority was revoked. | 28 bounded attempts (22 refusals, 6 positive controls), 29 states. |
+| **M11** | `agents/service.ts` (`resolveKeyInTransaction`, `issueKey`, `revokeInTransaction`, `ownerRevokeKey`, `recordEvent`), `projects/service.ts` (`projectAccessCeilingInTransaction`), `db/schema.ts` (`agents`, `agentApiKeys`, `agentApiKeyProjects`, `agentKeyEvents`), `0016`, `0017` | A key authenticates only in its one workspace; revocation, inactivity, and expiry (except for Never) each refuse it; Never still obeys revocation, activity, and the human owner's *current* project access, so a lowered level caps the agent and a removed grant ends its access; a workspace owner can revoke only keys scoped to their workspace; creation and revocation each write one event, and neither the events nor the stored row carry the secret. | A credential spilling across workspaces, an old key keeping removed authority, an owner revoking a human's keys elsewhere, or an audit trail leaking a secret. | 15 bounded attempts (8 refusals, 3 positive controls, 4 state outcomes), 16 states. |
 
 ## What Is Not Covered
 
@@ -74,6 +79,7 @@ We use a **zero-dependency Python 3 exhaustive BFS model checker** paired with s
 - **M9 transaction boundary**: M9 is a bounded design model driven by source markers. It assumes atomic transitions; it cannot prove that token, account, membership, and grant writes use the same transaction or roll back together. The real-Postgres workspaces tests check both successful acceptance paths and verify database state after a stale-scope rejection.
 - **Project transfer (#46)**: M9 models a project moving out of the invited workspace before redemption, but not the transfer operation itself. Use the scoped invitation recipe in `verify-orrery/features/workspaces.md` for REST and browser checks.
 - **M10 transaction boundary and concurrency**: M10 enumerates independent authority decisions in a bounded design model; it does not explore interleavings between two capability changes and a redemption, and it assumes the rejected `inviter_not_authorized` path rolls back the token and every earlier write in the transaction. Real-Postgres tests in `workspaces.test.ts` assert the invitation stays pending and no membership, account, or project grant commits. The live REST recipe in `verify-orrery/features/workspaces.md` covers the same ceilings through HTTP.
+- **M11 transaction boundary and revocation races**: M11 enumerates independent key decisions in a bounded design model; it does not explore an authentication transaction interleaved with a revocation or a project-grant change, and it assumes the rejected paths write no key or event. The real-Postgres `agents.test.ts` proves the just-before/just-after expiry boundary in database time, the lowered/removed grant ceiling, owner-revocation isolation, and the audit rows. The black-box `zz-agents.spec.ts` proves the same HTTP outcomes against the running image. `is_active` on `humans` is enforced by the key path now; the deactivation control itself is a later milestone.
 
 ## Interpreting Failures & Maintaining the Skill
 

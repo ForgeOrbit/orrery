@@ -5,6 +5,7 @@ import type { Config } from "../platform/config.ts";
 import type { Feature } from "../platform/feature.ts";
 import type { Logger } from "../platform/log.ts";
 import { createAccountsFeature, accountsRoutes } from "./accounts/index.ts";
+import { createAgentsFeature, agentsRoutes } from "./agents/index.ts";
 import { createInvitationsFeature, invitationsRoutes } from "./invitations/index.ts";
 import { createProjectsFeature, projectsRoutes } from "./projects/index.ts";
 import { createSettingsFeature, settingsRoutes } from "./settings/index.ts";
@@ -65,6 +66,15 @@ export function createFeatures(database: Database, config: Config, log: Logger):
       log,
     }),
     projects,
+    // Agents borrow accounts' session reader for management and projects' one project
+    // access resolver for the dynamic ceiling on a key. Its bearer reader is private to
+    // its own identity route.
+    createAgentsFeature({
+      db: database.db,
+      sessionReader: accounts.sessionReader,
+      projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
+        projects.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
+    }),
   ];
 }
 
@@ -72,6 +82,7 @@ export function createFeatures(database: Database, config: Config, log: Logger):
 export const routes = [
   ...systemRoutes,
   ...accountsRoutes,
+  ...agentsRoutes,
   ...settingsRoutes,
   ...invitationsRoutes,
   ...workspacesRoutes,

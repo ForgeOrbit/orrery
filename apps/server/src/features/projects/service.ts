@@ -97,6 +97,73 @@ function resolveAccessLevel(facts: AccessFacts, humanId: string): ProjectAccessL
   return facts.grantLevel;
 }
 
+// The agent-key ceiling: the human's current access to each named project in a
+// workspace, decided by the same resolver as every human-facing endpoint. A project
+// outside the workspace, or a human with no current access, answers null. This is the
+// one policy path for project levels; agents borrow it instead of growing a second one.
+export async function projectAccessCeilingInTransaction(
+  tx: DbTransaction,
+  workspaceId: string,
+  humanId: string,
+  projectIds: readonly string[],
+): Promise<Map<string, ProjectAccessLevel | null>> {
+  const ceiling = new Map<string, ProjectAccessLevel | null>();
+  if (projectIds.length === 0) return ceiling;
+
+  const [workspace] = await tx
+    .select({
+      kind: workspaces.kind,
+      personalOwnerHumanId: workspaces.personalOwnerHumanId,
+      membershipIsOwner: workspaceMemberships.isOwner,
+    })
+    .from(workspaces)
+    .leftJoin(
+      workspaceMemberships,
+      and(
+        eq(workspaceMemberships.workspaceId, workspaces.id),
+        eq(workspaceMemberships.humanId, humanId),
+      ),
+    )
+    .where(eq(workspaces.id, workspaceId))
+    .limit(1);
+
+  for (const projectId of projectIds) {
+    if (workspace === undefined) {
+      ceiling.set(projectId, null);
+      continue;
+    }
+    const [row] = await tx
+      .select({ workspaceId: projects.workspaceId, grantLevel: projectAccessGrants.level })
+      .from(projects)
+      .leftJoin(
+        projectAccessGrants,
+        and(
+          eq(projectAccessGrants.projectId, projects.id),
+          eq(projectAccessGrants.humanId, humanId),
+        ),
+      )
+      .where(eq(projects.id, projectId))
+      .limit(1);
+    if (row === undefined || row.workspaceId !== workspaceId) {
+      ceiling.set(projectId, null);
+      continue;
+    }
+    ceiling.set(
+      projectId,
+      resolveAccessLevel(
+        {
+          workspaceKind: WorkspaceKind.parse(workspace.kind),
+          personalOwnerHumanId: workspace.personalOwnerHumanId,
+          membershipIsOwner: workspace.membershipIsOwner,
+          grantLevel: row.grantLevel === null ? null : ProjectAccessLevel.parse(row.grantLevel),
+        },
+        humanId,
+      ),
+    );
+  }
+  return ceiling;
+}
+
 function requireLevel(
   facts: AccessFacts,
   humanId: string,
@@ -782,6 +849,13 @@ export interface ProjectsService {
     grantedByHumanId: string,
     offered: readonly { projectId: string; level: ProjectAccessLevel }[],
   ): Promise<string[]>;
+  // The agents feature borrows this for the dynamic human-access ceiling on a key.
+  projectAccessCeiling(
+    tx: DbTransaction,
+    workspaceId: string,
+    humanId: string,
+    projectIds: readonly string[],
+  ): Promise<Map<string, ProjectAccessLevel | null>>;
   listIssues(account: SessionAccount | null, projectId: string): Promise<Issue[]>;
   getIssue(account: SessionAccount | null, issueId: string): Promise<Issue>;
   createIssue(
@@ -1195,6 +1269,10 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
         grantedByHumanId,
         offered,
       );
+    },
+
+    projectAccessCeiling(tx, workspaceId, humanId, projectIds) {
+      return projectAccessCeilingInTransaction(tx, workspaceId, humanId, projectIds);
     },
 
     async listIssues(account, projectId) {

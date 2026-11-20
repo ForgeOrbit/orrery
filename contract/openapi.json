@@ -180,6 +180,261 @@
           "emailVerified"
         ]
       },
+      "Agent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "humanId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "id",
+          "humanId",
+          "name",
+          "createdAt"
+        ]
+      },
+      "Timestamp": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "CreateAgentRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "AgentsResponse": {
+        "type": "object",
+        "properties": {
+          "agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Agent"
+            }
+          }
+        },
+        "required": [
+          "agents"
+        ]
+      },
+      "CreateAgentKeyResponse": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "$ref": "#/components/schemas/AgentKey"
+          },
+          "secret": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "secret"
+        ]
+      },
+      "AgentKey": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "workspaceId": {
+            "type": "string"
+          },
+          "createdByHumanId": {
+            "type": "string"
+          },
+          "validity": {
+            "$ref": "#/components/schemas/AgentKeyValidity"
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "expiresAt": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            ]
+          },
+          "revokedAt": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            ]
+          },
+          "revokedByHumanId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "projects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentKeyProject"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "agentId",
+          "workspaceId",
+          "createdByHumanId",
+          "validity",
+          "createdAt",
+          "expiresAt",
+          "revokedAt",
+          "revokedByHumanId",
+          "projects"
+        ]
+      },
+      "AgentKeyValidity": {
+        "type": "string",
+        "enum": [
+          "7",
+          "14",
+          "30",
+          "60",
+          "90",
+          "never"
+        ]
+      },
+      "AgentKeyProject": {
+        "type": "object",
+        "properties": {
+          "projectId": {
+            "type": "string"
+          },
+          "level": {
+            "$ref": "#/components/schemas/ProjectAccessLevel"
+          }
+        },
+        "required": [
+          "projectId",
+          "level"
+        ]
+      },
+      "ProjectAccessLevel": {
+        "type": "string",
+        "enum": [
+          "read",
+          "contribute",
+          "manage"
+        ]
+      },
+      "CreateAgentKeyRequest": {
+        "type": "object",
+        "properties": {
+          "agentId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "validity": {
+            "$ref": "#/components/schemas/AgentKeyValidity"
+          },
+          "projects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentKeyProject"
+            }
+          }
+        },
+        "required": [
+          "agentId",
+          "workspaceId",
+          "projects"
+        ]
+      },
+      "AgentKeysResponse": {
+        "type": "object",
+        "properties": {
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentKey"
+            }
+          }
+        },
+        "required": [
+          "keys"
+        ]
+      },
+      "AgentIdentity": {
+        "type": "object",
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "humanId": {
+            "type": "string"
+          },
+          "keyId": {
+            "type": "string"
+          },
+          "workspaceId": {
+            "type": "string"
+          },
+          "validity": {
+            "$ref": "#/components/schemas/AgentKeyValidity"
+          },
+          "projects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentKeyProject"
+            }
+          }
+        },
+        "required": [
+          "agentId",
+          "name",
+          "humanId",
+          "keyId",
+          "workspaceId",
+          "validity",
+          "projects"
+        ]
+      },
       "SmtpSettingsResponse": {
         "type": "object",
         "properties": {
@@ -554,14 +809,6 @@
           }
         ]
       },
-      "ProjectAccessLevel": {
-        "type": "string",
-        "enum": [
-          "read",
-          "contribute",
-          "manage"
-        ]
-      },
       "InvitationDeliveryState": {
         "type": "object",
         "properties": {
@@ -931,10 +1178,6 @@
           "workspaceKind",
           "accessLevel"
         ]
-      },
-      "Timestamp": {
-        "type": "string",
-        "format": "date-time"
       },
       "Actor": {
         "type": "object",
@@ -1526,6 +1769,398 @@
           },
           "401": {
             "description": "No valid session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents": {
+      "post": {
+        "summary": "Register an agent under the signed-in human's identity",
+        "description": "An agent is an accountable worker identity, distinct from any model or run. Several keys and clients can act as the same agent. Only its human owner can register or list agents.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAgentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The registered agent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Agent"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "You already have an agent with this name",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List the signed-in human's agents",
+        "responses": {
+          "200": {
+            "description": "The agents",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/keys": {
+      "post": {
+        "summary": "Issue a workspace-scoped API key for one agent",
+        "description": "The key is bound to exactly one workspace and the selected projects, with a level capped by the human owner's current access. Offer 7, 14, 30, 60, or 90 days, or Never; 90 days is the default. The secret is returned in this response only: only its hash is persisted, and no later read can recover it. Revocation is a separate control.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAgentKeyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The issued key and its secret, shown once",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateAgentKeyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A project is outside the workspace, or above your current access",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such agent, or no access to the workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List the signed-in human's keys, optionally in one workspace",
+        "description": "Keys are listed without their secrets. An owner also has a separate, workspace-scoped view of every key in their workspace, including keys issued by other humans.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": false,
+            "name": "workspaceId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The keys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentKeysResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/keys/{keyId}": {
+      "delete": {
+        "summary": "Revoke one of the human's own keys",
+        "description": "Revocation takes effect on the next request, including for a Never key. The secret is neither required nor returned.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "keyId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The key was revoked"
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such key belongs to you",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspaces/{workspaceId}/agent-keys": {
+      "get": {
+        "summary": "List every key scoped to a workspace (owner only)",
+        "description": "A workspace owner sees all keys scoped to the workspace, whoever issued them, without any secret. Keys in other workspaces are never included.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The workspace's keys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentKeysResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only a workspace owner can list these keys",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspaces/{workspaceId}/agent-keys/{keyId}": {
+      "delete": {
+        "summary": "Revoke any key scoped to a workspace (owner only)",
+        "description": "A workspace owner can revoke any key scoped to that workspace without seeing its secret. The workspace is part of the key lookup, so a key in another workspace cannot be affected. A non-owner answers 403.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "keyId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The key was revoked"
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only a workspace owner can revoke these keys",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such key in this workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/me": {
+      "get": {
+        "summary": "Resolve the agent behind a bearer API key",
+        "description": "Authenticates an `Authorization: Bearer <key>` header and returns the agent identity, the one workspace the key is scoped to, and the effective project access after the human owner's current access has capped the key's grants. An optional `workspaceId` or `projectId` makes a cross-workspace or out-of-scope request fail here, on the server. Revoked, expired, and inactive-owner keys fail; Never skips only the expiry check. The secret is never echoed.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": false,
+            "name": "workspaceId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": false,
+            "name": "projectId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The agent identity and its effective access",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentIdentity"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The key is invalid, revoked, expired, or its owner is inactive",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key is not scoped to this workspace or project",
             "content": {
               "application/problem+json": {
                 "schema": {
