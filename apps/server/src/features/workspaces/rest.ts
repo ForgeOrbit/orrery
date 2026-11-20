@@ -357,6 +357,22 @@ const removeWorkspaceMember = createRoute({
   },
 });
 
+const leaveWorkspace = createRoute({
+  method: "post",
+  path: "/api/workspaces/{workspaceId}/leave",
+  summary: "Leave a shared workspace voluntarily",
+  description:
+    "A member ends their own membership, with the same immediate key revocation, project-access cleanup, and active-claim release as a removal, but records a leave event. A personal workspace cannot be left, and the last owner of a shared workspace cannot leave: appoint another owner first. The caller's personal work and every other membership stay intact.",
+  request: { params: workspaceParams },
+  responses: {
+    204: { description: "The membership was ended" },
+    400: problem("The workspace id is invalid"),
+    401: problem("Not signed in"),
+    404: problem("No accessible shared workspace"),
+    409: problem("The caller is the last owner of the workspace"),
+  },
+});
+
 // Route definitions, for the generated OpenAPI document.
 export const routes = [
   listWorkspaces,
@@ -374,6 +390,7 @@ export const routes = [
   appointWorkspaceOwner,
   updateWorkspaceMember,
   removeWorkspaceMember,
+  leaveWorkspace,
 ];
 
 // Transport details rest.ts owns: every workspaces error kind's HTTP status.
@@ -481,6 +498,7 @@ const removeKinds = [
   "member_not_found",
   "last_owner",
 ] as const;
+const leaveKinds = ["not_signed_in", "workspace_not_found", "last_owner"] as const;
 
 // Thin: resolve the session, call the service, map the result to HTTP. The service
 // decides who may do what; this layer only carries it, and every error is a Problem
@@ -676,6 +694,15 @@ export function createWorkspacesRest(service: WorkspacesService, sessionReader: 
       return c.body(null, 204);
     } catch (error) {
       return failure(c, error, removeKinds);
+    }
+  });
+
+  app.openapi(leaveWorkspace, async (c) => {
+    try {
+      await service.leaveWorkspace(await sessionReader(c), c.req.valid("param").workspaceId);
+      return c.body(null, 204);
+    } catch (error) {
+      return failure(c, error, leaveKinds);
     }
   });
 

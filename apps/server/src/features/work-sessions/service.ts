@@ -11,11 +11,19 @@ import {
   type WorkSession,
   type WorkSessionOutcome,
 } from "@orrery/contract";
-import { and, desc, eq, gt, isNull, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, lte, sql } from "drizzle-orm";
 import type { PgInsertValue } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
-import { issues, projects, runs, workSessions } from "../../db/schema.ts";
+import {
+  agents,
+  issues,
+  projects,
+  runs,
+  workSessions,
+  workspaceMemberships,
+  workspaces,
+} from "../../db/schema.ts";
 import type { WorkActor } from "../projects/index.ts";
 
 // The service is the only file that decides anything for work sessions (#36). REST and MCP
@@ -161,6 +169,120 @@ function toSession(row: SessionView): WorkSession {
 function requireAgent(actor: AgentActor | null) {
   if (actor === null) throw new SessionsError("not_signed_in");
   return actor.identity;
+}
+
+// A claim is only as live as its agent's human's access to the workspace. Key
+// authentication already refuses a removed member's key, but a request that authenticated
+// just before removal still carries a valid identity. Re-reading access inside the claim's
+// own transaction closes that window: a removal that committed first (or concurrently) is
+// visible here, so a renewal can never extend a claim the removed human no longer owns.
+// Personal workspaces have no membership row, so their single owner stays in scope.
+async function humanStillHasWorkspaceAccess(
+  tx: DbTransaction,
+  workspaceId: string,
+  humanId: string,
+): Promise<boolean> {
+  const [workspace] = await tx
+    .select({ personalOwnerHumanId: workspaces.personalOwnerHumanId })
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId))
+    .limit(1);
+  if (workspace === undefined) return false;
+  if (workspace.personalOwnerHumanId === humanId) return true;
+  const [membership] = await tx
+    .select({ id: workspaceMemberships.id })
+    .from(workspaceMemberships)
+    .where(
+      and(
+        eq(workspaceMemberships.workspaceId, workspaceId),
+        eq(workspaceMemberships.humanId, humanId),
+      ),
+    )
+    .limit(1);
+  return membership !== undefined;
+}
+
+// Take the agent's human's membership lock BEFORE any issue lock. Removal deletes the
+// membership before it locks issues to release claims, so one shared lock order
+// (workspace_memberships -> issues) makes the two write paths serialize in either order
+// instead of writing skewed: if the DELETE wins, this key-share read sees no row; if this
+// lock wins, the DELETE waits until the claim/renewal commits and removal's release pass
+// then sees the newly committed claim. Personal workspaces have no membership row; their
+// single owner is checked directly and cannot be removed.
+async function lockAgentWorkspaceAccess(tx: DbTransaction, identity: AgentIdentity): Promise<void> {
+  const [workspace] = await tx
+    .select({ personalOwnerHumanId: workspaces.personalOwnerHumanId })
+    .from(workspaces)
+    .where(eq(workspaces.id, identity.workspaceId))
+    .limit(1);
+  if (workspace === undefined) throw new SessionsError("insufficient_access");
+  if (workspace.personalOwnerHumanId === identity.humanId) return;
+  const [membership] = await tx
+    .select({ id: workspaceMemberships.id })
+    .from(workspaceMemberships)
+    .where(
+      and(
+        eq(workspaceMemberships.workspaceId, identity.workspaceId),
+        eq(workspaceMemberships.humanId, identity.humanId),
+      ),
+    )
+    .for("key share");
+  if (membership === undefined) throw new SessionsError("insufficient_access");
+}
+
+// Workspace removal/leave ends every active claim held by the departing human's agents in
+// that workspace, in the *removing* transaction. It never touches their personal work,
+// their other memberships, or the issue comments and agent attribution already recorded.
+// Active issues are locked FOR UPDATE in id order before the sessions are ended: claims,
+// renewals and fenced writes all lock the same issue first, so this ordering serializes
+// with a renewal racing removal without deadlocking. No nested transaction is opened —
+// the caller already holds the ownership lock and one DbTransaction.
+export async function releaseMemberWorkSessions(
+  tx: DbTransaction,
+  workspaceId: string,
+  humanId: string,
+): Promise<void> {
+  const ownedAgents = tx.select({ id: agents.id }).from(agents).where(eq(agents.humanId, humanId));
+  const claims = await tx
+    .select({ id: workSessions.id, issueId: workSessions.issueId })
+    .from(workSessions)
+    .where(
+      and(
+        eq(workSessions.workspaceId, workspaceId),
+        eq(workSessions.status, WorkSessionStatus.enum.active),
+        inArray(workSessions.agentId, ownedAgents),
+      ),
+    );
+  if (claims.length === 0) return;
+
+  const issueIds = [...new Set(claims.map((claim) => claim.issueId))].toSorted();
+  await tx
+    .select({ id: issues.id })
+    .from(issues)
+    .where(inArray(issues.id, issueIds))
+    .orderBy(issues.id)
+    .for("update");
+
+  await tx
+    .update(workSessions)
+    .set({
+      // "released" ends the claim without marking it failed or completed: the human left,
+      // the work itself is untouched and stays open for another worker to claim.
+      status: WorkSessionStatus.enum.released,
+      endedAt: sql`statement_timestamp()`,
+      updatedAt: sql`statement_timestamp()`,
+    })
+    .where(
+      and(
+        // A claim that legitimately completed or expired after the read above must not be
+        // overwritten to "released"; only the still-active ones are ended by a departure.
+        eq(workSessions.status, WorkSessionStatus.enum.active),
+        inArray(
+          workSessions.id,
+          claims.map((claim) => claim.id),
+        ),
+      ),
+    );
 }
 
 // Lock the target issue first. Every claim, renewal, fenced write, progress update and
@@ -325,6 +447,12 @@ function requireAccessArgs(
     }
 
     const humanId = actor.kind === "human" ? actor.account.humanId : actor.identity.humanId;
+    // Re-read the human's workspace access on the caller's transaction. A removed human's
+    // in-flight renewal cannot pass here even if the project grant read below is stale,
+    // so the claim cannot be retained or extended after removal.
+    if (!(await humanStillHasWorkspaceAccess(tx, project.workspaceId, humanId))) {
+      throw new SessionsError("insufficient_access");
+    }
     const ceiling = await projectAccessCeiling(tx, project.workspaceId, humanId, [projectId]);
     const humanLevel = ceiling.get(projectId) ?? null;
     let effective = humanLevel;
@@ -371,6 +499,8 @@ export function createSessionsService({
     const identity = requireAgent(actor);
     await expireCommitted(issueId);
     return db.transaction(async (tx) => {
+      // Membership first, issue second: see lockAgentWorkspaceAccess for the lock order.
+      await lockAgentWorkspaceAccess(tx, identity);
       const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
       const issue = await lockIssue(tx, issueId);
       await expireStale(tx, issue.id);
@@ -409,6 +539,9 @@ export function createSessionsService({
       const identity = requireAgent(actor);
       await expireCommitted(input.issueId);
       return db.transaction(async (tx) => {
+        // Membership first, issue second: a removal deleting this membership waits for
+        // the claim to commit, then releases it instead of missing the uncommitted row.
+        await lockAgentWorkspaceAccess(tx, identity);
         const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
         const issue = await lockIssue(tx, input.issueId);
         await expireStale(tx, issue.id);
@@ -562,6 +695,8 @@ export function createSessionsService({
       // refused reacquisition still releases it. The locked check below is the decision.
       await expireCommitted(input.issueId);
       return db.transaction(async (tx) => {
+        // Membership first, issue second: serialize with member removal just like claim.
+        await lockAgentWorkspaceAccess(tx, identity);
         const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
         const issue = await lockIssue(tx, input.issueId);
         await expireStale(tx, issue.id);

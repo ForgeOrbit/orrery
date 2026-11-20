@@ -69,6 +69,10 @@ def extract_code_facts() -> dict[str, Any]:
     mig_0007 = read_text("db/migrations/0007_workspace_owner_guards.sql")
     mig_0008 = read_text("db/migrations/0008_workspace_ownership_write_order.sql")
 
+    # #37: removal and voluntary leave share one private cleanup tail. M1, M8, M11 and M18
+    # all inspect it, so define it once here rather than repeating the slice below.
+    end_membership_fn = slice_between(ws_src, "async function endMembership(", "\n  }\n\n  return {")
+
     # M1: Workspace ownership serialization + deferred trigger
     remove_member_fn = slice_between(ws_src, "async removeMember(", "  };")
     m1_lock_in_service = "lockWorkspaceForMutation(tx, workspaceId)" in remove_member_fn
@@ -243,7 +247,10 @@ def extract_code_facts() -> dict[str, Any]:
         "lockWorkspaceOwnershipWrites(tx)" in create_project_fn
         and "lockWorkspaceOwnershipWrites(tx)" in set_access_fn
         and "lockWorkspaceOwnershipWrites(tx)" in remove_access_fn
-        and "revokeMemberProjectAccess(tx" in remove_member_fn
+        # #37 moved the grant revocation into the shared cleanup tail: the removal must
+        # call that tail, and the tail must still revoke the departing member's grants.
+        and "endMembership(" in remove_member_fn
+        and "revokeMemberProjectAccess(tx, workspaceId, humanId, actorHumanId)" in end_membership_fn
     )
 
     # M9: These source markers select transitions in a bounded design model. They do
@@ -424,7 +431,10 @@ def extract_code_facts() -> dict[str, Any]:
     # no INSERT can land after that revocation. Authentication reads one REPEATABLE READ
     # snapshot, and the database rejects a key grant outside the key's workspace.
     m11_member_removal_revokes_keys = (
-        "revokeMemberWorkspaceKeys(tx, workspaceId, humanId, actor.humanId)" in remove_member_fn
+        # #37: removeMember delegates the cleanup to endMembership; both the call and the
+        # key revocation inside the tail must be present for a rejoin to stay revoked.
+        "endMembership(" in remove_member_fn
+        and "revokeMemberWorkspaceKeys(tx, workspaceId, humanId, actorHumanId)" in end_membership_fn
         and "revokedAt: sql`now()`" in revoke_member_fn
         and "isNull(agentApiKeys.revokedAt)" in revoke_member_fn
         and "AgentKeyEventType.enum.agent_key_revoked" in revoke_member_fn
@@ -1099,6 +1109,88 @@ def extract_code_facts() -> dict[str, Any]:
     )
     m17_problems = sess_rest_src.count("400: problem(") >= 5
 
+    # M18 (#37): member removal / voluntary leave versus an in-flight claim renewal.
+    # Every decision is read from the live workspaces, work-sessions, agents, projects and
+    # REST sources plus the schema/migration, so deleting the release call, the membership
+    # recheck, the issue lock order, the last-owner guard or the distinct leave events
+    # flips the model to a shortest counterexample naming the exact request.
+    ws_rest_src = read_text("apps/server/src/features/workspaces/rest.ts")
+    ws_registry_src = read_text("apps/server/src/features/index.ts")
+    mig_0023 = read_text("db/migrations/0023_wealthy_silvermane.sql")
+    # The cleanup facts are read from the shared tail defined above, and the two call
+    # sites are checked separately.
+    remove_member_fn = slice_between(ws_src, "async removeMember(", "async leaveWorkspace(")
+    leave_fn = slice_between(ws_src, "async leaveWorkspace(", "  };\n}")
+    release_fn = slice_between(sess_src, "export async function releaseMemberWorkSessions(", "\n}\n")
+    require_access_fn = slice_between(sess_src, "function requireAccessArgs(", "export function createSessionsService(")
+    lock_access_fn = slice_between(sess_src, "async function lockAgentWorkspaceAccess(", "// Workspace removal/leave ends")
+    workspace_event_types = slice_between(schema_src, "export const workspaceEventTypes = [", "] as const;")
+
+    m18_release_in_remove = (
+        "endMembership(" in remove_member_fn
+        and "releaseMemberWorkSessions(tx, workspaceId, humanId)" in end_membership_fn
+    )
+    m18_release_in_leave = (
+        "endMembership(" in leave_fn
+        and "releaseMemberWorkSessions(tx, workspaceId, humanId)" in end_membership_fn
+    )
+    m18_active_only = "eq(workSessions.status, WorkSessionStatus.enum.active)" in release_fn
+    m18_release_status_guard = ordered(
+        release_fn,
+        ".update(workSessions)",
+        "eq(workSessions.status, WorkSessionStatus.enum.active)",
+    )
+    m18_membership_lock = (
+        '.for("key share")' in lock_access_fn
+        and 'throw new SessionsError("insufficient_access")' in lock_access_fn
+        and ordered(claim_fn, "lockAgentWorkspaceAccess(tx, identity)", "lockIssue(tx")
+        and ordered(live_fn, "lockAgentWorkspaceAccess(tx, identity)", "lockIssue(tx")
+    )
+    m18_issue_lock_order = (
+        ordered(
+            release_fn,
+            ".select({ id: workSessions.id, issueId: workSessions.issueId })",
+            '.for("update")',
+            ".update(workSessions)",
+        )
+        and ".orderBy(issues.id)" in release_fn
+        and "status: WorkSessionStatus.enum.released" in release_fn
+    )
+    m18_no_nested_tx = "db.transaction(" not in release_fn
+    m18_recheck_membership = "humanStillHasWorkspaceAccess(tx, project.workspaceId, humanId)" in require_access_fn
+    m18_personal_scope = "workspace.personalOwnerHumanId === humanId" in sess_src
+    m18_revoke_keys = (
+        "revokeMemberWorkspaceKeys(tx, workspaceId, humanId, actorHumanId)" in end_membership_fn
+        and "endMembership(" in remove_member_fn
+        and "endMembership(" in leave_fn
+    )
+    m18_revoke_grants = (
+        "revokeMemberProjectAccess(tx, workspaceId, humanId, actorHumanId)" in end_membership_fn
+        and "endMembership(" in remove_member_fn
+        and "endMembership(" in leave_fn
+    )
+    m18_last_owner_leave = 'throw new WorkspacesError("last_owner")' in leave_fn
+    m18_personal_not_leavable = "lockWorkspaceForMutation(tx, workspaceId)" in leave_fn
+    m18_distinct_events = (
+        '"member_left"' in workspace_event_types
+        and '"owner_left"' in workspace_event_types
+        and '"member_left"' in leave_fn
+        and '"owner_left"' in leave_fn
+        and "member_left" in mig_0023
+        and "owner_left" in mig_0023
+    )
+    m18_single_tx = "db.transaction(" in remove_member_fn and "db.transaction(" in leave_fn
+    m18_attribution_kept = (
+        "delete(workspaceMemberships)" in end_membership_fn
+        and end_membership_fn.count(".delete(") == 1
+    )
+    m18_leave_route = (
+        'path: "/api/workspaces/{workspaceId}/leave"' in ws_rest_src
+        and "leaveKinds" in ws_rest_src
+        and "400: problem(" in ws_rest_src
+        and "sessions.releaseMemberWorkSessions" in ws_registry_src
+    )
+
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
         "m2a_supersedes_failed": m2a_supersedes_failed,
@@ -1258,6 +1350,23 @@ def extract_code_facts() -> dict[str, Any]:
         "m18_closed_refused": m18_closed_refused,
         "m18_update_db_time": m18_update_db_time,
         "m18_find_active_db_time": m18_find_active_db_time,
+        "m19_release_in_remove": m18_release_in_remove,
+        "m19_release_in_leave": m18_release_in_leave,
+        "m19_active_only": m18_active_only,
+        "m19_release_status_guard": m18_release_status_guard,
+        "m19_membership_lock": m18_membership_lock,
+        "m19_issue_lock_order": m18_issue_lock_order,
+        "m19_no_nested_tx": m18_no_nested_tx,
+        "m19_recheck_membership": m18_recheck_membership,
+        "m19_personal_scope": m18_personal_scope,
+        "m19_revoke_keys": m18_revoke_keys,
+        "m19_revoke_grants": m18_revoke_grants,
+        "m19_last_owner_leave": m18_last_owner_leave,
+        "m19_personal_not_leavable": m18_personal_not_leavable,
+        "m19_distinct_events": m18_distinct_events,
+        "m19_single_tx": m18_single_tx,
+        "m19_attribution_kept": m18_attribution_kept,
+        "m19_leave_route": m18_leave_route,
     }
 
 
@@ -3100,6 +3209,186 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
     )
 
 
+def check_m19(facts: dict[str, Any]) -> CheckResult:
+    """#37: removal / voluntary leave revoke keys and grants and release active claims in
+    one transaction, a renewal racing the departure cannot retain the claim, the last owner
+    and a personal workspace cannot be left, re-invitation starts with fresh grants but the
+    old key stays dead, and comments/attribution survive. Behavioral guards are explored by
+    BFS; structural guards (lock order, no nested transaction, the thin REST leave route)
+    are asserted from the extracted facts."""
+    files = [
+        "apps/server/src/features/workspaces/service.ts",
+        "apps/server/src/features/workspaces/rest.ts",
+        "apps/server/src/features/work-sessions/service.ts",
+        "apps/server/src/features/agents/service.ts",
+        "apps/server/src/features/projects/service.ts",
+        "apps/server/src/features/index.ts",
+        "apps/server/src/db/schema.ts",
+        "db/migrations/0023_wealthy_silvermane.sql",
+    ]
+    structural = (
+        "m19_issue_lock_order",
+        "m19_no_nested_tx",
+        "m19_active_only",
+        "m19_release_status_guard",
+        "m19_membership_lock",
+        "m19_personal_scope",
+        "m19_single_tx",
+        "m19_leave_route",
+    )
+    missing = [name for name in structural if not facts[name]]
+    if missing:
+        return CheckResult(
+            "M18",
+            "Member Removal, Leave & Claim Release (#37)",
+            "Departure revokes credentials and grants, releases claims, and a racing renewal cannot retain one",
+            "safety",
+            "violated",
+            0,
+            0,
+            "M18 structural guard missing: " + ", ".join(missing),
+            [f"remove the {name} guard from the #37 cleanup" for name in missing],
+            files,
+        )
+
+    release_remove = facts["m19_release_in_remove"]
+    release_leave = facts["m19_release_in_leave"]
+    recheck = facts["m19_recheck_membership"]
+    revoke_keys = facts["m19_revoke_keys"]
+    revoke_grants = facts["m19_revoke_grants"]
+    last_owner = facts["m19_last_owner_leave"]
+    personal_guard = facts["m19_personal_not_leavable"]
+    distinct = facts["m19_distinct_events"]
+    keep_comments = facts["m19_attribution_kept"]
+
+    def depart(state, event, guard):
+        member, kind, is_owner, owners, key, grant, session, comments, events, inflight = state
+        if revoke_keys:
+            key = "revoked"
+        if revoke_grants:
+            grant = "revoked"
+        if session == "active" and guard:
+            session = "released"
+        if not keep_comments:
+            comments = 0
+        if distinct:
+            events = events | {event}
+        return (False, kind, is_owner, owners, key, grant, session, comments, events, inflight)
+
+    def removal(state):
+        if not state[0] or state[1] != "shared":
+            return state
+        return depart(state, "member_removed", release_remove)
+
+    def leave(state):
+        member, kind, is_owner, owners, *_ = state
+        if not member or kind != "shared":
+            return state
+        if is_owner and owners <= 1 and last_owner:
+            return state
+        next_state = depart(state, "owner_left" if is_owner else "member_left", release_leave)
+        updated = list(next_state)
+        updated[3] = owners - 1 if is_owner else owners
+        return tuple(updated)
+
+    def single_owner_context(state):
+        # A shared workspace whose only owner is the caller: the last-owner safeguard is
+        # the only thing between this and an unadministrable workspace.
+        return (True, "shared", True, 1, "valid", "present", "active", 1, frozenset(), None)
+
+    def personal_context(state):
+        # A fresh personal-workspace scenario: one owner, no membership row and a live
+        # agent claim. It starts its own history so the shared-workspace timeline above
+        # cannot leak a "revived key" signal into this independent context.
+        return (True, "personal", True, 1, "valid", "present", "active", 1, frozenset(), None)
+
+    def leave_personal(state):
+        if state[1] != "personal" or not state[0] or personal_guard:
+            return state
+        return depart(state, "owner_left", release_leave)
+
+    def renew_start(state):
+        if state[0] and state[6] == "active":
+            updated = list(state)
+            updated[9] = "renew"
+            return tuple(updated)
+        return state
+
+    def renew_commit(state):
+        if state[9] is None:
+            return state
+        updated = list(state)
+        updated[9] = None
+        if not state[0] and not recheck:
+            # The in-flight renewal extends a claim whose human has already departed.
+            updated[6] = "active"
+        return tuple(updated)
+
+    def reinvite(state):
+        if state[0]:
+            return state
+        updated = list(state)
+        updated[0] = True
+        updated[2] = False
+        updated[4] = "revoked" if revoke_keys else state[4]
+        updated[5] = "fresh"
+        updated[8] = state[8] | {"member_joined"}
+        return tuple(updated)
+
+    def add_comment(state):
+        updated = list(state)
+        updated[7] = min(2, state[7] + 1)
+        return tuple(updated)
+
+    actions = [
+        ("an authorized owner removes the member", removal),
+        ("the member leaves voluntarily", leave),
+        ("a renewal starts before the departure", renew_start),
+        ("the in-flight renewal commits after removal", renew_commit),
+        ("the member is re-invited with fresh grants", reinvite),
+        ("a comment keeps the issue's agent attribution", add_comment),
+        ("context: a personal workspace with one owner and a live claim", personal_context),
+        ("the personal owner tries to leave", leave_personal),
+        ("context: a shared workspace with one owner and a live claim", single_owner_context),
+        ("the last owner tries to leave the shared workspace", leave),
+    ]
+    init = (True, "shared", False, 2, "valid", "present", "active", 1, frozenset(), None)
+
+    def next_states(state):
+        return [(label, action(state)) for label, action in actions]
+
+    def inv(state):
+        member, kind, is_owner, owners, key, grant, session, comments, events, _ = state
+        if kind == "shared" and owners < 1:
+            return False, "shared workspace ended with no owner (last-owner guard missing)"
+        if kind == "personal" and not member:
+            return False, "personal workspace lost its owner (leave was allowed)"
+        if not member:
+            if key == "valid":
+                return False, "removed member's agent key is still valid"
+            if grant == "present":
+                return False, "removed member still holds project access"
+            if session == "active":
+                return False, "removed member's agent retained an active claim"
+            if not events:
+                return False, "departure wrote no audit event"
+        if "member_removed" in events and "member_joined" in events and key == "valid":
+            return False, "pre-removal key revived on re-invitation"
+        if comments < 1:
+            return False, "departure erased the issue comment and its agent attribution"
+        return True, ""
+
+    return bfs_check(
+        "M19",
+        "Member Removal, Leave & Claim Release (#37)",
+        "Removal/leave revoke keys and grants, release active claims in one transaction, block a racing renewal, protect the last owner and personal work, and keep audit and comments",
+        "safety",
+        init,
+        next_states,
+        inv,
+        files,
+    )
+
 def main() -> None:
     facts = extract_code_facts()
     results = [
@@ -3122,6 +3411,7 @@ def main() -> None:
         check_m16(facts),
         check_m17(facts),
         check_m18(facts),
+        check_m19(facts),
     ]
 
     if "--json" in sys.argv:

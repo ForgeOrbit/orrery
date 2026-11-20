@@ -4793,6 +4793,69 @@
         }
       }
     },
+    "/api/workspaces/{workspaceId}/leave": {
+      "post": {
+        "summary": "Leave a shared workspace voluntarily",
+        "description": "A member ends their own membership, with the same immediate key revocation, project-access cleanup, and active-claim release as a removal, but records a leave event. A personal workspace cannot be left, and the last owner of a shared workspace cannot leave: appoint another owner first. The caller's personal work and every other membership stay intact.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The membership was ended"
+          },
+          "400": {
+            "description": "The workspace id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No accessible shared workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The caller is the last owner of the workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/workspaces/{workspaceId}/projects": {
       "get": {
         "summary": "The projects the caller can access in a workspace",
