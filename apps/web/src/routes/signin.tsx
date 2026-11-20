@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-router";
 import type { FormEvent } from "react";
 import { useState } from "react";
-import { sessionQuery, signIn, type Session } from "../features/accounts/index.ts";
+import { sessionQuery, signIn } from "../features/accounts/index.ts";
 
 // Only the internal workspace-invitation path is accepted as a post-sign-in destination.
 // It is not a general redirect: complete URLs, schemes, and every other route are ignored.
@@ -42,9 +42,13 @@ function SignInPage() {
     setSubmitting(true);
     setError(undefined);
     try {
-      const account = await signIn({ email, password });
-      const session: Session = { signedIn: true, email: account.email };
-      queryClient.setQueryData(sessionQuery.queryKey, session);
+      await signIn({ email, password });
+      // Anything cached while signed out (notably an anonymous smtpSettingsQuery of
+      // null) must not survive the new identity: with staleTime, ensureQueryData would
+      // otherwise keep serving that refusal after sign-in. Login also only answers with
+      // the email, so fetch the session from the server for the verified state.
+      queryClient.clear();
+      await queryClient.fetchQuery(sessionQuery);
       const token = invitationTokenFrom(next);
       if (token !== undefined) {
         await navigate({ to: "/workspace-invitation", search: { token } });
