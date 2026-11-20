@@ -940,7 +940,18 @@ def extract_code_facts() -> dict[str, Any]:
     expire_fn = slice_between(sess_src, "async function expireStale(", "const fiveMinutes")
     claim_fn = slice_between(sess_src, "async claim(actor, input)", "async renew(actor, issueId)")
     renew_fn = slice_between(sess_src, "async renew(actor, issueId)", "async progress(actor, issueId, summary)")
-    live_fn = slice_between(sess_src, "const withLiveSession = async (", "return {")
+    # #83 made this helper generic so activity appends can return the inserted row while
+    # the lease-taking writes still return a WorkSession. Accept either spelling of the
+    # declaration as the extraction anchor; the guards below are unchanged.
+    live_start = next(
+        (
+            marker
+            for marker in ("const withLiveSession = async <T>(", "const withLiveSession = async (")
+            if marker in sess_src
+        ),
+        "const withLiveSession = async (",
+    )
+    live_fn = slice_between(sess_src, live_start, "return {")
     ready_fn = slice_between(sess_src, "async readyWork(actorArg, projectId)", "async agentHoldsSession(")
     gate_fn = slice_between(sess_src, "async agentHoldsSession(", "};\n}")
     update_issue_fn = slice_between(proj_src, "async updateIssue(actorArg, issueId, input)", "async listComments(")

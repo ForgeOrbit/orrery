@@ -2578,6 +2578,62 @@
           "$ref": "#/components/schemas/WorkSession"
         }
       },
+      "SessionActivity": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "workSessionId": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SessionActivityKind"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "detail": {
+            "$ref": "#/components/schemas/SessionActivityDetail"
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "id",
+          "workSessionId",
+          "runId",
+          "kind",
+          "summary",
+          "detail",
+          "createdAt"
+        ]
+      },
+      "SessionActivityKind": {
+        "type": "string",
+        "enum": [
+          "thought",
+          "action",
+          "status"
+        ]
+      },
+      "SessionActivityDetail": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": {}
+      },
+      "SessionActivitiesResponse": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/SessionActivity"
+        }
+      },
       "ActiveWorkSessionsResponse": {
         "type": "array",
         "items": {
@@ -8682,6 +8738,188 @@
           },
           "404": {
             "description": "No such issue is in scope for the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/{issueId}/work-sessions/activities": {
+      "post": {
+        "summary": "Append an activity to a live session",
+        "description": "Append an ephemeral thought, action or status entry to the live work session this agent holds on the issue. Entries are kept in their own append-only timeline, independent of the claim lease and never in issue_comments, so an interrupted or completed session stays inspectable. An optional sessionId fences a delayed write from an interrupted session.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "issueId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "$ref": "#/components/schemas/SessionActivityKind"
+                  },
+                  "summary": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 20000
+                  },
+                  "detail": {
+                    "$ref": "#/components/schemas/SessionActivityDetail"
+                  },
+                  "sessionId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  }
+                },
+                "required": [
+                  "kind",
+                  "summary"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The appended activity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionActivity"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The activity is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "An agent key is required, or the key is invalid or revoked",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Contribute access is required to work on this issue",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such issue is in scope for this agent",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This agent holds no live session for this issue",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/{issueId}/work-sessions/{sessionId}/activities": {
+      "get": {
+        "summary": "The activity timeline of one work session",
+        "description": "List the ephemeral thought/action/status entries recorded for one work session, newest first. Read access to the issue's project is enough, for a human or an agent; no claim is needed. Unrelated callers get 404 rather than a 403 that would reveal the issue or session. Entries survive expiry and completion and are never part of issue_comments.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "issueId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "sessionId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The session's activity timeline, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionActivitiesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The issue or session id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the agent key is invalid or revoked",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such issue or work session is in scope for the caller",
             "content": {
               "application/problem+json": {
                 "schema": {

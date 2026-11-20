@@ -6,6 +6,8 @@ import {
   CreateAgentKeyResponse,
   Problem,
   RequestStopWorkSessionInput,
+  SessionActivitiesResponse,
+  SessionActivity,
   WorkSession,
 } from "@orrery/contract";
 import { and, eq, sql } from "drizzle-orm";
@@ -14,11 +16,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   browserSessions,
   humans,
+  issueComments,
   issues,
   projectAccessGrants,
   projectActivity,
   projects,
   runs as runRows,
+  workSessionActivities,
   workSessions,
   workspaceMemberships,
   workspaces,
@@ -161,6 +165,8 @@ afterAll(async () => {
 
 afterEach(async () => {
   await database.db.transaction(async (tx) => {
+    // Activities have a deliberate no-action FK to their session: cleanup must go first.
+    await tx.execute(sql`delete from work_session_activities`);
     await tx.execute(sql`delete from work_sessions`);
     await tx.execute(sql`delete from agent_key_events`);
     await tx.execute(sql`delete from agent_api_key_projects`);
@@ -1547,5 +1553,286 @@ describe("human stop requests on active work sessions (#82)", () => {
     // A lapsed lease drops out of the live listing in database time without a write.
     await setLease(issue.id, "statement_timestamp() - interval '1 second'");
     expect(await sessionsService.activeSessions(humanActor(f), f.workspaceId)).toEqual([]);
+  });
+});
+
+describe("ephemeral session activities (#83)", () => {
+  // Activities are append-only, tied to the one live session the calling agent holds, and
+  // kept in their own table so expiry/completion never erase the trail.
+  it("lets only the live holder append activities and keeps them after expiry", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "Activity issue");
+    const runId = await newRun(identity);
+    const session = await sessionsService.claim(
+      { kind: "agent", identity },
+      { issueId: issue.id, runId },
+    );
+    const actor = { kind: "agent" as const, identity };
+
+    const thought = await sessionsService.logActivity(actor, {
+      issueId: issue.id,
+      kind: "thought",
+      summary: "Considering the options",
+      detail: { step: 1, confidence: 0.7 },
+    });
+    expect(SessionActivity.parse(thought)).toMatchObject({
+      workSessionId: session.id,
+      runId,
+      kind: "thought",
+      summary: "Considering the options",
+      detail: { step: 1, confidence: 0.7 },
+    });
+    const action = await sessionsService.logActivity(actor, {
+      issueId: issue.id,
+      kind: "action",
+      summary: "Edited service.ts",
+    });
+    expect(action).toMatchObject({ kind: "action", detail: null });
+
+    // A different agent, even with Contribute on the same project, holds no session.
+    const otherAgent = await postJson(
+      "/api/agents",
+      { name: `activity-other-${randomUUID()}` },
+      f.cookie,
+    );
+    expect(otherAgent.status).toBe(201);
+    const otherKey = await postJson(
+      "/api/agents/keys",
+      {
+        agentId: idOf(await otherAgent.json(), "agent"),
+        workspaceId: f.workspaceId,
+        validity: "90",
+        projects: [{ projectId: f.projectId, level: "contribute" }],
+      },
+      f.cookie,
+    );
+    expect(otherKey.status).toBe(201);
+    const other = await identityFor(CreateAgentKeyResponse.parse(await otherKey.json()).secret);
+    expect(
+      errorKind(
+        await rejection(
+          sessionsService.logActivity(
+            { kind: "agent", identity: other },
+            {
+              issueId: issue.id,
+              kind: "status",
+              summary: "Not mine",
+            },
+          ),
+        ),
+      ),
+    ).toBe("session_required");
+
+    // A fence naming another session never falls through to the live one.
+    expect(
+      errorKind(
+        await rejection(
+          sessionsService.logActivity(actor, {
+            issueId: issue.id,
+            kind: "status",
+            summary: "Stale write",
+            sessionId: randomUUID(),
+          }),
+        ),
+      ),
+    ).toBe("session_required");
+
+    // Once the lease lapses, neither a plain nor a correctly fenced append is accepted:
+    // an expired session is never revived and the two existing entries are untouched.
+    await setLease(issue.id, "statement_timestamp() - interval '1 second'");
+    for (const fenced of [false, true]) {
+      expect(
+        errorKind(
+          await rejection(
+            sessionsService.logActivity(actor, {
+              issueId: issue.id,
+              kind: "status",
+              summary: "After lapse",
+              ...(fenced ? { sessionId: session.id } : {}),
+            }),
+          ),
+        ),
+      ).toBe("session_required");
+    }
+    const stored = await sessionsService.getSession(actor, issue.id);
+    expect(stored.status).toBe("expired");
+    const timeline = await sessionsService.listActivities(humanActor(f), issue.id, session.id);
+    expect(SessionActivitiesResponse.parse(timeline).map((entry) => entry.summary)).toEqual([
+      "Edited service.ts",
+      "Considering the options",
+    ]);
+    const rows = await database.db
+      .select({ id: workSessionActivities.id })
+      .from(workSessionActivities)
+      .where(eq(workSessionActivities.workSessionId, session.id));
+    expect(rows).toHaveLength(2);
+    const comments = await database.db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issue.id));
+    expect(comments).toHaveLength(0);
+
+    // Completion is equally harmless to the recorded trail.
+    const secondIssue = await humanIssue(f, "Completed activity issue");
+    const secondRun = await newRun(identity);
+    const second = await sessionsService.claim(
+      { kind: "agent", identity },
+      { issueId: secondIssue.id, runId: secondRun },
+    );
+    await sessionsService.logActivity(actor, {
+      issueId: secondIssue.id,
+      kind: "thought",
+      summary: "Before completion",
+    });
+    await sessionsService.stop(actor, secondIssue.id, "completed");
+    expect(
+      (await sessionsService.listActivities(humanActor(f), secondIssue.id, second.id)).map(
+        (entry) => entry.summary,
+      ),
+    ).toEqual(["Before completion"]);
+  });
+
+  it("reads an activity timeline with project Read and denies unrelated callers 404", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "Readable activity issue");
+    const runId = await newRun(identity);
+    const session = await sessionsService.claim(
+      { kind: "agent", identity },
+      { issueId: issue.id, runId },
+    );
+    await sessionsService.logActivity(
+      { kind: "agent", identity },
+      { issueId: issue.id, kind: "thought", summary: "Visible to readers" },
+    );
+
+    // A human in the project and a Read-scoped agent key can both read the timeline.
+    expect(await sessionsService.listActivities(humanActor(f), issue.id, session.id)).toHaveLength(
+      1,
+    );
+    const readKey = await postJson(
+      "/api/agents/keys",
+      {
+        agentId: f.agentId,
+        workspaceId: f.workspaceId,
+        validity: "90",
+        projects: [{ projectId: f.projectId, level: "read" }],
+      },
+      f.cookie,
+    );
+    expect(readKey.status).toBe(201);
+    const reader = await identityFor(CreateAgentKeyResponse.parse(await readKey.json()).secret);
+    expect(
+      await sessionsService.listActivities(
+        { kind: "agent", identity: reader },
+        issue.id,
+        session.id,
+      ),
+    ).toHaveLength(1);
+
+    // A session id from a different issue is indistinguishable from a missing one.
+    expect(
+      errorKind(
+        await rejection(sessionsService.listActivities(humanActor(f), issue.id, randomUUID())),
+      ),
+    ).toBe("session_not_found");
+
+    // A human outside the workspace gets the same 404 as a missing issue.
+    const outsider = {
+      kind: "human" as const,
+      account: {
+        humanId: randomUUID(),
+        email: "activity-outsider@example.com",
+        isSystemAdministrator: false,
+        emailVerifiedAt: new Date(),
+      },
+    };
+    expect(
+      errorKind(await rejection(sessionsService.listActivities(outsider, issue.id, session.id))),
+    ).toBe("issue_not_found");
+    // An agent key scoped to another workspace cannot reach the issue either.
+    const [otherWorkspace] = await database.db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(workspaces)
+        .values({ id: randomUUID(), kind: "shared", name: "Other activity team" })
+        .returning();
+      if (created === undefined) throw new Error("no other workspace");
+      await tx.insert(workspaceMemberships).values({
+        id: randomUUID(),
+        workspaceId: created.id,
+        humanId: f.humanId,
+        isOwner: true,
+      });
+      return [created];
+    });
+    const otherAgent = await postJson(
+      "/api/agents",
+      { name: `activity-foreign-${randomUUID()}` },
+      f.cookie,
+    );
+    const foreignKey = await postJson(
+      "/api/agents/keys",
+      {
+        agentId: idOf(await otherAgent.json(), "agent"),
+        workspaceId: otherWorkspace.id,
+        validity: "90",
+        projects: [],
+      },
+      f.cookie,
+    );
+    expect(foreignKey.status).toBe(201);
+    const foreign = await identityFor(CreateAgentKeyResponse.parse(await foreignKey.json()).secret);
+    expect(
+      errorKind(
+        await rejection(
+          sessionsService.listActivities(
+            { kind: "agent", identity: foreign },
+            issue.id,
+            session.id,
+          ),
+        ),
+      ),
+    ).toBe("issue_not_found");
+
+    // REST exposes the same boundary: the bare array to a reader, 404 to a stranger.
+    const res = await getJson(
+      `/api/issues/${issue.id}/work-sessions/${session.id}/activities`,
+      f.cookie,
+    );
+    expect(res.status).toBe(200);
+    expect(SessionActivitiesResponse.parse(await res.json())).toHaveLength(1);
+    const anonymous = await getJson(
+      `/api/issues/${issue.id}/work-sessions/${session.id}/activities`,
+    );
+    await expectProblem(anonymous, 401, "not_signed_in");
+  });
+
+  it("appends over REST without adding an issue comment", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "REST activity issue");
+    await sessionsService.claim(
+      { kind: "agent", identity },
+      { issueId: issue.id, runId: await newRun(identity) },
+    );
+
+    const created = await postJson(
+      `/api/issues/${issue.id}/work-sessions/activities`,
+      { kind: "status", summary: "REST update", detail: { tool: "edit" } },
+      undefined,
+      f.secret,
+    );
+    expect(created.status).toBe(201);
+    expect(SessionActivity.parse(await created.json())).toMatchObject({
+      kind: "status",
+      summary: "REST update",
+      detail: { tool: "edit" },
+    });
+    const comments = await database.db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issue.id));
+    expect(comments).toHaveLength(0);
   });
 });

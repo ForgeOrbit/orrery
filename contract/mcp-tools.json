@@ -4561,6 +4561,261 @@
     }
   },
   {
+    "name": "log_session_activity",
+    "description": "Append an ephemeral thought, action or status entry to the live work session this agent holds on an issue. Optional detail is an extensible JSON object for structured blocks. Entries are kept independently of the claim lease, so an interrupted or completed session keeps its whole trail, and are never posted as issue comments. Requires a live session; pass sessionId to refuse a delayed write from an expired session instead of writing to a newer one.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$ref": "#/$defs/LogSessionActivityInput",
+      "$defs": {
+        "LogSessionActivityInput": {
+          "type": "object",
+          "properties": {
+            "issueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "kind": {
+              "$ref": "#/$defs/SessionActivityKind"
+            },
+            "summary": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 20000
+            },
+            "detail": {
+              "$ref": "#/$defs/SessionActivityDetail"
+            },
+            "sessionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
+          "required": [
+            "issueId",
+            "kind",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "SessionActivityKind": {
+          "type": "string",
+          "enum": [
+            "thought",
+            "action",
+            "status"
+          ]
+        },
+        "SessionActivityDetail": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        }
+      }
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$ref": "#/$defs/LogSessionActivityResponse",
+      "$defs": {
+        "LogSessionActivityResponse": {
+          "type": "object",
+          "properties": {
+            "activity": {
+              "$ref": "#/$defs/SessionActivity"
+            }
+          },
+          "required": [
+            "activity"
+          ],
+          "additionalProperties": false
+        },
+        "SessionActivity": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "workSessionId": {
+              "type": "string"
+            },
+            "runId": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/SessionActivityKind"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SessionActivityDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            }
+          },
+          "required": [
+            "id",
+            "workSessionId",
+            "runId",
+            "kind",
+            "summary",
+            "detail",
+            "createdAt"
+          ],
+          "additionalProperties": false
+        },
+        "SessionActivityKind": {
+          "type": "string",
+          "enum": [
+            "thought",
+            "action",
+            "status"
+          ]
+        },
+        "SessionActivityDetail": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        }
+      }
+    }
+  },
+  {
+    "name": "list_session_activities",
+    "description": "List the ephemeral thought/action/status timeline of one work session on an issue, newest first. Read access to the issue's project is enough; no claim is needed. These entries are separate from the permanent issue comments and survive expiry or completion.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$ref": "#/$defs/ListSessionActivitiesInput",
+      "$defs": {
+        "ListSessionActivitiesInput": {
+          "type": "object",
+          "properties": {
+            "issueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "sessionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
+          "required": [
+            "issueId",
+            "sessionId"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$ref": "#/$defs/ListSessionActivitiesResponse",
+      "$defs": {
+        "ListSessionActivitiesResponse": {
+          "type": "object",
+          "properties": {
+            "activities": {
+              "$ref": "#/$defs/SessionActivitiesResponse"
+            }
+          },
+          "required": [
+            "activities"
+          ],
+          "additionalProperties": false
+        },
+        "SessionActivitiesResponse": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SessionActivity"
+          }
+        },
+        "SessionActivity": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "workSessionId": {
+              "type": "string"
+            },
+            "runId": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/SessionActivityKind"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SessionActivityDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            }
+          },
+          "required": [
+            "id",
+            "workSessionId",
+            "runId",
+            "kind",
+            "summary",
+            "detail",
+            "createdAt"
+          ],
+          "additionalProperties": false
+        },
+        "SessionActivityKind": {
+          "type": "string",
+          "enum": [
+            "thought",
+            "action",
+            "status"
+          ]
+        },
+        "SessionActivityDetail": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        }
+      }
+    }
+  },
+  {
     "name": "ask_for_input",
     "description": "Ask the team a blocking question about an issue this agent currently holds. Include a concrete proposed fallback; the agent cannot authorize it. The question opens for one hour in database time, keeps the claim while the agent checks in, sets the issue to Needs input and emails the agent's owner. A human with Contribute or Manage answers through the inbox. Only a human may set the project fallback policy or an issue override; the agent cannot authorize its own fallback. At the deadline a require_human question pauses, releasing the claim and keeping Needs input; a fallback_allowed question resolves to fallback_used, clears Needs input and lets the worker continue without releasing its claim.",
     "inputSchema": {

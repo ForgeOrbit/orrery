@@ -24,6 +24,10 @@ import { RunReportInput, RunReportResponse } from "./runs.ts";
 import {
   ClaimWorkSessionInput,
   GetWorkSessionInput,
+  ListSessionActivitiesInput,
+  ListSessionActivitiesResponse,
+  LogSessionActivityInput,
+  LogSessionActivityResponse,
   ReadyWorkInput,
   ReadyWorkResponse,
   ReacquireWorkSessionInput,
@@ -300,6 +304,25 @@ const allSessionsForIssue = {
   output: z.object({ sessions: WorkSessionsResponse }),
 };
 
+// Ephemeral telemetry (#83): append-only thought/action/status entries stay with the work
+// session and are never mixed into issue comments. Appending requires a live session held
+// by this agent; reading needs only Read access on the issue's project.
+const logSessionActivity = {
+  name: "log_session_activity",
+  description:
+    "Append an ephemeral thought, action or status entry to the live work session this agent holds on an issue. Optional detail is an extensible JSON object for structured blocks. Entries are kept independently of the claim lease, so an interrupted or completed session keeps its whole trail, and are never posted as issue comments. Requires a live session; pass sessionId to refuse a delayed write from an expired session instead of writing to a newer one.",
+  input: LogSessionActivityInput,
+  output: LogSessionActivityResponse,
+};
+
+const listSessionActivities = {
+  name: "list_session_activities",
+  description:
+    "List the ephemeral thought/action/status timeline of one work session on an issue, newest first. Read access to the issue's project is enough; no claim is needed. These entries are separate from the permanent issue comments and survive expiry or completion.",
+  input: ListSessionActivitiesInput,
+  output: ListSessionActivitiesResponse,
+};
+
 // Human input (issue #41, fallback policy in #42). An agent asks through this tool;
 // answering, setting the project policy and setting an issue override are human-only
 // REST operations, so no agent key — including a sibling run — can authorize its own
@@ -358,6 +381,8 @@ export const sessionTools: readonly ToolContract[] = [
   reacquireWorkSession,
   readyWork,
   allSessionsForIssue,
+  logSessionActivity,
+  listSessionActivities,
 ];
 
 export const questionTools: readonly ToolContract[] = [askForInput, listIssueQuestions];

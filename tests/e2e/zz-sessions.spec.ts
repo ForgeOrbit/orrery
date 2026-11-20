@@ -455,3 +455,103 @@ test("an open blocker hides ready work until it closes (REST and MCP)", async ()
     await client.close();
   }
 });
+
+// #83: ephemeral session telemetry is append-only on the live session, readable over both
+// transports, never posted as an issue comment, and streamed into the issue sidecar.
+test("session activities stream into the issue sidecar without touching comments", async ({
+  browser,
+}) => {
+  const workspaceId = await personalWorkspaceOf(api);
+  const projectId = await project(api, workspaceId);
+  const agentId = await createAgent(api, `sessions-activity-${randomUUID()}`);
+  const secret = await issueKey(api, agentId, workspaceId, projectId);
+  const client = await connect(secret);
+  const http = bearer(secret);
+  let context;
+  try {
+    const created = await call(client, "create_issue", { projectId, title: "Activity issue" });
+    const issueId = requiredText(field(created.data.issue, "id"), "the issue id");
+    expect(
+      asArray(field((await call(client, "list_comments", { issueId })).data, "comments")),
+    ).toEqual([]);
+
+    const runId = await newRun(client);
+    const claim = await call(client, "claim_issue", { issueId, runId });
+    expect(claim.isError).toBe(false);
+    const sessionId = requiredText(field(claim.data.session, "id"), "the session id");
+
+    const thought = await call(client, "log_session_activity", {
+      issueId,
+      kind: "thought",
+      summary: "Planning the fix",
+      detail: { step: 1 },
+    });
+    expect(thought.isError).toBe(false);
+    expect(field(thought.data.activity, "workSessionId")).toBe(sessionId);
+    expect(field(thought.data.activity, "runId")).toBe(runId);
+    expect(field(thought.data.activity, "detail")).toMatchObject({ step: 1 });
+    const action = await call(client, "log_session_activity", {
+      issueId,
+      kind: "action",
+      summary: "Edited service.ts",
+    });
+    expect(action.isError).toBe(false);
+
+    // Both transports read the same newest-first timeline; comments stay empty.
+    const listed = await call(client, "list_session_activities", { issueId, sessionId });
+    expect(listed.isError).toBe(false);
+    expect(asArray(field(listed.data, "activities")).map((entry) => field(entry, "kind"))).toEqual([
+      "action",
+      "thought",
+    ]);
+    const restList = await http.get(`/api/issues/${issueId}/work-sessions/${sessionId}/activities`);
+    expect(restList.status).toBe(200);
+    expect(asArray(await restList.json()).map((entry) => field(entry, "summary"))).toEqual([
+      "Edited service.ts",
+      "Planning the fix",
+    ]);
+    expect(
+      asArray(field((await call(client, "list_comments", { issueId })).data, "comments")),
+    ).toEqual([]);
+
+    // Browser: open the issue and the sidecar inspector; the timeline is polled into view.
+    context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto("/signin");
+    await page.getByLabel("Email").fill(ADMIN_EMAIL);
+    await page.getByLabel("Password").fill(ADMIN_PASSWORD);
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page.getByText(`Signed in as ${ADMIN_EMAIL}.`)).toBeVisible();
+    await page.goto(`/issues/${issueId}`);
+    await page.getByRole("button", { name: "Show session inspector" }).click();
+    const timeline = page.locator("[data-activity-timeline]");
+    await expect(
+      timeline.locator('[data-activity-kind="thought"] [data-activity-summary]'),
+    ).toHaveText("Planning the fix", { timeout: 10_000 });
+    await expect(
+      timeline.locator('[data-activity-kind="action"] [data-activity-summary]'),
+    ).toHaveText("Edited service.ts", { timeout: 10_000 });
+    await expect(
+      timeline.locator('[data-activity-kind="thought"] [data-activity-detail]'),
+    ).toContainText('"step": 1', { timeout: 10_000 });
+
+    // Ending the session refuses further appends but never removes the recorded trail.
+    const stopped = await call(client, "stop_session", { issueId, outcome: "completed" });
+    expect(stopped.isError).toBe(false);
+    const refused = await call(client, "log_session_activity", {
+      issueId,
+      kind: "status",
+      summary: "After stop",
+    });
+    expect(refused.isError).toBe(true);
+    expect(refused.data).toMatchObject({ code: "session_required" });
+    const afterStop = await call(client, "list_session_activities", { issueId, sessionId });
+    expect(asArray(field(afterStop.data, "activities"))).toHaveLength(2);
+  } finally {
+    if (context !== undefined) {
+      for (const cookie of await context.cookies()) await recordSecret(cookie.value);
+      await context.close();
+    }
+    await client.close();
+  }
+});

@@ -20,7 +20,7 @@ import {
   TitleBodyForm,
   updateIssue,
 } from "../features/projects/index.ts";
-import { SessionStatus } from "../features/work-sessions/index.ts";
+import { SessionInspector, SessionStatus } from "../features/work-sessions/index.ts";
 
 // One issue's page: read it, edit its Markdown body, close or reopen it, and comment.
 // The project's effective level decides whether those controls appear; Read sees the
@@ -63,6 +63,7 @@ function IssuePage() {
         edited by {issue.updatedBy.displayName}
       </p>
       <SessionStatus issueId={issue.id} projectId={issue.projectId} canContribute={canContribute} />
+      <SessionInspector issueId={issue.id} />
       {issue.body === "" ? (
         <p>No description.</p>
       ) : (

@@ -11,6 +11,7 @@ import {
   ProjectActivityType,
   QuestionStatus,
   RunStatus,
+  SessionActivityKind,
   TransferAuthorizationStatus,
   WorkSessionStatus,
   WorkspaceKind,
@@ -23,6 +24,7 @@ import {
   check,
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -1032,6 +1034,36 @@ export const workSessions = pgTable(
     index("work_sessions_agent_created").on(t.agentId, t.createdAt),
     index("work_sessions_run_created").on(t.runId, t.createdAt),
     index("work_sessions_issue_created").on(t.issueId, t.createdAt),
+  ],
+);
+
+// Ephemeral telemetry for a work session (#83). An activity is append-only and belongs to
+// a session and its run, never to issue_comments. There is no status column and no cascade
+// on lease expiry or session completion: an interrupted run keeps its whole trail for
+// debugging. `detail` is a JSONB object left deliberately unstructured for #15's blocks.
+// The kind check mirrors the shared contract so no writer can store an unknown kind.
+export const workSessionActivities = pgTable(
+  "work_session_activities",
+  {
+    id: text("id").primaryKey(),
+    workSessionId: text("work_session_id")
+      .notNull()
+      .references(() => workSessions.id),
+    runId: text("run_id")
+      .notNull()
+      .references(() => runs.id),
+    kind: text("kind").$type<SessionActivityKind>().notNull(),
+    summary: text("summary").notNull(),
+    detail: jsonb("detail").$type<Record<string, unknown>>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "work_session_activities_kind",
+      sql`${t.kind} in (${sql.raw(sqlLiteralList(SessionActivityKind))})`,
+    ),
+    // The inspector reads a whole session's timeline in created-at order; index that path.
+    index("work_session_activities_session_created").on(t.workSessionId, t.createdAt),
   ],
 );
 

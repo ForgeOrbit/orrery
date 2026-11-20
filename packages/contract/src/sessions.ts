@@ -194,3 +194,72 @@ export const WorkSessionsListInput = z
   .object({ issueId: z.string().trim().min(1).max(200) })
   .meta({ id: "WorkSessionsListInput" });
 export type WorkSessionsListInput = z.infer<typeof WorkSessionsListInput>;
+
+// Ephemeral session activities (#83, design doc section 1). High-frequency telemetry is
+// append-only and tied to a work session, never to issue_comments: an interrupted or
+// completed session keeps its whole trail. `detail` stays an extensible JSON object so a
+// structured block renderer can plug into `action` entries later (#15) without a migration.
+export const SessionActivityKind = z
+  .enum(["thought", "action", "status"])
+  .meta({ id: "SessionActivityKind" });
+export type SessionActivityKind = z.infer<typeof SessionActivityKind>;
+
+// A flat JSON object. z.json() is deliberately avoided: its recursive schema makes the
+// OpenAPI generator recurse forever; an unknown-valued record is still fully extensible.
+export const SessionActivityDetail = z
+  .record(z.string(), z.unknown())
+  .meta({ id: "SessionActivityDetail" });
+export type SessionActivityDetail = z.infer<typeof SessionActivityDetail>;
+
+export const SessionActivity = z
+  .object({
+    id: z.string(),
+    workSessionId: z.string(),
+    // The run named by the session, not a caller-supplied id: an activity cannot be
+    // attributed to a run the holding session never belonged to.
+    runId: z.string(),
+    kind: SessionActivityKind,
+    summary: z.string(),
+    detail: SessionActivityDetail.nullable(),
+    createdAt: Timestamp,
+  })
+  .meta({ id: "SessionActivity" });
+export type SessionActivity = z.infer<typeof SessionActivity>;
+
+export const SessionActivitiesResponse = z
+  .array(SessionActivity)
+  .meta({ id: "SessionActivitiesResponse" });
+export type SessionActivitiesResponse = z.infer<typeof SessionActivitiesResponse>;
+
+// Appending needs a live session held by the calling agent. The optional sessionId fence
+// has the same meaning as renew/progress/stop: a delayed write from an interrupted session
+// is refused even if the agent now holds a newer one on the same issue.
+export const LogSessionActivityInput = z
+  .object({
+    issueId: z.string().trim().min(1).max(200),
+    kind: SessionActivityKind,
+    summary: z.string().trim().min(1).max(20_000),
+    detail: SessionActivityDetail.optional(),
+    sessionId: SessionFence.optional(),
+  })
+  .meta({ id: "LogSessionActivityInput" });
+export type LogSessionActivityInput = z.infer<typeof LogSessionActivityInput>;
+
+export const ListSessionActivitiesInput = z
+  .object({
+    issueId: z.string().trim().min(1).max(200),
+    sessionId: SessionFence,
+  })
+  .meta({ id: "ListSessionActivitiesInput" });
+export type ListSessionActivitiesInput = z.infer<typeof ListSessionActivitiesInput>;
+
+// MCP wraps results in a named object; REST returns the bare resource or list (ADR-0003).
+export const LogSessionActivityResponse = z
+  .object({ activity: SessionActivity })
+  .meta({ id: "LogSessionActivityResponse" });
+export type LogSessionActivityResponse = z.infer<typeof LogSessionActivityResponse>;
+
+export const ListSessionActivitiesResponse = z
+  .object({ activities: SessionActivitiesResponse })
+  .meta({ id: "ListSessionActivitiesResponse" });
+export type ListSessionActivitiesResponse = z.infer<typeof ListSessionActivitiesResponse>;

@@ -1,4 +1,9 @@
-import { ActiveWorkSessionsResponse, WorkSession } from "@orrery/contract";
+import {
+  ActiveWorkSessionsResponse,
+  SessionActivitiesResponse,
+  WorkSession,
+  WorkSessionsResponse,
+} from "@orrery/contract";
 import { queryOptions } from "@tanstack/react-query";
 import { ApiProblemError, getJson } from "../../lib/api.ts";
 
@@ -22,6 +27,40 @@ export const sessionQuery = (issueId: string) =>
       }
     },
     refetchInterval: 4000,
+  });
+
+// #83: every session recorded for an issue, so the inspector can pick a past one as well
+// as follow the active session. Polling is on only while the inspector is open on a live
+// session; a closed or completed timeline is a stable read.
+export const sessionsQuery = (issueId: string, active = false) =>
+  queryOptions({
+    queryKey: ["issues", issueId, "work-sessions"],
+    queryFn: () =>
+      getJson(`/api/issues/${encodeURIComponent(issueId)}/work-sessions/all`, (value) =>
+        WorkSessionsResponse.parse(value),
+      ),
+    refetchInterval: active ? 4000 : false,
+  });
+
+// A session's ephemeral timeline. A missing issue/session is an expected empty state for
+// the inspector (the session may have ended between two polls), not a load failure.
+const emptyActivityCodes = new Set(["session_not_found", "issue_not_found"]);
+
+export const sessionActivitiesQuery = (issueId: string, sessionId: string, active = false) =>
+  queryOptions({
+    queryKey: ["issues", issueId, "work-sessions", sessionId, "activities"],
+    queryFn: async (): Promise<SessionActivitiesResponse> => {
+      try {
+        return await getJson(
+          `/api/issues/${encodeURIComponent(issueId)}/work-sessions/${encodeURIComponent(sessionId)}/activities`,
+          (value) => SessionActivitiesResponse.parse(value),
+        );
+      } catch (error) {
+        if (error instanceof ApiProblemError && emptyActivityCodes.has(error.code)) return [];
+        throw error;
+      }
+    },
+    refetchInterval: active ? 4000 : false,
   });
 
 // Only live sessions in projects the caller can read. The agents view renders this list

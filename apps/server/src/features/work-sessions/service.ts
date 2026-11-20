@@ -10,6 +10,8 @@ import {
   type ResumeDisposition,
   type ResumeWorkSessionInput,
   type ResumeWorkSessionResult,
+  type SessionActivity,
+  type SessionActivityKind,
   type WorkSession,
   type WorkSessionOutcome,
 } from "@orrery/contract";
@@ -25,6 +27,7 @@ import {
   projectActivity,
   projects,
   runs,
+  workSessionActivities,
   workSessions,
   workspaceMemberships,
   workspaces,
@@ -49,7 +52,8 @@ export type SessionsErrorKind =
   | "session_required"
   | "human_sign_in_required"
   | "agents_cannot_request_stop"
-  | "session_not_active";
+  | "session_not_active"
+  | "session_not_found";
 
 const messages: Record<SessionsErrorKind, string> = {
   not_signed_in: "An agent key is required.",
@@ -64,6 +68,7 @@ const messages: Record<SessionsErrorKind, string> = {
   human_sign_in_required: "Sign in as a human to request a stop.",
   agents_cannot_request_stop: "Only a human with Contribute or Manage access may request a stop.",
   session_not_active: "The work session is no longer active.",
+  session_not_found: "No such work session is in scope for the caller.",
 };
 
 export class SessionsError extends Error {
@@ -147,6 +152,25 @@ export interface SessionsService {
   reacquire(actor: AgentActor | null, input: ReacquireWorkSessionInput): Promise<WorkSession>;
   getSession(actor: WorkActor | null, issueId: string): Promise<WorkSession>;
   listSessions(actor: WorkActor | null, issueId: string): Promise<WorkSession[]>;
+  // #83: append-only, ephemeral session telemetry. Append needs the live session the
+  // calling agent holds (with the same optional sessionId fence as the other writes);
+  // reading a session's timeline needs only Read access on the issue's project. Activities
+  // live in their own table, so expiry and completion never erase them.
+  logActivity(
+    actor: AgentActor | null,
+    input: {
+      issueId: string;
+      kind: SessionActivityKind;
+      summary: string;
+      detail?: Record<string, unknown> | undefined;
+      sessionId?: string | undefined;
+    },
+  ): Promise<SessionActivity>;
+  listActivities(
+    actor: WorkActor | null,
+    issueId: string,
+    sessionId: string,
+  ): Promise<SessionActivity[]>;
   readyWork(actor: WorkActor | null, projectId: string): Promise<Issue[]>;
   // The narrow seam projects borrows to fence agent issue edits, closure and reopen. It
   // lazily expires a stale lease inside the caller's already issue-locked transaction and
@@ -204,6 +228,32 @@ function toSession(row: SessionView): WorkSession {
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     endedAt: iso(row.endedAt),
+  };
+}
+
+// A projection of one activity row. The run id is read from the session at append time;
+// callers cannot attribute telemetry to a run the holding session never belonged to.
+const activityColumns = {
+  id: workSessionActivities.id,
+  workSessionId: workSessionActivities.workSessionId,
+  runId: workSessionActivities.runId,
+  kind: workSessionActivities.kind,
+  summary: workSessionActivities.summary,
+  detail: workSessionActivities.detail,
+  createdAt: workSessionActivities.createdAt,
+};
+
+type ActivityRow = typeof workSessionActivities.$inferSelect;
+
+function toActivity(row: ActivityRow): SessionActivity {
+  return {
+    id: row.id,
+    workSessionId: row.workSessionId,
+    runId: row.runId,
+    kind: row.kind,
+    summary: row.summary,
+    detail: row.detail ?? null,
+    createdAt: row.createdAt.toISOString(),
   };
 }
 
@@ -617,6 +667,58 @@ async function requireHumanStopAccess(
   return issue;
 }
 
+// #83 read boundary. Unlike a claim write, an activity read is allowed by project Read on
+// either actor kind. Every failure — missing issue, foreign workspace, absent membership,
+// a key without this project in scope, or a level below Read — answers 404 so an unrelated
+// caller cannot enumerate issues or sessions. The check is a read on the caller's own
+// transaction and never expires or renews a lease.
+async function requireActivityReadAccess(
+  tx: DbTransaction,
+  deps: Pick<SessionsDeps, "projectAccessCeiling" | "projectAccessAtLeast">,
+  actor: WorkActor,
+  issueId: string,
+): Promise<void> {
+  const [issue] = await tx
+    .select({ projectId: issues.projectId })
+    .from(issues)
+    .where(eq(issues.id, issueId))
+    .limit(1);
+  if (issue === undefined) throw new SessionsError("issue_not_found");
+  const [project] = await tx
+    .select({ workspaceId: projects.workspaceId })
+    .from(projects)
+    .where(eq(projects.id, issue.projectId))
+    .limit(1);
+  if (project === undefined) throw new SessionsError("issue_not_found");
+  if (actor.kind === "agent" && actor.identity.workspaceId !== project.workspaceId) {
+    throw new SessionsError("issue_not_found");
+  }
+  const humanId = actor.kind === "human" ? actor.account.humanId : actor.identity.humanId;
+  if (!(await humanStillHasWorkspaceAccess(tx, project.workspaceId, humanId))) {
+    throw new SessionsError("issue_not_found");
+  }
+  const ceiling = await deps.projectAccessCeiling(tx, project.workspaceId, humanId, [
+    issue.projectId,
+  ]);
+  const humanLevel = ceiling.get(issue.projectId) ?? null;
+  let level: ProjectAccessLevel | null = humanLevel;
+  if (actor.kind === "agent") {
+    const keyLevel = actor.identity.projects.find(
+      (grant) => grant.projectId === issue.projectId,
+    )?.level;
+    if (keyLevel === undefined) throw new SessionsError("issue_not_found");
+    level =
+      humanLevel === null
+        ? null
+        : deps.projectAccessAtLeast(humanLevel, keyLevel)
+          ? keyLevel
+          : humanLevel;
+  }
+  if (level === null || !deps.projectAccessAtLeast(level, ProjectAccessLevel.enum.read)) {
+    throw new SessionsError("issue_not_found");
+  }
+}
+
 export function createSessionsService({
   db,
   projectAccessCeiling,
@@ -658,19 +760,16 @@ export function createSessionsService({
     });
   };
 
-  // Renew, progress and stop share one live-session decision: lock the issue, expire a
-  // stale lease, re-check the agent's current project level, find the live session the
-  // agent holds, then apply the one update. Only the update differs between them.
-  const withLiveSession = async (
+  // Renew, progress, stop and activity logging share one live-session decision: lock the
+  // issue, expire a stale lease, re-check the agent's current project level, find the live
+  // session the agent holds, then apply the one write. Only that write differs. The session
+  // row is passed through so an activity can take its run id from the session itself.
+  const withLiveSession = async <T>(
     actor: AgentActor | null,
     issueId: string,
     sessionId: string | undefined,
-    update: (
-      tx: DbTransaction,
-      sessionId: string,
-      issueId: string,
-    ) => Promise<SessionView | undefined>,
-  ): Promise<WorkSession> => {
+    write: (tx: DbTransaction, session: SessionView, issueId: string) => Promise<T | undefined>,
+  ): Promise<T> => {
     const identity = requireAgent(actor);
     await deadlineCommitted(issueId);
     await expireCommitted(issueId);
@@ -707,9 +806,9 @@ export function createSessionsService({
         .limit(1);
       // An inactive session is never revived and a stale write never becomes a new claim.
       if (session === undefined) throw new SessionsError("session_required");
-      const updated = await update(tx, session.id, issue.id);
-      if (updated === undefined) throw new SessionsError("session_required");
-      return toSession(updated);
+      const result = await write(tx, session, issue.id);
+      if (result === undefined) throw new SessionsError("session_required");
+      return result;
     });
   };
 
@@ -772,7 +871,7 @@ export function createSessionsService({
     },
 
     async renew(actor, issueId, sessionId) {
-      return withLiveSession(actor, issueId, sessionId, async (tx, id, issue) => {
+      return withLiveSession(actor, issueId, sessionId, async (tx, session, issue) => {
         // While a question is open, checking in keeps the claim but never past the one-hour
         // deadline. After the deadline the question has been paused by the evaluation above,
         // so there is no live session left to renew.
@@ -786,18 +885,18 @@ export function createSessionsService({
           .set({ leaseExpiresAt: lease, updatedAt: sql`statement_timestamp()` })
           .where(
             and(
-              eq(workSessions.id, id),
+              eq(workSessions.id, session.id),
               eq(workSessions.status, WorkSessionStatus.enum.active),
               liveLease,
             ),
           )
           .returning(sessionColumns);
-        return updated;
+        return updated === undefined ? undefined : toSession(updated);
       });
     },
 
     async progress(actor, issueId, summary, sessionId) {
-      return withLiveSession(actor, issueId, sessionId, async (tx, id) => {
+      return withLiveSession(actor, issueId, sessionId, async (tx, session) => {
         const [updated] = await tx
           .update(workSessions)
           .set({
@@ -807,19 +906,19 @@ export function createSessionsService({
           })
           .where(
             and(
-              eq(workSessions.id, id),
+              eq(workSessions.id, session.id),
               eq(workSessions.status, WorkSessionStatus.enum.active),
               liveLease,
             ),
           )
           .returning(sessionColumns);
-        return updated;
+        return updated === undefined ? undefined : toSession(updated);
       });
     },
 
     async stop(actor, issueId, outcome, sessionId) {
       const nextStatus = workSessionMachine.assertTransition("active", outcome);
-      return withLiveSession(actor, issueId, sessionId, async (tx, id) => {
+      return withLiveSession(actor, issueId, sessionId, async (tx, session) => {
         const [updated] = await tx
           .update(workSessions)
           .set({
@@ -829,13 +928,36 @@ export function createSessionsService({
           })
           .where(
             and(
-              eq(workSessions.id, id),
+              eq(workSessions.id, session.id),
               eq(workSessions.status, WorkSessionStatus.enum.active),
               liveLease,
             ),
           )
           .returning(sessionColumns);
-        return updated;
+        return updated === undefined ? undefined : toSession(updated);
+      });
+    },
+
+    async logActivity(actor, input) {
+      // withLiveSession already locked the issue, expired a lapsed lease in database time
+      // and found this agent's one live session (or refused the fence). The INSERT happens
+      // on that same transaction, so the activity can never be written against a session
+      // that was not live at the moment of the append. No UPDATE to work_sessions follows:
+      // expiry and completion leave every already-written activity untouched.
+      return withLiveSession(actor, input.issueId, input.sessionId, async (tx, session) => {
+        const [row] = await tx
+          .insert(workSessionActivities)
+          .values({
+            id: randomUUID(),
+            workSessionId: session.id,
+            runId: session.runId,
+            kind: input.kind,
+            summary: input.summary,
+            detail: input.detail ?? null,
+            createdAt: sql`statement_timestamp()`,
+          })
+          .returning(activityColumns);
+        return row === undefined ? undefined : toActivity(row);
       });
     },
 
@@ -1172,6 +1294,36 @@ export function createSessionsService({
             .where(eq(workSessions.issueId, issueId))
             .orderBy(desc(workSessions.createdAt));
           return rows.map(toSession);
+        },
+        { accessMode: "read only" },
+      );
+    },
+
+    async listActivities(actorArg, issueId, sessionId) {
+      const actor = requireActor(actorArg);
+      return db.transaction(
+        async (tx) => {
+          // 404 for unrelated callers, not a 403 that would confirm the issue exists.
+          await requireActivityReadAccess(
+            tx,
+            { projectAccessCeiling, projectAccessAtLeast },
+            actor,
+            issueId,
+          );
+          const [session] = await tx
+            .select({ id: workSessions.id })
+            .from(workSessions)
+            .where(and(eq(workSessions.id, sessionId), eq(workSessions.issueId, issueId)))
+            .limit(1);
+          if (session === undefined) throw new SessionsError("session_not_found");
+          // A pure read: no lease expiry, no status change, no revival of a completed or
+          // expired session. Once written, an activity stays readable for the whole trail.
+          const rows = await tx
+            .select(activityColumns)
+            .from(workSessionActivities)
+            .where(eq(workSessionActivities.workSessionId, session.id))
+            .orderBy(desc(workSessionActivities.createdAt), desc(workSessionActivities.id));
+          return rows.map(toActivity);
         },
         { accessMode: "read only" },
       );

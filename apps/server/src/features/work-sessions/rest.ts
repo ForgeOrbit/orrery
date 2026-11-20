@@ -4,12 +4,16 @@ import {
   ActiveWorkSessionsResponse,
   ClaimWorkSessionInput,
   IssuesResponse,
+  ListSessionActivitiesInput,
+  LogSessionActivityInput,
   ReacquireWorkSessionInput,
   RenewWorkSessionInput,
   ReportProgressInput,
   RequestStopWorkSessionInput,
   ResumeWorkSessionInput,
   ResumeWorkSessionResult,
+  SessionActivitiesResponse,
+  SessionActivity,
   StopWorkSessionInput,
   WorkSession,
   WorkSessionsResponse,
@@ -38,6 +42,7 @@ const stopBody = StopWorkSessionInput.omit({ issueId: true });
 const stopRequestBody = RequestStopWorkSessionInput.omit({ issueId: true });
 const resumeBody = ResumeWorkSessionInput.omit({ issueId: true });
 const reacquireBody = ReacquireWorkSessionInput.omit({ issueId: true });
+const logActivityBody = LogSessionActivityInput.omit({ issueId: true });
 
 const claim = createRoute({
   method: "post",
@@ -240,6 +245,47 @@ const all = createRoute({
   },
 });
 
+const logActivity = createRoute({
+  method: "post",
+  path: "/api/issues/{issueId}/work-sessions/activities",
+  summary: "Append an activity to a live session",
+  description:
+    "Append an ephemeral thought, action or status entry to the live work session this agent holds on the issue. Entries are kept in their own append-only timeline, independent of the claim lease and never in issue_comments, so an interrupted or completed session stays inspectable. An optional sessionId fences a delayed write from an interrupted session.",
+  request: {
+    params: issueParams,
+    body: { required: true, content: { "application/json": { schema: logActivityBody } } },
+  },
+  responses: {
+    201: {
+      description: "The appended activity",
+      content: { "application/json": { schema: SessionActivity } },
+    },
+    400: problem("The activity is invalid"),
+    401: problem("An agent key is required, or the key is invalid or revoked"),
+    403: problem("Contribute access is required to work on this issue"),
+    404: problem("No such issue is in scope for this agent"),
+    409: problem("This agent holds no live session for this issue"),
+  },
+});
+
+const listActivities = createRoute({
+  method: "get",
+  path: "/api/issues/{issueId}/work-sessions/{sessionId}/activities",
+  summary: "The activity timeline of one work session",
+  description:
+    "List the ephemeral thought/action/status entries recorded for one work session, newest first. Read access to the issue's project is enough, for a human or an agent; no claim is needed. Unrelated callers get 404 rather than a 403 that would reveal the issue or session. Entries survive expiry and completion and are never part of issue_comments.",
+  request: { params: ListSessionActivitiesInput },
+  responses: {
+    200: {
+      description: "The session's activity timeline, newest first",
+      content: { "application/json": { schema: SessionActivitiesResponse } },
+    },
+    400: problem("The issue or session id is invalid"),
+    401: problem("Not signed in, or the agent key is invalid or revoked"),
+    404: problem("No such issue or work session is in scope for the caller"),
+  },
+});
+
 const activeSessions = createRoute({
   method: "get",
   path: "/api/workspaces/{workspaceId}/work-sessions/active",
@@ -286,6 +332,8 @@ export const routes = [
   reacquire,
   current,
   all,
+  logActivity,
+  listActivities,
   activeSessions,
   readyWork,
 ];
@@ -303,6 +351,7 @@ const statusFor = {
   human_sign_in_required: 401,
   agents_cannot_request_stop: 403,
   session_not_active: 409,
+  session_not_found: 404,
 } as const satisfies Record<SessionsErrorKind, number>;
 
 function isKind<K extends readonly SessionsErrorKind[]>(
@@ -365,6 +414,7 @@ const reacquireKinds = [
   "session_required",
 ] as const;
 const currentKinds = writeKinds;
+const listActivitiesKinds = ["not_signed_in", "issue_not_found", "session_not_found"] as const;
 const listKinds = ["not_signed_in", "issue_not_found", "insufficient_access"] as const;
 const readyKinds = ["not_signed_in", "project_not_found", "insufficient_access"] as const;
 
@@ -512,6 +562,33 @@ export function createSessionsRest(
       );
     } catch (error) {
       return failure(c, error, listKinds);
+    }
+  });
+
+  app.openapi(logActivity, async (c) => {
+    try {
+      const body = c.req.valid("json");
+      return c.json(
+        await service.logActivity(await agentActor(c), {
+          issueId: c.req.valid("param").issueId,
+          kind: body.kind,
+          summary: body.summary,
+          detail: body.detail,
+          sessionId: body.sessionId,
+        }),
+        201,
+      );
+    } catch (error) {
+      return failure(c, error, writeKinds);
+    }
+  });
+
+  app.openapi(listActivities, async (c) => {
+    try {
+      const { issueId, sessionId } = c.req.valid("param");
+      return c.json(await service.listActivities(await workActor(c), issueId, sessionId), 200);
+    } catch (error) {
+      return failure(c, error, listActivitiesKinds);
     }
   });
 
