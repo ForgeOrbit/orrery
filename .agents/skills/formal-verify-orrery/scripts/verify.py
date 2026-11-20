@@ -69,6 +69,10 @@ def extract_code_facts() -> dict[str, Any]:
     mig_0007 = read_text("db/migrations/0007_workspace_owner_guards.sql")
     mig_0008 = read_text("db/migrations/0008_workspace_ownership_write_order.sql")
 
+    # #37: removal and voluntary leave share one private cleanup tail. M1, M8, M11 and M18
+    # all inspect it, so define it once here rather than repeating the slice below.
+    end_membership_fn = slice_between(ws_src, "async function endMembership(", "\n  }\n\n  return {")
+
     # M1: Workspace ownership serialization + deferred trigger
     remove_member_fn = slice_between(ws_src, "async removeMember(", "  };")
     m1_lock_in_service = "lockWorkspaceForMutation(tx, workspaceId)" in remove_member_fn
@@ -243,7 +247,10 @@ def extract_code_facts() -> dict[str, Any]:
         "lockWorkspaceOwnershipWrites(tx)" in create_project_fn
         and "lockWorkspaceOwnershipWrites(tx)" in set_access_fn
         and "lockWorkspaceOwnershipWrites(tx)" in remove_access_fn
-        and "revokeMemberProjectAccess(tx" in remove_member_fn
+        # #37 moved the grant revocation into the shared cleanup tail: the removal must
+        # call that tail, and the tail must still revoke the departing member's grants.
+        and "endMembership(" in remove_member_fn
+        and "revokeMemberProjectAccess(tx, workspaceId, humanId, actorHumanId)" in end_membership_fn
     )
 
     # M9: These source markers select transitions in a bounded design model. They do
@@ -424,7 +431,10 @@ def extract_code_facts() -> dict[str, Any]:
     # no INSERT can land after that revocation. Authentication reads one REPEATABLE READ
     # snapshot, and the database rejects a key grant outside the key's workspace.
     m11_member_removal_revokes_keys = (
-        "revokeMemberWorkspaceKeys(tx, workspaceId, humanId, actor.humanId)" in remove_member_fn
+        # #37: removeMember delegates the cleanup to endMembership; both the call and the
+        # key revocation inside the tail must be present for a rejoin to stay revoked.
+        "endMembership(" in remove_member_fn
+        and "revokeMemberWorkspaceKeys(tx, workspaceId, humanId, actorHumanId)" in end_membership_fn
         and "revokedAt: sql`now()`" in revoke_member_fn
         and "isNull(agentApiKeys.revokedAt)" in revoke_member_fn
         and "AgentKeyEventType.enum.agent_key_revoked" in revoke_member_fn
@@ -1030,9 +1040,8 @@ def extract_code_facts() -> dict[str, Any]:
     ws_rest_src = read_text("apps/server/src/features/workspaces/rest.ts")
     ws_registry_src = read_text("apps/server/src/features/index.ts")
     mig_0023 = read_text("db/migrations/0023_wealthy_silvermane.sql")
-    # Both departure paths call one private tail, so the cleanup facts are read from that
-    # helper and the two call sites are checked separately.
-    end_membership_fn = slice_between(ws_src, "async function endMembership(", "\n  }\n\n  return {")
+    # The cleanup facts are read from the shared tail defined above, and the two call
+    # sites are checked separately.
     remove_member_fn = slice_between(ws_src, "async removeMember(", "async leaveWorkspace(")
     leave_fn = slice_between(ws_src, "async leaveWorkspace(", "  };\n}")
     release_fn = slice_between(sess_src, "export async function releaseMemberWorkSessions(", "\n}\n")
