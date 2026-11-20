@@ -604,7 +604,7 @@ def extract_code_facts() -> dict[str, Any]:
         and "workspaceMemberships" in hist_ws_fn
     )
     m13_delegate_scope = (
-        'throw new HistoryError("not_workspace_owner")' in hist_ws_fn
+        'throw new HistoryError("workspace_history_forbidden")' in hist_ws_fn
         and "row.canManageMemberPermissions !== true" in hist_ws_fn
         and "eq(projectAccessGrants.level, ProjectAccessLevel.enum.manage)" in hist_ws_fn
     )

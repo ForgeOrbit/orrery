@@ -35,8 +35,8 @@ const labels: Record<string, string> = {
   installation_invitation_created: "invited",
   installation_invitation_accepted: "accepted an invitation from",
   installation_invitation_declined: "declined an invitation from",
-  installation_invitation_expired: "let an invitation from them expire",
-  installation_invitation_revoked: "revoked an invitation from",
+  installation_invitation_expired: "let an invitation expire for",
+  installation_invitation_revoked: "revoked an invitation for",
 };
 
 const formatTime = (value: string) => new Date(value).toLocaleString();
@@ -44,11 +44,14 @@ const formatTime = (value: string) => new Date(value).toLocaleString();
 function describe(event: HistoryEvent): string {
   const label = labels[event.type] ?? event.type.replaceAll("_", " ");
   const level =
-    event.level === null
-      ? ""
-      : event.previousLevel === null || event.previousLevel === event.level
+    event.level !== null
+      ? event.previousLevel === null || event.previousLevel === event.level
         ? ` (${event.level})`
-        : ` (${event.previousLevel} to ${event.level})`;
+        : ` (${event.previousLevel} to ${event.level})`
+      : // A revocation records only the level that was taken away.
+        event.previousLevel !== null
+        ? ` (was ${event.previousLevel})`
+        : "";
   const target = event.subject === null ? "" : ` ${event.subject.displayName}`;
   return `${event.actor.displayName} ${label}${target}${level}`;
 }
@@ -63,19 +66,22 @@ export function HistoryList({
   if (events.length === 0) return <p>{emptyMessage}</p>;
   return (
     <ul>
-      {events.map((event) => (
-        <li
-          key={event.id}
-          data-event-kind={event.kind}
-          data-event-type={event.type}
-          data-event-id={event.id}
-        >
-          <span data-event-description={describe(event)}>{describe(event)}</span>
-          {event.summary !== null && <> “{event.summary}”</>}
-          {event.scope.name !== null && <> · {event.scope.name}</>} ·{" "}
-          <time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time>
-        </li>
-      ))}
+      {events.map((event) => {
+        const description = describe(event);
+        return (
+          <li
+            key={event.id}
+            data-event-kind={event.kind}
+            data-event-type={event.type}
+            data-event-id={event.id}
+          >
+            <span data-event-description={description}>{description}</span>
+            {event.summary !== null && <> “{event.summary}”</>}
+            {event.scope.name !== null && <> · {event.scope.name}</>} ·{" "}
+            <time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time>
+          </li>
+        );
+      })}
     </ul>
   );
 }

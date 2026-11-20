@@ -354,7 +354,7 @@ test("a delegated manager stays inside their workspace and project authority", a
 test("an ordinary member sees only granted-project activity and no access history", async () => {
   const denied = await history(member, `/api/workspaces/${workspaceId}/history`);
   expect(denied.status()).toBe(403);
-  expect(await bodyOf(denied)).toMatchObject({ status: 403, code: "not_workspace_owner" });
+  expect(await bodyOf(denied)).toMatchObject({ status: 403, code: "workspace_history_forbidden" });
 
   const project = await events(member, `/api/projects/${projectId}/history`);
   expect(project.length).toBeGreaterThan(0);

@@ -72,7 +72,7 @@ const statusFor = {
   not_signed_in: 401,
   workspace_not_found: 404,
   project_not_found: 404,
-  not_workspace_owner: 403,
+  workspace_history_forbidden: 403,
   not_system_administrator: 403,
 } as const satisfies Record<HistoryErrorKind, number>;
 
@@ -83,7 +83,11 @@ function isKind<K extends readonly HistoryErrorKind[]>(
   return kinds.some((kind) => kind === error.kind);
 }
 
-const workspaceKinds = ["not_signed_in", "workspace_not_found", "not_workspace_owner"] as const;
+const workspaceKinds = [
+  "not_signed_in",
+  "workspace_not_found",
+  "workspace_history_forbidden",
+] as const;
 const projectKinds = ["not_signed_in", "project_not_found"] as const;
 const installationKinds = ["not_signed_in", "not_system_administrator"] as const;
 

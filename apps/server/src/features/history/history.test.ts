@@ -18,6 +18,7 @@ import {
   projects,
   workspaceEvents,
   workspaceMemberships,
+  workspaces,
 } from "../../db/schema.ts";
 import { createDb, type Database } from "../../platform/db.ts";
 import { createApp } from "../../platform/http.ts";
@@ -351,6 +352,20 @@ describe("history visibility against real Postgres", () => {
       })
       .returning();
     if (invitation === undefined) throw new Error("the invitation was not created");
+    const [declinedInvitation] = await database.db
+      .insert(invitations)
+      .values({
+        id: randomUUID(),
+        email: "declined@example.com",
+        status: "declined",
+        tokenHash: tokenHash(randomBytes(32).toString("base64url")),
+        invitedByHumanId: admin.id,
+        expiresAt: sql`now() + interval '7 days'`,
+        declinedAt: sql`now()`,
+      })
+      .returning();
+    if (declinedInvitation === undefined)
+      throw new Error("the declined invitation was not created");
 
     return {
       app,
@@ -366,6 +381,7 @@ describe("history visibility against real Postgres", () => {
       otherProject,
       secret,
       invitation,
+      declinedInvitation,
     };
   }
 
@@ -453,7 +469,7 @@ describe("history visibility against real Postgres", () => {
     await expectProblem(
       await getJson(s.app, `/api/workspaces/${s.workspace.id}/history`, s.member.cookie),
       403,
-      "not_workspace_owner",
+      "workspace_history_forbidden",
     );
     const projectEvents = await readHistory(
       s.app,
@@ -510,6 +526,23 @@ describe("history visibility against real Postgres", () => {
       ]),
     );
     expect(events.every((event) => event.scope.kind === "installation")).toBe(true);
+    // Issuing is the inviter's act; accepting and declining are the recipient's, with the
+    // inviter named as the subject so the rendered sentence reads in the right direction.
+    const issued = events.find((event) => event.id.startsWith(`${s.invitation.id}:`));
+    expect(issued).toMatchObject({
+      actor: { humanId: s.admin.id, email: s.admin.email },
+      subject: { humanId: null, email: "invited@example.com" },
+    });
+    const accepted = events.find((event) => event.type === "installation_invitation_accepted");
+    expect(accepted).toMatchObject({
+      actor: { humanId: null, email: "invited@example.com" },
+      subject: { humanId: s.admin.id, email: s.admin.email },
+    });
+    const declined = events.find((event) => event.type === "installation_invitation_declined");
+    expect(declined).toMatchObject({
+      actor: { humanId: null, email: "declined@example.com" },
+      subject: { humanId: s.admin.id, email: s.admin.email },
+    });
     expect(JSON.stringify(events)).not.toContain(s.otherWorkspace.id);
     expect(JSON.stringify(events)).not.toContain(s.otherProject.id);
     // The administrator role alone grants nothing in a workspace they do not belong to.
@@ -550,6 +583,64 @@ describe("history visibility against real Postgres", () => {
       await getJson(s.app, `/api/projects/${randomUUID()}/history`, s.adminCookie),
       404,
       "project_not_found",
+    );
+  });
+
+  it("lets a personal workspace owner read their credential events and refuses everyone else", async () => {
+    const s = await readyScenario();
+    const [personal] = await database.db
+      .select({ id: workspaces.id })
+      .from(workspaces)
+      .where(eq(workspaces.personalOwnerHumanId, s.admin.id))
+      .limit(1);
+    if (personal === undefined) throw new Error("the administrator has no personal workspace");
+
+    // A key issued in the personal workspace is recorded there, just as one in a shared
+    // workspace is. The owner can read it; another human gets the same 404 as a missing id.
+    const projectResponse = await postJson(
+      s.app,
+      `/api/workspaces/${personal.id}/projects`,
+      { name: "Personal Project" },
+      s.adminCookie,
+    );
+    expect(projectResponse.status).toBe(201);
+    const project = Project.parse(await projectResponse.json());
+    const agentResponse = await postJson(
+      s.app,
+      "/api/agents",
+      { name: "Personal Bot" },
+      s.adminCookie,
+    );
+    expect(agentResponse.status).toBe(201);
+    const agentId = idOf(await agentResponse.json(), "the agent id");
+    const keyResponse = await postJson(
+      s.app,
+      "/api/agents/keys",
+      {
+        agentId,
+        workspaceId: personal.id,
+        validity: "30",
+        projects: [{ projectId: project.id, level: "read" }],
+      },
+      s.adminCookie,
+    );
+    expect(keyResponse.status).toBe(201);
+
+    const events = await readHistory(
+      s.app,
+      `/api/workspaces/${personal.id}/history`,
+      s.adminCookie,
+    );
+    expect(
+      events.some((event) => event.kind === "agent_key" && event.type === "agent_key_created"),
+    ).toBe(true);
+    expect(JSON.stringify(events)).not.toContain(
+      text(field(await keyResponse.json(), "secret"), "the key secret"),
+    );
+    await expectProblem(
+      await getJson(s.app, `/api/workspaces/${personal.id}/history`, s.member.cookie),
+      404,
+      "workspace_not_found",
     );
   });
 });

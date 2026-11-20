@@ -57,14 +57,15 @@ export type HistoryErrorKind =
   | "not_signed_in"
   | "workspace_not_found"
   | "project_not_found"
-  | "not_workspace_owner"
+  | "workspace_history_forbidden"
   | "not_system_administrator";
 
 const messages = {
   not_signed_in: "Not signed in.",
   workspace_not_found: "This workspace does not exist.",
   project_not_found: "This project does not exist.",
-  not_workspace_owner: "Only a workspace owner or permission manager can view this history.",
+  workspace_history_forbidden:
+    "Only a workspace owner or permission manager can view this history.",
   not_system_administrator: "Only a system administrator can view installation history.",
 } as const satisfies Record<HistoryErrorKind, string>;
 
@@ -319,9 +320,9 @@ async function loadInstallationEvents(db: Db): Promise<HistoryEvent[]> {
     .leftJoin(inviter, eq(inviter.id, invitations.invitedByHumanId))
     .orderBy(desc(invitations.createdAt), desc(invitations.id));
   for (const row of rows) {
-    const actor = humanActor(row.inviterId, row.inviterEmail);
-    const subject = humanActor(null, row.email);
-    const add = (type: string, at: Date | null) => {
+    const inviterActor = humanActor(row.inviterId, row.inviterEmail);
+    const inviteeActor = humanActor(null, row.email);
+    const add = (type: string, at: Date | null, actor: Actor, subject: Actor) => {
       if (at === null) return;
       events.push({
         id: `${row.id}:${type}`,
@@ -336,13 +337,17 @@ async function loadInstallationEvents(db: Db): Promise<HistoryEvent[]> {
         previousLevel: null,
       });
     };
-    add(INSTALLATION_TYPE.invited, row.createdAt);
+    add(INSTALLATION_TYPE.invited, row.createdAt, inviterActor, inviteeActor);
+    // Accepting and declining are the recipient's acts: they are the actor and the
+    // inviter is the subject. Issuing, expiry, and revocation stay the inviter's acts.
     if (row.status === InvitationStatus.enum.accepted)
-      add(INSTALLATION_TYPE.accepted, row.acceptedAt);
+      add(INSTALLATION_TYPE.accepted, row.acceptedAt, inviteeActor, inviterActor);
     if (row.status === InvitationStatus.enum.declined)
-      add(INSTALLATION_TYPE.declined, row.declinedAt);
-    if (row.status === InvitationStatus.enum.expired) add(INSTALLATION_TYPE.expired, row.expiredAt);
-    if (row.status === InvitationStatus.enum.revoked) add(INSTALLATION_TYPE.revoked, row.revokedAt);
+      add(INSTALLATION_TYPE.declined, row.declinedAt, inviteeActor, inviterActor);
+    if (row.status === InvitationStatus.enum.expired)
+      add(INSTALLATION_TYPE.expired, row.expiredAt, inviterActor, inviteeActor);
+    if (row.status === InvitationStatus.enum.revoked)
+      add(INSTALLATION_TYPE.revoked, row.revokedAt, inviterActor, inviteeActor);
   }
   return events;
 }
@@ -396,7 +401,7 @@ export function createHistoryService({ db, projectAccessCeiling }: HistoryDeps):
           // Credential history is the owner's; a delegate's authority is permission
           // management plus the projects they Manage.
           if (!isOwner && row.canManageMemberPermissions !== true) {
-            throw new HistoryError("not_workspace_owner");
+            throw new HistoryError("workspace_history_forbidden");
           }
 
           const events: HistoryEvent[] = [
