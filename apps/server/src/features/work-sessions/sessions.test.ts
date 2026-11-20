@@ -1,12 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import {
-  AgentIdentity,
-  CreateAgentKeyResponse,
-  Problem,
-  WorkSessionResponse,
-  type WorkSession,
-} from "@orrery/contract";
+import { AgentIdentity, CreateAgentKeyResponse, Problem, WorkSession } from "@orrery/contract";
 import { and, eq, sql } from "drizzle-orm";
 import type { Hono } from "hono";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -138,6 +132,7 @@ beforeAll(async () => {
     projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
       projectsFeature.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
     projectAccessAtLeast: (actual, required) => atLeast(actual, required),
+    listIssues: (actor, projectId) => projectsFeature.service.listIssues(actor, projectId),
   });
   gate = (tx, agentId, workspaceId, issueId) =>
     sessionsFeature.agentHoldsSession(tx, agentId, workspaceId, issueId);
@@ -431,11 +426,18 @@ describe("work sessions against real Postgres", () => {
     await setLease(issue.id, "statement_timestamp() - interval '1 second'");
 
     const actor = { kind: "agent" as const, identity };
-    const edit = await rejection(
-      projectsService.updateIssue(actor, issue.id, { title: "Stale edit" }),
-    );
-    expect(edit).toBeInstanceOf(ProjectsError);
-    expect(errorKind(edit)).toBe("session_required");
+    // Every fenced issue write is refused while the lease is lapsed: title, body and
+    // closure, even with no other claimant. None may become an implicit fresh claim.
+    const staleWrites = [
+      () => projectsService.updateIssue(actor, issue.id, { title: "Stale edit" }),
+      () => projectsService.updateIssue(actor, issue.id, { body: "Stale body" }),
+      () => projectsService.updateIssue(actor, issue.id, { status: "closed" }),
+    ];
+    for (const write of staleWrites) {
+      const error = await rejection(write());
+      expect(error).toBeInstanceOf(ProjectsError);
+      expect(errorKind(error)).toBe("session_required");
+    }
     for (const operation of [
       () => sessionsService.progress(actor, issue.id, "after lapse"),
       () => sessionsService.renew(actor, issue.id),
@@ -447,6 +449,8 @@ describe("work sessions against real Postgres", () => {
     }
     const [row] = await database.db.select().from(issues).where(eq(issues.id, issue.id));
     expect(row?.title).toBe("Fenced issue");
+    expect(row?.body).toBe("");
+    expect(row?.status).toBe("open");
     expect(await activeCount(issue.id)).toBe(0);
     expect((await sessionsService.getSession(actor, issue.id)).progress).toBe("before lapse");
 
@@ -712,8 +716,8 @@ describe("work sessions against real Postgres", () => {
       f.secret,
     );
     expect(claim.status).toBe(201);
-    const session = WorkSessionResponse.parse(await claim.json());
-    expect(session.session.status).toBe("active");
+    const session = WorkSession.parse(await claim.json());
+    expect(session.status).toBe("active");
 
     const progress = await postJson(
       `/api/issues/${issue.id}/work-sessions/progress`,
@@ -722,7 +726,7 @@ describe("work sessions against real Postgres", () => {
       f.secret,
     );
     expect(progress.status).toBe(200);
-    expect(WorkSessionResponse.parse(await progress.json()).session.progress).toBe("REST progress");
+    expect(WorkSession.parse(await progress.json()).progress).toBe("REST progress");
 
     const current = await getJson(`/api/issues/${issue.id}/work-sessions`, undefined, f.secret);
     expect(current.status).toBe(200);
@@ -736,7 +740,7 @@ describe("work sessions against real Postgres", () => {
       f.secret,
     );
     expect(stop.status).toBe(200);
-    expect(WorkSessionResponse.parse(await stop.json()).session.status).toBe("released");
+    expect(WorkSession.parse(await stop.json()).status).toBe("released");
 
     // A fenced REST edit without a live session is a Problem, not a silent write.
     const edit = await postJson(

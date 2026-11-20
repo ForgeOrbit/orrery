@@ -2215,17 +2215,6 @@
           "endedAt"
         ]
       },
-      "WorkSessionResponse": {
-        "type": "object",
-        "properties": {
-          "session": {
-            "$ref": "#/components/schemas/WorkSession"
-          }
-        },
-        "required": [
-          "session"
-        ]
-      },
       "WorkSession": {
         "type": "object",
         "properties": {
@@ -2323,51 +2312,6 @@
         "items": {
           "$ref": "#/components/schemas/WorkSession"
         }
-      },
-      "ReadyWorkResponse": {
-        "type": "object",
-        "properties": {
-          "issues": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ReadyWorkItem"
-            }
-          }
-        },
-        "required": [
-          "issues"
-        ]
-      },
-      "ReadyWorkItem": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "projectId": {
-            "type": "string"
-          },
-          "number": {
-            "type": "integer",
-            "exclusiveMinimum": 0
-          },
-          "title": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "open"
-            ]
-          }
-        },
-        "required": [
-          "id",
-          "projectId",
-          "number",
-          "title",
-          "status"
-        ]
       }
     },
     "parameters": {}
@@ -6311,7 +6255,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WorkSessionResponse"
+                  "$ref": "#/components/schemas/WorkSession"
                 }
               }
             }
@@ -6389,7 +6333,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WorkSessionResponse"
+                  "$ref": "#/components/schemas/WorkSession"
                 }
               }
             }
@@ -6469,7 +6413,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WorkSessionResponse"
+                  "$ref": "#/components/schemas/WorkSession"
                 }
               }
             }
@@ -6569,7 +6513,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WorkSessionResponse"
+                  "$ref": "#/components/schemas/WorkSession"
                 }
               }
             }
@@ -6664,7 +6608,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WorkSessionResponse"
+                  "$ref": "#/components/schemas/WorkSession"
                 }
               }
             }
@@ -6814,7 +6758,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ReadyWorkResponse"
+                  "$ref": "#/components/schemas/IssuesResponse"
                 }
               }
             }

@@ -194,16 +194,24 @@ test("fenced writes need a live session; reads, creation, comments and knowledge
       runId: restRun,
     });
     expect(restClaim.status).toBe(201);
+    // ADR-0003: REST answers with the resource itself, not a `{ session }` envelope.
+    expect(asRecord(await restClaim.json())).toMatchObject({ status: "active" });
     const restProgress = await http.post(`/api/issues/${restIssueId}/work-sessions/progress`, {
       summary: "REST progress",
     });
     expect(restProgress.status).toBe(200);
+    expect(asRecord(await restProgress.json())).toMatchObject({ progress: "REST progress" });
     const restEdit = await http.patch(`/api/issues/${restIssueId}`, { title: "REST edit" });
     expect(restEdit.status).toBe(200);
     const restStop = await http.post(`/api/issues/${restIssueId}/work-sessions/stop`, {
       outcome: "released",
     });
     expect(restStop.status).toBe(200);
+    expect(asRecord(await restStop.json())).toMatchObject({ status: "released" });
+    const restReady = await http.get(`/api/projects/${projectId}/ready-work`);
+    expect(restReady.status).toBe(200);
+    const readyRows = await restReady.json();
+    expect(Array.isArray(readyRows)).toBe(true);
   } finally {
     await client.close();
   }

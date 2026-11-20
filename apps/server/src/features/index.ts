@@ -75,6 +75,7 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
       projects.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
     projectAccessAtLeast,
+    listIssues: (actor, projectId) => projects.service.listIssues(actor, projectId),
   });
   sessionGate = (tx, agentId, workspaceId, issueId) =>
     sessions.agentHoldsSession(tx, agentId, workspaceId, issueId);

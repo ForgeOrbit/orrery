@@ -856,6 +856,7 @@ def extract_code_facts() -> dict[str, Any]:
     expire_fn = slice_between(sess_src, "async function expireStale(", "const fiveMinutes")
     claim_fn = slice_between(sess_src, "async claim(actor, input)", "async renew(actor, issueId)")
     renew_fn = slice_between(sess_src, "async renew(actor, issueId)", "async progress(actor, issueId, summary)")
+    live_fn = slice_between(sess_src, "const withLiveSession = async (", "return {")
     ready_fn = slice_between(sess_src, "async readyWork(actorArg, projectId)", "async agentHoldsSession(")
     gate_fn = slice_between(sess_src, "async agentHoldsSession(", "};\n}")
     update_issue_fn = slice_between(proj_src, "async updateIssue(actorArg, issueId, input)", "async listComments(")
@@ -868,14 +869,14 @@ def extract_code_facts() -> dict[str, Any]:
     m16_issue_lock = (
         '.for("update")' in lock_issue_fn
         and "lockIssue(tx" in claim_fn
-        and "lockIssue(tx" in renew_fn
+        and "lockIssue(tx" in live_fn
         and '.for("update")' in update_issue_fn
     )
     m16_lazy_expiry = (
         "lte(workSessions.leaseExpiresAt, sql`statement_timestamp()`)" in expire_fn
         and "status: WorkSessionStatus.enum.expired" in expire_fn
         and "expireStale(tx" in claim_fn
-        and "expireStale(tx" in renew_fn
+        and "expireStale(tx" in live_fn
     )
     m16_db_time_lease = "statement_timestamp() + interval '5 minutes'" in sess_src
     m16_progress_independent = (
@@ -889,16 +890,23 @@ def extract_code_facts() -> dict[str, Any]:
         and "agentHoldsSession:" in sess_index_src
     )
     m16_gate_no_claim = (
-        ".insert(workSessions)" not in gate_fn
-        and "expireCommitted(issueId)" in gate_fn
+        "gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`)" in gate_fn
+        and "eq(workSessions.status, WorkSessionStatus.enum.active)" in gate_fn
+        and ".insert(workSessions)" not in gate_fn
         and "claim(" not in gate_fn
     )
+    # The gate runs inside projects' already issue-locked transaction; a second
+    # db.transaction there would take another pool connection and can starve/deadlock.
+    m16_no_nested_tx = (
+        "expireCommitted(" not in gate_fn
+        and "db.transaction(" not in gate_fn
+    )
     m16_renew_active = (
-        "eq(workSessions.status, WorkSessionStatus.enum.active)" in renew_fn
-        and 'throw new SessionsError("session_required")' in renew_fn
+        "eq(workSessions.status, WorkSessionStatus.enum.active)" in live_fn
+        and 'throw new SessionsError("session_required")' in live_fn
     )
     m16_recheck_access = (
-        "requireAccess(" in renew_fn
+        "requireAccess(" in live_fn
         and "projectAccessCeiling" in sess_src
         and '"insufficient_access"' in sess_src
     )
@@ -1060,6 +1068,7 @@ def extract_code_facts() -> dict[str, Any]:
         "m16_progress_independent": m16_progress_independent,
         "m16_fenced_write": m16_fenced_write,
         "m16_gate_no_claim": m16_gate_no_claim,
+        "m16_no_nested_tx": m16_no_nested_tx,
         "m16_renew_active": m16_renew_active,
         "m16_recheck_access": m16_recheck_access,
         "m16_session_identity": m16_session_identity,
@@ -2329,6 +2338,7 @@ def check_m16(facts: dict[str, Any]) -> CheckResult:
     keep_progress = facts["m16_progress_independent"]
     fenced = facts["m16_fenced_write"]
     no_claim = facts["m16_gate_no_claim"]
+    no_nested = facts["m16_no_nested_tx"]
     renew_active = facts["m16_renew_active"]
     recheck = facts["m16_recheck_access"]
     identity = facts["m16_session_identity"]
@@ -2455,6 +2465,7 @@ def check_m16(facts: dict[str, Any]) -> CheckResult:
         ("issue 1 is paused for input", lambda s, l, v: (upd(s, 0, needs=True), v)),
         ("the ready-work listing is read", lambda s, l, v: (s, v if _ready_ok(s, ready_db) else bad(v, "ready_listing_wrong"))),
         ("the five-minute lease deadline is computed in database time", lambda s, l, v: (s, v if db_time else bad(v, "lease_not_db_time"))),
+        ("the fenced gate evaluates liveness on the caller's transaction", lambda s, l, v: (s, v if no_nested else bad(v, "nested_transaction_pool_starvation"))),
         ("both adapters authenticate the bearer key", lambda s, l, v: (s, v if adapters else bad(v, "unauthenticated_adapter"))),
         ("session tools are exposed with validated problems", lambda s, l, v: (s, v if tools_ok else bad(v, "session_tools_missing"))),
     ]

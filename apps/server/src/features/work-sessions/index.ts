@@ -32,6 +32,7 @@ export function createSessionsFeature(deps: SessionsFeatureDeps): SessionsFeatur
     db: deps.db,
     projectAccessCeiling: deps.projectAccessCeiling,
     projectAccessAtLeast: deps.projectAccessAtLeast,
+    listIssues: deps.listIssues,
   });
   return {
     name: "work-sessions",

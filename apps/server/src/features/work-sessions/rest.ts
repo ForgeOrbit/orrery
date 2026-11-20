@@ -2,10 +2,10 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import {
   ClaimWorkSessionInput,
-  ReadyWorkResponse,
+  IssuesResponse,
   ReportProgressInput,
   StopWorkSessionInput,
-  WorkSessionResponse,
+  WorkSession,
   WorkSessionsResponse,
 } from "@orrery/contract";
 import {
@@ -41,7 +41,7 @@ const claim = createRoute({
   responses: {
     201: {
       description: "The active work session",
-      content: { "application/json": { schema: WorkSessionResponse } },
+      content: { "application/json": { schema: WorkSession } },
     },
     400: problem("The claim is invalid"),
     401: problem("An agent key is required, or the key is invalid or revoked"),
@@ -61,7 +61,7 @@ const renew = createRoute({
   responses: {
     200: {
       description: "The renewed session",
-      content: { "application/json": { schema: WorkSessionResponse } },
+      content: { "application/json": { schema: WorkSession } },
     },
     400: problem("The issue id is invalid"),
     401: problem("An agent key is required, or the key is invalid or revoked"),
@@ -84,7 +84,7 @@ const progress = createRoute({
   responses: {
     200: {
       description: "The session with its updated progress",
-      content: { "application/json": { schema: WorkSessionResponse } },
+      content: { "application/json": { schema: WorkSession } },
     },
     400: problem("The progress report is invalid"),
     401: problem("An agent key is required, or the key is invalid or revoked"),
@@ -107,7 +107,7 @@ const stop = createRoute({
   responses: {
     200: {
       description: "The ended session",
-      content: { "application/json": { schema: WorkSessionResponse } },
+      content: { "application/json": { schema: WorkSession } },
     },
     400: problem("The stop request is invalid"),
     401: problem("An agent key is required, or the key is invalid or revoked"),
@@ -127,7 +127,7 @@ const current = createRoute({
   responses: {
     200: {
       description: "The most recent session",
-      content: { "application/json": { schema: WorkSessionResponse } },
+      content: { "application/json": { schema: WorkSession } },
     },
     400: problem("The issue id is invalid"),
     401: problem("Not signed in, or the agent key is invalid or revoked"),
@@ -166,7 +166,7 @@ const readyWork = createRoute({
   responses: {
     200: {
       description: "The ready issues",
-      content: { "application/json": { schema: ReadyWorkResponse } },
+      content: { "application/json": { schema: IssuesResponse } },
     },
     400: problem("The project id is invalid"),
     401: problem("Not signed in, or the agent key is invalid or revoked"),
@@ -251,12 +251,10 @@ export function createSessionsRest(
   app.openapi(claim, async (c) => {
     try {
       return c.json(
-        {
-          session: await service.claim(await agentActor(c), {
-            issueId: c.req.valid("param").issueId,
-            runId: c.req.valid("json").runId,
-          }),
-        },
+        await service.claim(await agentActor(c), {
+          issueId: c.req.valid("param").issueId,
+          runId: c.req.valid("json").runId,
+        }),
         201,
       );
     } catch (error) {
@@ -266,10 +264,7 @@ export function createSessionsRest(
 
   app.openapi(renew, async (c) => {
     try {
-      return c.json(
-        { session: await service.renew(await agentActor(c), c.req.valid("param").issueId) },
-        200,
-      );
+      return c.json(await service.renew(await agentActor(c), c.req.valid("param").issueId), 200);
     } catch (error) {
       return failure(c, error, writeKinds);
     }
@@ -278,13 +273,11 @@ export function createSessionsRest(
   app.openapi(progress, async (c) => {
     try {
       return c.json(
-        {
-          session: await service.progress(
-            await agentActor(c),
-            c.req.valid("param").issueId,
-            c.req.valid("json").summary,
-          ),
-        },
+        await service.progress(
+          await agentActor(c),
+          c.req.valid("param").issueId,
+          c.req.valid("json").summary,
+        ),
         200,
       );
     } catch (error) {
@@ -295,13 +288,11 @@ export function createSessionsRest(
   app.openapi(stop, async (c) => {
     try {
       return c.json(
-        {
-          session: await service.stop(
-            await agentActor(c),
-            c.req.valid("param").issueId,
-            c.req.valid("json").outcome,
-          ),
-        },
+        await service.stop(
+          await agentActor(c),
+          c.req.valid("param").issueId,
+          c.req.valid("json").outcome,
+        ),
         200,
       );
     } catch (error) {
@@ -312,7 +303,7 @@ export function createSessionsRest(
   app.openapi(current, async (c) => {
     try {
       return c.json(
-        { session: await service.getSession(await workActor(c), c.req.valid("param").issueId) },
+        await service.getSession(await workActor(c), c.req.valid("param").issueId),
         200,
       );
     } catch (error) {
@@ -334,7 +325,7 @@ export function createSessionsRest(
   app.openapi(readyWork, async (c) => {
     try {
       return c.json(
-        { issues: await service.readyWork(await workActor(c), c.req.valid("param").projectId) },
+        await service.readyWork(await workActor(c), c.req.valid("param").projectId),
         200,
       );
     } catch (error) {

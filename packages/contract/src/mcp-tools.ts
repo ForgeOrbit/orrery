@@ -158,7 +158,7 @@ const runCheckin = {
 const claimIssue = {
   name: "claim_issue",
   description:
-    "Claim an open issue for this agent and run. One active session per issue: a second worker is refused. Helpers on the same issue pass the same runId and join the existing session. The claim is a five-minute lease in database time; renew it while working.",
+    "Claim an issue this agent needs to work on, for this agent and run. The issue may already be closed: a worker reopening it must claim it first, because a fenced update_issue needs a live session. One active session per issue: a second worker is refused. Helpers on the same issue pass the same runId and join the existing session. The claim is a five-minute lease in database time; renew it while working.",
   input: ClaimWorkSessionInput,
   output: WorkSessionResponse,
 };
@@ -190,7 +190,7 @@ const stopSession = {
 const getWorkSession = {
   name: "get_work_session",
   description:
-    "Read the work session this agent last held for an issue, including its recorded progress. This is a read: it needs no live claim and never renews one.",
+    "Read the latest work session recorded for an issue, from any agent, including its recorded progress and lease deadline. This is a read: it needs no live claim and never renews one.",
   input: GetWorkSessionInput,
   output: WorkSessionResponse,
 };
@@ -200,7 +200,7 @@ const readyWork = {
   description:
     "List minimal ready work in a project: open issues that are not Needs input and have no live active session, evaluated in database time. Needs no claim.",
   input: ReadyWorkInput,
-  output: ReadyWorkResponse,
+  output: z.object({ issues: ReadyWorkResponse }),
 };
 
 const allSessionsForIssue = {

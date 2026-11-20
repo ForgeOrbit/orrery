@@ -2130,7 +2130,7 @@
   },
   {
     "name": "claim_issue",
-    "description": "Claim an open issue for this agent and run. One active session per issue: a second worker is refused. Helpers on the same issue pass the same runId and join the existing session. The claim is a five-minute lease in database time; renew it while working.",
+    "description": "Claim an issue this agent needs to work on, for this agent and run. The issue may already be closed: a worker reopening it must claim it first, because a fenced update_issue needs a live session. One active session per issue: a second worker is refused. Helpers on the same issue pass the same runId and join the existing session. The claim is a five-minute lease in database time; renew it while working.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "$ref": "#/$defs/ClaimWorkSessionInput",
@@ -2658,7 +2658,7 @@
   },
   {
     "name": "get_work_session",
-    "description": "Read the work session this agent last held for an issue, including its recorded progress. This is a read: it needs no live claim and never renews one.",
+    "description": "Read the latest work session recorded for an issue, from any agent, including its recorded progress and lease deadline. This is a read: it needs no live claim and never renews one.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "$ref": "#/$defs/GetWorkSessionInput",
@@ -2807,24 +2807,24 @@
     },
     "outputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "$ref": "#/$defs/ReadyWorkResponse",
+      "type": "object",
+      "properties": {
+        "issues": {
+          "$ref": "#/$defs/ReadyWorkResponse"
+        }
+      },
+      "required": [
+        "issues"
+      ],
+      "additionalProperties": false,
       "$defs": {
         "ReadyWorkResponse": {
-          "type": "object",
-          "properties": {
-            "issues": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/ReadyWorkItem"
-              }
-            }
-          },
-          "required": [
-            "issues"
-          ],
-          "additionalProperties": false
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Issue"
+          }
         },
-        "ReadyWorkItem": {
+        "Issue": {
           "type": "object",
           "properties": {
             "id": {
@@ -2841,9 +2841,33 @@
             "title": {
               "type": "string"
             },
+            "body": {
+              "type": "string"
+            },
             "status": {
-              "type": "string",
-              "const": "open"
+              "$ref": "#/$defs/IssueStatus"
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updatedAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "closedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "createdBy": {
+              "$ref": "#/$defs/Actor"
+            },
+            "updatedBy": {
+              "$ref": "#/$defs/Actor"
             }
           },
           "required": [
@@ -2851,9 +2875,72 @@
             "projectId",
             "number",
             "title",
-            "status"
+            "body",
+            "status",
+            "createdAt",
+            "updatedAt",
+            "closedAt",
+            "createdBy",
+            "updatedBy"
           ],
           "additionalProperties": false
+        },
+        "IssueStatus": {
+          "type": "string",
+          "enum": [
+            "open",
+            "closed"
+          ]
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        },
+        "Actor": {
+          "type": "object",
+          "properties": {
+            "humanId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "email": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Email"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "agentId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "agentName": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "displayName": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "displayName"
+          ],
+          "additionalProperties": false
+        },
+        "Email": {
+          "type": "string",
+          "format": "email",
+          "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
         }
       }
     }

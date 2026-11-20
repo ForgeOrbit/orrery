@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { Timestamp } from "./common.ts";
+import { Issue } from "./projects.ts";
 
 // Work sessions and renewable claims (issue #36, user stories 51-54 and 57). A session
 // belongs to an agent, a run, a workspace and an issue — never to one API key. Two keys
@@ -87,23 +88,11 @@ export const GetWorkSessionInput = z
   .meta({ id: "GetWorkSessionInput" });
 export type GetWorkSessionInput = z.infer<typeof GetWorkSessionInput>;
 
-// Minimal ready work: enough identity to pick an issue, no full board projection. An issue
+// Minimal ready work: the eligible open issues in a project, not a full board. An issue
 // is ready while open, not marked Needs input, and without a live (unevaluated-expired)
-// active session. A summary is included so a worker can choose without a second call.
-export const ReadyWorkItem = z
-  .object({
-    id: z.string(),
-    projectId: z.string(),
-    number: z.int().positive(),
-    title: z.string(),
-    status: z.literal("open"),
-  })
-  .meta({ id: "ReadyWorkItem" });
-export type ReadyWorkItem = z.infer<typeof ReadyWorkItem>;
-
-export const ReadyWorkResponse = z
-  .object({ issues: z.array(ReadyWorkItem) })
-  .meta({ id: "ReadyWorkResponse" });
+// active session. The rows are ordinary Issues so REST and MCP use the same shape as every
+// other issue listing; only the filtering is minimal.
+export const ReadyWorkResponse = z.array(Issue).meta({ id: "ReadyWorkResponse" });
 export type ReadyWorkResponse = z.infer<typeof ReadyWorkResponse>;
 
 export const ReadyWorkInput = z

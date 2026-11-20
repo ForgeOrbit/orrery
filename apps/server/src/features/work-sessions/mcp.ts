@@ -1,15 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import type { AgentIdentity } from "@orrery/contract";
-import {
-  ClaimWorkSessionInput,
-  GetWorkSessionInput,
-  ReadyWorkInput,
-  RenewWorkSessionInput,
-  ReportProgressInput,
-  StopWorkSessionInput,
-  WorkSessionsListInput,
-  sessionTools,
-} from "@orrery/contract";
+import { sessionTools } from "@orrery/contract";
 import { isAgentError, type AgentAuthenticator } from "../agents/index.ts";
 import { SessionsError, type SessionsService } from "./service.ts";
 
@@ -66,27 +57,14 @@ export function createSessionsMcp(service: SessionsService, authenticate: AgentA
     }),
   };
 
-  const parsers: Record<string, (value: unknown) => Args> = {
-    claim_issue: (value) => ClaimWorkSessionInput.parse(value),
-    renew_claim: (value) => RenewWorkSessionInput.parse(value),
-    report_progress: (value) => ReportProgressInput.parse(value),
-    stop_session: (value) => StopWorkSessionInput.parse(value),
-    get_work_session: (value) => GetWorkSessionInput.parse(value),
-    list_work_sessions: (value) => WorkSessionsListInput.parse(value),
-    ready_work: (value) => ReadyWorkInput.parse(value),
-  };
-
   for (const tool of sessionTools) {
-    if (!(tool.name in strategies) || !(tool.name in parsers)) {
-      throw new Error(`no strategy for MCP tool ${tool.name}`);
-    }
+    if (!(tool.name in strategies)) throw new Error(`no strategy for MCP tool ${tool.name}`);
   }
 
   return (server: McpServer, request: Request): void => {
     for (const tool of sessionTools) {
       const strategy = strategies[tool.name];
-      const parse = parsers[tool.name];
-      if (strategy === undefined || parse === undefined) continue;
+      if (strategy === undefined) continue;
       server.registerTool(
         tool.name,
         {
@@ -98,7 +76,8 @@ export function createSessionsMcp(service: SessionsService, authenticate: AgentA
           try {
             const identity = await authenticate(request);
             if (identity === null) throw new SessionsError("not_signed_in");
-            const result = await strategy(identity, parse(rawArgs));
+            // The tool's own contract schema validates every argument; no second parser.
+            const result = await strategy(identity, tool.input.parse(rawArgs));
             return {
               content: [{ type: "text" as const, text: JSON.stringify(result) }],
               structuredContent: result,

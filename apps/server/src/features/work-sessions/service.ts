@@ -3,7 +3,7 @@ import {
   ProjectAccessLevel,
   WorkSessionStatus,
   type AgentIdentity,
-  type ReadyWorkItem,
+  type Issue,
   type WorkSession,
   type WorkSessionOutcome,
 } from "@orrery/contract";
@@ -66,6 +66,9 @@ export interface SessionsDeps {
   db: PostgresJsDatabase;
   projectAccessCeiling: SessionsProjectAccessCeiling;
   projectAccessAtLeast: SessionsProjectAccessAtLeast;
+  // Projects' public listing, borrowed so ready work returns the same Issue shape every
+  // other issue listing uses. Called outside this feature's transaction, never nested.
+  listIssues: (actor: WorkActor, projectId: string) => Promise<Issue[]>;
 }
 
 // The adapter always resolves an agent key before claiming, renewing or stopping: a work
@@ -83,7 +86,7 @@ export interface SessionsService {
   ): Promise<WorkSession>;
   getSession(actor: WorkActor | null, issueId: string): Promise<WorkSession>;
   listSessions(actor: WorkActor | null, issueId: string): Promise<WorkSession[]>;
-  readyWork(actor: WorkActor | null, projectId: string): Promise<ReadyWorkItem[]>;
+  readyWork(actor: WorkActor | null, projectId: string): Promise<Issue[]>;
   // The narrow seam projects borrows to fence agent issue edits, closure and reopen. It
   // lazily expires a stale lease inside the caller's already issue-locked transaction and
   // answers whether this agent holds a live session. It never creates one.
@@ -240,12 +243,53 @@ export function createSessionsService({
   db,
   projectAccessCeiling,
   projectAccessAtLeast,
+  listIssues,
 }: SessionsDeps): SessionsService {
   // The in-transaction expiry below decides the claim. A lapsed lease must also be
   // released when the operation is refused — the rejected transaction rolls back — so a
-  // committed expiry runs first. It is idempotent: the second, locked expiry inside the
-  // operation is the one that serializes with the claim decision.
+  // committed expiry runs first, *before* any transaction is opened by this feature. It is
+  // idempotent: the second, locked expiry inside the operation serializes with the claim.
   const expireCommitted = (issueId: string) => db.transaction((tx) => expireStale(tx, issueId));
+
+  // Renew, progress and stop share one live-session decision: lock the issue, expire a
+  // stale lease, re-check the agent's current project level, find the live session the
+  // agent holds, then apply the one update. Only the update differs between them.
+  const withLiveSession = async (
+    actor: AgentActor | null,
+    issueId: string,
+    update: (tx: DbTransaction, sessionId: string) => Promise<SessionView | undefined>,
+  ): Promise<WorkSession> => {
+    const identity = requireAgent(actor);
+    await expireCommitted(issueId);
+    return db.transaction(async (tx) => {
+      const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
+      const issue = await lockIssue(tx, issueId);
+      await expireStale(tx, issue.id);
+      await requireAccess(
+        { kind: "agent", identity },
+        issue.projectId,
+        ProjectAccessLevel.enum.contribute,
+        "issue_not_found",
+      );
+      const [session] = await tx
+        .select(sessionColumns)
+        .from(workSessions)
+        .where(
+          and(
+            eq(workSessions.issueId, issue.id),
+            eq(workSessions.agentId, identity.agentId),
+            eq(workSessions.workspaceId, identity.workspaceId),
+            eq(workSessions.status, WorkSessionStatus.enum.active),
+          ),
+        )
+        .limit(1);
+      // An inactive session is never revived and a stale write never becomes a new claim.
+      if (session === undefined) throw new SessionsError("session_required");
+      const updated = await update(tx, session.id);
+      if (updated === undefined) throw new SessionsError("session_required");
+      return toSession(updated);
+    });
+  };
 
   return {
     async claim(actor, input) {
@@ -321,68 +365,18 @@ export function createSessionsService({
     },
 
     async renew(actor, issueId) {
-      const identity = requireAgent(actor);
-      await expireCommitted(issueId);
-      return db.transaction(async (tx) => {
-        const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
-        const issue = await lockIssue(tx, issueId);
-        await expireStale(tx, issue.id);
-        await requireAccess(
-          { kind: "agent", identity },
-          issue.projectId,
-          ProjectAccessLevel.enum.contribute,
-          "issue_not_found",
-        );
-        const [session] = await tx
-          .select(sessionColumns)
-          .from(workSessions)
-          .where(
-            and(
-              eq(workSessions.issueId, issue.id),
-              eq(workSessions.agentId, identity.agentId),
-              eq(workSessions.workspaceId, identity.workspaceId),
-              eq(workSessions.status, WorkSessionStatus.enum.active),
-            ),
-          )
-          .limit(1);
-        // An inactive session is never revived and a stale write never becomes a new claim.
-        if (session === undefined) throw new SessionsError("session_required");
+      return withLiveSession(actor, issueId, async (tx, sessionId) => {
         const [updated] = await tx
           .update(workSessions)
           .set({ leaseExpiresAt: fiveMinutes, updatedAt: sql`statement_timestamp()` })
-          .where(eq(workSessions.id, session.id))
+          .where(eq(workSessions.id, sessionId))
           .returning(sessionColumns);
-        if (updated === undefined) throw new SessionsError("session_required");
-        return toSession(updated);
+        return updated;
       });
     },
 
     async progress(actor, issueId, summary) {
-      const identity = requireAgent(actor);
-      await expireCommitted(issueId);
-      return db.transaction(async (tx) => {
-        const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
-        const issue = await lockIssue(tx, issueId);
-        await expireStale(tx, issue.id);
-        await requireAccess(
-          { kind: "agent", identity },
-          issue.projectId,
-          ProjectAccessLevel.enum.contribute,
-          "issue_not_found",
-        );
-        const [session] = await tx
-          .select(sessionColumns)
-          .from(workSessions)
-          .where(
-            and(
-              eq(workSessions.issueId, issue.id),
-              eq(workSessions.agentId, identity.agentId),
-              eq(workSessions.workspaceId, identity.workspaceId),
-              eq(workSessions.status, WorkSessionStatus.enum.active),
-            ),
-          )
-          .limit(1);
-        if (session === undefined) throw new SessionsError("session_required");
+      return withLiveSession(actor, issueId, async (tx, sessionId) => {
         const [updated] = await tx
           .update(workSessions)
           .set({
@@ -390,39 +384,14 @@ export function createSessionsService({
             progressUpdatedAt: sql`statement_timestamp()`,
             updatedAt: sql`statement_timestamp()`,
           })
-          .where(eq(workSessions.id, session.id))
+          .where(eq(workSessions.id, sessionId))
           .returning(sessionColumns);
-        if (updated === undefined) throw new SessionsError("session_required");
-        return toSession(updated);
+        return updated;
       });
     },
 
     async stop(actor, issueId, outcome) {
-      const identity = requireAgent(actor);
-      await expireCommitted(issueId);
-      return db.transaction(async (tx) => {
-        const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
-        const issue = await lockIssue(tx, issueId);
-        await expireStale(tx, issue.id);
-        await requireAccess(
-          { kind: "agent", identity },
-          issue.projectId,
-          ProjectAccessLevel.enum.contribute,
-          "issue_not_found",
-        );
-        const [session] = await tx
-          .select(sessionColumns)
-          .from(workSessions)
-          .where(
-            and(
-              eq(workSessions.issueId, issue.id),
-              eq(workSessions.agentId, identity.agentId),
-              eq(workSessions.workspaceId, identity.workspaceId),
-              eq(workSessions.status, WorkSessionStatus.enum.active),
-            ),
-          )
-          .limit(1);
-        if (session === undefined) throw new SessionsError("session_required");
+      return withLiveSession(actor, issueId, async (tx, sessionId) => {
         const [updated] = await tx
           .update(workSessions)
           .set({
@@ -430,10 +399,9 @@ export function createSessionsService({
             endedAt: sql`statement_timestamp()`,
             updatedAt: sql`statement_timestamp()`,
           })
-          .where(eq(workSessions.id, session.id))
+          .where(eq(workSessions.id, sessionId))
           .returning(sessionColumns);
-        if (updated === undefined) throw new SessionsError("session_required");
-        return toSession(updated);
+        return updated;
       });
     },
 
@@ -497,7 +465,10 @@ export function createSessionsService({
 
     async readyWork(actorArg, projectId) {
       const actor = requireActor(actorArg);
-      return db.transaction(
+      // One read-only transaction decides which issues are ready, then the projects
+      // feature's public listing supplies the same Issue shape as every other listing.
+      // The two transactions are sequential, never nested on the connection pool.
+      const eligible = await db.transaction(
         async (tx) => {
           const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
           await requireAccess(actor, projectId, ProjectAccessLevel.enum.read, "project_not_found");
@@ -509,12 +480,7 @@ export function createSessionsService({
             gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
           );
           const rows = await tx
-            .select({
-              id: issues.id,
-              projectId: issues.projectId,
-              number: issues.number,
-              title: issues.title,
-            })
+            .select({ id: issues.id })
             .from(issues)
             .leftJoin(workSessions, live)
             .where(
@@ -526,23 +492,20 @@ export function createSessionsService({
               ),
             )
             .orderBy(issues.number);
-          return rows.map((row): ReadyWorkItem => ({
-            id: row.id,
-            projectId: row.projectId,
-            number: row.number,
-            title: row.title,
-            status: "open",
-          }));
+          return rows.map((row) => row.id);
         },
         { accessMode: "read only" },
       );
+      if (eligible.length === 0) return [];
+      const ready = new Set(eligible);
+      return (await listIssues(actor, projectId)).filter((issue) => ready.has(issue.id));
     },
 
     async agentHoldsSession(tx, agentId, workspaceId, issueId) {
-      // A fenced write that is refused rolls back its transaction. Release a lapsed lease
-      // in a committed transaction first so a stale write cannot leave the claim held.
-      await expireCommitted(issueId);
-      await expireStale(tx, issueId);
+      // Projects calls this inside its already issue-locked transaction. Never open a
+      // second transaction here: liveness is evaluated on the caller's tx in database
+      // time. The caller's lazy expiry and the DB-time filters on reads keep a lapsed
+      // claim from being used, and this gate never creates a claim from a stale write.
       const [row] = await tx
         .select({ id: workSessions.id })
         .from(workSessions)
@@ -552,6 +515,7 @@ export function createSessionsService({
             eq(workSessions.agentId, agentId),
             eq(workSessions.workspaceId, workspaceId),
             eq(workSessions.status, WorkSessionStatus.enum.active),
+            gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
           ),
         )
         .limit(1);

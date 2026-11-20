@@ -158,6 +158,7 @@ async function makeProjectWorkApp() {
     projectAccessAtLeast: (actual, required) =>
       ["read", "contribute", "manage"].indexOf(actual) >=
       ["read", "contribute", "manage"].indexOf(required),
+    listIssues: (actor, projectId) => projectsFeature.service.listIssues(actor, projectId),
   });
   gate = (tx, agentId, workspaceId, issueId) =>
     sessionsFeature.agentHoldsSession(tx, agentId, workspaceId, issueId);
