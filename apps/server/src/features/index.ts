@@ -74,6 +74,9 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     sessionReader: accounts.sessionReader,
     agentAuthenticator,
     sessionGate: workSessionGate,
+    // A policy change freezes already-due questions through the same inbox seam a
+    // check-in uses; the closure is live by the time any request reaches a policy route.
+    evaluateQuestionDeadline: evaluateDeadline,
   });
   const agents = createAgentsFeature({
     db: database.db,

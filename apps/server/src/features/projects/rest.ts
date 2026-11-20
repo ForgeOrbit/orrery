@@ -548,8 +548,6 @@ const issueWriteKinds = [
   "insufficient_project_access",
   "session_required",
 ] as const;
-// A policy setting needs no work session, so its failure set has no 409.
-const issuePolicyKinds = [...issueReadKinds, "insufficient_project_access"] as const;
 // Comments, creation and knowledge stay unfenced (#20), so their failure set has no
 // session_required and their routes need no 409 response.
 const commentWriteKinds = [...issueReadKinds, "insufficient_project_access"] as const;
@@ -739,7 +737,7 @@ export function createProjectsRest(
         200,
       );
     } catch (error) {
-      return failure(c, error, issuePolicyKinds);
+      return failure(c, error, commentWriteKinds);
     }
   });
 

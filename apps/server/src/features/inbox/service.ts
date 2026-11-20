@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  FallbackPolicy,
   ProjectAccessLevel,
   QuestionStatus,
   type AgentIdentity,
@@ -175,6 +176,25 @@ async function lockIssue(tx: DbTransaction, issueId: string) {
   return row;
 }
 
+// The effective policy on the caller's already issue-locked transaction. Keeping this read
+// in one place makes the deadline write, the check-in lease and a policy change's freeze of
+// already-due questions decide from the same committed policy snapshot.
+async function effectiveFallbackPolicy(
+  tx: DbTransaction,
+  issueId: string,
+): Promise<FallbackPolicy> {
+  const [policy] = await tx
+    .select({
+      override: issues.fallbackPolicyOverride,
+      projectPolicy: projects.fallbackPolicy,
+    })
+    .from(issues)
+    .innerJoin(projects, eq(projects.id, issues.projectId))
+    .where(eq(issues.id, issueId))
+    .limit(1);
+  return policy?.override ?? policy?.projectPolicy ?? FallbackPolicy.enum.require_human;
+}
+
 // Record the question and its resolution in the project's activity feed, which the history
 // feature already exposes. The summary is the text a reader needs, never a secret.
 async function recordActivity(
@@ -318,23 +338,14 @@ const evaluateDeadline: InboxService["evaluateDeadline"] = async (tx, issueId) =
     )
     .limit(1);
   if (due === undefined) return;
-  const [policy] = await tx
-    .select({
-      override: issues.fallbackPolicyOverride,
-      projectPolicy: projects.fallbackPolicy,
-    })
-    .from(issues)
-    .innerJoin(projects, eq(projects.id, issues.projectId))
-    .where(eq(issues.id, issueId))
-    .limit(1);
-  const effectivePolicy = policy?.override ?? policy?.projectPolicy ?? "require_human";
+  const effectivePolicy = await effectiveFallbackPolicy(tx, issueId);
   const stillDue = and(
     eq(questions.id, due.id),
     eq(questions.status, "open"),
     lte(questions.responseDeadlineAt, sql`statement_timestamp()`),
   );
 
-  if (effectivePolicy === "fallback_allowed") {
+  if (effectivePolicy === FallbackPolicy.enum.fallback_allowed) {
     const [used] = await tx
       .update(questions)
       .set({ status: "fallback_used", resolvedAt: sql`statement_timestamp()` })
@@ -394,7 +405,15 @@ const questionDeadline: InboxService["questionDeadline"] = async (tx, issueId) =
     .from(questions)
     .where(and(eq(questions.issueId, issueId), eq(questions.status, "open")))
     .limit(1);
-  return row?.responseDeadlineAt ?? null;
+  if (row === undefined) return null;
+  // Only require_human clips a check-in's lease to the response deadline. Under
+  // fallback_allowed the worker keeps its normal five-minute lease across the boundary:
+  // the deadline evaluation runs first on the same locked transaction and resolves the
+  // question to fallback_used without releasing that still-live claim. A later tightening
+  // to require_human is still enforced by evaluateDeadline at the deadline itself.
+  return (await effectiveFallbackPolicy(tx, issueId)) === FallbackPolicy.enum.require_human
+    ? row.responseDeadlineAt
+    : null;
 };
 
 export function createInboxService(deps: InboxDeps): InboxService {

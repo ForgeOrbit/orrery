@@ -70,6 +70,9 @@ beforeAll(async () => {
     publicUrl: PUBLIC_URL,
   });
   let gate: Parameters<typeof createProjectsFeature>[0]["sessionGate"] | undefined;
+  let deadlineEvaluate:
+    | Parameters<typeof createProjectsFeature>[0]["evaluateQuestionDeadline"]
+    | undefined;
   const projectsFeature = createProjectsFeature({
     db: database.db,
     sessionReader: accounts.sessionReader,
@@ -77,6 +80,10 @@ beforeAll(async () => {
     sessionGate: (tx, agentId, workspaceId, issueId) => {
       if (gate === undefined) throw new Error("gate not wired");
       return gate(tx, agentId, workspaceId, issueId);
+    },
+    evaluateQuestionDeadline: (tx, issueId) => {
+      if (deadlineEvaluate === undefined) throw new Error("deadline seam not wired");
+      return deadlineEvaluate(tx, issueId);
     },
   });
   const agentsFeature = createAgentsFeature({
@@ -112,6 +119,7 @@ beforeAll(async () => {
   });
   projectsService = projectsFeature.service;
   sessions = sessionsFeature.service;
+  deadlineEvaluate = (tx, issueId) => inbox.evaluateDeadline(tx, issueId);
   history = createHistoryService({
     db: database.db,
     projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
@@ -1022,5 +1030,137 @@ describe("fallback deadline and late answers against real Postgres", () => {
     expect(raced.answer).toBeNull();
     expect(raced.followUp).toBe("late answer");
     expect(await isNeedsInput(issue.id)).toBe(false);
+  });
+
+  it("keeps a checking-in claim across the boundary when the fallback is authorized", async () => {
+    const f = await bootstrap();
+    await projectsService.setProjectFallbackPolicy((await humanActor(f)).account, f.projectId, {
+      fallbackPolicy: "fallback_allowed",
+    });
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const question = await ask(f, issue.id, runId);
+    const agentActor = { kind: "agent" as const, identity: f.identity };
+
+    // T≈57m: a check-in keeps a full lease instead of clipping it to the response deadline.
+    await setDeadline(question.id, "statement_timestamp() + interval '10 seconds'");
+    await sessions.renew(agentActor, issue.id);
+    const [leaseBefore] = await database.db
+      .select({ lease: workSessions.leaseExpiresAt })
+      .from(workSessions)
+      .where(eq(workSessions.issueId, issue.id));
+    const [deadlineRow] = await database.db
+      .select({ deadline: questionRows.responseDeadlineAt })
+      .from(questionRows)
+      .where(eq(questionRows.id, question.id));
+    expect(leaseBefore!.lease.getTime()).toBeGreaterThan(deadlineRow!.deadline.getTime());
+
+    // T=60m+1s: the lease is still live, so the worker checks in again and keeps its claim.
+    await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
+    await sessions.renew(agentActor, issue.id);
+    expect((await questionOf(question.id))?.status).toBe("fallback_used");
+    expect(await isNeedsInput(issue.id)).toBe(false);
+    expect(await activeSessions(issue.id)).toBe(1);
+  });
+
+  it("releases a checking-in claim at the boundary when a human is required", async () => {
+    const f = await bootstrap();
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const question = await ask(f, issue.id, runId);
+    const agentActor = { kind: "agent" as const, identity: f.identity };
+
+    // require_human still clamps the lease to the deadline, so a worker checking in near
+    // the boundary cannot extend its claim past the moment the question pauses.
+    await setDeadline(question.id, "statement_timestamp() + interval '10 seconds'");
+    await sessions.renew(agentActor, issue.id);
+    const [leaseBefore] = await database.db
+      .select({ lease: workSessions.leaseExpiresAt })
+      .from(workSessions)
+      .where(eq(workSessions.issueId, issue.id));
+    const [deadlineRow] = await database.db
+      .select({ deadline: questionRows.responseDeadlineAt })
+      .from(questionRows)
+      .where(eq(questionRows.id, question.id));
+    expect(leaseBefore!.lease.getTime()).toBeLessThanOrEqual(deadlineRow!.deadline.getTime());
+
+    await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
+    expect(errorKindOf(await refused(sessions.renew(agentActor, issue.id)))).toBe(
+      "session_required",
+    );
+    expect((await questionOf(question.id))?.status).toBe("paused");
+    expect(await isNeedsInput(issue.id)).toBe(true);
+    expect(await activeSessions(issue.id)).toBe(0);
+  });
+
+  it("reacquires a lapsed claim after the deadline once the fallback is authorized", async () => {
+    const f = await bootstrap();
+    await projectsService.setProjectFallbackPolicy((await humanActor(f)).account, f.projectId, {
+      fallbackPolicy: "fallback_allowed",
+    });
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const question = await ask(f, issue.id, runId);
+    await database.db.execute(
+      sql`update work_sessions set lease_expires_at = statement_timestamp() - interval '1 second' where issue_id = ${issue.id}`,
+    );
+    await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
+
+    const reacquired = await sessions.reacquire(
+      { kind: "agent", identity: f.identity },
+      { issueId: issue.id, runId },
+    );
+    expect(reacquired.status).toBe("active");
+    expect((await questionOf(question.id))?.status).toBe("fallback_used");
+    expect(await isNeedsInput(issue.id)).toBe(false);
+    expect(await activeSessions(issue.id)).toBe(1);
+  });
+
+  it("freezes an already-due question before changing the project policy", async () => {
+    const f = await bootstrap();
+    await projectsService.setProjectFallbackPolicy((await humanActor(f)).account, f.projectId, {
+      fallbackPolicy: "fallback_allowed",
+    });
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const question = await ask(f, issue.id, runId);
+    await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
+
+    const read = () =>
+      inbox.issueHistory({ kind: "agent", identity: f.identity }, issue.id).then((rows) => rows[0]);
+    expect((await read())?.status).toBe("fallback_used");
+    // A manager changing the policy must not re-project the resolved answer as paused.
+    await projectsService.setProjectFallbackPolicy((await humanActor(f)).account, f.projectId, {
+      fallbackPolicy: "require_human",
+    });
+    expect((await read())?.status).toBe("fallback_used");
+    expect((await read())?.authorizedFallback).toBe("Use v1");
+    expect((await questionOf(question.id))?.status).toBe("fallback_used");
+  });
+
+  it("freezes an already-due question before setting an issue override", async () => {
+    const f = await bootstrap();
+    await projectsService.setProjectFallbackPolicy((await humanActor(f)).account, f.projectId, {
+      fallbackPolicy: "fallback_allowed",
+    });
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const question = await ask(f, issue.id, runId);
+    await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
+
+    await projectsService.setIssueFallbackPolicyOverride((await humanActor(f)).account, issue.id, {
+      override: "require_human",
+    });
+    expect((await questionOf(question.id))?.status).toBe("fallback_used");
+    const fromHistory = (
+      await inbox.issueHistory({ kind: "agent", identity: f.identity }, issue.id)
+    )[0];
+    expect(fromHistory?.status).toBe("fallback_used");
+    expect(fromHistory?.authorizedFallback).toBe("Use v1");
   });
 });

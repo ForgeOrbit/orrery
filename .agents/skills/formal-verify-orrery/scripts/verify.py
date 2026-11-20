@@ -1342,8 +1342,14 @@ def extract_code_facts() -> dict[str, Any]:
         pj_rest, "app.openapi(setIssueFallbackPolicyOverride,", "app.openapi(listComments,"
     )
     m22_eval_fn = slice_between(q_src, "const evaluateDeadline", "const questionDeadline")
+    m22_deadline_fn = slice_between(
+        q_src, "const questionDeadline", "export function createInboxService"
+    )
+    m22_policy_fn = slice_between(
+        q_src, "async function effectiveFallbackPolicy(", "// Record the question"
+    )
     m22_fallback_branch = slice_between(
-        m22_eval_fn, 'if (effectivePolicy === "fallback_allowed") {', "const [paused]"
+        m22_eval_fn, "if (effectivePolicy === FallbackPolicy.enum.fallback_allowed) {", "const [paused]"
     )
     m22_pause_branch = slice_between(m22_eval_fn, "const [paused]", "\n};")
     m22_follow_fn = slice_between(
@@ -1355,6 +1361,7 @@ def extract_code_facts() -> dict[str, Any]:
     m22_sess_renew_fn = slice_between(
         sess_src, "async renew(actor, issueId", "async progress(actor, issueId"
     )
+    m22_reacquire_fn = slice_between(sess_src, "async reacquire(actor, input)", "async getSession(")
     m22_tool_names = re.findall(r'name: "([^"]+)"', tools_src)
 
     m22_contract = (
@@ -1397,10 +1404,29 @@ def extract_code_facts() -> dict[str, Any]:
         and 'throw new InboxError("agents_cannot_answer")' in m22_answer_fn
     )
     m22_effective = (
-        "policy?.override ?? policy?.projectPolicy" in m22_eval_fn
+        "policy?.override ?? policy?.projectPolicy" in m22_policy_fn
+        and "effectiveFallbackPolicy(tx, issueId)" in m22_eval_fn
         and "row.fallbackPolicyOverride ?? row.projectFallbackPolicy" in proj_src
         and "coalesce(" in m22_columns_fn
         and "fallbackPolicyOverride" in m22_columns_fn
+    )
+    # The three edge-case guards added in review: a checking-in worker keeps a full lease
+    # under fallback_allowed, reacquisition evaluates a due deadline, and a policy change
+    # freezes already-due questions instead of re-projecting their outcome.
+    m22_lease_unclipped = (
+        "effectiveFallbackPolicy(tx, issueId)" in m22_deadline_fn
+        and "FallbackPolicy.enum.require_human" in m22_deadline_fn
+    )
+    m22_reacquire_deadline = (
+        "deadlineCommitted(input.issueId)" in m22_reacquire_fn
+        and "checkDeadline(tx, issue.id)" in m22_reacquire_fn
+        and "fresh?.needsInput" in m22_reacquire_fn
+    )
+    m22_freeze = (
+        "freezeDueQuestions" in proj_src
+        and "lte(questions.responseDeadlineAt, sql`statement_timestamp()`)" in m22_project_fn
+        and "evaluateQuestionDeadline?.(tx, issueId)" in m22_issue_fn
+        and "evaluateQuestionDeadline: evaluateDeadline" in index_src
     )
     m22_branch = (
         'status: "fallback_used"' in m22_fallback_branch
@@ -1781,6 +1807,9 @@ def extract_code_facts() -> dict[str, Any]:
         "m22_tighten_only": m22_tighten_only,
         "m22_no_agent": m22_no_agent,
         "m22_effective": m22_effective,
+        "m22_lease_unclipped": m22_lease_unclipped,
+        "m22_reacquire_deadline": m22_reacquire_deadline,
+        "m22_freeze": m22_freeze,
         "m22_branch": m22_branch,
         "m22_db_time": m22_db_time,
         "m22_authorized_only": m22_authorized_only,
@@ -4118,6 +4147,9 @@ def check_m22(facts: dict[str, Any]) -> CheckResult:
         "tighten_only": facts["m22_tighten_only"],
         "no_agent": facts["m22_no_agent"],
         "effective": facts["m22_effective"],
+        "lease_unclipped": facts["m22_lease_unclipped"],
+        "reacquire_deadline": facts["m22_reacquire_deadline"],
+        "freeze": facts["m22_freeze"],
         "branch": facts["m22_branch"],
         "db_time": facts["m22_db_time"],
         "authorized_only": facts["m22_authorized_only"],
@@ -4228,6 +4260,32 @@ def check_m22(facts: dict[str, Any]) -> CheckResult:
                             override=requested,
                             extra=bad("unauthorized_override"),
                         )
+
+            # A checking-in worker near the boundary keeps a full lease when the fallback
+            # is authorized; clipping it would expire the claim one second after 1h.
+            if qstatus == "open" and clock == "before" and project == "fallback_allowed":
+                go(
+                    "worker checks in near the 1h boundary under fallback_allowed",
+                    extra=frozenset() if g["lease_unclipped"] else bad("lease_clipped_to_deadline"),
+                )
+
+            # An expired claim can reacquire after the deadline only because the deadline
+            # evaluation first clears Needs input under fallback_allowed.
+            if qstatus == "fallback_used" and clock == "after":
+                go(
+                    "an expired worker reacquires after the authorized deadline",
+                    extra=frozenset()
+                    if g["reacquire_deadline"]
+                    else bad("reacquire_blocked_by_stale_needs_input"),
+                )
+
+            # Changing policy while a question is already past due freezes its outcome
+            # first; without that it could be re-projected from fallback_used to paused.
+            if qstatus == "open" and clock == "after":
+                go(
+                    "manager changes policy while a question is already past due",
+                    extra=frozenset() if g["freeze"] else bad("due_question_reprojected"),
+                )
 
             # The deadline reads the effective policy on the issue-locked transaction.
             if qstatus == "open" and clock == "after":

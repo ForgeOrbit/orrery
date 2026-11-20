@@ -25,7 +25,7 @@ import {
   type UpdateKnowledgeEntryRequest,
   type UpdateProjectRequest,
 } from "@orrery/contract";
-import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, lte, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
@@ -39,6 +39,7 @@ import {
   projectAccessGrants,
   projectActivity,
   projects,
+  questions,
   workspaceMemberships,
   workspaces,
 } from "../../db/schema.ts";
@@ -998,6 +999,30 @@ export type WorkSessionGate = (
 export interface ProjectsDeps {
   db: PostgresJsDatabase;
   sessionGate: WorkSessionGate;
+  // The inbox's deadline evaluation on the caller's already locked transaction. Optional
+  // for standalone construction; the feature registry wires it in production. A policy
+  // change calls it first so an already-due question cannot be re-projected under a new
+  // policy after its outcome was effectively decided.
+  evaluateQuestionDeadline?: ((tx: DbTransaction, issueId: string) => Promise<void>) | undefined;
+}
+
+// Materialize every already-due question on the affected issues before their policy can
+// change. Issues are locked in id order, like every other deadline writer, so a concurrent
+// answer or check-in cannot write-skew past this freeze. Never opens a nested transaction.
+async function freezeDueQuestions(
+  tx: DbTransaction,
+  issueIds: readonly string[],
+  evaluateQuestionDeadline: ProjectsDeps["evaluateQuestionDeadline"],
+): Promise<void> {
+  if (evaluateQuestionDeadline === undefined || issueIds.length === 0) return;
+  const ids = [...new Set(issueIds)].toSorted();
+  await tx
+    .select({ id: issues.id })
+    .from(issues)
+    .where(inArray(issues.id, ids))
+    .orderBy(issues.id)
+    .for("update");
+  for (const id of ids) await evaluateQuestionDeadline(tx, id);
 }
 
 export interface ProjectsService {
@@ -1091,7 +1116,11 @@ export interface ProjectsService {
   ): Promise<KnowledgeEntry>;
 }
 
-export function createProjectsService({ db, sessionGate }: ProjectsDeps): ProjectsService {
+export function createProjectsService({
+  db,
+  sessionGate,
+  evaluateQuestionDeadline,
+}: ProjectsDeps): ProjectsService {
   return {
     // The listing is the caller's accessible projects in the workspace: all of a personal
     // workspace's own projects, all of a shared workspace's projects for an owner, and
@@ -1286,6 +1315,26 @@ export function createProjectsService({ db, sessionGate }: ProjectsDeps): Projec
           workActor,
           ProjectAccessLevel.enum.manage,
         );
+        // A question already past its deadline resolves under the *old* policy before it
+        // can be re-projected under the new one; otherwise a fallback_used answer could
+        // visually flip back to paused just because a manager changed the setting.
+        const due = await tx
+          .select({ issueId: questions.issueId })
+          .from(questions)
+          .innerJoin(issues, eq(issues.id, questions.issueId))
+          .where(
+            and(
+              eq(issues.projectId, projectId),
+              eq(questions.status, "open"),
+              lte(questions.responseDeadlineAt, sql`statement_timestamp()`),
+            ),
+          )
+          .orderBy(issues.id);
+        await freezeDueQuestions(
+          tx,
+          due.map((row) => row.issueId),
+          evaluateQuestionDeadline,
+        );
         if (current.fallbackPolicy === input.fallbackPolicy) return toProject(current);
         const [updated] = await tx
           .update(projects)
@@ -1318,6 +1367,9 @@ export function createProjectsService({ db, sessionGate }: ProjectsDeps): Projec
           workActor,
           ProjectAccessLevel.enum.contribute,
         );
+        // The issue row is already locked: resolve a due question before its policy can
+        // change, so the recorded outcome cannot be reinterpreted by the override write.
+        await evaluateQuestionDeadline?.(tx, issueId);
         const override = input.override;
         const currentEffective = current.fallbackPolicyOverride ?? current.projectFallbackPolicy;
         const nextEffective = override ?? current.projectFallbackPolicy;

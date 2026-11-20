@@ -759,8 +759,11 @@ export function createSessionsService({
 
     async reacquire(actor, input) {
       const identity = requireAgent(actor);
-      // As with claim, materialize any lapsed lease in a committed transaction first so a
-      // refused reacquisition still releases it. The locked check below is the decision.
+      // As with claim, materialize a lapsed lease and a due one-hour question in committed
+      // transactions first, so a refused reacquisition still releases them. Under
+      // fallback_allowed the deadline may clear Needs input and keep a live claim here;
+      // the locked check below is the availability decision.
+      await deadlineCommitted(input.issueId);
       await expireCommitted(input.issueId);
       return db.transaction(async (tx) => {
         // Membership first, issue second: serialize with member removal just like claim.
@@ -768,6 +771,14 @@ export function createSessionsService({
         const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
         const issue = await lockIssue(tx, input.issueId);
         await expireStale(tx, issue.id);
+        await checkDeadline(tx, issue.id);
+        // Re-read the availability flags after the locked evaluation: the deadline may
+        // have just paused the issue (Needs input kept) or authorized a fallback (cleared).
+        const [fresh] = await tx
+          .select({ status: issues.status, needsInput: issues.needsInput })
+          .from(issues)
+          .where(eq(issues.id, issue.id))
+          .limit(1);
         await requireAccess(
           { kind: "agent", identity },
           issue.projectId,
@@ -791,8 +802,10 @@ export function createSessionsService({
         if (prior === undefined || prior.status !== WorkSessionStatus.enum.expired) {
           throw new SessionsError("session_required");
         }
-        // A closed or paused issue is not available, even with no competing claimant.
-        if (issue.status !== "open" || issue.needsInput) throw new SessionsError("issue_blocked");
+        // A closed or Needs-input issue is not available, even with no competing claimant.
+        if (fresh?.status !== "open" || (fresh?.needsInput ?? false)) {
+          throw new SessionsError("issue_blocked");
+        }
 
         // A fresh active row for the same identity, carrying forward the recorded progress
         // so an interruption does not erase work already reported.

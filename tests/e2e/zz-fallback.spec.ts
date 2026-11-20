@@ -5,11 +5,9 @@
 // issue out of ready work until a human answers. A late answer is stored as a follow-up.
 // No server code is imported; the deadline is a test fixture set inside Postgres.
 //
-// Use an isolated stack (the compose `name:` is overridden with -p):
-//   COMPOSE_PROJECT_NAME=orrery-e2e-42 ORRERY_PORT=18080 POSTGRES_PORT=15432 \
-//     docker compose -p orrery-e2e-42 --env-file .env.e2e-42 up -d --build --wait
-//   ORRERY_URL=http://localhost:18080 pnpm --filter @orrery/e2e exec playwright test zz-fallback.spec.ts
-//   docker compose -p orrery-e2e-42 down -v
+// `docker compose` here follows the same COMPOSE_PROJECT_NAME the stack was started with
+// (or the default project), so this spec also runs in CI's standard `pnpm test:e2e`.
+// An isolated local run can set COMPOSE_PROJECT_NAME and custom ports via --env-file.
 import { randomUUID } from "node:crypto";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
@@ -122,7 +120,7 @@ async function expireQuestion(questionId: string): Promise<void> {
     `UPDATE questions SET response_deadline_at = statement_timestamp() - interval '1 second', ` +
     `created_at = statement_timestamp() - interval '2 hours' WHERE id = '${questionId}'`;
   await run(
-    `docker compose -p orrery-e2e-42 -f "${composeFile}" exec -T ${postgresService} ` +
+    `docker compose -f "${composeFile}" exec -T ${postgresService} ` +
       `psql -U orrery -d orrery -c "${sql}"`,
     { timeout: 60_000 },
   );
