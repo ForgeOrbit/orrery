@@ -278,6 +278,7 @@ describe("history visibility against real Postgres", () => {
         id: randomUUID(),
         workspaceId: otherWorkspace.id,
         name: "Private Project",
+        key: `P${randomUUID().replaceAll("-", "").slice(0, 9).toUpperCase()}`,
         createdByHumanId: otherOwner.id,
       })
       .returning();

@@ -1421,7 +1421,7 @@ def extract_code_facts() -> dict[str, Any]:
         and '"project_transferred_out"' in accept_fn
     )
     m21_preserve_identity = (
-        "set({ workspaceId: destination.id })" in accept_fn
+        ("set({ workspaceId: destination.id, key: effectiveKey })" in accept_fn or "set({ workspaceId: destination.id })" in accept_fn)
         and ".set({ createdBy" not in accept_fn
         and "createdByHumanId:" not in accept_fn
     )
@@ -1815,7 +1815,7 @@ def extract_code_facts() -> dict[str, Any]:
         and '"project_transferred_out"' in accept_fn
     )
     m21_preserve_identity = (
-        "set({ workspaceId: destination.id })" in accept_fn
+        ("set({ workspaceId: destination.id, key: effectiveKey })" in accept_fn or "set({ workspaceId: destination.id })" in accept_fn)
         and ".set({ createdBy" not in accept_fn
         and "createdByHumanId:" not in accept_fn
     )
@@ -1970,7 +1970,7 @@ def extract_code_facts() -> dict[str, Any]:
         accept_fn, "from(issues)", '.for("update")', "workSessions.leaseExpiresAt"
     )
     m24_preserve_identity = (
-        "set({ workspaceId: destination.id })" in accept_fn and ".set({ createdBy" not in accept_fn
+        ("set({ workspaceId: destination.id, key: effectiveKey })" in accept_fn or "set({ workspaceId: destination.id })" in accept_fn) and ".set({ createdBy" not in accept_fn
     )
     m24_expire_lapsed = 'status: "expired"' in accept_fn and "lte(workSessions.leaseExpiresAt" in accept_fn
     m24_http_problems = tr_rest.count("400: problem(") >= 4

@@ -46,7 +46,9 @@ export type TransfersErrorKind =
   | "transfer_invalid"
   | "transfer_stale"
   | "source_authority_lost"
-  | "active_work";
+  | "active_work"
+  | "project_key_conflict"
+  | "project_key_immutable";
 
 const messages: Record<TransfersErrorKind, string> = {
   not_signed_in: "Not signed in",
@@ -59,6 +61,8 @@ const messages: Record<TransfersErrorKind, string> = {
   transfer_stale: "The project's workspace changed since the transfer was authorized",
   source_authority_lost: "The authorizing owner no longer controls the source workspace",
   active_work: "Finish or stop every active work session before transferring the project",
+  project_key_conflict: "The destination workspace already uses this project key",
+  project_key_immutable: "A project key can only change to resolve a transfer collision",
 };
 
 export class TransfersError extends Error {
@@ -90,11 +94,13 @@ export interface TransfersService {
     destinationWorkspaceId: string,
   ): Promise<TransferAuthorization>;
   receiverPreview(account: SessionAccount | null, token: string): Promise<TransferPreview>;
-  accept(account: SessionAccount | null, token: string): Promise<Project>;
+  // #95: `key` is the optional collision-resolving rename for the destination workspace.
+  accept(account: SessionAccount | null, token: string, key?: string): Promise<Project>;
   complete(
     account: SessionAccount | null,
     projectId: string,
     destinationWorkspaceId: string,
+    key?: string,
   ): Promise<Project>;
 }
 
@@ -386,6 +392,7 @@ function toProject(
     id: string;
     workspaceId: string;
     name: string;
+    key: string;
     createdAt: Date;
     creatorId: string;
     creatorEmail: string;
@@ -398,6 +405,7 @@ function toProject(
     id: row.id,
     workspaceId: row.workspaceId,
     name: row.name,
+    key: row.key,
     createdAt: row.createdAt.toISOString(),
     createdBy: {
       humanId: row.creatorId,
@@ -420,6 +428,7 @@ async function readProjectView(
       id: projects.id,
       workspaceId: projects.workspaceId,
       name: projects.name,
+      key: projects.key,
       createdAt: projects.createdAt,
       creatorId: humans.id,
       creatorEmail: humans.email,
@@ -524,6 +533,7 @@ async function acceptInTransaction(
   tx: DbTransaction,
   auth: AuthorizationLike,
   acceptorHumanId: string,
+  newKey?: string,
 ): Promise<Project> {
   const [row] = await tx
     .select()
@@ -607,6 +617,42 @@ async function acceptInTransaction(
     throw new TransfersError("transfer_stale");
   }
 
+  // #95: a key is immutable except for a conflict-resolving rename during acceptance.
+  // A replacement is only meaningful when this project's own key is already taken in the
+  // destination; supplying one otherwise would be an ordinary rename by another route.
+  // Both lookups run under the ownership lock and the project row lock.
+  const [destinationKeyCollision] = await tx
+    .select({ id: projects.id })
+    .from(projects)
+    .where(
+      and(
+        eq(projects.workspaceId, destination.id),
+        eq(projects.key, project.key),
+        ne(projects.id, auth.projectId),
+      ),
+    )
+    .limit(1);
+  const keyCollides = destinationKeyCollision !== undefined;
+  if (newKey !== undefined && (!keyCollides || newKey === project.key)) {
+    throw new TransfersError(keyCollides ? "project_key_conflict" : "project_key_immutable");
+  }
+  if (keyCollides && newKey === undefined) throw new TransfersError("project_key_conflict");
+  const effectiveKey = newKey ?? project.key;
+  if (newKey !== undefined) {
+    const [replacementCollision] = await tx
+      .select({ id: projects.id })
+      .from(projects)
+      .where(
+        and(
+          eq(projects.workspaceId, destination.id),
+          eq(projects.key, newKey),
+          ne(projects.id, auth.projectId),
+        ),
+      )
+      .limit(1);
+    if (replacementCollision !== undefined) throw new TransfersError("project_key_conflict");
+  }
+
   const issueIds = await tx
     .select({ id: issues.id })
     .from(issues)
@@ -675,12 +721,14 @@ async function acceptInTransaction(
     );
   }
 
-  // Move the identity. Issues, comments, knowledge, activity and runs all key on the
-  // project id, so the whole history travels with this one row change. Questions also
-  // denormalize workspace_id for inbox scoping, so keep them synchronized with the move.
+  // Move the identity and apply any collision-resolving rename in one UPDATE. Writing
+  // the key separately would check the unique index against the old workspace, so a
+  // replacement key that is free in the destination but used in the source would fail.
+  // Issues, comments, knowledge, activity and runs key on the project id and follow the
+  // row; questions denormalize workspace_id, so keep them synchronized with the move.
   await tx
     .update(projects)
-    .set({ workspaceId: destination.id })
+    .set({ workspaceId: destination.id, key: effectiveKey })
     .where(eq(projects.id, auth.projectId));
   await tx
     .update(questions)
@@ -875,16 +923,16 @@ export function createTransfersService({ db }: TransfersDeps): TransfersService 
       );
     },
 
-    async accept(account, token) {
+    async accept(account, token, key) {
       if (account === null) throw new TransfersError("not_signed_in");
       return db.transaction(async (tx) => {
         await lockOwnershipWrites(tx);
         const row = await pendingAuthorizationByToken(tx, token);
-        return acceptInTransaction(tx, row, account.humanId);
+        return acceptInTransaction(tx, row, account.humanId, key);
       });
     },
 
-    async complete(account, projectId, destinationWorkspaceId) {
+    async complete(account, projectId, destinationWorkspaceId, key) {
       if (account === null) throw new TransfersError("not_signed_in");
       return db.transaction(async (tx) => {
         await lockOwnershipWrites(tx);
@@ -915,6 +963,7 @@ export function createTransfersService({ db }: TransfersDeps): TransfersService 
             authorizedByHumanId: account.humanId,
           },
           account.humanId,
+          key,
         );
       });
     },

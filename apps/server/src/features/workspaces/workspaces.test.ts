@@ -266,12 +266,15 @@ async function invite(
 
 async function createProjectDirect(workspaceId: string, humanId: string, name = "Rocket Project") {
   const id = randomUUID();
-  await currentDatabase().db.insert(projects).values({
-    id,
-    workspaceId,
-    name,
-    createdByHumanId: humanId,
-  });
+  await currentDatabase()
+    .db.insert(projects)
+    .values({
+      id,
+      workspaceId,
+      name,
+      key: `P${randomUUID().replaceAll("-", "").slice(0, 9).toUpperCase()}`,
+      createdByHumanId: humanId,
+    });
   return id;
 }
 

@@ -83,7 +83,9 @@ export type ProjectsErrorKind =
   | "self_dependency"
   | "cross_project_dependency"
   | "dependency_cycle"
-  | "assignee_not_found";
+  | "assignee_not_found"
+  | "project_key_taken"
+  | "project_key_immutable";
 
 const messages = {
   not_signed_in: "Not signed in.",
@@ -103,6 +105,8 @@ const messages = {
   cross_project_dependency: "Dependencies can only link issues in the same project.",
   dependency_cycle: "That dependency would create a cycle.",
   assignee_not_found: "No active member or registered agent in this workspace has that id.",
+  project_key_taken: "Another project in this workspace already uses that key.",
+  project_key_immutable: "A project's key cannot be changed after it is created.",
 } as const satisfies Record<ProjectsErrorKind, string>;
 
 const ACCESS_RANK: Record<ProjectAccessLevel, number> = {
@@ -110,6 +114,27 @@ const ACCESS_RANK: Record<ProjectAccessLevel, number> = {
   contribute: 2,
   manage: 3,
 };
+
+// #95: derive a valid key from a project name — the first letter of each alphabetic
+// word, uppercased. A name with no letters falls back to PRJ; a one-letter name is
+// padded so the result always matches ^[A-Z][A-Z0-9]{1,9}$.
+function baseProjectKey(name: string): string {
+  const initials = (name.match(/[A-Za-z]+/g) ?? []).map((word) => word[0]!.toUpperCase()).join("");
+  if (initials.length === 0) return "PRJ";
+  if (initials.length === 1) return `${initials}J`;
+  return initials.slice(0, 8);
+}
+
+// Resolve a workspace collision deterministically: the first free suffix wins. Callers
+// hold the ownership advisory lock, so this read cannot race another key assignment.
+function availableProjectKey(base: string, used: ReadonlySet<string>): string {
+  if (!used.has(base)) return base;
+  for (let suffix = 2; ; suffix += 1) {
+    const text = String(suffix);
+    const candidate = `${base.slice(0, 10 - text.length)}${text}`;
+    if (!used.has(candidate)) return candidate;
+  }
+}
 
 // What a project query learns about the caller's access. A shared workspace row has a
 // membership (isOwner false or true) or none (null); a personal row has an owner id.
@@ -389,6 +414,7 @@ const projectColumns = {
   id: projects.id,
   workspaceId: projects.workspaceId,
   name: projects.name,
+  key: projects.key,
   createdAt: projects.createdAt,
   createdByHumanId: projects.createdByHumanId,
   createdByEmail: projectCreator.email,
@@ -412,6 +438,8 @@ const issueColumns = {
   id: issues.id,
   projectId: issues.projectId,
   number: issues.number,
+  // Joined by every issue reader so a DTO can carry <KEY>-<N> without another query.
+  projectKey: projects.key,
   title: issues.title,
   body: issues.body,
   status: issues.status,
@@ -514,6 +542,7 @@ type ProjectRow = {
   id: string;
   workspaceId: string;
   name: string;
+  key: string;
   createdAt: Date;
   createdByHumanId: string;
   createdByEmail: string;
@@ -538,6 +567,7 @@ type IssueRow = {
   id: string;
   projectId: string;
   number: number;
+  projectKey: string;
   title: string;
   body: string;
   status: IssueStatus;
@@ -643,6 +673,7 @@ function toProject(row: ProjectRow): Project {
     id: row.id,
     workspaceId: row.workspaceId,
     name: row.name,
+    key: row.key,
     createdAt: row.createdAt.toISOString(),
     createdBy: actorFromRow(
       row.createdByHumanId,
@@ -679,6 +710,7 @@ function toIssue(row: IssueRow): Issue {
     id: row.id,
     projectId: row.projectId,
     number: row.number,
+    identifier: `${row.projectKey}-${row.number}`,
     title: row.title,
     body: row.body,
     status: row.status,
@@ -1603,21 +1635,42 @@ export function createProjectsService({
         if (!workspace.canCreateProjects) {
           throw new ProjectsError("project_creation_not_allowed");
         }
-        const [created] = await tx
-          .insert(projects)
-          .values({
-            id,
-            workspaceId,
-            name: input.name,
-            createdByHumanId: actor.humanId,
-            createdAt: sql`statement_timestamp()`,
-          })
-          .returning({
-            id: projects.id,
-            workspaceId: projects.workspaceId,
-            name: projects.name,
-            createdAt: projects.createdAt,
-          });
+        // #95: an explicit key is checked against this workspace; an omitted one is
+        // derived from the name with a deterministic suffix on collision.
+        const existing = await tx
+          .select({ key: projects.key })
+          .from(projects)
+          .where(eq(projects.workspaceId, workspaceId));
+        const used = new Set(existing.map((row) => row.key));
+        const key = input.key ?? availableProjectKey(baseProjectKey(input.name), used);
+        if (used.has(key)) throw new ProjectsError("project_key_taken");
+        let created:
+          | { id: string; workspaceId: string; name: string; key: string; createdAt: Date }
+          | undefined;
+        try {
+          [created] = await tx
+            .insert(projects)
+            .values({
+              id,
+              workspaceId,
+              name: input.name,
+              key,
+              createdByHumanId: actor.humanId,
+              createdAt: sql`statement_timestamp()`,
+            })
+            .returning({
+              id: projects.id,
+              workspaceId: projects.workspaceId,
+              name: projects.name,
+              key: projects.key,
+              createdAt: projects.createdAt,
+            });
+        } catch (error) {
+          if (uniqueConstraintName(error) === "one_project_key_per_workspace") {
+            throw new ProjectsError("project_key_taken");
+          }
+          throw error;
+        }
         if (created === undefined) throw new Error("the project was not created");
 
         if (workspace.kind === WorkspaceKind.enum.shared && !workspace.isOwner) {
@@ -1651,6 +1704,7 @@ export function createProjectsService({
           id: created.id,
           workspaceId: created.workspaceId,
           name: created.name,
+          key: created.key,
           createdAt: created.createdAt.toISOString(),
           createdBy: { humanId: actor.humanId, email: actor.email, displayName: actor.email },
           workspaceKind: workspace.kind,
@@ -1675,6 +1729,11 @@ export function createProjectsService({
           workActor,
           ProjectAccessLevel.enum.manage,
         );
+        // #95: the key is an identity outside the project; only a transfer acceptance
+        // with an explicit replacement key may rename it.
+        if (input.key !== undefined && input.key !== current.key) {
+          throw new ProjectsError("project_key_immutable");
+        }
         if (input.name === current.name) return toProject(current);
         const [updated] = await tx
           .update(projects)
@@ -2095,6 +2154,7 @@ export function createProjectsService({
           id: created.id,
           projectId: created.projectId,
           number: created.number,
+          identifier: `${project.key}-${created.number}`,
           title: created.title,
           body: created.body,
           status: IssueStatus.parse(created.status),
@@ -2240,6 +2300,7 @@ export function createProjectsService({
           id: current.id,
           projectId: current.projectId,
           number: current.number,
+          identifier: `${current.projectKey}-${current.number}`,
           title,
           body,
           status: IssueStatus.parse(status),

@@ -14,6 +14,7 @@ import {
   Problem,
   Project,
   ProjectActivityResponse,
+  ProjectKey,
   ProjectsResponse,
 } from "@orrery/contract";
 import { eq, sql } from "drizzle-orm";
@@ -1177,6 +1178,136 @@ describe("projects", () => {
       .from(issues)
       .where(eq(issues.id, issue.id));
     expect(row).toEqual({ type: null, id: null });
+  });
+
+  it("stores an explicit workspace-unique key and derives one from the name when omitted", async () => {
+    const { app, adminCookie, workspaceId } = await readyApp();
+    const createWithKey = async (name: string, key?: string) => {
+      const res = await postJson(
+        app,
+        `/api/workspaces/${workspaceId}/projects`,
+        key === undefined ? { name } : { name, key },
+        adminCookie,
+      );
+      expect(res.status).toBe(201);
+      return Project.parse(await res.json());
+    };
+
+    const explicit = await createWithKey("Orchard", "ORR");
+    expect(explicit.key).toBe("ORR");
+    expect(ProjectKey.parse(explicit.key)).toBe("ORR");
+    const fetched = await getJson(app, `/api/projects/${explicit.id}`, adminCookie);
+    expect(Project.parse(await fetched.json()).key).toBe("ORR");
+    const listed = await getJson(app, `/api/workspaces/${workspaceId}/projects`, adminCookie);
+    expect(
+      ProjectsResponse.parse(await listed.json()).find((p) => p.id === explicit.id),
+    ).toMatchObject({ key: "ORR" });
+
+    await expectProblem(
+      await postJson(
+        app,
+        `/api/workspaces/${workspaceId}/projects`,
+        { name: "Other Orchard", key: "ORR" },
+        adminCookie,
+      ),
+      409,
+      "project_key_taken",
+    );
+    await expectProblem(
+      await postJson(
+        app,
+        `/api/workspaces/${workspaceId}/projects`,
+        { name: "Lowercase", key: "orr" },
+        adminCookie,
+      ),
+      400,
+      "validation_failed",
+    );
+
+    // Existing callers that only send a name still get a valid, workspace-unique key.
+    const first = await createProject(app, adminCookie, workspaceId, "Alpha Beta");
+    const second = await createProject(app, adminCookie, workspaceId, "Alpha Beta");
+    expect(first.key).toMatch(/^[A-Z][A-Z0-9]{1,9}$/);
+    expect(second.key).toMatch(/^[A-Z][A-Z0-9]{1,9}$/);
+    expect(first.key).not.toBe(second.key);
+    expect(first.key).not.toBe("ORR");
+  });
+
+  it("keeps the key immutable and enforces its format and workspace uniqueness in the database", async () => {
+    const { app, adminCookie, workspaceId } = await readyApp();
+    const project = await postJson(
+      app,
+      `/api/workspaces/${workspaceId}/projects`,
+      { name: "Fixed", key: "FIX" },
+      adminCookie,
+    );
+    expect(project.status).toBe(201);
+    const fixed = Project.parse(await project.json());
+
+    await expectProblem(
+      await patchJson(
+        app,
+        `/api/projects/${fixed.id}`,
+        { name: "Renamed", key: "NEW" },
+        adminCookie,
+      ),
+      409,
+      "project_key_immutable",
+    );
+    const after = await getJson(app, `/api/projects/${fixed.id}`, adminCookie);
+    expect(Project.parse(await after.json())).toMatchObject({ name: "Fixed", key: "FIX" });
+    const renamed = await patchJson(
+      app,
+      `/api/projects/${fixed.id}`,
+      { name: "Renamed" },
+      adminCookie,
+    );
+    expect(Project.parse(await renamed.json())).toMatchObject({ name: "Renamed", key: "FIX" });
+
+    const other = await postJson(
+      app,
+      `/api/workspaces/${workspaceId}/projects`,
+      { name: "Other", key: "OTH" },
+      adminCookie,
+    );
+    expect(other.status).toBe(201);
+    expect(
+      await rejection(
+        database.db.execute(sql`update projects set key = 'bad' where id = ${fixed.id}`),
+      ),
+    ).toContain("projects_key_format");
+    expect(
+      await rejection(
+        database.db.execute(sql`update projects set key = 'OTH' where id = ${fixed.id}`),
+      ),
+    ).toContain("one_project_key_per_workspace");
+  });
+
+  it("carries the formatted <KEY>-<N> identifier on every issue payload", async () => {
+    const { app, adminCookie, workspaceId } = await readyApp();
+    const created = await postJson(
+      app,
+      `/api/workspaces/${workspaceId}/projects`,
+      { name: "Issue Keys", key: "ISK" },
+      adminCookie,
+    );
+    expect(created.status).toBe(201);
+    const project = Project.parse(await created.json());
+
+    const first = await createIssue(app, adminCookie, project.id, { title: "First" });
+    const second = await createIssue(app, adminCookie, project.id, { title: "Second" });
+    expect(first.identifier).toBe("ISK-1");
+    expect(second.identifier).toBe("ISK-2");
+
+    const listed = await getJson(app, `/api/projects/${project.id}/issues`, adminCookie);
+    expect(IssuesResponse.parse(await listed.json()).map((issue) => issue.identifier)).toEqual([
+      "ISK-1",
+      "ISK-2",
+    ]);
+    const fetched = await getJson(app, `/api/issues/${first.id}`, adminCookie);
+    expect(IssueDetail.parse(await fetched.json()).identifier).toBe("ISK-1");
+    const edited = await patchIssue(app, first.id, { title: "Edited" }, adminCookie);
+    expect(Issue.parse(await edited.json()).identifier).toBe("ISK-1");
   });
 
   it("keeps the assignee pair integral in the database and records only real changes", async () => {
