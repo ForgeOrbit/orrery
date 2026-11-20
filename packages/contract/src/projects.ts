@@ -50,6 +50,7 @@ export const ProjectActivityType = z
     "issue_question_fallback_used",
     "issue_question_follow_up",
     "issue_fallback_policy_override_changed",
+    "issue_stop_requested",
     "knowledge_created",
     "knowledge_edited",
   ])

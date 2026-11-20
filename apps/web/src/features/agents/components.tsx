@@ -1,8 +1,16 @@
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { AgentKeyValidity, ProjectAccessLevel, type Agent, type AgentKey } from "@orrery/contract";
+import { Link } from "@tanstack/react-router";
+import {
+  AgentKeyValidity,
+  ProjectAccessLevel,
+  type Agent,
+  type AgentKey,
+  type Project,
+} from "@orrery/contract";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { projectsQuery } from "../projects/index.ts";
+import { activeSessionsQuery, SessionStatus } from "../work-sessions/index.ts";
 import {
   createAgent,
   issueAgentKey,
@@ -111,6 +119,8 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
           ))}
         </ul>
       )}
+      <h3>Active work sessions</h3>
+      <ActiveSessions workspaceId={workspaceId} projects={projects} />
       <RegisterAgentForm />
       {agents.length > 0 && (
         <IssueKeyForm
@@ -171,6 +181,37 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
         </ul>
       )}
     </section>
+  );
+}
+
+// #82: the agents view lists only live sessions from the workspace-level read, rather
+// than polling every issue of every project. The same badge and one-click stop control
+// as the issue page lets a human stop an agent without revoking its key.
+function ActiveSessions({
+  workspaceId,
+  projects,
+}: {
+  workspaceId: string;
+  projects: readonly Project[];
+}) {
+  const { data: sessions } = useSuspenseQuery(activeSessionsQuery(workspaceId));
+  if (sessions.length === 0) return <p>No active work sessions.</p>;
+  const levels = new Map(projects.map((project) => [project.id, project.accessLevel]));
+  return (
+    <ul>
+      {sessions.map((session) => (
+        <li key={session.id} data-agent-session-id={session.id} data-issue-id={session.issueId}>
+          <Link to="/issues/$issueId" params={{ issueId: session.issueId }}>
+            Issue {session.issueId}
+          </Link>{" "}
+          <SessionStatus
+            issueId={session.issueId}
+            projectId={session.projectId}
+            canContribute={levels.get(session.projectId) !== "read"}
+          />
+        </li>
+      ))}
+    </ul>
   );
 }
 

@@ -936,6 +936,12 @@ export const workSessions = pgTable(
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }).notNull(),
     progress: text("progress").notNull().default(""),
     progressUpdatedAt: timestamp("progress_updated_at", { withTimezone: true }),
+    // A human stop request (#82) is recorded on the still-active session in one atomic
+    // write: a timestamp and the requesting human are set together, with an optional
+    // reason. It is a signal the agent reads on its next check-in, never a status change.
+    stopRequestedAt: timestamp("stop_requested_at", { withTimezone: true }),
+    stopRequestedByHumanId: text("stop_requested_by_human_id").references(() => humans.id),
+    stopReason: text("stop_reason"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     endedAt: timestamp("ended_at", { withTimezone: true }),
@@ -944,6 +950,15 @@ export const workSessions = pgTable(
     check(
       "work_sessions_status",
       sql`${t.status} in (${sql.raw(sqlLiteralList(WorkSessionStatus))})`,
+    ),
+    // A stop request is one fact: its actor and time are always written together, and a
+    // reason may only exist when a request does. No half-recorded signal can be read.
+    check(
+      "work_sessions_stop_request",
+      sql`(
+        (${t.stopRequestedAt} is null and ${t.stopRequestedByHumanId} is null and ${t.stopReason} is null)
+        or (${t.stopRequestedAt} is not null and ${t.stopRequestedByHumanId} is not null)
+      )`,
     ),
     // At most one active session per issue, enforced by Postgres under a concurrent race.
     uniqueIndex("one_active_work_session_per_issue")
