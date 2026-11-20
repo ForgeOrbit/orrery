@@ -94,9 +94,9 @@ export function redact(text) {
 
 /** The API key comes from the process environment or a local file, never from the payload. */
 export async function readKey() {
-  const inline = trimmedString(process.env.ORRERY_AGENT_KEY);
+  const inline = trimmedString(process.env.ORRERY_API_KEY ?? process.env.ORRERY_AGENT_KEY);
   if (inline !== null) return inline;
-  const file = trimmedString(process.env.ORRERY_AGENT_KEY_FILE);
+  const file = trimmedString(process.env.ORRERY_API_KEY_FILE ?? process.env.ORRERY_AGENT_KEY_FILE);
   if (file === null) return null;
   try {
     return trimmedString(await readFile(file, "utf8"));
