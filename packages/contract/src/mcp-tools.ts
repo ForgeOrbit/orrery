@@ -169,7 +169,7 @@ const claimIssue = {
 const renewClaim = {
   name: "renew_claim",
   description:
-    "Check in on an issue this agent currently holds and refresh its five-minute lease in database time. Requires a live session; an expired or released session is never renewed or silently reacquired.",
+    "Check in on an issue this agent currently holds and refresh its five-minute lease in database time. Requires a live session; an expired or released session is never renewed or silently reacquired. Pass sessionId to fence a delayed call from an interrupted session: it is refused if that session is no longer the live one, even after reacquisition.",
   input: RenewWorkSessionInput,
   output: WorkSessionResponse,
 };
@@ -177,7 +177,7 @@ const renewClaim = {
 const reportProgress = {
   name: "report_progress",
   description:
-    "Record progress on the live session this agent holds for an issue. Progress is stored independently of the lease, so an interruption never erases it. Requires a live session.",
+    "Record progress on the live session this agent holds for an issue. Progress is stored independently of the lease, so an interruption never erases it. Requires a live session; pass sessionId to refuse a delayed report from an expired session instead of writing to a newer one.",
   input: ReportProgressInput,
   output: WorkSessionResponse,
 };
@@ -185,7 +185,7 @@ const reportProgress = {
 const stopSession = {
   name: "stop_session",
   description:
-    "Complete or release the live session this agent holds for an issue. Requires a live session; stopping is distinct from closing the issue.",
+    "Complete or release the live session this agent holds for an issue. Requires a live session; stopping is distinct from closing the issue. Pass sessionId to fence a delayed completion from an interrupted session: it is refused rather than completing a newer session.",
   input: StopWorkSessionInput,
   output: WorkSessionResponse,
 };

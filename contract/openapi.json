@@ -6537,7 +6537,7 @@
     "/api/issues/{issueId}/work-sessions/renew": {
       "post": {
         "summary": "Check in and renew a claim",
-        "description": "Refresh the five-minute lease in database time for the live session this agent holds on the issue. An expired or released session is never renewed or silently reacquired.",
+        "description": "Refresh the five-minute lease in database time for the live session this agent holds on the issue. An expired or released session is never renewed or silently reacquired. An optional sessionId fences a delayed call from an interrupted session.",
         "parameters": [
           {
             "schema": {
@@ -6550,6 +6550,23 @@
             "in": "path"
           }
         ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "sessionId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  }
+                }
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "The renewed session",
@@ -6617,7 +6634,7 @@
     "/api/issues/{issueId}/work-sessions/progress": {
       "post": {
         "summary": "Record progress on a live session",
-        "description": "Store a progress summary on the live session this agent holds. Progress is held independently of the lease, so expiry never erases it. Requires a live session.",
+        "description": "Store a progress summary on the live session this agent holds. Progress is held independently of the lease, so expiry never erases it. Requires a live session; an optional sessionId fences a delayed report from an expired one.",
         "parameters": [
           {
             "schema": {
@@ -6641,6 +6658,11 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 20000
+                  },
+                  "sessionId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
                   }
                 },
                 "required": [
@@ -6717,7 +6739,7 @@
     "/api/issues/{issueId}/work-sessions/stop": {
       "post": {
         "summary": "Complete or release a live session",
-        "description": "End the live session this agent holds. Stopping is distinct from closing the issue; the outcome records whether the work completed or was released for another worker.",
+        "description": "End the live session this agent holds. Stopping is distinct from closing the issue; the outcome records whether the work completed or was released for another worker. An optional sessionId fences a delayed completion from an expired session.",
         "parameters": [
           {
             "schema": {
@@ -6739,6 +6761,11 @@
                 "properties": {
                   "outcome": {
                     "$ref": "#/components/schemas/WorkSessionOutcome"
+                  },
+                  "sessionId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
                   }
                 }
               }

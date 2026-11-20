@@ -62,8 +62,17 @@ export const ClaimWorkSessionInput = z
   .meta({ id: "ClaimWorkSessionInput" });
 export type ClaimWorkSessionInput = z.infer<typeof ClaimWorkSessionInput>;
 
+// `sessionId` is an optional fence. When a client that was interrupted sends a delayed
+// renew/progress/stop, naming the session it started with makes the call fail rather than
+// silently mutating a newer session the same agent has since acquired on the issue.
+// Omitting it keeps #36 callers (helpers, older clients) working unchanged.
+const SessionFence = z.string().trim().min(1).max(200);
+
 export const RenewWorkSessionInput = z
-  .object({ issueId: z.string().trim().min(1).max(200) })
+  .object({
+    issueId: z.string().trim().min(1).max(200),
+    sessionId: SessionFence.optional(),
+  })
   .meta({ id: "RenewWorkSessionInput" });
 export type RenewWorkSessionInput = z.infer<typeof RenewWorkSessionInput>;
 
@@ -71,6 +80,7 @@ export const ReportProgressInput = z
   .object({
     issueId: z.string().trim().min(1).max(200),
     summary: z.string().trim().min(1).max(20_000),
+    sessionId: SessionFence.optional(),
   })
   .meta({ id: "ReportProgressInput" });
 export type ReportProgressInput = z.infer<typeof ReportProgressInput>;
@@ -79,6 +89,7 @@ export const StopWorkSessionInput = z
   .object({
     issueId: z.string().trim().min(1).max(200),
     outcome: WorkSessionOutcome.default("completed"),
+    sessionId: SessionFence.optional(),
   })
   .meta({ id: "StopWorkSessionInput" });
 export type StopWorkSessionInput = z.infer<typeof StopWorkSessionInput>;

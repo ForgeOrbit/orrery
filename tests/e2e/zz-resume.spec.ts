@@ -182,11 +182,14 @@ test("interrupt, resume, reacquire and retry without duplicating a claim", async
     expect(field(expiredSession, "status")).toBe("expired");
     expect(field(expiredSession, "progress")).toBe("Resumable progress");
 
-    // A stale completion and a stale renewal on the expired session are refused, even
-    // with nobody else holding the issue.
+    // A stale completion, renewal and progress report on the expired session are refused,
+    // even with nobody else holding the issue. Naming sessionId fences them to S1 so they
+    // cannot fall through to a newer session the same agent may acquire later.
     for (const stale of ["stop_session", "renew_claim", "report_progress"]) {
       const args: Record<string, unknown> =
-        stale === "report_progress" ? { issueId, summary: "Stale overwrite" } : { issueId };
+        stale === "report_progress"
+          ? { issueId, summary: "Stale overwrite", sessionId }
+          : { issueId, sessionId };
       const result = await call(client, stale, args);
       expect(result.isError).toBe(true);
       expect(result.data).toMatchObject({ code: "session_required" });
@@ -202,6 +205,19 @@ test("interrupt, resume, reacquire and retry without duplicating a claim", async
     expect(reacquiredId).not.toBe(sessionId);
     expect(field(reacquired.data.session, "status")).toBe("active");
     expect(field(reacquired.data.session, "progress")).toBe("Resumable progress");
+
+    // A delayed completion from S1 is still refused now that S2 is live. Naming S2's id
+    // succeeds, proving the fence targets the exact session rather than disabling writes.
+    const staleAfterReacquire = await call(client, "stop_session", {
+      issueId,
+      outcome: "completed",
+      sessionId,
+    });
+    expect(staleAfterReacquire.isError).toBe(true);
+    expect(staleAfterReacquire.data).toMatchObject({ code: "session_required" });
+    const fencedRenew = await call(client, "renew_claim", { issueId, sessionId: reacquiredId });
+    expect(fencedRenew.isError).toBe(false);
+    expect(field(asRecord(fencedRenew.data.session), "id")).toBe(reacquiredId);
 
     // Retries after reconnect — both a repeated reacquire and a repeated claim — resolve
     // to the same active session and never create a duplicate claim.
@@ -237,8 +253,11 @@ test("a stale completion is refused when another worker now holds the issue", as
     const originalRun = await newRun(original);
     const replacementRun = await newRun(replacement);
 
-    expect((await call(original, "claim_issue", { issueId, runId: originalRun })).isError).toBe(
-      false,
+    const originalClaim = await call(original, "claim_issue", { issueId, runId: originalRun });
+    expect(originalClaim.isError).toBe(false);
+    const originalSessionId = requiredText(
+      field(asRecord(originalClaim.data.session), "id"),
+      "the original session id",
     );
     expect(
       (await call(original, "report_progress", { issueId, summary: "Original progress" })).isError,
@@ -257,7 +276,9 @@ test("a stale completion is refused when another worker now holds the issue", as
     expect(reacquire.data).toMatchObject({ code: "issue_claimed" });
     for (const stale of ["stop_session", "renew_claim", "report_progress"]) {
       const args: Record<string, unknown> =
-        stale === "report_progress" ? { issueId, summary: "Overwrite" } : { issueId };
+        stale === "report_progress"
+          ? { issueId, summary: "Overwrite", sessionId: originalSessionId }
+          : { issueId, sessionId: originalSessionId };
       const result = await call(original, stale, args);
       expect(result.isError).toBe(true);
       expect(result.data).toMatchObject({ code: "session_required" });

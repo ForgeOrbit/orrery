@@ -15,6 +15,11 @@ const str = (value: unknown, field: string): string => {
   return value;
 };
 
+// The optional session fence is already validated by the tool's input schema; a missing
+// one keeps #36 callers working, a present one pins the write to that exact session.
+const sessionFence = (args: Args): string | undefined =>
+  typeof args.sessionId === "string" ? args.sessionId : undefined;
+
 export function createSessionsMcp(service: SessionsService, authenticate: AgentAuthenticator) {
   const strategies: Record<string, (identity: AgentIdentity, args: Args) => Promise<Args>> = {
     claim_issue: async (identity, args) => ({
@@ -24,13 +29,18 @@ export function createSessionsMcp(service: SessionsService, authenticate: AgentA
       ),
     }),
     renew_claim: async (identity, args) => ({
-      session: await service.renew({ kind: "agent", identity }, str(args.issueId, "issueId")),
+      session: await service.renew(
+        { kind: "agent", identity },
+        str(args.issueId, "issueId"),
+        sessionFence(args),
+      ),
     }),
     report_progress: async (identity, args) => ({
       session: await service.progress(
         { kind: "agent", identity },
         str(args.issueId, "issueId"),
         str(args.summary, "summary"),
+        sessionFence(args),
       ),
     }),
     stop_session: async (identity, args) => ({
@@ -38,6 +48,7 @@ export function createSessionsMcp(service: SessionsService, authenticate: AgentA
         { kind: "agent", identity },
         str(args.issueId, "issueId"),
         args.outcome === "released" ? "released" : "completed",
+        sessionFence(args),
       ),
     }),
     get_work_session: async (identity, args) => ({

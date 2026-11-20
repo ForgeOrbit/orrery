@@ -4,6 +4,7 @@ import {
   ClaimWorkSessionInput,
   IssuesResponse,
   ReacquireWorkSessionInput,
+  RenewWorkSessionInput,
   ReportProgressInput,
   ResumeWorkSessionInput,
   ResumeWorkSessionResult,
@@ -28,6 +29,7 @@ import { SessionsError, type SessionsErrorKind, type SessionsService } from "./s
 const issueParams = z.object({ issueId: z.string().min(1).max(200) });
 const projectParams = z.object({ projectId: z.string().min(1).max(200) });
 const claimBody = ClaimWorkSessionInput.omit({ issueId: true });
+const renewBody = RenewWorkSessionInput.omit({ issueId: true });
 const progressBody = ReportProgressInput.omit({ issueId: true });
 const stopBody = StopWorkSessionInput.omit({ issueId: true });
 const resumeBody = ResumeWorkSessionInput.omit({ issueId: true });
@@ -61,8 +63,11 @@ const renew = createRoute({
   path: "/api/issues/{issueId}/work-sessions/renew",
   summary: "Check in and renew a claim",
   description:
-    "Refresh the five-minute lease in database time for the live session this agent holds on the issue. An expired or released session is never renewed or silently reacquired.",
-  request: { params: issueParams },
+    "Refresh the five-minute lease in database time for the live session this agent holds on the issue. An expired or released session is never renewed or silently reacquired. An optional sessionId fences a delayed call from an interrupted session.",
+  request: {
+    params: issueParams,
+    body: { required: false, content: { "application/json": { schema: renewBody } } },
+  },
   responses: {
     200: {
       description: "The renewed session",
@@ -81,7 +86,7 @@ const progress = createRoute({
   path: "/api/issues/{issueId}/work-sessions/progress",
   summary: "Record progress on a live session",
   description:
-    "Store a progress summary on the live session this agent holds. Progress is held independently of the lease, so expiry never erases it. Requires a live session.",
+    "Store a progress summary on the live session this agent holds. Progress is held independently of the lease, so expiry never erases it. Requires a live session; an optional sessionId fences a delayed report from an expired one.",
   request: {
     params: issueParams,
     body: { required: true, content: { "application/json": { schema: progressBody } } },
@@ -104,7 +109,7 @@ const stop = createRoute({
   path: "/api/issues/{issueId}/work-sessions/stop",
   summary: "Complete or release a live session",
   description:
-    "End the live session this agent holds. Stopping is distinct from closing the issue; the outcome records whether the work completed or was released for another worker.",
+    "End the live session this agent holds. Stopping is distinct from closing the issue; the outcome records whether the work completed or was released for another worker. An optional sessionId fences a delayed completion from an expired session.",
   request: {
     params: issueParams,
     body: { required: true, content: { "application/json": { schema: stopBody } } },
@@ -332,7 +337,14 @@ export function createSessionsRest(
 
   app.openapi(renew, async (c) => {
     try {
-      return c.json(await service.renew(await agentActor(c), c.req.valid("param").issueId), 200);
+      return c.json(
+        await service.renew(
+          await agentActor(c),
+          c.req.valid("param").issueId,
+          c.req.valid("json")?.sessionId,
+        ),
+        200,
+      );
     } catch (error) {
       return failure(c, error, writeKinds);
     }
@@ -345,6 +357,7 @@ export function createSessionsRest(
           await agentActor(c),
           c.req.valid("param").issueId,
           c.req.valid("json").summary,
+          c.req.valid("json").sessionId,
         ),
         200,
       );
@@ -360,6 +373,7 @@ export function createSessionsRest(
           await agentActor(c),
           c.req.valid("param").issueId,
           c.req.valid("json").outcome,
+          c.req.valid("json").sessionId,
         ),
         200,
       );

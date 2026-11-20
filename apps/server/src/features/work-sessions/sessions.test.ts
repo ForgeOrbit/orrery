@@ -944,6 +944,114 @@ describe("work sessions against real Postgres", () => {
     );
   });
 
+  it("fences stale writes to an expired session even when the same agent holds a newer one", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "Fenced stale issue");
+    const run1 = await newRun(identity);
+    const actor = { kind: "agent" as const, identity };
+    const s1 = await sessionsService.claim(actor, { issueId: issue.id, runId: run1 });
+    await sessionsService.progress(actor, issue.id, "Original progress");
+    await setLease(issue.id, "statement_timestamp() - interval '1 second'");
+
+    // The same run reacquires a brand-new session S2 carrying the progress.
+    const s2 = await sessionsService.reacquire(actor, { issueId: issue.id, runId: run1 });
+    expect(s2.id).not.toBe(s1.id);
+    expect(s2).toMatchObject({ status: "active", progress: "Original progress" });
+
+    // A delayed call named S1 is refused even though this very agent holds live S2.
+    for (const stale of [
+      () => sessionsService.renew(actor, issue.id, s1.id),
+      () => sessionsService.progress(actor, issue.id, "Stale overwrite", s1.id),
+      () => sessionsService.stop(actor, issue.id, "completed", s1.id),
+    ]) {
+      const error = await rejection(stale());
+      expect(errorKind(error)).toBe("session_required");
+    }
+    // Positive control: naming the live session succeeds, and the stale writes changed nothing.
+    await expect(sessionsService.renew(actor, issue.id, s2.id)).resolves.toMatchObject({
+      id: s2.id,
+      status: "active",
+    });
+    expect((await sessionsService.getSession(actor, issue.id)).progress).toBe("Original progress");
+    expect(await activeCount(issue.id)).toBe(1);
+
+    // Now S2 lapses and a different run of the SAME agent claims S3. Both old ids stay fenced.
+    await setLease(issue.id, "statement_timestamp() - interval '1 second'");
+    const run2 = await newRun(identity);
+    const s3 = await sessionsService.claim(actor, { issueId: issue.id, runId: run2 });
+    expect(s3.id).not.toBe(s2.id);
+    for (const oldId of [s1.id, s2.id]) {
+      for (const stale of [
+        () => sessionsService.renew(actor, issue.id, oldId),
+        () => sessionsService.progress(actor, issue.id, "Another stale write", oldId),
+        () => sessionsService.stop(actor, issue.id, "completed", oldId),
+      ]) {
+        const error = await rejection(stale());
+        expect(errorKind(error)).toBe("session_required");
+      }
+    }
+    await expect(sessionsService.renew(actor, issue.id, s3.id)).resolves.toMatchObject({
+      id: s3.id,
+      status: "active",
+    });
+    expect(await activeCount(issue.id)).toBe(1);
+    const history = await sessionsService.listSessions(actor, issue.id);
+    expect(history).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: s1.id, status: "expired" }),
+        expect.objectContaining({ id: s2.id, status: "expired" }),
+        expect.objectContaining({ id: s3.id, status: "active" }),
+      ]),
+    );
+  });
+
+  it("refuses to reacquire a claim on an issue closed while the lease was expired", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "Closed reacquire issue");
+    const runId = await newRun(identity);
+    const actor = { kind: "agent" as const, identity };
+    await sessionsService.claim(actor, { issueId: issue.id, runId });
+    await sessionsService.progress(actor, issue.id, "Done mostly");
+    await setLease(issue.id, "statement_timestamp() - interval '1 second'");
+
+    await projectsService.updateIssue(
+      {
+        kind: "human",
+        account: {
+          humanId: f.humanId,
+          email: ADMIN_EMAIL,
+          isSystemAdministrator: false,
+          emailVerifiedAt: new Date(),
+        },
+      },
+      issue.id,
+      { status: "closed" },
+    );
+    const blocked = await rejection(sessionsService.reacquire(actor, { issueId: issue.id, runId }));
+    expect(errorKind(blocked)).toBe("issue_blocked");
+    expect(await activeCount(issue.id)).toBe(0);
+
+    // Reopening makes the very same expired claim available again, with progress intact.
+    await projectsService.updateIssue(
+      {
+        kind: "human",
+        account: {
+          humanId: f.humanId,
+          email: ADMIN_EMAIL,
+          isSystemAdministrator: false,
+          emailVerifiedAt: new Date(),
+        },
+      },
+      issue.id,
+      { status: "open" },
+    );
+    await expect(
+      sessionsService.reacquire(actor, { issueId: issue.id, runId }),
+    ).resolves.toMatchObject({ status: "active", progress: "Done mostly" });
+  });
+
   it("exposes resume and reacquire over bearer REST without wrapping the resource", async () => {
     const f = await bootstrap();
     const identity = await identityFor(f.secret);
@@ -956,6 +1064,7 @@ describe("work sessions against real Postgres", () => {
       f.secret,
     );
     expect(claim.status).toBe(201);
+    const originalId = WorkSession.parse(await claim.clone().json()).id;
     await postJson(
       `/api/issues/${issue.id}/work-sessions/progress`,
       { summary: "REST progress" },
@@ -1003,10 +1112,38 @@ describe("work sessions against real Postgres", () => {
     );
     expect(reacquired.status).toBe(201);
     // ADR-0003: the bare session, not a `{ session }` wrapper.
-    expect(await reacquired.json()).toMatchObject({
-      status: "active",
-      progress: "REST progress",
+    const current = WorkSession.parse(await reacquired.clone().json());
+    expect(current).toMatchObject({ status: "active", progress: "REST progress" });
+
+    // A sessionId fence in the REST body refuses a call naming the expired session and
+    // accepts one naming the live session. An omitted body still works (#36 callers).
+    const staleFenced = await postJson(
+      `/api/issues/${issue.id}/work-sessions/stop`,
+      { outcome: "completed", sessionId: originalId },
+      undefined,
+      f.secret,
+    );
+    await expectProblem(staleFenced, 409, "session_required");
+    const liveFenced = await postJson(
+      `/api/issues/${issue.id}/work-sessions/renew`,
+      { sessionId: current.id },
+      undefined,
+      f.secret,
+    );
+    expect(liveFenced.status).toBe(200);
+    expect(WorkSession.parse(await liveFenced.json()).id).toBe(current.id);
+    const noBody = await postJson(
+      `/api/issues/${issue.id}/work-sessions/renew`,
+      {},
+      undefined,
+      f.secret,
+    );
+    expect(noBody.status).toBe(200);
+    const trulyBodyless = await app.request(`/api/issues/${issue.id}/work-sessions/renew`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${f.secret}` },
     });
+    expect(trulyBodyless.status).toBe(200);
     expect(identity.agentId).toBe(f.agentId);
   });
 });

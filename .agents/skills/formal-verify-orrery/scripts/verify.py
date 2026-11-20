@@ -991,8 +991,8 @@ def extract_code_facts() -> dict[str, Any]:
         and "keyId" not in claim_fn
     )
     m17_helper_shares = (
-        "return toSession(existing)" in claim_fn
-        and "existing.runId === input.runId" in claim_fn
+        "isSameRun(existing, identity, input.runId)" in claim_fn
+        and "return toSession(existing)" in claim_fn
     )
     m17_ready_db_time = (
         "gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`)" in ready_fn
@@ -1015,9 +1015,9 @@ def extract_code_facts() -> dict[str, Any]:
     sess_contract = read_text("packages/contract/src/sessions.ts")
     resume_fn = slice_between(sess_src, "async resume(actor, input)", "async reacquire(actor, input)")
     reacquire_fn = slice_between(sess_src, "async reacquire(actor, input)", "async getSession(actorArg, issueId)")
-    renew_only_fn = slice_between(sess_src, "async renew(actor, issueId)", "async progress(actor, issueId, summary)")
-    progress_only_fn = slice_between(sess_src, "async progress(actor, issueId, summary)", "async stop(actor, issueId, outcome)")
-    stop_only_fn = slice_between(sess_src, "async stop(actor, issueId, outcome)", "async resume(actor, input)")
+    renew_only_fn = slice_between(sess_src, "async renew(", "async progress(")
+    progress_only_fn = slice_between(sess_src, "async progress(", "async stop(")
+    stop_only_fn = slice_between(sess_src, "async stop(", "async resume(")
     session_columns_fn = slice_between(sess_src, "const sessionColumns =", "const iso =")
 
     m18_resume_read_only = (
@@ -1058,8 +1058,8 @@ def extract_code_facts() -> dict[str, Any]:
         "id: randomUUID()" in reacquire_fn and "leaseExpiresAt: fiveMinutes" in reacquire_fn
     )
     m18_idempotent = (
-        "existing.runId === input.runId" in claim_fn
-        and "active.runId === input.runId" in reacquire_fn
+        "isSameRun(existing, identity, input.runId)" in claim_fn
+        and "isSameRun(active, identity, input.runId)" in reacquire_fn
         and "return toSession(active)" in reacquire_fn
     )
     m18_adapters = (
@@ -1074,6 +1074,17 @@ def extract_code_facts() -> dict[str, Any]:
         and 'path: "/api/issues/{issueId}/work-sessions/reacquire"' in sess_rest_src
         and sess_rest_src.count("400: problem(") >= 7
     )
+    active_fn = slice_between(sess_src, "async function findActive(", "function requireAccessArgs")
+    m18_session_fence = (
+        "eq(workSessions.id, sessionId)" in live_fn
+        and "sessionId: SessionFence.optional()" in sess_contract
+        and "sessionFence(args)" in sess_mcp_src
+    )
+    m18_closed_refused = 'issue.status !== "open"' in reacquire_fn
+    m18_update_db_time = all(
+        "liveLease," in fn for fn in (renew_only_fn, progress_only_fn, stop_only_fn)
+    )
+    m18_find_active_db_time = "liveLease," in active_fn
     m17_tools = all(
         name in tools_src
         for name in (
@@ -1243,6 +1254,10 @@ def extract_code_facts() -> dict[str, Any]:
         "m18_idempotent": m18_idempotent,
         "m18_adapters": m18_adapters,
         "m18_http_problems": m18_http_problems,
+        "m18_session_fence": m18_session_fence,
+        "m18_closed_refused": m18_closed_refused,
+        "m18_update_db_time": m18_update_db_time,
+        "m18_find_active_db_time": m18_find_active_db_time,
     }
 
 
@@ -2865,6 +2880,10 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
     idempotent = facts["m18_idempotent"]
     adapters = facts["m18_adapters"]
     problems = facts["m18_http_problems"]
+    fence_guard = facts["m18_session_fence"]
+    closed_guard = facts["m18_closed_refused"]
+    update_db_time = facts["m18_update_db_time"]
+    find_active_db_time = facts["m18_find_active_db_time"]
 
     KEYS = ("owner", "gen", "status", "lease", "progress")
     MAX_SESSIONS = 2
@@ -2907,13 +2926,31 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
             rs.append(dict(owner=owner, gen=next_gen(rs), status="active", lease="fresh", progress=""))
         return pack(rs), violations
 
-    def stale_write(sessions, violations, owner, action):
-        """renew, progress, completion and fenced writes all need a live held session."""
+    def stale_write(sessions, violations, owner, action, fence=None):
+        """renew, progress, completion and fenced writes all need a live held session.
+        A `fence` names the session the delayed caller started with; it must still be the
+        live session, otherwise the write is refused even if this agent holds a newer one."""
         rs = materialize(rows(sessions))
         idx = next(
             (i for i, row in enumerate(rs) if row["owner"] == owner and row["status"] == "active"),
             None,
         )
+        if fence is not None:
+            fenced = next((i for i, row in enumerate(rs) if row["gen"] == fence), None)
+            valid = (
+                fenced is not None
+                and rs[fenced]["owner"] == owner
+                and rs[fenced]["status"] == "active"
+                and rs[fenced]["lease"] == "fresh"
+            )
+            if not valid:
+                if not fence_guard and idx is not None:
+                    # Buggy: the fence is ignored and the write falls through to S2.
+                    violations = violations | {"stale_fence_bypassed"}
+                else:
+                    return pack(rs), violations
+            else:
+                idx = fenced
         if idx is None:
             if not stale_rejected and len(rs) < MAX_SESSIONS:
                 rs.append(dict(owner=owner, gen=next_gen(rs), status="active", lease="fresh", progress=""))
@@ -2959,7 +2996,7 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
             violations = violations | {"resume_dropped_progress"}
         return out, violations
 
-    def reacquire(sessions, violations, owner, needs):
+    def reacquire(sessions, violations, owner, needs, closed):
         rs = materialize(rows(sessions))
         active = next((i for i, row in enumerate(rs) if row["status"] == "active"), None)
         if active is not None:
@@ -2979,10 +3016,11 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
                 rs.append(dict(owner=owner, gen=next_gen(rs), status="active", lease="fresh", progress=""))
                 return pack(rs), violations | {"reacquire_without_expired_claim"}
             return pack(rs), violations
-        if needs:
-            if not available and len(rs) < MAX_SESSIONS:
+        if needs or closed:
+            if (not available or (closed and not closed_guard)) and len(rs) < MAX_SESSIONS:
                 rs.append(dict(owner=owner, gen=next_gen(rs), status="active", lease="fresh", progress=prior["progress"]))
-                return pack(rs), violations | {"reacquire_while_paused"}
+                reason = "reacquire_closed_issue" if closed else "reacquire_while_paused"
+                return pack(rs), violations | {reason}
             return pack(rs), violations  # issue_blocked
         if len(rs) >= MAX_SESSIONS:
             return pack(rs), violations
@@ -2996,40 +3034,46 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
 
     def step(fn):
         """Adapt a (sessions, violations) -> (sessions, violations) step to full state."""
-        def action(s, n, v):
+        def action(s, c, n, v):
             ns, nv = fn(s, v)
-            return (ns, n, nv)
+            return (ns, c, n, nv)
         return action
 
-    def step_needs(fn):
-        """Adapt a (sessions, violations, needs) -> (sessions, violations) step."""
-        def action(s, n, v):
-            ns, nv = fn(s, v, n)
-            return (ns, n, nv)
+    def step_flags(fn):
+        """Adapt a (sessions, violations, needs, closed) -> (sessions, violations) step."""
+        def action(s, c, n, v):
+            ns, nv = fn(s, v, n, c)
+            return (ns, c, n, nv)
         return action
 
     actions = [
         ("the original run claims the issue", step(lambda s, v: claim(s, v, "R"))),
         ("another worker claims the issue", step(lambda s, v: claim(s, v, "S"))),
-        ("five minutes pass in database time", lambda s, n, v: (pack([dict(row, lease="lapsed") if row["status"] == "active" else row for row in rows(s)]), n, v)),
+        ("five minutes pass in database time", lambda s, c, n, v: (pack([dict(row, lease="lapsed") if row["status"] == "active" else row for row in rows(s)]), c, n, v)),
         ("the original run resumes its conversation", step(lambda s, v: resume(s, v, "R"))),
         ("a stale renewal arrives on the expired session", step(lambda s, v: stale_write(s, v, "R", "renew"))),
         ("a stale progress report arrives on the expired session", step(lambda s, v: stale_write(s, v, "R", "progress"))),
         ("a stale completion arrives on the expired session", step(lambda s, v: stale_write(s, v, "R", "stop"))),
         ("a stale fenced issue write arrives on the expired session", step(lambda s, v: stale_write(s, v, "R", "edit"))),
+        ("a delayed renewal fenced to session 1", step(lambda s, v: stale_write(s, v, "R", "renew", fence=1))),
+        ("a delayed progress report fenced to session 1", step(lambda s, v: stale_write(s, v, "R", "progress", fence=1))),
+        ("a delayed completion fenced to session 1", step(lambda s, v: stale_write(s, v, "R", "stop", fence=1))),
         ("the other worker renews its live claim", step(lambda s, v: stale_write(s, v, "S", "renew"))),
         ("the other worker completes its live claim", step(lambda s, v: stale_write(s, v, "S", "stop"))),
-        ("the original run reacquires its expired claim", step_needs(lambda s, v, n: reacquire(s, v, "R", n))),
-        ("the other worker reacquires its expired claim", step_needs(lambda s, v, n: reacquire(s, v, "S", n))),
-        ("the issue is paused for input", lambda s, n, v: (s, True, v)),
-        ("the input is answered", lambda s, n, v: (s, False, v)),
-        ("resume/reacquire tools are exposed with validated problems", lambda s, n, v: (s, n, v if adapters and problems else v | {"tools_or_problems_missing"})),
+        ("the original run reacquires its expired claim", step_flags(lambda s, v, n, c: reacquire(s, v, "R", n, c))),
+        ("the other worker reacquires its expired claim", step_flags(lambda s, v, n, c: reacquire(s, v, "S", n, c))),
+        ("the issue is paused for input", lambda s, c, n, v: (s, c, True, v)),
+        ("the input is answered", lambda s, c, n, v: (s, c, False, v)),
+        ("the issue is closed", lambda s, c, n, v: (s, True, n, v)),
+        ("the issue is reopened", lambda s, c, n, v: (s, False, n, v)),
+        ("renew/progress/stop recheck DB-time liveness on UPDATE and findActive", lambda s, c, n, v: (s, c, n, v if update_db_time and find_active_db_time else v | {"lapsed_row_updated"})),
+        ("resume/reacquire tools are exposed with validated problems", lambda s, c, n, v: (s, c, n, v if adapters and problems else v | {"tools_or_problems_missing"})),
     ]
 
-    init = ((), False, frozenset())
+    init = ((), False, False, frozenset())
 
     def inv(state):
-        sessions, _, violations = state
+        sessions, _, _, violations = state
         if violations:
             reason = sorted(violations)[0]
             return False, f"resume/reacquire invariant broken: {reason}"

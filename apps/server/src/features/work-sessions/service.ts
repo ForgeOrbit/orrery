@@ -12,6 +12,7 @@ import {
   type WorkSessionOutcome,
 } from "@orrery/contract";
 import { and, desc, eq, gt, isNull, lte, sql } from "drizzle-orm";
+import type { PgInsertValue } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
 import { issues, projects, runs, workSessions } from "../../db/schema.ts";
@@ -39,7 +40,7 @@ const messages: Record<SessionsErrorKind, string> = {
   run_not_found: "No such run belongs to this agent in this workspace.",
   insufficient_access: "Contribute access is required to work on this issue.",
   issue_claimed: "Another worker holds the active session for this issue.",
-  issue_blocked: "This issue is paused for input and cannot be reacquired yet.",
+  issue_blocked: "This issue is closed or paused for input and cannot be reacquired yet.",
   session_required: "This agent holds no live session for this issue.",
 };
 
@@ -83,12 +84,20 @@ export type AgentActor = { kind: "agent"; identity: AgentIdentity };
 
 export interface SessionsService {
   claim(actor: AgentActor | null, input: { issueId: string; runId: string }): Promise<WorkSession>;
-  renew(actor: AgentActor | null, issueId: string): Promise<WorkSession>;
-  progress(actor: AgentActor | null, issueId: string, summary: string): Promise<WorkSession>;
+  // The optional sessionId is a fence: a delayed call from a session that has since
+  // expired is refused even if the same agent now holds a newer live session on the issue.
+  renew(actor: AgentActor | null, issueId: string, sessionId?: string): Promise<WorkSession>;
+  progress(
+    actor: AgentActor | null,
+    issueId: string,
+    summary: string,
+    sessionId?: string,
+  ): Promise<WorkSession>;
   stop(
     actor: AgentActor | null,
     issueId: string,
     outcome: WorkSessionOutcome,
+    sessionId?: string,
   ): Promise<WorkSession>;
   // #40: a pure, database-time read of the original run's claim, and the only way to
   // re-arm an expired claim. Resume never mutates; reacquire creates a fresh active
@@ -159,7 +168,12 @@ function requireAgent(actor: AgentActor | null) {
 // consistent state and two writers to the same issue serialize.
 async function lockIssue(tx: DbTransaction, issueId: string) {
   const [row] = await tx
-    .select({ id: issues.id, projectId: issues.projectId, needsInput: issues.needsInput })
+    .select({
+      id: issues.id,
+      projectId: issues.projectId,
+      status: issues.status,
+      needsInput: issues.needsInput,
+    })
     .from(issues)
     .where(eq(issues.id, issueId))
     .limit(1)
@@ -190,6 +204,12 @@ async function expireStale(tx: DbTransaction, issueId: string): Promise<void> {
 
 const fiveMinutes = sql`statement_timestamp() + interval '5 minutes'`;
 
+// The database-time liveness predicate is repeated on every read and write that treats a
+// session as live. `statement_timestamp()` advances between statements in a transaction, so
+// a lease can lapse after expireStale ran; without this predicate a later statement could
+// still return or update that row as active.
+const liveLease = gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`);
+
 async function findActive(tx: DbTransaction, issueId: string) {
   const [row] = await tx
     .select(sessionColumns)
@@ -198,10 +218,87 @@ async function findActive(tx: DbTransaction, issueId: string) {
       and(
         eq(workSessions.issueId, issueId),
         eq(workSessions.status, WorkSessionStatus.enum.active),
+        liveLease,
       ),
     )
     .limit(1);
   return row;
+}
+
+// Shared by claim, resume and reacquire: a run belongs to this agent in this workspace.
+async function requireRun(tx: DbTransaction, identity: AgentIdentity, runId: string) {
+  const [run] = await tx
+    .select({ id: runs.id })
+    .from(runs)
+    .where(
+      and(
+        eq(runs.id, runId),
+        eq(runs.agentId, identity.agentId),
+        eq(runs.workspaceId, identity.workspaceId),
+      ),
+    )
+    .limit(1);
+  if (run === undefined) throw new SessionsError("run_not_found");
+  return run;
+}
+
+// The most recent session this run recorded on the issue: the one resume reports and the
+// one reacquire may extend. The id tie-breaker keeps "most recent" deterministic when two
+// rows share a timestamp.
+async function findLatestForRun(
+  tx: DbTransaction,
+  issueId: string,
+  identity: AgentIdentity,
+  runId: string,
+) {
+  const [row] = await tx
+    .select(sessionColumns)
+    .from(workSessions)
+    .where(
+      and(
+        eq(workSessions.issueId, issueId),
+        eq(workSessions.agentId, identity.agentId),
+        eq(workSessions.workspaceId, identity.workspaceId),
+        eq(workSessions.runId, runId),
+      ),
+    )
+    .orderBy(desc(workSessions.createdAt), desc(workSessions.id))
+    .limit(1);
+  return row;
+}
+
+function isSameRun(
+  session: SessionView | undefined,
+  identity: AgentIdentity,
+  runId: string,
+): boolean {
+  return (
+    session !== undefined &&
+    session.agentId === identity.agentId &&
+    session.workspaceId === identity.workspaceId &&
+    session.runId === runId
+  );
+}
+
+// Insert a fresh active row under the issue lock. If a lease lapsed in the tiny window
+// between expireStale and this INSERT, the partial unique index refuses the first attempt;
+// expiring again in this same transaction frees the slot and the retry wins. A second
+// failure means a genuinely different live claimant holds the issue.
+async function insertFreshSession(
+  tx: DbTransaction,
+  issueId: string,
+  values: PgInsertValue<typeof workSessions>,
+): Promise<SessionView | undefined> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const [created] = await tx
+      .insert(workSessions)
+      .values(values)
+      .onConflictDoNothing()
+      .returning(sessionColumns);
+    if (created !== undefined) return created;
+    await expireStale(tx, issueId);
+  }
+  return undefined;
 }
 
 function requireAccessArgs(
@@ -268,6 +365,7 @@ export function createSessionsService({
   const withLiveSession = async (
     actor: AgentActor | null,
     issueId: string,
+    sessionId: string | undefined,
     update: (tx: DbTransaction, sessionId: string) => Promise<SessionView | undefined>,
   ): Promise<WorkSession> => {
     const identity = requireAgent(actor);
@@ -291,6 +389,10 @@ export function createSessionsService({
             eq(workSessions.agentId, identity.agentId),
             eq(workSessions.workspaceId, identity.workspaceId),
             eq(workSessions.status, WorkSessionStatus.enum.active),
+            liveLease,
+            // A named fence must resolve to this exact session. A delayed call from S1
+            // cannot fall through to the newer S2 the same agent now holds.
+            ...(sessionId === undefined ? [] : [eq(workSessions.id, sessionId)]),
           ),
         )
         .limit(1);
@@ -318,76 +420,51 @@ export function createSessionsService({
         );
         // A session follows the agent and run, not the key. An explicit run id must be a
         // run of this agent in this workspace; helpers on one issue pass the same id.
-        const [run] = await tx
-          .select({ id: runs.id })
-          .from(runs)
-          .where(
-            and(
-              eq(runs.id, input.runId),
-              eq(runs.agentId, identity.agentId),
-              eq(runs.workspaceId, identity.workspaceId),
-            ),
-          )
-          .limit(1);
-        if (run === undefined) throw new SessionsError("run_not_found");
+        await requireRun(tx, identity, input.runId);
 
         const existing = await findActive(tx, issue.id);
         if (existing !== undefined) {
-          if (
-            existing.agentId === identity.agentId &&
-            existing.workspaceId === identity.workspaceId &&
-            existing.runId === input.runId
-          ) {
-            return toSession(existing);
-          }
+          if (isSameRun(existing, identity, input.runId)) return toSession(existing);
           throw new SessionsError("issue_claimed");
         }
 
-        const [created] = await tx
-          .insert(workSessions)
-          .values({
-            id: randomUUID(),
-            agentId: identity.agentId,
-            runId: input.runId,
-            workspaceId: identity.workspaceId,
-            issueId: issue.id,
-            status: WorkSessionStatus.enum.active,
-            leaseExpiresAt: fiveMinutes,
-            createdAt: sql`statement_timestamp()`,
-            updatedAt: sql`statement_timestamp()`,
-          })
-          .onConflictDoNothing()
-          .returning(sessionColumns);
+        const created = await insertFreshSession(tx, issue.id, {
+          id: randomUUID(),
+          agentId: identity.agentId,
+          runId: input.runId,
+          workspaceId: identity.workspaceId,
+          issueId: issue.id,
+          status: WorkSessionStatus.enum.active,
+          leaseExpiresAt: fiveMinutes,
+          createdAt: sql`statement_timestamp()`,
+          updatedAt: sql`statement_timestamp()`,
+        });
         if (created !== undefined) return toSession(created);
 
-        // The partial unique index won a concurrent race: a helper on the same issue may
-        // join only if it is the same agent and run; everyone else is refused.
-        const winner = await findActive(tx, issue.id);
-        if (
-          winner !== undefined &&
-          winner.agentId === identity.agentId &&
-          winner.workspaceId === identity.workspaceId &&
-          winner.runId === input.runId
-        ) {
-          return toSession(winner);
-        }
+        // A different live claimant won the partial unique index; it is never joined.
         throw new SessionsError("issue_claimed");
       });
     },
 
-    async renew(actor, issueId) {
-      return withLiveSession(actor, issueId, async (tx, sessionId) => {
+    async renew(actor, issueId, sessionId) {
+      return withLiveSession(actor, issueId, sessionId, async (tx, id) => {
         const [updated] = await tx
           .update(workSessions)
           .set({ leaseExpiresAt: fiveMinutes, updatedAt: sql`statement_timestamp()` })
-          .where(eq(workSessions.id, sessionId))
+          .where(
+            and(
+              eq(workSessions.id, id),
+              eq(workSessions.status, WorkSessionStatus.enum.active),
+              liveLease,
+            ),
+          )
           .returning(sessionColumns);
         return updated;
       });
     },
 
-    async progress(actor, issueId, summary) {
-      return withLiveSession(actor, issueId, async (tx, sessionId) => {
+    async progress(actor, issueId, summary, sessionId) {
+      return withLiveSession(actor, issueId, sessionId, async (tx, id) => {
         const [updated] = await tx
           .update(workSessions)
           .set({
@@ -395,14 +472,20 @@ export function createSessionsService({
             progressUpdatedAt: sql`statement_timestamp()`,
             updatedAt: sql`statement_timestamp()`,
           })
-          .where(eq(workSessions.id, sessionId))
+          .where(
+            and(
+              eq(workSessions.id, id),
+              eq(workSessions.status, WorkSessionStatus.enum.active),
+              liveLease,
+            ),
+          )
           .returning(sessionColumns);
         return updated;
       });
     },
 
-    async stop(actor, issueId, outcome) {
-      return withLiveSession(actor, issueId, async (tx, sessionId) => {
+    async stop(actor, issueId, outcome, sessionId) {
+      return withLiveSession(actor, issueId, sessionId, async (tx, id) => {
         const [updated] = await tx
           .update(workSessions)
           .set({
@@ -410,7 +493,13 @@ export function createSessionsService({
             endedAt: sql`statement_timestamp()`,
             updatedAt: sql`statement_timestamp()`,
           })
-          .where(eq(workSessions.id, sessionId))
+          .where(
+            and(
+              eq(workSessions.id, id),
+              eq(workSessions.status, WorkSessionStatus.enum.active),
+              liveLease,
+            ),
+          )
           .returning(sessionColumns);
         return updated;
       });
@@ -436,32 +525,9 @@ export function createSessionsService({
             ProjectAccessLevel.enum.read,
             "issue_not_found",
           );
-          const [run] = await tx
-            .select({ id: runs.id })
-            .from(runs)
-            .where(
-              and(
-                eq(runs.id, input.runId),
-                eq(runs.agentId, identity.agentId),
-                eq(runs.workspaceId, identity.workspaceId),
-              ),
-            )
-            .limit(1);
-          if (run === undefined) throw new SessionsError("run_not_found");
+          await requireRun(tx, identity, input.runId);
 
-          const [row] = await tx
-            .select(sessionColumns)
-            .from(workSessions)
-            .where(
-              and(
-                eq(workSessions.issueId, input.issueId),
-                eq(workSessions.agentId, identity.agentId),
-                eq(workSessions.workspaceId, identity.workspaceId),
-                eq(workSessions.runId, input.runId),
-              ),
-            )
-            .orderBy(desc(workSessions.createdAt))
-            .limit(1);
+          const row = await findLatestForRun(tx, input.issueId, identity, input.runId);
           if (row === undefined) {
             return {
               runId: input.runId,
@@ -505,86 +571,44 @@ export function createSessionsService({
           ProjectAccessLevel.enum.contribute,
           "issue_not_found",
         );
-        const [run] = await tx
-          .select({ id: runs.id })
-          .from(runs)
-          .where(
-            and(
-              eq(runs.id, input.runId),
-              eq(runs.agentId, identity.agentId),
-              eq(runs.workspaceId, identity.workspaceId),
-            ),
-          )
-          .limit(1);
-        if (run === undefined) throw new SessionsError("run_not_found");
+        await requireRun(tx, identity, input.runId);
 
         // An idempotent retry after reconnect: the same run re-acquiring an issue it
         // already holds live returns that one session instead of registering a second.
         const active = await findActive(tx, issue.id);
         if (active !== undefined) {
-          if (
-            active.agentId === identity.agentId &&
-            active.workspaceId === identity.workspaceId &&
-            active.runId === input.runId
-          ) {
-            return toSession(active);
-          }
+          if (isSameRun(active, identity, input.runId)) return toSession(active);
           throw new SessionsError("issue_claimed");
         }
 
         // Reacquisition belongs to the run that owned the expired claim. A run that never
         // claimed, or one whose session already ended, has nothing to reacquire; it must
         // use claim instead. A stale write can never become this fresh claim.
-        const [prior] = await tx
-          .select(sessionColumns)
-          .from(workSessions)
-          .where(
-            and(
-              eq(workSessions.issueId, issue.id),
-              eq(workSessions.agentId, identity.agentId),
-              eq(workSessions.workspaceId, identity.workspaceId),
-              eq(workSessions.runId, input.runId),
-            ),
-          )
-          .orderBy(desc(workSessions.createdAt))
-          .limit(1);
+        const prior = await findLatestForRun(tx, issue.id, identity, input.runId);
         if (prior === undefined || prior.status !== WorkSessionStatus.enum.expired) {
           throw new SessionsError("session_required");
         }
-        // A paused issue is not available, even with no competing claimant.
-        if (issue.needsInput) throw new SessionsError("issue_blocked");
+        // A closed or paused issue is not available, even with no competing claimant.
+        if (issue.status !== "open" || issue.needsInput) throw new SessionsError("issue_blocked");
 
         // A fresh active row for the same identity, carrying forward the recorded progress
         // so an interruption does not erase work already reported.
-        const [created] = await tx
-          .insert(workSessions)
-          .values({
-            id: randomUUID(),
-            agentId: identity.agentId,
-            runId: input.runId,
-            workspaceId: identity.workspaceId,
-            issueId: issue.id,
-            status: WorkSessionStatus.enum.active,
-            leaseExpiresAt: fiveMinutes,
-            progress: prior.progress,
-            progressUpdatedAt: prior.progressUpdatedAt,
-            createdAt: sql`statement_timestamp()`,
-            updatedAt: sql`statement_timestamp()`,
-          })
-          .onConflictDoNothing()
-          .returning(sessionColumns);
+        const created = await insertFreshSession(tx, issue.id, {
+          id: randomUUID(),
+          agentId: identity.agentId,
+          runId: input.runId,
+          workspaceId: identity.workspaceId,
+          issueId: issue.id,
+          status: WorkSessionStatus.enum.active,
+          leaseExpiresAt: fiveMinutes,
+          progress: prior.progress,
+          progressUpdatedAt: prior.progressUpdatedAt,
+          createdAt: sql`statement_timestamp()`,
+          updatedAt: sql`statement_timestamp()`,
+        });
         if (created !== undefined) return toSession(created);
 
-        // The partial index won a concurrent race: only this same run may take the retry.
-        const winner = await findActive(tx, issue.id);
-        if (
-          winner !== undefined &&
-          winner.agentId === identity.agentId &&
-          winner.workspaceId === identity.workspaceId &&
-          winner.runId === input.runId
-        ) {
-          return toSession(winner);
-        }
+        // A different live claimant won the partial unique index; it is never joined.
         throw new SessionsError("issue_claimed");
       });
     },
