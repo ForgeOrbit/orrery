@@ -5,7 +5,8 @@ import { createAccountsRest, createSessionReader, routes, type SessionReader } f
 import { type AccountsDeps, createAccountsService } from "./service.ts";
 
 export { routes as accountsRoutes };
-export { startupWarnings } from "./service.ts";
+export { createAccountsService, startupWarnings } from "./service.ts";
+export { accountByEmail, invalidateAccountSessions, setAccountPassword } from "./service.ts";
 export type { AccountsService, SessionPolicy, SessionAccount } from "./service.ts";
 export { createSessionReader, type SessionReader } from "./rest.ts";
 
@@ -19,6 +20,9 @@ export interface AccountsFeature extends Feature {
   markEmailVerified: AccountsService["markEmailVerified"];
   createInvitedHuman: AccountsService["createInvitedHuman"];
   emailRegistered: AccountsService["emailRegistered"];
+  accountByEmail: AccountsService["accountByEmail"];
+  setPassword: AccountsService["setPassword"];
+  invalidateBrowserSessions: AccountsService["invalidateBrowserSessions"];
 }
 
 export function createAccountsFeature(deps: AccountsDeps): AccountsFeature {
@@ -30,5 +34,8 @@ export function createAccountsFeature(deps: AccountsDeps): AccountsFeature {
     markEmailVerified: (humanId, tx) => service.markEmailVerified(humanId, tx),
     createInvitedHuman: (input, tx) => service.createInvitedHuman(input, tx),
     emailRegistered: (email, tx) => service.emailRegistered(email, tx),
+    accountByEmail: (email, tx) => service.accountByEmail(email, tx),
+    setPassword: (humanId, password, tx) => service.setPassword(humanId, password, tx),
+    invalidateBrowserSessions: (humanId, tx) => service.invalidateBrowserSessions(humanId, tx),
   };
 }

@@ -107,6 +107,39 @@ export function rejectLogin(): AccountsError {
   return new AccountsError("invalid_credentials");
 }
 
+// Accounts owns humans and browser sessions, so the writes a password recovery earns
+// are exposed here rather than duplicated in another feature. A runner is the caller's
+// transaction when a flow must be atomic with its token redemption, or the database
+// itself for the local recovery command. Only password hashes and browser sessions are
+// touched: bootstrap, agent keys, and workspace ownership belong to other features.
+type AccountRunner = PostgresJsDatabase | DbTransaction;
+
+export async function accountByEmail(runner: AccountRunner, email: string) {
+  const [row] = await runner
+    .select({
+      humanId: humans.id,
+      email: humans.email,
+      emailVerifiedAt: humans.emailVerifiedAt,
+    })
+    .from(humans)
+    .where(eq(humans.email, email))
+    .limit(1);
+  return row ?? null;
+}
+
+export async function setAccountPassword(runner: AccountRunner, humanId: string, password: string) {
+  // Hashing stays accounts' policy (scrypt with recorded parameters), never the caller's:
+  // the raw password reaches no other feature, no event, and no log.
+  const passwordHash = await hashPassword(password);
+  await runner.update(humans).set({ passwordHash }).where(eq(humans.id, humanId));
+}
+
+export async function invalidateAccountSessions(runner: AccountRunner, humanId: string) {
+  // Only browser sessions end on a password reset. Agent keys live in the agents
+  // feature and are deliberately untouched (issue #31, story 12).
+  await runner.delete(browserSessions).where(eq(browserSessions.humanId, humanId));
+}
+
 // The account behind a live browser session: what any feature needs to authorize a
 // request. The cookie's token is accounts' transport detail; this is its account-level
 // answer.
@@ -156,6 +189,15 @@ export interface AccountsService {
   // double an account (invitations now). Accounts owns humans, so the check lives here.
   // Passing a transaction evaluates the check inside the caller's transaction boundary.
   emailRegistered(email: string, tx?: DbTransaction): Promise<boolean>;
+  // Recovery's narrow seams onto the account it changes: the email and verification mark
+  // decide whether a reset may be mailed, and the two writes end browser sessions and
+  // change the password without touching bootstrap, agents, or workspaces.
+  accountByEmail(
+    email: string,
+    tx?: DbTransaction,
+  ): Promise<{ humanId: string; email: string; emailVerifiedAt: Date | null } | null>;
+  setPassword(humanId: string, password: string, tx: DbTransaction): Promise<void>;
+  invalidateBrowserSessions(humanId: string, tx: DbTransaction): Promise<void>;
 }
 
 // One place creates a human with their personal workspace (issue #23): bootstrap's
@@ -316,6 +358,18 @@ export function createAccountsService({
         .where(eq(humans.email, email))
         .limit(1);
       return rows.length > 0;
+    },
+
+    async accountByEmail(email: string, tx?: DbTransaction) {
+      return accountByEmail(tx ?? db, email);
+    },
+
+    async setPassword(humanId: string, password: string, tx: DbTransaction) {
+      await setAccountPassword(tx, humanId, password);
+    },
+
+    async invalidateBrowserSessions(humanId: string, tx: DbTransaction) {
+      await invalidateAccountSessions(tx, humanId);
     },
   };
 }

@@ -585,6 +585,45 @@
           "token"
         ]
       },
+      "RecoveryMessage": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ]
+      },
+      "RequestPasswordReset": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "$ref": "#/components/schemas/Email"
+          }
+        },
+        "required": [
+          "email"
+        ]
+      },
+      "ConfirmPasswordReset": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "password": {
+            "$ref": "#/components/schemas/NewPassword"
+          }
+        },
+        "required": [
+          "token",
+          "password"
+        ]
+      },
       "InstallationInvitation": {
         "type": "object",
         "properties": {
@@ -2471,6 +2510,82 @@
           },
           "401": {
             "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/password-reset/request": {
+      "post": {
+        "summary": "Ask for a password reset link",
+        "description": "Always answers the same way, whether or not the address has an account and whether or not its email is verified (#20). Only a verified address is sent mail, and a broken relay is swallowed with the same answer rather than disclosed. No link is sent for an unverified address: that account recovers locally. The emailed link changes nothing on GET; a POST to the confirm route is what sets a password.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestPasswordReset"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The same answer for every address",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryMessage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/password-reset/confirm": {
+      "post": {
+        "summary": "Set a new password with the token from the reset email",
+        "description": "Redeems the emailed token and sets the new password in one transaction. The token is single-use, short-lived, and checked in database time; the link's GET changes nothing. Every prior browser session for the account is signed out, while agent API keys stay live. No account or email state is disclosed beyond the token's bearer.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmPasswordReset"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The password was reset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryMessage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid, or the link is invalid, expired, or already used",
             "content": {
               "application/problem+json": {
                 "schema": {

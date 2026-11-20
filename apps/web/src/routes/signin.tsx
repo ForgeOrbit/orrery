@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-router";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { sessionQuery, signIn, type Session } from "../features/accounts/index.ts";
@@ -88,6 +88,9 @@ function SignInPage() {
           Sign in
         </button>
       </form>
+      <p>
+        <Link to="/forgot-password">Forgot your password?</Link>
+      </p>
     </main>
   );
 }

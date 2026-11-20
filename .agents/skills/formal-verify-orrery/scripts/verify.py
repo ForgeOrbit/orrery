@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Orrery Formal Verification Model Checker (M1-M10).
+Orrery Formal Verification Model Checker (M1-M13).
 
 Extracts critical concurrency, locking, and state-transition guards directly from
 Orrery's server source and SQL migrations, then runs an exhaustive BFS finite-state
@@ -579,6 +579,79 @@ def extract_code_facts() -> dict[str, Any]:
         and "await sessionReader(c)" in set_access_rest
     )
 
+    # M13 (#31): password reset and local recovery. Each guard is read from the
+    # function or table that owns the decision, so deleting one produces a short
+    # counterexample naming the exact API path and TS function.
+    rec_src = read_text("apps/server/src/features/recovery/service.ts")
+    rec_rest_src = read_text("apps/server/src/features/recovery/rest.ts")
+    rec_cli_src = read_text("apps/server/src/recovery-cli.ts")
+    rec_request_fn = slice_between(rec_src, "async requestReset(email)", "async confirmReset(token, password)")
+    rec_confirm_fn = slice_between(rec_src, "async confirmReset(token, password)", "async localRecover(email, password)")
+    rec_local_fn = slice_between(rec_src, "async localRecover(email, password)", "}")
+    rec_change_fn = slice_between(rec_src, "async function changePasswordAndSignOut(", "export function createRecoveryService")
+    rec_tokens_table = slice_between(schema_src := read_text("apps/server/src/db/schema.ts"), "export const passwordResetTokens = pgTable(", "// Recovery and password-reset events")
+    rec_events_table = slice_between(schema_src, "export const accountRecoveryEvents = pgTable(", "// An invitation (issue #23)")
+    rec_token_insert = slice_between(rec_request_fn, ".insert(passwordResetTokens)", "try {")
+
+    m13_token_hash_only = (
+        "tokenHash: tokenHash(token)" in rec_token_insert
+        and '"token_hash"' in rec_tokens_table
+        and '"password"' not in rec_tokens_table
+        and '"secret"' not in rec_tokens_table
+    )
+    verified_branch = rec_request_fn.find("account.emailVerifiedAt !== null")
+    deliver_at = rec_request_fn.find("await deliver(")
+    m13_unverified_no_mail = (
+        verified_branch >= 0 and deliver_at > verified_branch
+    )
+    m13_uniform_response = (
+        "return { message: PASSWORD_RESET_REQUEST_MESSAGE };" in rec_request_fn
+        and "return { email:" not in rec_request_fn
+        and "return { humanId:" not in rec_request_fn
+    )
+    m13_failed_send_deletes_token = (
+        "await db.delete(passwordResetTokens)" in rec_request_fn
+        and "catch (error)" in rec_request_fn
+    )
+    m13_single_use = (
+        "isNull(passwordResetTokens.usedAt)" in rec_confirm_fn
+        and 'throw new RecoveryError("reset_token_invalid")' in rec_confirm_fn
+    )
+    m13_db_time_expiry = "gt(passwordResetTokens.expiresAt, sql`now()`)" in rec_confirm_fn
+    m13_one_tx = (
+        "await db.transaction(async (tx) =>" in rec_confirm_fn
+        and "changePasswordAndSignOut(" in rec_confirm_fn
+        and "await db.transaction(async (tx) =>" in rec_local_fn
+    )
+    m13_sessions_cleared = (
+        "invalidateBrowserSessions(humanId, tx)" in rec_change_fn
+        and "await runner.delete(browserSessions)" in acc_src
+    )
+    m13_agent_keys_untouched = all(
+        word not in rec_change_fn and word not in rec_cli_src
+        for word in ("agentApiKeys", "agentKeyEvents", "agents)", "revokeAgent")
+    )
+    m13_scope_untouched = all(
+        word not in rec_change_fn and word not in rec_local_fn and word not in rec_cli_src
+        for word in ("instanceSetup", "workspaces", "workspaceMemberships", "setupAdmin", "appointOwner")
+    )
+    m13_events_without_secret = (
+        "insert(accountRecoveryEvents)" in rec_change_fn
+        and '"token_hash"' not in rec_events_table
+        and '"password"' not in rec_events_table
+        and '"secret"' not in rec_events_table
+        and "tokenHash:" not in rec_change_fn
+    )
+    m13_local_no_smtp = (
+        "deliver(" not in rec_local_fn
+        and "localRecover(" in rec_cli_src
+        and "local recovery never sends mail" in rec_cli_src
+    )
+    m13_http_problems = (
+        rec_rest_src.count("400: problem(") >= 2
+        and rec_rest_src.count("app.openapi(") >= 2
+    )
+
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
         "m2a_supersedes_failed": m2a_supersedes_failed,
@@ -653,6 +726,19 @@ def extract_code_facts() -> dict[str, Any]:
         "m12_rest_bearer": m12_rest_bearer,
         "m12_rest_admin_session": m12_rest_admin_session,
         "m12_list_scope": m12_list_scope,
+        "m13_token_hash_only": m13_token_hash_only,
+        "m13_unverified_no_mail": m13_unverified_no_mail,
+        "m13_uniform_response": m13_uniform_response,
+        "m13_failed_send_deletes_token": m13_failed_send_deletes_token,
+        "m13_single_use": m13_single_use,
+        "m13_db_time_expiry": m13_db_time_expiry,
+        "m13_one_tx": m13_one_tx,
+        "m13_sessions_cleared": m13_sessions_cleared,
+        "m13_agent_keys_untouched": m13_agent_keys_untouched,
+        "m13_scope_untouched": m13_scope_untouched,
+        "m13_events_without_secret": m13_events_without_secret,
+        "m13_local_no_smtp": m13_local_no_smtp,
+        "m13_http_problems": m13_http_problems,
     }
 
 
@@ -1521,6 +1607,203 @@ def check_m12(facts: dict[str, Any]) -> CheckResult:
     )
 
 
+def check_m13(facts: dict[str, Any]) -> CheckResult:
+    # #31 password recovery and local administrator recovery. BFS over the token
+    # lifecycle (issued, just before/after expiry in database time, used), delivery
+    # failures, and both password-change paths. Every guard comes from the source of
+    # the decision; removing one makes the corresponding forbidden state reachable.
+    single_use = facts["m13_single_use"]
+    db_time = facts["m13_db_time_expiry"]
+    unverified_guard = facts["m13_unverified_no_mail"]
+    uniform = facts["m13_uniform_response"]
+    failed_send_deletes = facts["m13_failed_send_deletes_token"]
+    one_tx = facts["m13_one_tx"]
+    sessions_cleared = facts["m13_sessions_cleared"]
+    keys_untouched = facts["m13_agent_keys_untouched"]
+    scope_untouched = facts["m13_scope_untouched"]
+    audit_ok = facts["m13_events_without_secret"]
+    local_no_smtp = facts["m13_local_no_smtp"]
+
+    fields = [
+        "token", "verified", "smtp", "mailed", "pw_changed", "expired_used", "reused",
+        "torn", "leak", "secret_event", "bootstrap", "owner", "sessions", "keys",
+        "events", "smtp_dependency", "unverified_mailed", "raw_token_stored", "no_problem",
+    ]
+    idx = {name: i for i, name in enumerate(fields)}
+
+    def setf(state, **kwargs):
+        values = list(state)
+        for name, value in kwargs.items():
+            values[idx[name]] = value
+        return tuple(values)
+
+    def add_event(events, kind):
+        # A frozenset keeps the event space finite across repeated requests; only the
+        # presence of a secret-free event matters to this model.
+        return events | {kind}
+
+    init = (
+        "none", False, True, False, False, False, False, False, False, False,
+        "closed", "u1", frozenset({"s1", "s2"}), frozenset({"k1"}), frozenset(),
+        False, False, not facts["m13_token_hash_only"], not facts["m13_http_problems"],
+    )
+
+    def next_states(state):
+        out = []
+        token = state[idx["token"]]
+
+        # Environment: the separate verification flow and the administrator's relay.
+        if not state[idx["verified"]]:
+            out.append(("email verified by the separate verification flow", setf(state, verified=True)))
+        if state[idx["smtp"]]:
+            out.append(("SMTP breaks", setf(state, smtp=False)))
+        else:
+            out.append(("SMTP repaired", setf(state, smtp=True)))
+
+        # Every request answers the same resource; only an eligible, verified address
+        # with a working relay creates a live token and sends mail.
+        for label, eligibility in (
+            ("request for an unknown address", "unknown"),
+            ("request for an unverified address", "unverified"),
+            ("request for a verified address", "verified"),
+        ):
+            new = state
+            if not uniform:
+                new = setf(new, leak=True)
+            if eligibility == "verified" and state[idx["smtp"]]:
+                new = setf(
+                    new,
+                    token="pre",
+                    mailed=True,
+                    events=add_event(state[idx["events"]], "requested"),
+                )
+                if not audit_ok:
+                    new = setf(new, secret_event=True)
+            elif eligibility == "verified" and not failed_send_deletes:
+                # Mail never left, but a token row survived: an undelivered link is live.
+                new = setf(new, token="pre", mailed=False)
+            elif eligibility == "unverified" and not unverified_guard:
+                new = setf(
+                    new,
+                    token="pre",
+                    mailed=True,
+                    unverified_mailed=True,
+                    events=add_event(state[idx["events"]], "requested"),
+                )
+                if not audit_ok:
+                    new = setf(new, secret_event=True)
+            out.append((label, new))
+
+        # The token crosses its one-hour deadline in database time.
+        if token == "pre":
+            out.append(("database time passes the one-hour deadline", setf(state, token="post")))
+
+        # Redemption: a POST is the only thing that consumes the token.
+        if token in ("pre", "post", "used"):
+            # A fresh token redeems either way; single-use and database-time expiry are
+            # what refuse the *later* attempts (reuse and post-deadline redemption).
+            allowed = (
+                token == "pre"
+                or (token == "post" and not db_time)
+                or (token == "used" and not single_use)
+            )
+            if allowed:
+                new = setf(
+                    state,
+                    token="used",
+                    sessions=frozenset(),
+                    events=add_event(state[idx["events"]], "completed"),
+                )
+                if token == "post":
+                    new = setf(new, expired_used=True)
+                if token == "used":
+                    new = setf(new, reused=True)
+                if not one_tx:
+                    # Token consumed but the password change did not commit with it.
+                    new = setf(new, torn=True)
+                else:
+                    new = setf(new, pw_changed=True)
+                if not sessions_cleared:
+                    new = setf(new, sessions=state[idx["sessions"]])
+                if not keys_untouched:
+                    new = setf(new, keys=frozenset())
+                if not audit_ok:
+                    new = setf(new, secret_event=True)
+                out.append(("confirmReset(token) redeems the link", new))
+            else:
+                out.append(("confirmReset(token) refused: invalid, expired, or used", state))
+        else:
+            out.append(("confirmReset(fabricated token) refused", state))
+
+        # The local command changes the password with no email, no token, and no SMTP.
+        new = setf(
+            state,
+            sessions=frozenset(),
+            pw_changed=True,
+            events=add_event(state[idx["events"]], "local"),
+        )
+        if not sessions_cleared:
+            new = setf(new, sessions=state[idx["sessions"]])
+        if not keys_untouched:
+            new = setf(new, keys=frozenset())
+        if not scope_untouched:
+            new = setf(new, bootstrap="open", owner="u2")
+        if not audit_ok:
+            new = setf(new, secret_event=True)
+        if not local_no_smtp:
+            new = setf(new, smtp_dependency=True)
+        out.append(("local recovery changes the password with broken SMTP", new))
+        return out
+
+    def inv(state):
+        if state[idx["leak"]]:
+            return False, "A recovery response revealed whether an account exists or is verified."
+        if state[idx["unverified_mailed"]]:
+            return False, "A password reset was mailed to an unverified address."
+        if state[idx["raw_token_stored"]]:
+            return False, "A raw reset token, password, or secret was stored."
+        if state[idx["no_problem"]]:
+            return False, "A validated recovery route does not declare a 400 Problem."
+        if state[idx["secret_event"]]:
+            return False, "A recovery event carried a secret, or its table can store one."
+        if state[idx["expired_used"]]:
+            return False, "A reset token just after its database-time deadline was redeemed."
+        if state[idx["reused"]]:
+            return False, "A single-use reset token was redeemed twice."
+        if state[idx["torn"]]:
+            return False, "A token was consumed without the password change committing with it."
+        if state[idx["token"]] == "used" and not state[idx["mailed"]]:
+            return False, "A token whose email never left was redeemable."
+        if state[idx["pw_changed"]] and state[idx["sessions"]]:
+            return False, "Prior browser sessions survived a password change."
+        if state[idx["pw_changed"]] and state[idx["keys"]] != frozenset({"k1"}):
+            return False, "Agent API keys were touched by a password recovery."
+        if state[idx["bootstrap"]] != "closed":
+            return False, "Local recovery reopened bootstrap."
+        if state[idx["owner"]] != "u1":
+            return False, "Local recovery changed workspace ownership."
+        if state[idx["smtp_dependency"]]:
+            return False, "Local recovery depended on a working SMTP relay."
+        return True, ""
+
+    return bfs_check(
+        "M13",
+        "Password Recovery & Local Recovery (#31)",
+        "Reset links are single-use and expire in database time, unverified addresses are never mailed, responses never enumerate accounts, both paths end browser sessions without touching agent keys/bootstrap/ownership, and local recovery works without SMTP",
+        "safety",
+        init,
+        next_states,
+        inv,
+        [
+            "apps/server/src/features/recovery/service.ts",
+            "apps/server/src/features/recovery/rest.ts",
+            "apps/server/src/features/accounts/service.ts",
+            "apps/server/src/recovery-cli.ts",
+            "apps/server/src/db/schema.ts",
+        ],
+    )
+
+
 def main() -> None:
     facts = extract_code_facts()
     results = [
@@ -1537,6 +1820,7 @@ def main() -> None:
         check_m10(facts),
         check_m11(facts),
         check_m12(facts),
+        check_m13(facts),
     ]
 
     if "--json" in sys.argv:
