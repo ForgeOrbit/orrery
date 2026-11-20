@@ -13,6 +13,11 @@ blocked and submit work for review. A shared Markdown vault gives them the conte
 These pages are also published on the website:
 <https://forge-orbit.github.io/orrery-site/docs/>.
 
+## Guides
+
+- [Claude Code run reporting](./guides/claude-code-runs.md) — hook and static MCP setup, with the
+  [issue #44](https://github.com/forge-orbit/orrery/issues/44) gate results.
+
 ## Planned guides
 
 | Guide | Covers | Milestone |
