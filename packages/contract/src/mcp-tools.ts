@@ -21,8 +21,11 @@ import {
   GetWorkSessionInput,
   ReadyWorkInput,
   ReadyWorkResponse,
+  ReacquireWorkSessionInput,
   RenewWorkSessionInput,
   ReportProgressInput,
+  ResumeWorkSessionInput,
+  ResumeWorkSessionResponse,
   StopWorkSessionInput,
   WorkSessionResponse,
   WorkSessionsListInput,
@@ -195,6 +198,27 @@ const getWorkSession = {
   output: WorkSessionResponse,
 };
 
+// Resume and reacquisition (issue #40). Resume is a pure read for the original run: it
+// reports whether that run still holds a live claim, has an expired one, or never claimed,
+// and keeps the recorded progress visible. Reacquire re-arms only the run's own expired
+// claim, and only when the issue has no live claimant and is not paused for input. Neither
+// call ever resurrects an expired lease or turns a stale call into a fresh claim.
+const resumeWorkSession = {
+  name: "resume_work_session",
+  description:
+    "Inspect the work session the given run (the harness conversation, including resumes) recorded for an issue. Returns disposition active, expired, ended or none, and the session with its recorded progress. This is a read in database time: it never renews or resurrects an expired lease.",
+  input: ResumeWorkSessionInput,
+  output: ResumeWorkSessionResponse,
+};
+
+const reacquireWorkSession = {
+  name: "reacquire_issue",
+  description:
+    "Reacquire this run's expired claim on an issue after an interruption. Creates a new active session for the same agent, run, workspace and issue, carrying forward the recorded progress, and only when no other worker holds a live claim and the issue is not paused for input. Retries with the same run return the same session; a stale call on an expired session is refused, never turned into a fresh claim.",
+  input: ReacquireWorkSessionInput,
+  output: WorkSessionResponse,
+};
+
 const readyWork = {
   name: "ready_work",
   description:
@@ -237,6 +261,8 @@ export const sessionTools: readonly ToolContract[] = [
   reportProgress,
   stopSession,
   getWorkSession,
+  resumeWorkSession,
+  reacquireWorkSession,
   readyWork,
   allSessionsForIssue,
 ];

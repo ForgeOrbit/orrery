@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Orrery Formal Verification Model Checker (M1-M16).
+Orrery Formal Verification Model Checker (M1-M18).
 
 Extracts critical concurrency, locking, and state-transition guards directly from
 Orrery's server source and SQL migrations, then runs an exhaustive BFS finite-state
@@ -1008,6 +1008,72 @@ def extract_code_facts() -> dict[str, Any]:
         and "isAgentError(error)" in sess_rest_src
         and "SessionsError" in sess_rest_src
     )
+
+    # M18 (#40): resume, progress retention, reacquisition and stale-session rejection.
+    # Each guard is read from the function that owns the decision, so a deleted guard
+    # produces a short counterexample naming the exact operation and TS function.
+    sess_contract = read_text("packages/contract/src/sessions.ts")
+    resume_fn = slice_between(sess_src, "async resume(actor, input)", "async reacquire(actor, input)")
+    reacquire_fn = slice_between(sess_src, "async reacquire(actor, input)", "async getSession(actorArg, issueId)")
+    renew_only_fn = slice_between(sess_src, "async renew(actor, issueId)", "async progress(actor, issueId, summary)")
+    progress_only_fn = slice_between(sess_src, "async progress(actor, issueId, summary)", "async stop(actor, issueId, outcome)")
+    stop_only_fn = slice_between(sess_src, "async stop(actor, issueId, outcome)", "async resume(actor, input)")
+    session_columns_fn = slice_between(sess_src, "const sessionColumns =", "const iso =")
+
+    m18_resume_read_only = (
+        'accessMode: "read only"' in resume_fn
+        and "expireCommitted(" not in resume_fn
+        and "expireStale(" not in resume_fn
+    )
+    m18_resume_db_time = (
+        '"expired"' in resume_fn
+        and "effectiveStatus" in session_columns_fn
+        and "statement_timestamp()" in session_columns_fn
+    )
+    m18_resume_keeps_progress = "session: toSession(row)" in resume_fn and "progress" in session_columns_fn
+    m18_stale_rejected = all(
+        "withLiveSession(" in fn
+        for fn in (renew_only_fn, progress_only_fn, stop_only_fn)
+    ) and 'throw new SessionsError("session_required")' in live_fn
+    m18_db_time_liveness = (
+        "lte(workSessions.leaseExpiresAt, sql`statement_timestamp()`)" in expire_fn
+        and "expireStale(tx" in live_fn
+        and "expireCommitted(issueId)" in sess_src
+    )
+    m18_reacquire_available = (
+        "const active = await findActive(tx, issue.id)" in reacquire_fn
+        and "issue.needsInput" in reacquire_fn
+        and 'throw new SessionsError("issue_claimed")' in reacquire_fn
+        and 'throw new SessionsError("issue_blocked")' in reacquire_fn
+    )
+    m18_reacquire_expired_only = (
+        "prior.status !== WorkSessionStatus.enum.expired" in reacquire_fn
+        and 'throw new SessionsError("session_required")' in reacquire_fn
+    )
+    m18_reacquire_carries_progress = (
+        "progress: prior.progress" in reacquire_fn
+        and "progressUpdatedAt: prior.progressUpdatedAt" in reacquire_fn
+    )
+    m18_reacquire_fresh_session = (
+        "id: randomUUID()" in reacquire_fn and "leaseExpiresAt: fiveMinutes" in reacquire_fn
+    )
+    m18_idempotent = (
+        "existing.runId === input.runId" in claim_fn
+        and "active.runId === input.runId" in reacquire_fn
+        and "return toSession(active)" in reacquire_fn
+    )
+    m18_adapters = (
+        "resume_work_session" in sess_mcp_src
+        and "reacquire_issue" in sess_mcp_src
+        and "resume_work_session" in tools_src
+        and "reacquire_issue" in tools_src
+        and "ResumeWorkSessionInput" in sess_contract
+    )
+    m18_http_problems = (
+        'path: "/api/issues/{issueId}/work-sessions/resume"' in sess_rest_src
+        and 'path: "/api/issues/{issueId}/work-sessions/reacquire"' in sess_rest_src
+        and sess_rest_src.count("400: problem(") >= 7
+    )
     m17_tools = all(
         name in tools_src
         for name in (
@@ -1165,6 +1231,18 @@ def extract_code_facts() -> dict[str, Any]:
         "m17_adapters": m17_adapters,
         "m17_tools": m17_tools,
         "m17_problems": m17_problems,
+        "m18_resume_read_only": m18_resume_read_only,
+        "m18_resume_db_time": m18_resume_db_time,
+        "m18_resume_keeps_progress": m18_resume_keeps_progress,
+        "m18_stale_rejected": m18_stale_rejected,
+        "m18_db_time_liveness": m18_db_time_liveness,
+        "m18_reacquire_available": m18_reacquire_available,
+        "m18_reacquire_expired_only": m18_reacquire_expired_only,
+        "m18_reacquire_carries_progress": m18_reacquire_carries_progress,
+        "m18_reacquire_fresh_session": m18_reacquire_fresh_session,
+        "m18_idempotent": m18_idempotent,
+        "m18_adapters": m18_adapters,
+        "m18_http_problems": m18_http_problems,
     }
 
 
@@ -2768,6 +2846,216 @@ def check_m17(facts: dict[str, Any]) -> CheckResult:
     )
 
 
+def check_m18(facts: dict[str, Any]) -> CheckResult:
+    """#40: resume is a read that distinguishes a live claim from an expired one without
+    resurrecting it; progress survives interruption and is carried into reacquisition;
+    reacquisition needs an expired claim of the same run and an available issue; stale
+    renew/progress/write/completion never become a fresh claim; retries do not duplicate.
+    Every transition consults a guard extracted from the live service/adapters/contract,
+    so a deleted guard yields a shortest trace naming the exact operation."""
+    read_only = facts["m18_resume_read_only"]
+    resume_db_time = facts["m18_resume_db_time"]
+    keeps_progress = facts["m18_resume_keeps_progress"]
+    stale_rejected = facts["m18_stale_rejected"]
+    db_time = facts["m18_db_time_liveness"]
+    available = facts["m18_reacquire_available"]
+    expired_only = facts["m18_reacquire_expired_only"]
+    carry = facts["m18_reacquire_carries_progress"]
+    fresh = facts["m18_reacquire_fresh_session"]
+    idempotent = facts["m18_idempotent"]
+    adapters = facts["m18_adapters"]
+    problems = facts["m18_http_problems"]
+
+    KEYS = ("owner", "gen", "status", "lease", "progress")
+    MAX_SESSIONS = 2
+
+    def rows(sessions):
+        return [dict(zip(KEYS, row)) for row in sessions]
+
+    def pack(row_list):
+        return tuple(tuple(row[k] for k in KEYS) for row in row_list)
+
+    def materialize(row_list):
+        """Lazy expiry in DB time: only lapsed active rows become expired."""
+        if not db_time:
+            return row_list
+        return [
+            dict(row, status="expired")
+            if row["status"] == "active" and row["lease"] == "lapsed"
+            else row
+            for row in row_list
+        ]
+
+    def next_gen(row_list):
+        return max([row["gen"] for row in row_list] or [0]) + 1
+
+    def run_idx(sessions, owner):
+        found = [i for i, row in enumerate(rows(sessions)) if row["owner"] == owner]
+        return max(found) if found else None
+
+    def claim(sessions, violations, owner):
+        rs = materialize(rows(sessions))
+        active = next((i for i, row in enumerate(rs) if row["status"] == "active"), None)
+        if active is not None:
+            if rs[active]["owner"] == owner:
+                if not idempotent and len(rs) < MAX_SESSIONS:
+                    rs.append(dict(owner=owner, gen=next_gen(rs), status="active", lease="fresh", progress=""))
+                    return pack(rs), violations | {"duplicate_claim_on_retry"}
+                return pack(rs), violations
+            return pack(rs), violations  # issue_claimed: another worker holds it
+        if len(rs) < MAX_SESSIONS:
+            rs.append(dict(owner=owner, gen=next_gen(rs), status="active", lease="fresh", progress=""))
+        return pack(rs), violations
+
+    def stale_write(sessions, violations, owner, action):
+        """renew, progress, completion and fenced writes all need a live held session."""
+        rs = materialize(rows(sessions))
+        idx = next(
+            (i for i, row in enumerate(rs) if row["owner"] == owner and row["status"] == "active"),
+            None,
+        )
+        if idx is None:
+            if not stale_rejected and len(rs) < MAX_SESSIONS:
+                rs.append(dict(owner=owner, gen=next_gen(rs), status="active", lease="fresh", progress=""))
+                return pack(rs), violations | {f"stale_{action}_became_claim"}
+            return pack(rs), violations
+        if not db_time and rs[idx]["lease"] == "lapsed":
+            violations = violations | {f"expired_claim_{action}_accepted"}
+            if action == "renew":
+                rs[idx]["lease"] = "fresh"
+            return pack(rs), violations
+        if action == "renew":
+            rs[idx]["lease"] = "fresh"
+        elif action == "progress":
+            rs[idx]["progress"] = "p"
+        elif action == "stop":
+            rs[idx]["status"] = "ended"
+        return pack(rs), violations
+
+    def resume(sessions, violations, owner):
+        rs = rows(sessions)
+        idx = run_idx(pack(rs), owner)
+        disposition = "none"
+        if idx is not None:
+            row = rs[idx]
+            if row["status"] == "active" and row["lease"] == "fresh":
+                disposition = "active"
+            elif row["status"] == "active" and row["lease"] == "lapsed" and not resume_db_time:
+                disposition = "active"  # buggy: a lapsed lease is reported as live
+            elif (row["status"] == "active" and row["lease"] == "lapsed") or row["status"] == "expired":
+                disposition = "expired"
+            else:
+                disposition = "ended"
+        out = pack(rs)
+        if idx is not None and not read_only:
+            # A buggy resume re-arms the lease instead of just reporting it.
+            rs[idx]["status"] = "active"
+            rs[idx]["lease"] = "fresh"
+            out = pack(rs)
+            violations = violations | {"resume_resurrected_lease"}
+        if idx is not None and not resume_db_time and row["lease"] == "lapsed":
+            violations = violations | {"resume_missed_expiry"}
+        if idx is not None and not keeps_progress:
+            violations = violations | {"resume_dropped_progress"}
+        return out, violations
+
+    def reacquire(sessions, violations, owner, needs):
+        rs = materialize(rows(sessions))
+        active = next((i for i, row in enumerate(rs) if row["status"] == "active"), None)
+        if active is not None:
+            if rs[active]["owner"] == owner:
+                if not idempotent and len(rs) < MAX_SESSIONS:
+                    rs.append(dict(owner=owner, gen=next_gen(rs), status="active", lease="fresh", progress=""))
+                    return pack(rs), violations | {"duplicate_reacquire_claim"}
+                return pack(rs), violations
+            if not available:
+                rs[active]["owner"] = owner
+                return pack(rs), violations | {"reacquire_stole_live_claim"}
+            return pack(rs), violations  # issue_claimed
+        idx = run_idx(pack(rs), owner)
+        prior = rs[idx] if idx is not None else None
+        if prior is None or prior["status"] != "expired":
+            if not expired_only and len(rs) < MAX_SESSIONS:
+                rs.append(dict(owner=owner, gen=next_gen(rs), status="active", lease="fresh", progress=""))
+                return pack(rs), violations | {"reacquire_without_expired_claim"}
+            return pack(rs), violations
+        if needs:
+            if not available and len(rs) < MAX_SESSIONS:
+                rs.append(dict(owner=owner, gen=next_gen(rs), status="active", lease="fresh", progress=prior["progress"]))
+                return pack(rs), violations | {"reacquire_while_paused"}
+            return pack(rs), violations  # issue_blocked
+        if len(rs) >= MAX_SESSIONS:
+            return pack(rs), violations
+        gen = prior["gen"] if not fresh else next_gen(rs)
+        progress = prior["progress"] if carry else ""
+        violations = violations | (set() if carry else {"progress_lost_on_reacquire"})
+        if gen == prior["gen"]:
+            violations = violations | {"lease_resurrected"}
+        rs.append(dict(owner=owner, gen=gen, status="active", lease="fresh", progress=progress))
+        return pack(rs), violations
+
+    def step(fn):
+        """Adapt a (sessions, violations) -> (sessions, violations) step to full state."""
+        def action(s, n, v):
+            ns, nv = fn(s, v)
+            return (ns, n, nv)
+        return action
+
+    def step_needs(fn):
+        """Adapt a (sessions, violations, needs) -> (sessions, violations) step."""
+        def action(s, n, v):
+            ns, nv = fn(s, v, n)
+            return (ns, n, nv)
+        return action
+
+    actions = [
+        ("the original run claims the issue", step(lambda s, v: claim(s, v, "R"))),
+        ("another worker claims the issue", step(lambda s, v: claim(s, v, "S"))),
+        ("five minutes pass in database time", lambda s, n, v: (pack([dict(row, lease="lapsed") if row["status"] == "active" else row for row in rows(s)]), n, v)),
+        ("the original run resumes its conversation", step(lambda s, v: resume(s, v, "R"))),
+        ("a stale renewal arrives on the expired session", step(lambda s, v: stale_write(s, v, "R", "renew"))),
+        ("a stale progress report arrives on the expired session", step(lambda s, v: stale_write(s, v, "R", "progress"))),
+        ("a stale completion arrives on the expired session", step(lambda s, v: stale_write(s, v, "R", "stop"))),
+        ("a stale fenced issue write arrives on the expired session", step(lambda s, v: stale_write(s, v, "R", "edit"))),
+        ("the other worker renews its live claim", step(lambda s, v: stale_write(s, v, "S", "renew"))),
+        ("the other worker completes its live claim", step(lambda s, v: stale_write(s, v, "S", "stop"))),
+        ("the original run reacquires its expired claim", step_needs(lambda s, v, n: reacquire(s, v, "R", n))),
+        ("the other worker reacquires its expired claim", step_needs(lambda s, v, n: reacquire(s, v, "S", n))),
+        ("the issue is paused for input", lambda s, n, v: (s, True, v)),
+        ("the input is answered", lambda s, n, v: (s, False, v)),
+        ("resume/reacquire tools are exposed with validated problems", lambda s, n, v: (s, n, v if adapters and problems else v | {"tools_or_problems_missing"})),
+    ]
+
+    init = ((), False, frozenset())
+
+    def inv(state):
+        sessions, _, violations = state
+        if violations:
+            reason = sorted(violations)[0]
+            return False, f"resume/reacquire invariant broken: {reason}"
+        actives = [row for row in rows(sessions) if row["status"] == "active"]
+        if len(actives) > 1:
+            return False, "two active sessions hold the same issue"
+        return True, ""
+
+    return bfs_check(
+        "M18",
+        "Resume, Reacquisition and Stale Sessions (#40)",
+        "Resume is a DB-time read that distinguishes live from expired claims without resurrecting them; progress survives interruption and reacquisition; a run reacquires only its own expired claim on an available issue; stale renew/progress/fenced writes/completions never become fresh claims; retries do not duplicate a claim",
+        "safety",
+        init,
+        lambda state: [(label, action(*state)) for label, action in actions],
+        inv,
+        [
+            "apps/server/src/features/work-sessions/service.ts",
+            "apps/server/src/features/work-sessions/rest.ts",
+            "apps/server/src/features/work-sessions/mcp.ts",
+            "packages/contract/src/sessions.ts",
+            "packages/contract/src/mcp-tools.ts",
+        ],
+    )
+
+
 def main() -> None:
     facts = extract_code_facts()
     results = [
@@ -2789,6 +3077,7 @@ def main() -> None:
         check_m15(facts),
         check_m16(facts),
         check_m17(facts),
+        check_m18(facts),
     ]
 
     if "--json" in sys.argv:

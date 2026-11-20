@@ -752,4 +752,261 @@ describe("work sessions against real Postgres", () => {
     await expectProblem(edit, 409, "session_required");
     expect(identity.agentId).toBe(f.agentId);
   });
+
+  // #40 black-box service coverage. These tests drive the public service methods against
+  // real Postgres, in database time, so interruption, resume and reacquisition exercise the
+  // same row locks, partial unique index and lazy lease expiry production relies on.
+
+  it("reports progress and retains it across interruption, distinguishing a live claim from an expired one on resume", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "Resumed issue");
+    const runId = await newRun(identity);
+    const actor = { kind: "agent" as const, identity };
+    const claim = await sessionsService.claim(actor, { issueId: issue.id, runId });
+
+    // While the lease is live, resume clearly reports an active claim with the progress.
+    await sessionsService.progress(actor, issue.id, "Drafted the plan");
+    const live = await sessionsService.resume(actor, { issueId: issue.id, runId });
+    expect(live).toMatchObject({
+      runId,
+      issueId: issue.id,
+      disposition: "active",
+      session: { id: claim.id, status: "active", progress: "Drafted the plan" },
+    });
+
+    // The client is interrupted and the five-minute lease lapses. Resume is a pure read:
+    // it reports the claim as expired with the progress intact, without renewing it.
+    await setLease(issue.id, "statement_timestamp() - interval '1 second'");
+    const interrupted = await sessionsService.resume(actor, { issueId: issue.id, runId });
+    expect(interrupted).toMatchObject({
+      disposition: "expired",
+      session: { id: claim.id, status: "expired", progress: "Drafted the plan" },
+    });
+    const [raw] = await database.db
+      .select({ status: workSessions.status })
+      .from(workSessions)
+      .where(eq(workSessions.id, claim.id));
+    expect(raw?.status).toBe("active"); // resume did not resurrect or even materialize it
+
+    // No session for another run of the same agent: disposition "none".
+    const otherRun = await newRun(identity);
+    const none = await sessionsService.resume(actor, { issueId: issue.id, runId: otherRun });
+    expect(none).toMatchObject({ disposition: "none", session: null });
+
+    // A stale completion on the expired session is refused and does not become a claim.
+    const staleStop = await rejection(sessionsService.stop(actor, issue.id, "completed"));
+    expect(errorKind(staleStop)).toBe("session_required");
+    expect(await activeCount(issue.id)).toBe(0);
+    const readBack = await sessionsService.getSession(actor, issue.id);
+    expect(readBack).toMatchObject({ status: "expired", progress: "Drafted the plan" });
+  });
+
+  it("reacquires an expired claim with its progress, and retries never duplicate the claim", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "Reacquired issue");
+    const runId = await newRun(identity);
+    const actor = { kind: "agent" as const, identity };
+    const original = await sessionsService.claim(actor, { issueId: issue.id, runId });
+    await sessionsService.progress(actor, issue.id, "Halfway through");
+    await setLease(issue.id, "statement_timestamp() - interval '1 second'");
+
+    const reacquired = await sessionsService.reacquire(actor, { issueId: issue.id, runId });
+    expect(reacquired).toMatchObject({
+      status: "active",
+      runId,
+      agentId: identity.agentId,
+      issueId: issue.id,
+      progress: "Halfway through",
+    });
+    expect(reacquired.id).not.toBe(original.id); // a fresh session, not a resurrected lease
+    expect(await activeCount(issue.id)).toBe(1);
+
+    // A replacement key with the same agent, workspace and scope sees the same session.
+    const second = await postJson(
+      "/api/agents/keys",
+      {
+        agentId: f.agentId,
+        workspaceId: f.workspaceId,
+        validity: "never",
+        projects: [{ projectId: f.projectId, level: "contribute" }],
+      },
+      f.cookie,
+    );
+    const replacement = await identityFor(CreateAgentKeyResponse.parse(await second.json()).secret);
+    const retry = await sessionsService.reacquire(
+      { kind: "agent", identity: replacement },
+      { issueId: issue.id, runId },
+    );
+    expect(retry.id).toBe(reacquired.id);
+    expect(await activeCount(issue.id)).toBe(1);
+
+    // A plain claim retry after reconnect is idempotent for the same run too.
+    const claimRetry = await sessionsService.claim(actor, { issueId: issue.id, runId });
+    expect(claimRetry.id).toBe(reacquired.id);
+    expect(await activeCount(issue.id)).toBe(1);
+  });
+
+  it("reacquires only when the issue is available, and refuses a paused issue", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "Paused reacquire issue");
+    const runId = await newRun(identity);
+    const actor = { kind: "agent" as const, identity };
+    await sessionsService.claim(actor, { issueId: issue.id, runId });
+    await sessionsService.progress(actor, issue.id, "Blocked midway");
+    await setLease(issue.id, "statement_timestamp() - interval '1 second'");
+    await database.db.update(issues).set({ needsInput: true }).where(eq(issues.id, issue.id));
+
+    const blocked = await rejection(sessionsService.reacquire(actor, { issueId: issue.id, runId }));
+    expect(errorKind(blocked)).toBe("issue_blocked");
+    expect(await activeCount(issue.id)).toBe(0);
+
+    // Once input has arrived the very same run may reacquire, with progress preserved.
+    await database.db.update(issues).set({ needsInput: false }).where(eq(issues.id, issue.id));
+    await expect(
+      sessionsService.reacquire(actor, { issueId: issue.id, runId }),
+    ).resolves.toMatchObject({ status: "active", progress: "Blocked midway" });
+  });
+
+  it("refuses stale writes and reacquisition when another worker holds the issue", async () => {
+    const f = await bootstrap();
+    const first = await identityFor(f.secret);
+    const otherAgent = await postJson(
+      "/api/agents",
+      { name: `resent-agent-${randomUUID()}` },
+      f.cookie,
+    );
+    const otherId = idOf(await otherAgent.json(), "agent");
+    const otherKey = await postJson(
+      "/api/agents/keys",
+      {
+        agentId: otherId,
+        workspaceId: f.workspaceId,
+        validity: "90",
+        projects: [{ projectId: f.projectId, level: "contribute" }],
+      },
+      f.cookie,
+    );
+    const replacement = await identityFor(
+      CreateAgentKeyResponse.parse(await otherKey.json()).secret,
+    );
+    const issue = await humanIssue(f, "Contested issue");
+    const firstRun = await newRun(first);
+    const otherRun = await newRun(replacement);
+    const stale = { kind: "agent" as const, identity: first };
+    const current = { kind: "agent" as const, identity: replacement };
+
+    await sessionsService.claim(stale, { issueId: issue.id, runId: firstRun });
+    await sessionsService.progress(stale, issue.id, "Original progress");
+    await setLease(issue.id, "statement_timestamp() - interval '1 second'");
+
+    // The replacement worker legitimately claims the released issue.
+    const replacementSession = await sessionsService.claim(current, {
+      issueId: issue.id,
+      runId: otherRun,
+    });
+    expect(replacementSession).toMatchObject({ status: "active", agentId: otherId });
+
+    // The original run cannot reacquire over a live claim, and none of its stale writes
+    // become a fresh claim: renewal, progress, fenced edit/close and completion all fail.
+    const reacquireError = await rejection(
+      sessionsService.reacquire(stale, { issueId: issue.id, runId: firstRun }),
+    );
+    expect(errorKind(reacquireError)).toBe("issue_claimed");
+    for (const operation of [
+      () => sessionsService.renew(stale, issue.id),
+      () => sessionsService.progress(stale, issue.id, "Stale overwrite"),
+      () => sessionsService.stop(stale, issue.id, "completed"),
+      () => projectsService.updateIssue(stale, issue.id, { title: "Stale title" }),
+      () => projectsService.updateIssue(stale, issue.id, { status: "closed" }),
+    ]) {
+      const error = await rejection(operation());
+      expect(errorKind(error)).toBe("session_required");
+    }
+
+    expect(await activeCount(issue.id)).toBe(1);
+    const [row] = await database.db.select().from(issues).where(eq(issues.id, issue.id));
+    expect(row?.title).toBe("Contested issue");
+    expect(row?.status).toBe("open");
+    // The original progress lives on its expired session; the replacement has none.
+    const history = await sessionsService.listSessions(current, issue.id);
+    expect(history).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          agentId: first.agentId,
+          status: "expired",
+          progress: "Original progress",
+        }),
+        expect.objectContaining({ id: replacementSession.id, status: "active" }),
+      ]),
+    );
+  });
+
+  it("exposes resume and reacquire over bearer REST without wrapping the resource", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "REST resume issue");
+    const runId = await newRun(identity);
+    const claim = await postJson(
+      `/api/issues/${issue.id}/work-sessions`,
+      { runId },
+      undefined,
+      f.secret,
+    );
+    expect(claim.status).toBe(201);
+    await postJson(
+      `/api/issues/${issue.id}/work-sessions/progress`,
+      { summary: "REST progress" },
+      undefined,
+      f.secret,
+    );
+
+    const live = await postJson(
+      `/api/issues/${issue.id}/work-sessions/resume`,
+      { runId },
+      undefined,
+      f.secret,
+    );
+    expect(live.status).toBe(200);
+    expect(await live.json()).toMatchObject({
+      disposition: "active",
+      session: { status: "active", progress: "REST progress" },
+    });
+
+    await setLease(issue.id, "statement_timestamp() - interval '1 second'");
+    const expired = await postJson(
+      `/api/issues/${issue.id}/work-sessions/resume`,
+      { runId },
+      undefined,
+      f.secret,
+    );
+    expect(await expired.json()).toMatchObject({
+      disposition: "expired",
+      session: { status: "expired", progress: "REST progress" },
+    });
+
+    const staleStop = await postJson(
+      `/api/issues/${issue.id}/work-sessions/stop`,
+      { outcome: "completed" },
+      undefined,
+      f.secret,
+    );
+    await expectProblem(staleStop, 409, "session_required");
+
+    const reacquired = await postJson(
+      `/api/issues/${issue.id}/work-sessions/reacquire`,
+      { runId },
+      undefined,
+      f.secret,
+    );
+    expect(reacquired.status).toBe(201);
+    // ADR-0003: the bare session, not a `{ session }` wrapper.
+    expect(await reacquired.json()).toMatchObject({
+      status: "active",
+      progress: "REST progress",
+    });
+    expect(identity.agentId).toBe(f.agentId);
+  });
 });

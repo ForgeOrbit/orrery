@@ -43,6 +43,18 @@ export function createSessionsMcp(service: SessionsService, authenticate: AgentA
     get_work_session: async (identity, args) => ({
       session: await service.getSession({ kind: "agent", identity }, str(args.issueId, "issueId")),
     }),
+    resume_work_session: async (identity, args) => ({
+      resume: await service.resume(
+        { kind: "agent", identity },
+        { issueId: str(args.issueId, "issueId"), runId: str(args.runId, "runId") },
+      ),
+    }),
+    reacquire_issue: async (identity, args) => ({
+      session: await service.reacquire(
+        { kind: "agent", identity },
+        { issueId: str(args.issueId, "issueId"), runId: str(args.runId, "runId") },
+      ),
+    }),
     list_work_sessions: async (identity, args) => ({
       sessions: await service.listSessions(
         { kind: "agent", identity },

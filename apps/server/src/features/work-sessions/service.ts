@@ -4,6 +4,10 @@ import {
   WorkSessionStatus,
   type AgentIdentity,
   type Issue,
+  type ReacquireWorkSessionInput,
+  type ResumeDisposition,
+  type ResumeWorkSessionInput,
+  type ResumeWorkSessionResult,
   type WorkSession,
   type WorkSessionOutcome,
 } from "@orrery/contract";
@@ -25,6 +29,7 @@ export type SessionsErrorKind =
   | "run_not_found"
   | "insufficient_access"
   | "issue_claimed"
+  | "issue_blocked"
   | "session_required";
 
 const messages: Record<SessionsErrorKind, string> = {
@@ -34,6 +39,7 @@ const messages: Record<SessionsErrorKind, string> = {
   run_not_found: "No such run belongs to this agent in this workspace.",
   insufficient_access: "Contribute access is required to work on this issue.",
   issue_claimed: "Another worker holds the active session for this issue.",
+  issue_blocked: "This issue is paused for input and cannot be reacquired yet.",
   session_required: "This agent holds no live session for this issue.",
 };
 
@@ -84,6 +90,11 @@ export interface SessionsService {
     issueId: string,
     outcome: WorkSessionOutcome,
   ): Promise<WorkSession>;
+  // #40: a pure, database-time read of the original run's claim, and the only way to
+  // re-arm an expired claim. Resume never mutates; reacquire creates a fresh active
+  // session (carrying the recorded progress) only when the issue is actually available.
+  resume(actor: AgentActor | null, input: ResumeWorkSessionInput): Promise<ResumeWorkSessionResult>;
+  reacquire(actor: AgentActor | null, input: ReacquireWorkSessionInput): Promise<WorkSession>;
   getSession(actor: WorkActor | null, issueId: string): Promise<WorkSession>;
   listSessions(actor: WorkActor | null, issueId: string): Promise<WorkSession[]>;
   readyWork(actor: WorkActor | null, projectId: string): Promise<Issue[]>;
@@ -148,7 +159,7 @@ function requireAgent(actor: AgentActor | null) {
 // consistent state and two writers to the same issue serialize.
 async function lockIssue(tx: DbTransaction, issueId: string) {
   const [row] = await tx
-    .select({ id: issues.id, projectId: issues.projectId })
+    .select({ id: issues.id, projectId: issues.projectId, needsInput: issues.needsInput })
     .from(issues)
     .where(eq(issues.id, issueId))
     .limit(1)
@@ -402,6 +413,179 @@ export function createSessionsService({
           .where(eq(workSessions.id, sessionId))
           .returning(sessionColumns);
         return updated;
+      });
+    },
+
+    async resume(actor, input) {
+      const identity = requireAgent(actor);
+      // Resume is a read. It deliberately does NOT call expireCommitted or expireStale:
+      // the effectiveStatus projection below reports a lapsed lease as expired in
+      // database time without ever resurrecting or re-arming it.
+      return db.transaction(
+        async (tx) => {
+          const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
+          const [issue] = await tx
+            .select({ projectId: issues.projectId })
+            .from(issues)
+            .where(eq(issues.id, input.issueId))
+            .limit(1);
+          if (issue === undefined) throw new SessionsError("issue_not_found");
+          await requireAccess(
+            { kind: "agent", identity },
+            issue.projectId,
+            ProjectAccessLevel.enum.read,
+            "issue_not_found",
+          );
+          const [run] = await tx
+            .select({ id: runs.id })
+            .from(runs)
+            .where(
+              and(
+                eq(runs.id, input.runId),
+                eq(runs.agentId, identity.agentId),
+                eq(runs.workspaceId, identity.workspaceId),
+              ),
+            )
+            .limit(1);
+          if (run === undefined) throw new SessionsError("run_not_found");
+
+          const [row] = await tx
+            .select(sessionColumns)
+            .from(workSessions)
+            .where(
+              and(
+                eq(workSessions.issueId, input.issueId),
+                eq(workSessions.agentId, identity.agentId),
+                eq(workSessions.workspaceId, identity.workspaceId),
+                eq(workSessions.runId, input.runId),
+              ),
+            )
+            .orderBy(desc(workSessions.createdAt))
+            .limit(1);
+          if (row === undefined) {
+            return {
+              runId: input.runId,
+              issueId: input.issueId,
+              disposition: "none" as const satisfies ResumeDisposition,
+              session: null,
+            };
+          }
+          // The DB-time projection distinguishes a live claim from an expired one without
+          // mutating the row: progress stays intact and the old lease stays expired.
+          const effective = row.effectiveStatus ?? row.status;
+          const disposition: ResumeDisposition =
+            effective === WorkSessionStatus.enum.active
+              ? "active"
+              : effective === WorkSessionStatus.enum.expired
+                ? "expired"
+                : "ended";
+          return {
+            runId: input.runId,
+            issueId: input.issueId,
+            disposition,
+            session: toSession(row),
+          };
+        },
+        { accessMode: "read only" },
+      );
+    },
+
+    async reacquire(actor, input) {
+      const identity = requireAgent(actor);
+      // As with claim, materialize any lapsed lease in a committed transaction first so a
+      // refused reacquisition still releases it. The locked check below is the decision.
+      await expireCommitted(input.issueId);
+      return db.transaction(async (tx) => {
+        const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
+        const issue = await lockIssue(tx, input.issueId);
+        await expireStale(tx, issue.id);
+        await requireAccess(
+          { kind: "agent", identity },
+          issue.projectId,
+          ProjectAccessLevel.enum.contribute,
+          "issue_not_found",
+        );
+        const [run] = await tx
+          .select({ id: runs.id })
+          .from(runs)
+          .where(
+            and(
+              eq(runs.id, input.runId),
+              eq(runs.agentId, identity.agentId),
+              eq(runs.workspaceId, identity.workspaceId),
+            ),
+          )
+          .limit(1);
+        if (run === undefined) throw new SessionsError("run_not_found");
+
+        // An idempotent retry after reconnect: the same run re-acquiring an issue it
+        // already holds live returns that one session instead of registering a second.
+        const active = await findActive(tx, issue.id);
+        if (active !== undefined) {
+          if (
+            active.agentId === identity.agentId &&
+            active.workspaceId === identity.workspaceId &&
+            active.runId === input.runId
+          ) {
+            return toSession(active);
+          }
+          throw new SessionsError("issue_claimed");
+        }
+
+        // Reacquisition belongs to the run that owned the expired claim. A run that never
+        // claimed, or one whose session already ended, has nothing to reacquire; it must
+        // use claim instead. A stale write can never become this fresh claim.
+        const [prior] = await tx
+          .select(sessionColumns)
+          .from(workSessions)
+          .where(
+            and(
+              eq(workSessions.issueId, issue.id),
+              eq(workSessions.agentId, identity.agentId),
+              eq(workSessions.workspaceId, identity.workspaceId),
+              eq(workSessions.runId, input.runId),
+            ),
+          )
+          .orderBy(desc(workSessions.createdAt))
+          .limit(1);
+        if (prior === undefined || prior.status !== WorkSessionStatus.enum.expired) {
+          throw new SessionsError("session_required");
+        }
+        // A paused issue is not available, even with no competing claimant.
+        if (issue.needsInput) throw new SessionsError("issue_blocked");
+
+        // A fresh active row for the same identity, carrying forward the recorded progress
+        // so an interruption does not erase work already reported.
+        const [created] = await tx
+          .insert(workSessions)
+          .values({
+            id: randomUUID(),
+            agentId: identity.agentId,
+            runId: input.runId,
+            workspaceId: identity.workspaceId,
+            issueId: issue.id,
+            status: WorkSessionStatus.enum.active,
+            leaseExpiresAt: fiveMinutes,
+            progress: prior.progress,
+            progressUpdatedAt: prior.progressUpdatedAt,
+            createdAt: sql`statement_timestamp()`,
+            updatedAt: sql`statement_timestamp()`,
+          })
+          .onConflictDoNothing()
+          .returning(sessionColumns);
+        if (created !== undefined) return toSession(created);
+
+        // The partial index won a concurrent race: only this same run may take the retry.
+        const winner = await findActive(tx, issue.id);
+        if (
+          winner !== undefined &&
+          winner.agentId === identity.agentId &&
+          winner.workspaceId === identity.workspaceId &&
+          winner.runId === input.runId
+        ) {
+          return toSession(winner);
+        }
+        throw new SessionsError("issue_claimed");
       });
     },
 
