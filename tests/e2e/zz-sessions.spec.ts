@@ -673,10 +673,10 @@ test("assigning to a human refuses an agent claim with a Problem", async () => {
   try {
     const created = await call(client, "create_issue", { projectId, title: "Human owned" });
     const issueId = requiredText(field(created.data.issue, "id"), "the issue id");
-    const members = await api.get(`/api/workspaces/${workspaceId}/members`);
-    expect(members.status()).toBe(200);
+    const projectRes = await api.get(`/api/projects/${projectId}`);
+    expect(projectRes.status()).toBe(200);
     const humanId = requiredText(
-      field(asArray(await members.json())[0], "humanId"),
+      field(field(await projectRes.json(), "createdBy"), "humanId"),
       "the human id",
     );
     const assigned = await api.patch(`/api/issues/${issueId}`, {

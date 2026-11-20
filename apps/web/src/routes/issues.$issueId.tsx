@@ -46,7 +46,6 @@ export const Route = createFileRoute("/issues/$issueId")({
     await Promise.all([
       context.queryClient.ensureQueryData(issueCommentsQuery(params.issueId)),
       context.queryClient.ensureQueryData(workspaceQuery(project.workspaceId)),
-      context.queryClient.ensureQueryData(workspaceMembersQuery(project.workspaceId)),
       context.queryClient.ensureQueryData(agentKeysQuery(project.workspaceId)),
       context.queryClient.ensureQueryData(issueBlockedByQuery(params.issueId)),
       context.queryClient.ensureQueryData(issueBlockingQuery(params.issueId)),
@@ -64,17 +63,39 @@ function IssuePage() {
   const { data: comments } = useSuspenseQuery(issueCommentsQuery(issueId));
   const { data: project } = useSuspenseQuery(projectQuery(issue.projectId));
   const { data: workspace } = useSuspenseQuery(workspaceQuery(project.workspaceId));
-  const { data: members } = useSuspenseQuery(workspaceMembersQuery(project.workspaceId));
+  const canReadMembers =
+    workspace.kind === "shared" &&
+    (workspace.isOwner || workspace.canManageMemberPermissions || workspace.canRemoveMembers);
+  const membersQuery = useQuery({
+    ...workspaceMembersQuery(project.workspaceId),
+    enabled: canReadMembers,
+  });
   const { data: myKeys } = useSuspenseQuery(agentKeysQuery(project.workspaceId));
   const workspaceKeys = useQuery({
     ...workspaceAgentKeysQuery(project.workspaceId),
-    enabled: workspace.isOwner,
+    enabled: workspace.kind === "shared" && workspace.isOwner,
   });
-  const candidates: AssigneeCandidate[] = members.map((member) => ({
-    value: `human:${member.humanId}`,
-    label: `Human · ${member.email}`,
-    assignee: { type: "human" as const, id: member.humanId },
-  }));
+  const candidates: AssigneeCandidate[] = [];
+  const seenHumans = new Set<string>();
+  for (const actor of [project.createdBy, issue.createdBy, issue.updatedBy]) {
+    if (actor.humanId && !seenHumans.has(actor.humanId)) {
+      seenHumans.add(actor.humanId);
+      candidates.push({
+        value: `human:${actor.humanId}`,
+        label: `Human · ${actor.email ?? actor.displayName}`,
+        assignee: { type: "human" as const, id: actor.humanId },
+      });
+    }
+  }
+  for (const member of membersQuery.data ?? []) {
+    if (seenHumans.has(member.humanId)) continue;
+    seenHumans.add(member.humanId);
+    candidates.push({
+      value: `human:${member.humanId}`,
+      label: `Human · ${member.email}`,
+      assignee: { type: "human" as const, id: member.humanId },
+    });
+  }
   const seen = new Set<string>();
   for (const key of [...myKeys, ...(workspaceKeys.data ?? [])]) {
     if (key.revokedAt !== null || seen.has(key.agentId)) continue;
