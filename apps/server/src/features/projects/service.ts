@@ -2138,6 +2138,17 @@ export function createProjectsService({
         // each other's changes or diverge the activity feed from the issue's status.
         await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issueId)).for("update");
         const current = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
+        // #84: the access precheck and the assignee validation ran in separate committed
+        // transactions. A project transfer that committed between them may have moved the
+        // issue to another workspace; recheck under the issue lock so a source-workspace
+        // assignee can never be written onto a transferred issue.
+        if (
+          input.assignee !== undefined &&
+          input.assignee !== null &&
+          current.workspaceId !== target.workspaceId
+        ) {
+          throw new ProjectsError("issue_not_found");
+        }
         // #20 fences an agent's issue state/body edits (including close and reopen) on a
         // live session it holds. Humans, comments, creation and knowledge stay unfenced.
         // The gate runs after access and under the same issue row lock, so a downgrade to

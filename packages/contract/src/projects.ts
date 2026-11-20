@@ -215,8 +215,8 @@ export const Issue = z
     // The board renders a Needs input column from this flag; it is a human-input pause,
     // not a work-session status (#37/#41).
     needsInput: z.boolean(),
-    // Board assignment (#84): null means unassigned, otherwise the human or agent who
-    // owns the pull queue for this issue.
+    // Board assignment (#84): null means unassigned, otherwise the human or agent
+    // assigned to this issue. Assignment is a pull-queue hint, never a claim.
     assignee: IssueAssignee,
     createdAt: Timestamp,
     updatedAt: Timestamp,

@@ -65,7 +65,7 @@ const claim = createRoute({
     401: problem("An agent key is required, or the key is invalid or revoked"),
     403: problem("Contribute access is required to claim this issue"),
     404: problem("No such issue or run is in scope for this agent"),
-    409: problem("The issue is reserved for a human or another agent, or another worker holds it"),
+    409: problem("The issue is assigned to a human or another agent, or another worker holds it"),
   },
 });
 
@@ -203,7 +203,7 @@ const reacquire = createRoute({
     403: problem("Contribute access is required to reacquire this claim"),
     404: problem("No such issue or run is in scope for this agent"),
     409: problem(
-      "The issue is claimed by another worker or paused for input, or the claim was never expired",
+      "The issue is claimed by another worker, paused for input, assigned to a human or another agent, or the claim was never expired",
     ),
   },
 });
@@ -310,7 +310,7 @@ const readyWork = createRoute({
   path: "/api/projects/{projectId}/ready-work",
   summary: "Minimal ready-work listing for a project",
   description:
-    "Open issues that are not Needs input, have no live active session, and have no blocker whose status is not closed, evaluated in database time. `filter` selects all claimable work (the default), only work assigned to the caller, or only unassigned work; an agent never sees work reserved for a human or another agent. Owned work sorts first, then priority, sortOrder and createdAt. Needs no claim; a full board is out of scope.",
+    "Open issues that are not Needs input, have no live active session, and have no blocker whose status is not closed, evaluated in database time. `filter` selects all claimable work (the default), only work assigned to the caller, or only unassigned work; an agent never sees work assigned to a human or another agent. Assigned work sorts first, then priority, sortOrder and createdAt. Needs no claim; a full board is out of scope.",
   request: { params: projectParams, query: readyWorkQuery },
   responses: {
     200: {

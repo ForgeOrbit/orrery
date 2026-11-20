@@ -277,7 +277,7 @@ function assertClaimAssignee(
   }
 }
 
-// The ready queue's stable first sort key: work reserved for the caller goes ahead of
+// The ready queue's stable first sort key: work assigned to the caller goes ahead of
 // everything else. Humans have no claim, but seeing their own assigned work first is the
 // same board hint; agents get the strict claimable queue.
 function assignedToActor(issue: Issue, actor: WorkActor): boolean {
@@ -878,7 +878,7 @@ export function createSessionsService({
         // A session follows the agent and run, not the key. An explicit run id must be a
         // run of this agent in this workspace; helpers on one issue pass the same id.
         await requireRun(tx, identity, input.runId);
-        // #84: a reserved issue is not claimable, even by its previous run reconnecting.
+        // #84: an issue assigned elsewhere is not claimable, even by its prior run.
         assertClaimAssignee(issue.assigneeType, issue.assigneeId, identity.agentId);
 
         const existing = await findActive(tx, issue.id);

@@ -2122,6 +2122,12 @@ def extract_code_facts() -> dict[str, Any]:
         and "needsInput: z.boolean()" in pj_contract
         and "assignee_type" in schema_src
     )
+    # The access precheck and assignee validation are separate committed transactions;
+    # the issue-locked transaction must recheck the workspace before writing the pair.
+    m28_workspace_recheck = (
+        "current.workspaceId !== target.workspaceId" in update_issue_fn
+        and 'throw new ProjectsError("issue_not_found")' in update_issue_fn
+    )
 
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
@@ -2459,6 +2465,7 @@ def extract_code_facts() -> dict[str, Any]:
         "m28_strict_claim": m28_strict_claim,
         "m28_ready_filter": m28_ready_filter,
         "m28_contract_surface": m28_contract_surface,
+        "m28_workspace_recheck": m28_workspace_recheck,
     }
 
 
@@ -6247,6 +6254,14 @@ def check_m28(facts: dict[str, Any]) -> CheckResult:
 
         return step
 
+    def transfer_racing_assignment(state):
+        assignee, holder, v = state
+        if not g["m28_workspace_recheck"]:
+            # The issue moved to another workspace after the precheck read; without the
+            # recheck the source-workspace assignee would be committed onto it.
+            v = bad(v, "cross_workspace_assignee")
+        return (assignee, holder, v)
+
     actions = [
         ("assign to a human", assign("human")),
         ("assign to agent A", assign("A")),
@@ -6260,6 +6275,7 @@ def check_m28(facts: dict[str, Any]) -> CheckResult:
         ("agent A lists ready work", ready("A")),
         ("agent B lists ready work", ready("B")),
         ("assign racing deactivation", assign_after_deactivation("A")),
+        ("project transfer racing assignment", transfer_racing_assignment),
     ]
     init = ("none", None, frozenset())
 

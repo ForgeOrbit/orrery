@@ -304,7 +304,9 @@ const updateIssue = createRoute({
       "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
     ),
     403: problem("Read access cannot change the issue"),
-    404: problem("No issue with this id is accessible to the caller"),
+    404: problem(
+      "No issue with this id is accessible to the caller, or the assignee is unknown or inactive in the workspace",
+    ),
     409: problem("The agent holds no live work session for this issue"),
   },
 });

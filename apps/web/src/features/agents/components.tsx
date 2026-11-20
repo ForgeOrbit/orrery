@@ -211,13 +211,16 @@ function ActiveSessions({
         const run = runById.get(session.runId);
         const canContribute = levels.get(session.projectId) !== "read";
         return (
-          <li key={session.id} data-agent-session-id={session.id} data-issue-id={session.issueId}>
+          <li
+            key={session.id}
+            data-agent-session-id={session.id}
+            data-issue-id={session.issueId}
+            {...(run?.harness ? { "data-session-harness": run.harness } : {})}
+          >
             <Link to="/issues/$issueId" params={{ issueId: session.issueId }}>
               Issue {session.issueId}
             </Link>{" "}
-            <span data-session-harness={run?.harness ?? "unknown"}>
-              harness: {run?.harness ?? "unknown"}
-            </span>{" "}
+            <span>harness: {run?.harness ?? "unknown"}</span>{" "}
             <span data-session-model={run?.model ?? "unknown"}>
               model: {run?.model ?? "unknown"}
             </span>{" "}

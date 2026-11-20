@@ -112,10 +112,15 @@ function BoardCard({
         ? "stopping"
         : session.status;
 
+  // The card itself carries the badge type so a browser check can read it from the
+  // board row, not from one of its nested display spans.
+  const assigneeType =
+    issue.assignee === null ? "none" : issue.assignee.agentId !== undefined ? "agent" : "human";
   return (
     <li
       data-board-issue-id={issue.id}
       data-ready={String(ready)}
+      data-assignee-type={assigneeType}
       style={{ border: "1px solid #ddd", padding: "0.5rem", marginBottom: "0.5rem" }}
     >
       <Link to="/issues/$issueId" params={{ issueId: issue.id }}>
@@ -124,11 +129,10 @@ function BoardCard({
       <div>
         <PriorityBadge priority={issue.priority} />{" "}
         {issue.assignee === null ? (
-          <span data-assignee-type="none">Unassigned</span>
+          <span>Unassigned</span>
         ) : (
-          <span data-assignee-type={issue.assignee.agentId !== undefined ? "agent" : "human"}>
-            {issue.assignee.agentId !== undefined ? "Agent" : "Human"} ·{" "}
-            {issue.assignee.displayName}
+          <span>
+            {assigneeType === "agent" ? "Agent" : "Human"} · {issue.assignee.displayName}
           </span>
         )}
       </div>

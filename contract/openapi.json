@@ -6750,7 +6750,7 @@
             }
           },
           "404": {
-            "description": "No issue with this id is accessible to the caller",
+            "description": "No issue with this id is accessible to the caller, or the assignee is unknown or inactive in the workspace",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8144,7 +8144,7 @@
             }
           },
           "409": {
-            "description": "The issue is reserved for a human or another agent, or another worker holds it",
+            "description": "The issue is assigned to a human or another agent, or another worker holds it",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8810,7 +8810,7 @@
             }
           },
           "409": {
-            "description": "The issue is claimed by another worker or paused for input, or the claim was never expired",
+            "description": "The issue is claimed by another worker, paused for input, assigned to a human or another agent, or the claim was never expired",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -9127,7 +9127,7 @@
     "/api/projects/{projectId}/ready-work": {
       "get": {
         "summary": "Minimal ready-work listing for a project",
-        "description": "Open issues that are not Needs input, have no live active session, and have no blocker whose status is not closed, evaluated in database time. `filter` selects all claimable work (the default), only work assigned to the caller, or only unassigned work; an agent never sees work reserved for a human or another agent. Owned work sorts first, then priority, sortOrder and createdAt. Needs no claim; a full board is out of scope.",
+        "description": "Open issues that are not Needs input, have no live active session, and have no blocker whose status is not closed, evaluated in database time. `filter` selects all claimable work (the default), only work assigned to the caller, or only unassigned work; an agent never sees work assigned to a human or another agent. Assigned work sorts first, then priority, sortOrder and createdAt. Needs no claim; a full board is out of scope.",
         "parameters": [
           {
             "schema": {
