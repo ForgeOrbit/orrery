@@ -1,0 +1,109 @@
+import { ISSUE_SORT_STEP, IssuePriority, type Issue, type IssueDetail } from "@orrery/contract";
+import { useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+import { updateIssue } from "./commands.ts";
+import { issueQuery, issuesQuery, projectActivityQuery } from "./queries.ts";
+
+// A board badge is a plain label: readers always see the current importance, even when
+// they cannot change it.
+export function PriorityBadge({ priority }: { priority: IssuePriority }) {
+  return <span data-issue-priority={priority}>{priority}</span>;
+}
+
+// Move one card within its own priority group. Crossing groups by changing sortOrder would
+// have no visible effect, so the caller passes the already-filtered group and the card's
+// index in it. `up` goes toward smaller sortOrder, `down` toward larger.
+function midpointWithinGroup(
+  group: Issue[],
+  index: number,
+  direction: "up" | "down",
+): number | undefined {
+  const delta = direction === "up" ? -1 : 1;
+  const neighbour = group[index + delta];
+  if (neighbour === undefined) return undefined;
+  const beyond = group[index + 2 * delta];
+  // With no second neighbour, step out by a full spacing so there is room to land between.
+  const beyondOrder = beyond?.sortOrder ?? neighbour.sortOrder + delta * ISSUE_SORT_STEP;
+  // Equal adjacent positions have no midpoint; a one-unit step still breaks the tie.
+  if (beyond !== undefined && neighbour.sortOrder === beyond.sortOrder) {
+    return direction === "up" ? neighbour.sortOrder - 1 : neighbour.sortOrder + 1;
+  }
+  // Add the half-gap to the neighbour rather than averaging the two: (a + b) / 2 can
+  // overflow to Infinity for large positions, while a + (b - a) / 2 cannot.
+  return neighbour.sortOrder + (beyondOrder - neighbour.sortOrder) / 2;
+}
+
+// The Contribute controls for the board: set importance, or move a card one slot within its
+// priority group. Both are single-row PATCHes using the midpoint scheme, so no sibling is
+// rewritten; each change refreshes the list and the activity feed from the server.
+export function IssuePriorityControls({
+  issue,
+  issues,
+  projectId,
+}: {
+  issue: Issue;
+  issues: Issue[];
+  projectId: string;
+}) {
+  const queryClient = useQueryClient();
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string>();
+
+  const group = issues.filter((candidate) => candidate.priority === issue.priority);
+  const index = group.findIndex((candidate) => candidate.id === issue.id);
+  const canMoveUp = index > 0;
+  const canMoveDown = index >= 0 && index < group.length - 1;
+
+  async function save(input: { priority?: IssuePriority; sortOrder?: number }) {
+    setSaving(true);
+    setError(undefined);
+    try {
+      const updated = await updateIssue(issue.id, input);
+      queryClient.setQueryData<IssueDetail>(issueQuery(issue.id).queryKey, (old) =>
+        old === undefined ? old : { ...old, ...updated },
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: issuesQuery(projectId).queryKey }),
+        queryClient.invalidateQueries({ queryKey: projectActivityQuery(projectId).queryKey }),
+      ]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not update the issue.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function move(direction: "up" | "down") {
+    const sortOrder = midpointWithinGroup(group, index, direction);
+    if (sortOrder !== undefined) void save({ sortOrder });
+  }
+
+  return (
+    <span data-issue-order-controls={issue.id}>
+      <label htmlFor={`issue-priority-${issue.id}`}>Priority</label>
+      <select
+        id={`issue-priority-${issue.id}`}
+        data-issue-priority-select={issue.id}
+        value={issue.priority}
+        disabled={saving}
+        onChange={(event) => {
+          const next = IssuePriority.safeParse(event.target.value);
+          if (next.success) void save({ priority: next.data });
+        }}
+      >
+        {IssuePriority.options.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>{" "}
+      <button type="button" disabled={saving || !canMoveUp} onClick={() => move("up")}>
+        Move up
+      </button>{" "}
+      <button type="button" disabled={saving || !canMoveDown} onClick={() => move("down")}>
+        Move down
+      </button>
+      {error !== undefined && <span role="alert">{error}</span>}
+    </span>
+  );
+}

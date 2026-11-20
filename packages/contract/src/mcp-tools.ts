@@ -90,7 +90,7 @@ const getIssue = {
 const createIssue = {
   name: "create_issue",
   description:
-    "Create an issue in an in-scope project. Requires Contribute access on the key and on its human owner.",
+    "Create an issue in an in-scope project. Priority and sortOrder may be set at creation; omitted priority defaults to none and omitted sortOrder is spaced by 65535 from the project-local issue number. Requires Contribute access on the key and on its human owner.",
   input: CreateIssueRequest.extend({ projectId: id("The project id") }),
   output: z.object({ issue: Issue }),
 };
@@ -98,7 +98,7 @@ const createIssue = {
 const updateIssue = {
   name: "update_issue",
   description:
-    "Edit an issue's title or body, or close/reopen it. Requires Contribute access. The actor recorded is the agent, not its human owner.",
+    "Edit an issue's title or body, close/reopen it, or change its priority or sortOrder (a float; the midpoint of two neighbours moves one card without rewriting them). Requires Contribute access and, for an agent, a live work session on the issue. The actor recorded is the agent, not its human owner.",
   input: UpdateIssueRequest.extend({ issueId: id("The issue id") }),
   output: z.object({ issue: Issue }),
 };
@@ -291,7 +291,7 @@ const reacquireWorkSession = {
 const readyWork = {
   name: "ready_work",
   description:
-    "List minimal ready work in a project: open issues that are not Needs input, have no live active session, and have no blocker whose status is not closed, evaluated in database time. Needs no claim.",
+    "List minimal ready work in a project: open issues that are not Needs input, have no live active session, and have no blocker whose status is not closed, evaluated in database time. The queue is deterministic: priority urgent > high > medium > low > none, then sortOrder ascending, then creation time ascending. Needs no claim.",
   input: ReadyWorkInput,
   output: z.object({ issues: ReadyWorkResponse }),
 };

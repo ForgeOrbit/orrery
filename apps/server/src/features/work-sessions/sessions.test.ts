@@ -763,6 +763,119 @@ describe("work sessions against real Postgres", () => {
     expect(afterRemoval.map((item) => item.id)).toContain(downstream.id);
   });
 
+  it("orders ready work by priority, then sortOrder, then createdAt", async () => {
+    const f = await bootstrap();
+    const human = humanActor(f);
+    const identity = await identityFor(f.secret);
+    const actor = { kind: "agent" as const, identity };
+    const make = (
+      title: string,
+      input: { priority?: "urgent" | "high" | "medium" | "low" | "none"; sortOrder?: number } = {},
+    ) => projectsService.createIssue(human, f.projectId, { title, ...input });
+
+    // Priority dominates position: each card here has a larger sortOrder than the one
+    // before it, so only the priority ranking produces this order.
+    const urgent = await make("Urgent", { priority: "urgent", sortOrder: 100_000 });
+    const high = await make("High", { priority: "high", sortOrder: 200_000 });
+    const medium = await make("Medium", { priority: "medium", sortOrder: 300_000 });
+    const low = await make("Low", { priority: "low", sortOrder: 400_000 });
+    const none = await make("None", { sortOrder: 500_000 });
+
+    const first = await sessionsService.readyWork(actor, f.projectId);
+    expect(first.map((issue) => issue.id)).toEqual([
+      urgent.id,
+      high.id,
+      medium.id,
+      low.id,
+      none.id,
+    ]);
+
+    // Within one priority, the smaller sortOrder wins; equal positions fall back to
+    // creation time, which is set explicitly here to make the tie unambiguous.
+    const earlier = await make("Earlier", { priority: "urgent", sortOrder: 10 });
+    const later = await make("Later", { priority: "urgent", sortOrder: 10 });
+    await database.db
+      .update(issues)
+      .set({ createdAt: new Date("2020-01-01T00:00:00Z") })
+      .where(eq(issues.id, earlier.id));
+    await database.db
+      .update(issues)
+      .set({ createdAt: new Date("2021-01-01T00:00:00Z") })
+      .where(eq(issues.id, later.id));
+
+    const second = await sessionsService.readyWork(actor, f.projectId);
+    expect(second.map((issue) => issue.id)).toEqual([
+      earlier.id,
+      later.id,
+      urgent.id,
+      high.id,
+      medium.id,
+      low.id,
+      none.id,
+    ]);
+  });
+
+  it("reorders ready work by writing only the dragged card's midpoint", async () => {
+    const f = await bootstrap();
+    const human = humanActor(f);
+    const identity = await identityFor(f.secret);
+    const actor = { kind: "agent" as const, identity };
+    const a = await projectsService.createIssue(human, f.projectId, { title: "A", sortOrder: 0 });
+    const b = await projectsService.createIssue(human, f.projectId, {
+      title: "B",
+      sortOrder: 100,
+    });
+    const c = await projectsService.createIssue(human, f.projectId, {
+      title: "C",
+      sortOrder: 200,
+    });
+
+    expect((await sessionsService.readyWork(actor, f.projectId)).map((i) => i.id)).toEqual([
+      a.id,
+      b.id,
+      c.id,
+    ]);
+
+    // Move C between A and B. Only C's row changes; its siblings keep their positions.
+    await projectsService.updateIssue(human, c.id, { sortOrder: 50 });
+    expect((await sessionsService.readyWork(actor, f.projectId)).map((i) => i.id)).toEqual([
+      a.id,
+      c.id,
+      b.id,
+    ]);
+    const positions = new Map(
+      (await database.db.select({ id: issues.id, sortOrder: issues.sortOrder }).from(issues)).map(
+        (row) => [row.id, row.sortOrder],
+      ),
+    );
+    expect(positions.get(a.id)).toBe(0);
+    expect(positions.get(b.id)).toBe(100);
+    expect(positions.get(c.id)).toBe(50);
+  });
+
+  it("lets an agent set priority and position at creation and update it while holding a session", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const actor = { kind: "agent" as const, identity };
+
+    // Creation is unfenced (#20), so an agent may triage a new card's importance and
+    // position immediately; changing an existing card stays fenced on a live session.
+    const issue = await projectsService.createIssue(actor, f.projectId, {
+      title: "Agent triage",
+      priority: "high",
+      sortOrder: 500,
+    });
+    expect(issue).toMatchObject({ priority: "high", sortOrder: 500 });
+
+    const runId = await newRun(identity);
+    await sessionsService.claim(actor, { issueId: issue.id, runId });
+    const updated = await projectsService.updateIssue(actor, issue.id, {
+      priority: "urgent",
+      sortOrder: 250,
+    });
+    expect(updated).toMatchObject({ priority: "urgent", sortOrder: 250 });
+  });
+
   it("exposes claim, progress, read and stop through bearer REST", async () => {
     const f = await bootstrap();
     const identity = await identityFor(f.secret);

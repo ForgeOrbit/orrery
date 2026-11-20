@@ -15,6 +15,7 @@ export {
   updateKnowledgeEntry,
   updateProject,
 } from "./commands.ts";
+export { IssuePriorityControls, PriorityBadge } from "./IssuePriority.tsx";
 export { ResourceLoadError } from "./LoadError.tsx";
 export { TitleBodyForm } from "./TitleBodyForm.tsx";
 export {

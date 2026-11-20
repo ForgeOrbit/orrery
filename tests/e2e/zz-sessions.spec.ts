@@ -555,3 +555,50 @@ test("session activities stream into the issue sidecar without touching comments
     await client.close();
   }
 });
+
+test("ready work is ordered by priority over REST and MCP", async () => {
+  const workspaceId = await personalWorkspaceOf(api);
+  const projectId = await project(api, workspaceId);
+  const agentId = await createAgent(api, `sessions-priority-${randomUUID()}`);
+  const secret = await issueKey(api, agentId, workspaceId, projectId);
+  const client = await connect(secret);
+  const http = bearer(secret);
+  try {
+    const low = await call(client, "create_issue", { projectId, title: "Low", priority: "low" });
+    const urgent = await call(client, "create_issue", {
+      projectId,
+      title: "Urgent",
+      priority: "urgent",
+    });
+    const plain = await call(client, "create_issue", { projectId, title: "None" });
+    const highRest = await api.post(`/api/projects/${projectId}/issues`, {
+      data: { title: "High", priority: "high" },
+    });
+    expect(highRest.status()).toBe(201);
+
+    const lowId = requiredText(field(low.data.issue, "id"), "the low issue id");
+    const urgentId = requiredText(field(urgent.data.issue, "id"), "the urgent issue id");
+    const plainId = requiredText(field(plain.data.issue, "id"), "the plain issue id");
+    const highId = requiredText(field(await highRest.json(), "id"), "the high issue id");
+
+    // Both transports report the same deterministic queue: urgent > high > low > none.
+    const expected = [urgentId, highId, lowId, plainId];
+    expect(ids((await call(client, "ready_work", { projectId })).data)).toEqual(expected);
+    const restReady = await http.get(`/api/projects/${projectId}/ready-work`);
+    expect(restReady.status).toBe(200);
+    expect(asArray(await restReady.json()).map((issue) => field(issue, "id"))).toEqual(expected);
+
+    // A human reprioritizes freely over REST. Low becomes urgent and, having the smaller
+    // position, now leads the two urgent cards and the whole queue.
+    const moved = await api.patch(`/api/issues/${lowId}`, { data: { priority: "urgent" } });
+    expect(moved.status()).toBe(200);
+    expect(ids((await call(client, "ready_work", { projectId })).data)).toEqual([
+      lowId,
+      urgentId,
+      highId,
+      plainId,
+    ]);
+  } finally {
+    await client.close();
+  }
+});

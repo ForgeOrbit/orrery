@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import { IssueLinkKind, projectTools } from "@orrery/contract";
+import { IssueLinkKind, IssuePriority, IssueSortOrder, projectTools } from "@orrery/contract";
 import { isAgentError, type AgentAuthenticator } from "../agents/index.ts";
 import { ProjectsError, type ProjectsService, type WorkActor } from "./service.ts";
 
@@ -16,6 +16,14 @@ const str = (value: unknown, field: string): string => {
   if (typeof value !== "string") throw new Error(`missing ${field}`);
   return value;
 };
+
+// The shared tool contract has already validated these optional fields. Parsing both with
+// their contract schemas keeps the service boundary typed and rejects non-finite positions
+// exactly as REST does, without inventing a second set of values here.
+const priority = (value: unknown): IssuePriority | undefined =>
+  value === undefined ? undefined : IssuePriority.parse(value);
+const sortOrder = (value: unknown): number | undefined =>
+  value === undefined ? undefined : IssueSortOrder.parse(value);
 
 export function createProjectsMcp(service: ProjectsService, authenticate: AgentAuthenticator) {
   const strategies: Record<string, Strategy> = {
@@ -35,6 +43,8 @@ export function createProjectsMcp(service: ProjectsService, authenticate: AgentA
       issue: await service.createIssue(actor, str(args.projectId, "projectId"), {
         title: str(args.title, "title"),
         body: args.body === undefined ? undefined : str(args.body, "body"),
+        priority: priority(args.priority),
+        sortOrder: sortOrder(args.sortOrder),
       }),
     }),
     update_issue: async (actor, args) => ({
@@ -42,6 +52,8 @@ export function createProjectsMcp(service: ProjectsService, authenticate: AgentA
         title: args.title === undefined ? undefined : str(args.title, "title"),
         body: args.body === undefined ? undefined : str(args.body, "body"),
         status: args.status === "open" || args.status === "closed" ? args.status : undefined,
+        priority: priority(args.priority),
+        sortOrder: sortOrder(args.sortOrder),
       }),
     }),
     add_blocked_by: async (actor, args) => ({

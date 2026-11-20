@@ -10,10 +10,12 @@ import {
   issueBlockedByQuery,
   issueBlockingQuery,
   issueCommentsQuery,
+  IssuePriorityControls,
   issueQuery,
   issuesQuery,
   projectActivityQuery,
   projectQuery,
+  PriorityBadge,
   removeBlockedBy,
   removeIssueLink,
   ResourceLoadError,
@@ -59,11 +61,17 @@ function IssuePage() {
       </p>
       <h1>{issue.title}</h1>
       <p data-issue-status={issue.status}>
-        Issue #{issue.number} · {issue.status} · created by {issue.createdBy.displayName} · last
-        edited by {issue.updatedBy.displayName}
+        Issue #{issue.number} · <PriorityBadge priority={issue.priority} /> · {issue.status} ·
+        created by {issue.createdBy.displayName} · last edited by {issue.updatedBy.displayName}
       </p>
       <SessionStatus issueId={issue.id} projectId={issue.projectId} canContribute={canContribute} />
       <SessionInspector issueId={issue.id} />
+      {canContribute && (
+        <section>
+          <h2>Priority and order</h2>
+          <IssuePriorityControls issue={issue} issues={projectIssues} projectId={issue.projectId} />
+        </section>
+      )}
       {issue.body === "" ? (
         <p>No description.</p>
       ) : (

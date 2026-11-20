@@ -11,6 +11,7 @@ import { useState } from "react";
 import {
   createIssue,
   createKnowledgeEntry,
+  IssuePriorityControls,
   issueQuery,
   issuesQuery,
   knowledgeEntriesQuery,
@@ -19,6 +20,7 @@ import {
   projectActivityQuery,
   projectQuery,
   projectsQuery,
+  PriorityBadge,
   removeProjectAccess,
   ResourceLoadError,
   setProjectAccess,
@@ -108,7 +110,11 @@ function ProjectPage() {
                 <Link to="/issues/$issueId" params={{ issueId: issue.id }}>
                   #{issue.number} {issue.title}
                 </Link>{" "}
-                <span data-issue-status={issue.status}>{issue.status}</span>
+                <PriorityBadge priority={issue.priority} />{" "}
+                <span data-issue-status={issue.status}>{issue.status}</span>{" "}
+                {canContribute && (
+                  <IssuePriorityControls issue={issue} issues={issues} projectId={project.id} />
+                )}
               </li>
             ))}
           </ul>
