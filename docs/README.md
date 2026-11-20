@@ -38,9 +38,16 @@ Want to write or change a page? See [Writing the docs](./writing-docs.md).
 - [Identity and work sessions spec](./design/mvp-spec.md)
 - [Identity and access](./design/identity-and-access.md)
 - [Agent board interaction](./design/agent-board-interaction.md)
+- [Projects and issues](./design/projects-and-issues.md)
+- [Agent API and sessions](./design/agent-api-and-sessions.md)
+- [Board, agents panel, inbox, and My work](./design/board-and-inbox.md)
 - [Harness compatibility proof](./design/harness-compatibility-proof.md)
 - [Bootstrap and instance settings](./adr/0001-bootstrap-and-instance-settings.md)
 - [Personal and shared workspaces](./adr/0002-personal-and-shared-workspaces.md)
+- [Problem Details for errors](./adr/0003-problem-details-for-errors.md)
+- [Encrypt instance secrets at rest](./adr/0004-encrypt-instance-secrets-at-rest.md)
+- [Fixed six-state issue workflow with derived needs-input](./adr/0005-issue-workflow-and-derived-needs-input.md)
+- [Soft-delete issues with 30-day in-place tombstone scrubbing](./adr/0006-soft-delete-and-tombstone-scrubbing.md)
 
 ## Help shape Orrery
 
