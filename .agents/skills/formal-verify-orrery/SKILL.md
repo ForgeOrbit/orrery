@@ -9,10 +9,10 @@ Exhaustive finite-state model checking for Orrery's highest-stakes concurrency, 
 
 ## Sync Commit & Coverage Record
 
-- **Last verified commit:** `030b59b`
+- **Last verified commit:** `421e5df`
 - **Check whether a change touches verified code:**
   ```bash
-  git diff --name-only 030b59b -- \
+  git diff --name-only 421e5df -- \
     apps/server/src/features/workspaces/service.ts \
     apps/server/src/features/projects/service.ts \
     apps/server/src/features/invitations/service.ts \
