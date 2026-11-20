@@ -6,6 +6,7 @@ import {
   ReacquireWorkSessionInput,
   RenewWorkSessionInput,
   ReportProgressInput,
+  RequestStopWorkSessionInput,
   ResumeWorkSessionInput,
   ResumeWorkSessionResult,
   StopWorkSessionInput,
@@ -32,6 +33,7 @@ const claimBody = ClaimWorkSessionInput.omit({ issueId: true });
 const renewBody = RenewWorkSessionInput.omit({ issueId: true });
 const progressBody = ReportProgressInput.omit({ issueId: true });
 const stopBody = StopWorkSessionInput.omit({ issueId: true });
+const stopRequestBody = RequestStopWorkSessionInput.omit({ issueId: true });
 const resumeBody = ResumeWorkSessionInput.omit({ issueId: true });
 const reacquireBody = ReacquireWorkSessionInput.omit({ issueId: true });
 
@@ -124,6 +126,29 @@ const stop = createRoute({
     403: problem("Contribute access is required to work on this issue"),
     404: problem("No such issue is in scope for this agent"),
     409: problem("This agent holds no live session for this issue"),
+  },
+});
+
+const requestStop = createRoute({
+  method: "post",
+  path: "/api/issues/{issueId}/work-sessions/stop-request",
+  summary: "Ask the holding agent to stop",
+  description:
+    "A human with Contribute or Manage on the project asks the agent holding the live session to stop. The session stays active (shown as stopping) and the agent learns of the request on its next renew or progress check-in. The five-minute lease remains the hard backstop. Agents, Readers and non-members are refused; an inactive or expired session cannot be stopped.",
+  request: {
+    params: issueParams,
+    body: { required: false, content: { "application/json": { schema: stopRequestBody } } },
+  },
+  responses: {
+    200: {
+      description: "The session carrying the recorded stop request",
+      content: { "application/json": { schema: WorkSession } },
+    },
+    400: problem("The stop request is invalid"),
+    401: problem("Not signed in as a human"),
+    403: problem("Only a human with Contribute or Manage on the project may request a stop"),
+    404: problem("No such issue is in scope for the caller"),
+    409: problem("The work session is no longer active"),
   },
 });
 
@@ -232,7 +257,18 @@ const readyWork = createRoute({
   },
 });
 
-export const routes = [claim, renew, progress, stop, resume, reacquire, current, all, readyWork];
+export const routes = [
+  claim,
+  renew,
+  progress,
+  stop,
+  requestStop,
+  resume,
+  reacquire,
+  current,
+  all,
+  readyWork,
+];
 
 const statusFor = {
   not_signed_in: 401,
@@ -244,6 +280,8 @@ const statusFor = {
   issue_needs_input: 409,
   issue_blocked: 409,
   session_required: 409,
+  agents_cannot_request_stop: 403,
+  session_not_active: 409,
 } as const satisfies Record<SessionsErrorKind, number>;
 
 function isKind<K extends readonly SessionsErrorKind[]>(
@@ -282,6 +320,13 @@ const writeKinds = [
   "issue_not_found",
   "insufficient_access",
   "session_required",
+] as const;
+const stopRequestKinds = [
+  "not_signed_in",
+  "agents_cannot_request_stop",
+  "issue_not_found",
+  "insufficient_access",
+  "session_not_active",
 ] as const;
 const resumeKinds = [
   "not_signed_in",
@@ -381,6 +426,21 @@ export function createSessionsRest(
       );
     } catch (error) {
       return failure(c, error, writeKinds);
+    }
+  });
+
+  app.openapi(requestStop, async (c) => {
+    try {
+      return c.json(
+        await service.requestStop(
+          await workActor(c),
+          c.req.valid("param").issueId,
+          c.req.valid("json")?.reason,
+        ),
+        200,
+      );
+    } catch (error) {
+      return failure(c, error, stopRequestKinds);
     }
   });
 

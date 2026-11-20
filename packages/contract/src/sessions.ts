@@ -34,6 +34,12 @@ export const WorkSession = z
     // Progress is independent of the lease: expiry only changes status, never this text.
     progress: z.string(),
     progressUpdatedAt: Timestamp.nullable(),
+    // A human stop request (#82) is a signal on the still-active session, not a new status:
+    // the holding agent learns of it on its next renew/progress check-in and ends the
+    // session itself. The UI renders an active session with stopRequested as "stopping".
+    stopRequested: z.boolean(),
+    stopRequestedAt: Timestamp.nullable(),
+    stopReason: z.string().nullable(),
     createdAt: Timestamp,
     updatedAt: Timestamp,
     endedAt: Timestamp.nullable(),
@@ -98,6 +104,17 @@ export const GetWorkSessionInput = z
   .object({ issueId: z.string().trim().min(1).max(200) })
   .meta({ id: "GetWorkSessionInput" });
 export type GetWorkSessionInput = z.infer<typeof GetWorkSessionInput>;
+
+// A human with Contribute or Manage on the project asks the holding agent to stop (#82).
+// This is a human-only REST operation: no MCP tool and no agent key may request it. The
+// reason is optional and is kept verbatim (bounded) as a snapshot in the activity feed.
+export const RequestStopWorkSessionInput = z
+  .object({
+    issueId: z.string().trim().min(1).max(200),
+    reason: z.string().trim().max(2000).optional(),
+  })
+  .meta({ id: "RequestStopWorkSessionInput" });
+export type RequestStopWorkSessionInput = z.infer<typeof RequestStopWorkSessionInput>;
 
 // Resuming an interrupted conversation (#40, stories 55 and 56). The run is the identity
 // of the harness conversation, so resume names both the run and the issue it was working.

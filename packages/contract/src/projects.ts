@@ -30,6 +30,7 @@ export const ProjectActivityType = z
     "issue_question_asked",
     "issue_question_answered",
     "issue_question_paused",
+    "issue_stop_requested",
     "knowledge_created",
     "knowledge_edited",
   ])

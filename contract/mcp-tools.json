@@ -1284,6 +1284,7 @@
             "issue_question_asked",
             "issue_question_answered",
             "issue_question_paused",
+            "issue_stop_requested",
             "knowledge_created",
             "knowledge_edited"
           ]
@@ -2252,6 +2253,25 @@
                 }
               ]
             },
+            "stopRequested": {
+              "type": "boolean"
+            },
+            "stopRequestedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "stopReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -2279,6 +2299,9 @@
             "leaseExpiresAt",
             "progress",
             "progressUpdatedAt",
+            "stopRequested",
+            "stopRequestedAt",
+            "stopReason",
             "createdAt",
             "updatedAt",
             "endedAt"
@@ -2304,7 +2327,7 @@
   },
   {
     "name": "renew_claim",
-    "description": "Check in on an issue this agent currently holds and refresh its five-minute lease in database time. Requires a live session; an expired or released session is never renewed or silently reacquired. Pass sessionId to fence a delayed call from an interrupted session: it is refused if that session is no longer the live one, even after reacquisition.",
+    "description": "Check in on an issue this agent currently holds and refresh its five-minute lease in database time. Requires a live session; an expired or released session is never renewed or silently reacquired. Pass sessionId to fence a delayed call from an interrupted session: it is refused if that session is no longer the live one, even after reacquisition. The returned session carries stopRequested, stopRequestedAt and stopReason: when stopRequested is true a human has asked you to stop, so flush a brief handoff and call stop_session promptly. The five-minute lease remains the hard backstop.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "$ref": "#/$defs/RenewWorkSessionInput",
@@ -2383,6 +2406,25 @@
                 }
               ]
             },
+            "stopRequested": {
+              "type": "boolean"
+            },
+            "stopRequestedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "stopReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -2410,6 +2452,9 @@
             "leaseExpiresAt",
             "progress",
             "progressUpdatedAt",
+            "stopRequested",
+            "stopRequestedAt",
+            "stopReason",
             "createdAt",
             "updatedAt",
             "endedAt"
@@ -2435,7 +2480,7 @@
   },
   {
     "name": "report_progress",
-    "description": "Record progress on the live session this agent holds for an issue. Progress is stored independently of the lease, so an interruption never erases it. Requires a live session; pass sessionId to refuse a delayed report from an expired session instead of writing to a newer one.",
+    "description": "Record progress on the live session this agent holds for an issue. Progress is stored independently of the lease, so an interruption never erases it. Requires a live session; pass sessionId to refuse a delayed report from an expired session instead of writing to a newer one. The returned session carries stopRequested, stopRequestedAt and stopReason: check them on every report and stop promptly if a human has asked you to stop.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "$ref": "#/$defs/ReportProgressInput",
@@ -2520,6 +2565,25 @@
                 }
               ]
             },
+            "stopRequested": {
+              "type": "boolean"
+            },
+            "stopRequestedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "stopReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -2547,6 +2611,9 @@
             "leaseExpiresAt",
             "progress",
             "progressUpdatedAt",
+            "stopRequested",
+            "stopRequestedAt",
+            "stopReason",
             "createdAt",
             "updatedAt",
             "endedAt"
@@ -2663,6 +2730,25 @@
                 }
               ]
             },
+            "stopRequested": {
+              "type": "boolean"
+            },
+            "stopRequestedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "stopReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -2690,6 +2776,9 @@
             "leaseExpiresAt",
             "progress",
             "progressUpdatedAt",
+            "stopRequested",
+            "stopRequestedAt",
+            "stopReason",
             "createdAt",
             "updatedAt",
             "endedAt"
@@ -2789,6 +2878,25 @@
                 }
               ]
             },
+            "stopRequested": {
+              "type": "boolean"
+            },
+            "stopRequestedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "stopReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -2816,6 +2924,9 @@
             "leaseExpiresAt",
             "progress",
             "progressUpdatedAt",
+            "stopRequested",
+            "stopRequestedAt",
+            "stopReason",
             "createdAt",
             "updatedAt",
             "endedAt"
@@ -2961,6 +3072,25 @@
                 }
               ]
             },
+            "stopRequested": {
+              "type": "boolean"
+            },
+            "stopRequestedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "stopReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -2988,6 +3118,9 @@
             "leaseExpiresAt",
             "progress",
             "progressUpdatedAt",
+            "stopRequested",
+            "stopRequestedAt",
+            "stopReason",
             "createdAt",
             "updatedAt",
             "endedAt"
@@ -3093,6 +3226,25 @@
                 }
               ]
             },
+            "stopRequested": {
+              "type": "boolean"
+            },
+            "stopRequestedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "stopReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -3120,6 +3272,9 @@
             "leaseExpiresAt",
             "progress",
             "progressUpdatedAt",
+            "stopRequested",
+            "stopRequestedAt",
+            "stopReason",
             "createdAt",
             "updatedAt",
             "endedAt"
@@ -3388,6 +3543,25 @@
                 }
               ]
             },
+            "stopRequested": {
+              "type": "boolean"
+            },
+            "stopRequestedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "stopReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -3415,6 +3589,9 @@
             "leaseExpiresAt",
             "progress",
             "progressUpdatedAt",
+            "stopRequested",
+            "stopRequestedAt",
+            "stopReason",
             "createdAt",
             "updatedAt",
             "endedAt"

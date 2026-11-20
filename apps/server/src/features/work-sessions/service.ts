@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   ProjectAccessLevel,
+  ProjectActivityType,
   WorkSessionStatus,
   type AgentIdentity,
   type Issue,
@@ -19,6 +20,7 @@ import {
   agents,
   humans,
   issues,
+  projectActivity,
   projects,
   runs,
   workSessions,
@@ -42,7 +44,9 @@ export type SessionsErrorKind =
   | "issue_claimed"
   | "issue_needs_input"
   | "issue_blocked"
-  | "session_required";
+  | "session_required"
+  | "agents_cannot_request_stop"
+  | "session_not_active";
 
 const messages: Record<SessionsErrorKind, string> = {
   not_signed_in: "An agent key is required.",
@@ -54,6 +58,8 @@ const messages: Record<SessionsErrorKind, string> = {
   issue_needs_input: "This issue needs human input and cannot be claimed yet.",
   issue_blocked: "This issue is closed or paused for input and cannot be reacquired yet.",
   session_required: "This agent holds no live session for this issue.",
+  agents_cannot_request_stop: "Only a human with Contribute or Manage access may request a stop.",
+  session_not_active: "The work session is no longer active.",
 };
 
 export class SessionsError extends Error {
@@ -119,6 +125,10 @@ export interface SessionsService {
     outcome: WorkSessionOutcome,
     sessionId?: string,
   ): Promise<WorkSession>;
+  // #82: a human-only stop request on an active session. It records the actor, time and
+  // optional reason and surfaces stopRequested on the agent's next check-in; it never
+  // ends the session or changes its status.
+  requestStop(actor: WorkActor | null, issueId: string, reason?: string): Promise<WorkSession>;
   // #40: a pure, database-time read of the original run's claim, and the only way to
   // re-arm an expired claim. Resume never mutates; reacquire creates a fresh active
   // session (carrying the recorded progress) only when the issue is actually available.
@@ -154,6 +164,9 @@ const sessionColumns = {
   leaseExpiresAt: workSessions.leaseExpiresAt,
   progress: workSessions.progress,
   progressUpdatedAt: workSessions.progressUpdatedAt,
+  stopRequestedAt: workSessions.stopRequestedAt,
+  stopRequestedByHumanId: workSessions.stopRequestedByHumanId,
+  stopReason: workSessions.stopReason,
   createdAt: workSessions.createdAt,
   updatedAt: workSessions.updatedAt,
   endedAt: workSessions.endedAt,
@@ -172,6 +185,11 @@ function toSession(row: SessionView): WorkSession {
     leaseExpiresAt: row.leaseExpiresAt.toISOString(),
     progress: row.progress,
     progressUpdatedAt: iso(row.progressUpdatedAt),
+    // A stop request is a signal, not a status: the session stays active until the agent
+    // acknowledges it or the lease expires, so readers can tell "stopping" from "stopped".
+    stopRequested: row.stopRequestedAt !== null,
+    stopRequestedAt: iso(row.stopRequestedAt),
+    stopReason: row.stopReason,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     endedAt: iso(row.endedAt),
@@ -739,6 +757,80 @@ export function createSessionsService({
           )
           .returning(sessionColumns);
         return updated;
+      });
+    },
+
+    async requestStop(actor, issueId, reason) {
+      // A stop request is human-only: a bearer key must never be able to ask its own
+      // operator to stop, and a missing actor cannot act through a human session.
+      if (actor === null) throw new SessionsError("not_signed_in");
+      if (actor.kind === "agent") throw new SessionsError("agents_cannot_request_stop");
+      const humanId = actor.account.humanId;
+
+      // As with renew/progress/stop, materialize a lapsed lease in a committed transaction
+      // before deciding, so a rejected request still leaves an already-expired claim
+      // expired. The decision below then reads and writes only in database time.
+      await expireCommitted(issueId);
+      return db.transaction(async (tx) => {
+        const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
+        const issue = await lockIssue(tx, issueId);
+        await expireStale(tx, issue.id);
+        // Readers, non-members and agents' human owners without project access are
+        // refused here with the same stable code as every other project write.
+        await requireAccess(
+          actor,
+          issue.projectId,
+          ProjectAccessLevel.enum.contribute,
+          "issue_not_found",
+        );
+
+        const [session] = await tx
+          .select(sessionColumns)
+          .from(workSessions)
+          .where(
+            and(
+              eq(workSessions.issueId, issue.id),
+              eq(workSessions.status, WorkSessionStatus.enum.active),
+              liveLease,
+            ),
+          )
+          .limit(1);
+        if (session === undefined) throw new SessionsError("session_not_active");
+
+        // The UPDATE rechecks liveness in database time: a lease that lapses between the
+        // read and this write cannot be turned into a stop request on a dead session.
+        const [updated] = await tx
+          .update(workSessions)
+          .set({
+            stopRequestedAt: sql`statement_timestamp()`,
+            stopRequestedByHumanId: humanId,
+            stopReason: reason ?? null,
+            updatedAt: sql`statement_timestamp()`,
+          })
+          .where(
+            and(
+              eq(workSessions.id, session.id),
+              eq(workSessions.status, WorkSessionStatus.enum.active),
+              liveLease,
+            ),
+          )
+          .returning(sessionColumns);
+        if (updated === undefined) throw new SessionsError("session_not_active");
+
+        // The stop request is part of the project's permanent history, written in the same
+        // transaction as the signal so activity can never disagree with the session. The
+        // summary is an optional reason snapshot, never a credential or internal id.
+        await tx.insert(projectActivity).values({
+          id: randomUUID(),
+          projectId: issue.projectId,
+          type: ProjectActivityType.enum.issue_stop_requested,
+          issueId: issue.id,
+          actorHumanId: humanId,
+          summary: reason ?? "Stop requested",
+          createdAt: sql`statement_timestamp()`,
+        });
+
+        return toSession(updated);
       });
     },
 

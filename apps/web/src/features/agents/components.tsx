@@ -1,8 +1,16 @@
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { AgentKeyValidity, ProjectAccessLevel, type Agent, type AgentKey } from "@orrery/contract";
+import { Link } from "@tanstack/react-router";
+import {
+  AgentKeyValidity,
+  ProjectAccessLevel,
+  type Agent,
+  type AgentKey,
+  type Project,
+} from "@orrery/contract";
 import type { FormEvent } from "react";
 import { useState } from "react";
-import { projectsQuery } from "../projects/index.ts";
+import { issuesQuery, projectsQuery } from "../projects/index.ts";
+import { SessionStatus } from "../work-sessions/index.ts";
 import {
   createAgent,
   issueAgentKey,
@@ -111,6 +119,8 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
           ))}
         </ul>
       )}
+      <h3>Active work sessions</h3>
+      <ActiveSessions projects={projects} />
       <RegisterAgentForm />
       {agents.length > 0 && (
         <IssueKeyForm
@@ -171,6 +181,44 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
         </ul>
       )}
     </section>
+  );
+}
+
+// #82: the agents view shows each project's issue sessions with the same badge and
+// one-click stop control as the issue page, so a human watching an agent can stop it
+// without revoking its key or waiting for the lease to expire.
+function ActiveSessions({ projects }: { projects: readonly Project[] }) {
+  if (projects.length === 0) return <p>No projects in this workspace.</p>;
+  return (
+    <>
+      {projects.map((project) => (
+        <ProjectSessions key={project.id} project={project} />
+      ))}
+    </>
+  );
+}
+
+function ProjectSessions({ project }: { project: Project }) {
+  const { data: issues } = useSuspenseQuery(issuesQuery(project.id));
+  if (issues.length === 0) return null;
+  return (
+    <div data-sessions-project={project.id}>
+      <h4>{project.name}</h4>
+      <ul>
+        {issues.map((issue) => (
+          <li key={issue.id} data-issue-id={issue.id}>
+            <Link to="/issues/$issueId" params={{ issueId: issue.id }}>
+              #{issue.number} {issue.title}
+            </Link>{" "}
+            <SessionStatus
+              issueId={issue.id}
+              projectId={project.id}
+              canContribute={project.accessLevel !== "read"}
+            />
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

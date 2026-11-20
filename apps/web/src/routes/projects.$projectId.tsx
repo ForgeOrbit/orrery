@@ -52,6 +52,7 @@ const activityLabels: Record<ProjectActivityType, string> = {
   issue_question_asked: "asked for input on issue",
   issue_question_answered: "answered a question on issue",
   issue_question_paused: "paused a question on issue",
+  issue_stop_requested: "asked the agent to stop on issue",
   knowledge_created: "created knowledge",
   knowledge_edited: "edited knowledge",
 };

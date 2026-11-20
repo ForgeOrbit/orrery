@@ -217,6 +217,126 @@ test("fenced writes need a live session; reads, creation, comments and knowledge
   }
 });
 
+// #82: a human stop request is a signal on the live session. The holding agent detects it
+// on its next heartbeat/progress check-in over MCP, while the request itself is a
+// human-only REST action that an agent key cannot perform.
+test("a human stop request reaches the agent on renew and progress and is recorded in history", async () => {
+  const workspaceId = await personalWorkspaceOf(api);
+  const projectId = await project(api, workspaceId);
+  const agentId = await createAgent(api, `sessions-stop-${randomUUID()}`);
+  const secret = await issueKey(api, agentId, workspaceId, projectId);
+  const client = await connect(secret);
+  const http = bearer(secret);
+  try {
+    const created = await call(client, "create_issue", { projectId, title: "Stop me" });
+    const issueId = requiredText(field(created.data.issue, "id"), "the issue id");
+    const runId = await newRun(client);
+    const claim = await call(client, "claim_issue", { issueId, runId });
+    expect(claim.isError).toBe(false);
+    expect(field(claim.data.session, "stopRequested")).toBe(false);
+
+    // An agent key cannot ask its own operator to stop.
+    const denied = await http.post(`/api/issues/${issueId}/work-sessions/stop-request`, {
+      reason: "self",
+    });
+    expect(denied.status).toBe(403);
+    expect(denied.headers.get("content-type")).toContain("application/problem+json");
+    expect(asRecord(await denied.json())).toMatchObject({
+      code: "agents_cannot_request_stop",
+      status: 403,
+    });
+
+    // The signed-in human requests the stop with a reason.
+    const requested = await api.post(`/api/issues/${issueId}/work-sessions/stop-request`, {
+      data: { reason: "Wrong direction" },
+    });
+    expect(requested.status()).toBe(200);
+    expect(asRecord(await requested.json())).toMatchObject({
+      status: "active",
+      stopRequested: true,
+      stopReason: "Wrong direction",
+    });
+
+    // The agent sees the signal on both check-ins over MCP.
+    const renewed = await call(client, "renew_claim", { issueId });
+    expect(renewed.isError).toBe(false);
+    expect(field(renewed.data.session, "stopRequested")).toBe(true);
+    expect(field(renewed.data.session, "stopReason")).toBe("Wrong direction");
+    const progressed = await call(client, "report_progress", {
+      issueId,
+      summary: "Handoff written",
+    });
+    expect(progressed.isError).toBe(false);
+    expect(field(progressed.data.session, "stopRequested")).toBe(true);
+
+    // The same fact is readable over REST and appears in the project's activity feed.
+    const current = await api.get(`/api/issues/${issueId}/work-sessions`);
+    expect(current.status()).toBe(200);
+    expect(asRecord(await current.json())).toMatchObject({ stopRequested: true });
+    const activity = await api.get(`/api/projects/${projectId}/activity`);
+    expect(activity.status()).toBe(200);
+    expect(
+      asArray(await activity.json()).some(
+        (event) =>
+          field(event, "type") === "issue_stop_requested" &&
+          field(event, "summary") === "Wrong direction",
+      ),
+    ).toBe(true);
+
+    // The agent acknowledges the signal and ends the session; the request stays in history.
+    const stopped = await call(client, "stop_session", { issueId, outcome: "released" });
+    expect(stopped.isError).toBe(false);
+    expect(field(stopped.data.session, "status")).toBe("released");
+    expect(field(stopped.data.session, "stopRequested")).toBe(true);
+  } finally {
+    await client.close();
+  }
+});
+
+test("clicking Stop agent in the browser transitions the session badge to stopping", async ({
+  browser,
+}) => {
+  const workspaceId = await personalWorkspaceOf(api);
+  const projectId = await project(api, workspaceId);
+  const agentId = await createAgent(api, `sessions-browser-stop-${randomUUID()}`);
+  const secret = await issueKey(api, agentId, workspaceId, projectId);
+  const client = await connect(secret);
+  let context;
+  try {
+    const created = await call(client, "create_issue", { projectId, title: "Browser stop issue" });
+    const issueId = requiredText(field(created.data.issue, "id"), "the issue id");
+    const runId = await newRun(client);
+    expect((await call(client, "claim_issue", { issueId, runId })).isError).toBe(false);
+
+    context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto("/signin");
+    await page.getByLabel("Email").fill(ADMIN_EMAIL);
+    await page.getByLabel("Password").fill(ADMIN_PASSWORD);
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page.getByText(`Signed in as ${ADMIN_EMAIL}.`)).toBeVisible();
+    await page.goto(`/issues/${issueId}`);
+
+    const badge = page.locator("[data-session-status]");
+    await expect(badge).toHaveText("active");
+    await page.getByLabel("Reason (optional)").fill("Browser reason");
+    await page.getByRole("button", { name: "Stop agent" }).click();
+    await expect(badge).toHaveText("stopping");
+
+    const current = await api.get(`/api/issues/${issueId}/work-sessions`);
+    expect(asRecord(await current.json())).toMatchObject({
+      stopRequested: true,
+      stopReason: "Browser reason",
+    });
+  } finally {
+    if (context !== undefined) {
+      for (const cookie of await context.cookies()) await recordSecret(cookie.value);
+      await context.close();
+    }
+    await client.close();
+  }
+});
+
 test("ready work omits claimed issues and two claims yield one winner", async () => {
   const workspaceId = await personalWorkspaceOf(api);
   const projectId = await project(api, workspaceId);
