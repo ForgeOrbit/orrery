@@ -13,6 +13,10 @@ blocked and submit work for review. A shared Markdown vault gives them the conte
 These pages are also published on the website:
 <https://forge-orbit.github.io/orrery-site/docs/>.
 
+## Guides
+
+- [Codex CLI run reporting](./guides/codex-run-reporting.md) — hook setup and the live gate record.
+
 ## Planned guides
 
 | Guide | Covers | Milestone |
