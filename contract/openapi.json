@@ -1517,6 +1517,122 @@
         "type": "string",
         "maxLength": 100000
       },
+      "IssueDetail": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/IssueStatus"
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "closedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "createdBy": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "updatedBy": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "fallbackPolicyOverride": {
+            "$ref": "#/components/schemas/FallbackPolicyOverride"
+          },
+          "effectiveFallbackPolicy": {
+            "$ref": "#/components/schemas/FallbackPolicy"
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IssueLink"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "projectId",
+          "number",
+          "title",
+          "body",
+          "status",
+          "createdAt",
+          "updatedAt",
+          "closedAt",
+          "createdBy",
+          "updatedBy",
+          "fallbackPolicyOverride",
+          "effectiveFallbackPolicy",
+          "links"
+        ]
+      },
+      "IssueLink": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "issueId": {
+            "type": "string"
+          },
+          "url": {
+            "$ref": "#/components/schemas/IssueLinkUrl"
+          },
+          "title": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/IssueLinkKind"
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "createdBy": {
+            "$ref": "#/components/schemas/Actor"
+          }
+        },
+        "required": [
+          "id",
+          "issueId",
+          "url",
+          "title",
+          "kind",
+          "createdAt",
+          "createdBy"
+        ]
+      },
+      "IssueLinkUrl": {
+        "type": "string",
+        "maxLength": 2048,
+        "format": "uri"
+      },
+      "IssueLinkKind": {
+        "type": "string",
+        "enum": [
+          "pr",
+          "commit",
+          "doc",
+          "link"
+        ]
+      },
       "UpdateIssueRequest": {
         "type": "object",
         "properties": {
@@ -1542,6 +1658,42 @@
         },
         "required": [
           "override"
+        ]
+      },
+      "IssueDependency": {
+        "type": "object",
+        "properties": {
+          "issueId": {
+            "type": "string"
+          },
+          "blockedByIssueId": {
+            "type": "string"
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "createdBy": {
+            "$ref": "#/components/schemas/Actor"
+          }
+        },
+        "required": [
+          "issueId",
+          "blockedByIssueId",
+          "createdAt",
+          "createdBy"
+        ]
+      },
+      "AddBlockedByRequest": {
+        "type": "object",
+        "properties": {
+          "blockedByIssueId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "blockedByIssueId"
         ]
       },
       "IssueCommentsResponse": {
@@ -1588,6 +1740,27 @@
         },
         "required": [
           "body"
+        ]
+      },
+      "CreateIssueLinkRequest": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "$ref": "#/components/schemas/IssueLinkUrl"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "kind": {
+            "$ref": "#/components/schemas/IssueLinkKind"
+          }
+        },
+        "required": [
+          "url",
+          "title",
+          "kind"
         ]
       },
       "ProjectActivityResponse": {
@@ -1652,12 +1825,17 @@
           "issue_commented",
           "issue_closed",
           "issue_reopened",
+          "issue_dependency_added",
+          "issue_dependency_removed",
+          "issue_link_added",
+          "issue_link_removed",
           "issue_question_asked",
           "issue_question_answered",
           "issue_question_paused",
           "issue_question_fallback_used",
           "issue_question_follow_up",
           "issue_fallback_policy_override_changed",
+          "issue_stop_requested",
           "knowledge_created",
           "knowledge_edited"
         ]
@@ -2295,6 +2473,18 @@
           "progressUpdatedAt": {
             "$ref": "#/components/schemas/Timestamp"
           },
+          "stopRequested": {
+            "type": "boolean"
+          },
+          "stopRequestedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "stopReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "createdAt": {
             "$ref": "#/components/schemas/Timestamp"
           },
@@ -2315,6 +2505,9 @@
           "leaseExpiresAt",
           "progress",
           "progressUpdatedAt",
+          "stopRequested",
+          "stopRequestedAt",
+          "stopReason",
           "createdAt",
           "updatedAt",
           "endedAt"
@@ -2384,6 +2577,86 @@
         "items": {
           "$ref": "#/components/schemas/WorkSession"
         }
+      },
+      "ActiveWorkSessionsResponse": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ActiveWorkSession"
+        }
+      },
+      "ActiveWorkSession": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "workspaceId": {
+            "type": "string"
+          },
+          "issueId": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/WorkSessionStatus"
+          },
+          "leaseExpiresAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "progress": {
+            "type": "string"
+          },
+          "progressUpdatedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "stopRequested": {
+            "type": "boolean"
+          },
+          "stopRequestedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "stopReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "endedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "projectId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "agentId",
+          "runId",
+          "workspaceId",
+          "issueId",
+          "status",
+          "leaseExpiresAt",
+          "progress",
+          "progressUpdatedAt",
+          "stopRequested",
+          "stopRequestedAt",
+          "stopReason",
+          "createdAt",
+          "updatedAt",
+          "endedAt",
+          "projectId"
+        ]
       },
       "Question": {
         "type": "object",
@@ -6155,7 +6428,7 @@
     "/api/issues/{issueId}": {
       "get": {
         "summary": "One issue the caller can access",
-        "description": "The issue's title, Markdown body, status, and authorship.A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
+        "description": "The issue's title, Markdown body, status, authorship, and structured links (each with its kind). A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
         "parameters": [
           {
             "schema": {
@@ -6170,11 +6443,11 @@
         ],
         "responses": {
           "200": {
-            "description": "The issue",
+            "description": "The issue with its links",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Issue"
+                  "$ref": "#/components/schemas/IssueDetail"
                 }
               }
             }
@@ -6380,6 +6653,287 @@
         }
       }
     },
+    "/api/issues/{issueId}/blocked-by": {
+      "post": {
+        "summary": "Record that an issue is blocked by another issue in the same project",
+        "description": "Contribute or Manage. The edge is added in one transaction with an activity event; a self-link, a cross-project link, and a cycle are refused. Re-adding an existing edge is a no-op. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "issueId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddBlockedByRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The dependency edge, written",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueDependency"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid, the issue blocks itself, or the two issues are in different projects",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read access cannot change dependencies",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No issue with either id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "That dependency would create a cycle",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "The issues that block an issue",
+        "description": "Read access is enough. Lists the issue's prerequisites, open or closed, in issue-number order. An issue with any blocker that is not closed is omitted from ready work. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "issueId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The issues that block this one",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The issue id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No issue with this id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/{issueId}/blocked-by/{blockedByIssueId}": {
+      "delete": {
+        "summary": "Remove a blocked_by relation from an issue",
+        "description": "Contribute or Manage. Removing an edge that is not there is a no-op. A real removal is recorded in the project's activity. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "issueId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "blockedByIssueId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The relation is no longer in place"
+          },
+          "400": {
+            "description": "The issue ids are invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read access cannot change dependencies",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No issue with this id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/{issueId}/blocking": {
+      "get": {
+        "summary": "The issues that an issue blocks",
+        "description": "Read access is enough. Lists the issue's dependants, open or closed, in issue-number order. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "issueId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The issues this one blocks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The issue id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No issue with this id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/issues/{issueId}/comments": {
       "get": {
         "summary": "The comments on an issue",
@@ -6507,6 +7061,169 @@
           },
           "404": {
             "description": "No issue with this id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/{issueId}/links": {
+      "post": {
+        "summary": "Attach a structured link to an issue",
+        "description": "Contribute or Manage. Attaches an http or https URL classified as a PR, commit, doc, or general link. The same URL cannot be attached twice to one issue. Like a comment, a link needs no work session, and it is recorded in the project's activity. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "issueId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateIssueLinkRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The link, attached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueLink"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid, or the URL scheme is not http or https",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read access cannot attach a link",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No issue with this id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This URL is already attached to the issue",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/{issueId}/links/{linkId}": {
+      "delete": {
+        "summary": "Remove a structured link from an issue",
+        "description": "Contribute or Manage. Removes one link by id from an issue and records the removal in the project's activity. Removing a link that is not attached is a 404, not a silent no-op. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "issueId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "linkId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The link was removed"
+          },
+          "400": {
+            "description": "The issue or link id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read access cannot remove a link",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No issue or link with this id is accessible to the caller",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -7620,6 +8337,102 @@
         }
       }
     },
+    "/api/issues/{issueId}/work-sessions/stop-request": {
+      "post": {
+        "summary": "Ask the holding agent to stop",
+        "description": "A human with Contribute or Manage on the project asks the agent holding the live session to stop. The session stays active (shown as stopping) and the agent learns of the request on its next renew or progress check-in. The five-minute lease remains the hard backstop. Agents, Readers and non-members are refused; an inactive or expired session cannot be stopped.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "issueId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 2000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The session carrying the recorded stop request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkSession"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The stop request is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in as a human",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only a human with Contribute or Manage on the project may request a stop",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such issue is in scope for the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The work session is no longer active",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/issues/{issueId}/work-sessions/resume": {
       "post": {
         "summary": "Inspect the original run's claim after an interruption",
@@ -7880,10 +8693,60 @@
         }
       }
     },
+    "/api/workspaces/{workspaceId}/work-sessions/active": {
+      "get": {
+        "summary": "Active work sessions in a workspace",
+        "description": "The live sessions in a workspace that the caller can read, evaluated in database time and including any stop request. A read only: it never renews a lease. Projects without access are omitted, so the listing cannot enumerate issues.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The active sessions, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActiveWorkSessionsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The workspace id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the agent key is invalid or revoked",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/projects/{projectId}/ready-work": {
       "get": {
         "summary": "Minimal ready-work listing for a project",
-        "description": "Open issues that are not Needs input and have no live active session, evaluated in database time. Needs no claim; a full board is out of scope.",
+        "description": "Open issues that are not Needs input, have no live active session, and have no blocker whose status is not closed, evaluated in database time. Needs no claim; a full board is out of scope.",
         "parameters": [
           {
             "schema": {

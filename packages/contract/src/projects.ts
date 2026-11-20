@@ -46,6 +46,8 @@ export const ProjectActivityType = z
     "issue_reopened",
     "issue_dependency_added",
     "issue_dependency_removed",
+    "issue_link_added",
+    "issue_link_removed",
     "issue_question_asked",
     "issue_question_answered",
     "issue_question_paused",
@@ -186,6 +188,55 @@ export type Issue = z.infer<typeof Issue>;
 
 export const IssuesResponse = z.array(Issue).meta({ id: "IssuesResponse" });
 export type IssuesResponse = z.infer<typeof IssuesResponse>;
+
+// A structured link attached to an issue (#87): a PR, a commit, an external doc, or any
+// other web URL. `link` is the fallback so a client never has to invent a kind for an
+// unfamiliar artifact.
+export const IssueLinkKind = z.enum(["pr", "commit", "doc", "link"]).meta({ id: "IssueLinkKind" });
+export type IssueLinkKind = z.infer<typeof IssueLinkKind>;
+
+// `z.url()` alone also accepts schemes such as javascript: and file:, which would make a
+// stored "link" unsafe to render as an anchor. Restrict the protocol to the web schemes;
+// the database repeats this rule so no writer can bypass the contract.
+export const IssueLinkUrl = z
+  .url()
+  .max(2048)
+  .refine(
+    (value) => {
+      const protocol = new URL(value).protocol;
+      return protocol === "http:" || protocol === "https:";
+    },
+    { message: "Only http and https links are allowed." },
+  )
+  .meta({ id: "IssueLinkUrl" });
+export type IssueLinkUrl = z.infer<typeof IssueLinkUrl>;
+
+export const IssueLink = z
+  .object({
+    id: z.string(),
+    issueId: z.string(),
+    url: IssueLinkUrl,
+    title: z.string(),
+    kind: IssueLinkKind,
+    createdAt: Timestamp,
+    createdBy: Actor,
+  })
+  .meta({ id: "IssueLink" });
+export type IssueLink = z.infer<typeof IssueLink>;
+
+export const CreateIssueLinkRequest = z
+  .object({
+    url: IssueLinkUrl,
+    title: z.string().trim().min(1, "Give the link a title.").max(200),
+    kind: IssueLinkKind,
+  })
+  .meta({ id: "CreateIssueLinkRequest" });
+export type CreateIssueLinkRequest = z.infer<typeof CreateIssueLinkRequest>;
+
+// The issue detail is the issue plus its structured links. The list and mutation responses
+// stay plain Issues so a project-wide listing does not pay for every issue's link rows.
+export const IssueDetail = Issue.extend({ links: z.array(IssueLink) }).meta({ id: "IssueDetail" });
+export type IssueDetail = z.infer<typeof IssueDetail>;
 
 // The issue body is Markdown, stored as written. The cap bounds the work of parsing and
 // storing it; it is not a rendering rule.

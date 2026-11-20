@@ -2,11 +2,13 @@
 // import only this file.
 export {
   addBlockedBy,
+  addIssueLink,
   createIssue,
   createIssueComment,
   createKnowledgeEntry,
   createProject,
   removeBlockedBy,
+  removeIssueLink,
   removeProjectAccess,
   setProjectAccess,
   updateIssue,

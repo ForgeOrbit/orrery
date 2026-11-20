@@ -38,6 +38,8 @@ const labels: Record<string, string> = {
   issue_stop_requested: "asked the agent to stop on issue",
   issue_dependency_added: "added a blocker to issue",
   issue_dependency_removed: "removed a blocker from issue",
+  issue_link_added: "linked on issue",
+  issue_link_removed: "unlinked from issue",
   knowledge_created: "created knowledge",
   knowledge_edited: "edited knowledge",
   installation_bootstrap: "bootstrapped the installation",
