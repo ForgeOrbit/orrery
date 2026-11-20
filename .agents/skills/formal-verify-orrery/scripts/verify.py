@@ -1032,7 +1032,9 @@ def extract_code_facts() -> dict[str, Any]:
     accept_fn = slice_between(
         tr_src, "async function acceptInTransaction(", "\nexport function createTransfersService"
     )
-    authorize_impl = tr_src.split("async authorize(", 1)[1].split("async accept(", 1)[0]
+    preview_impl = tr_src.split("async preview(", 1)[1].split("async authorize(", 1)[0]
+    authorize_impl = tr_src.split("async authorize(", 1)[1].split("async receiverPreview(", 1)[0]
+    receiver_preview_impl = tr_src.split("async receiverPreview(", 1)[1].split("async accept(", 1)[0]
     accept_impl = tr_src.split("async accept(", 1)[1].split("async complete(", 1)[0]
     complete_impl = tr_src.split("async complete(", 1)[1]
 
@@ -1040,9 +1042,12 @@ def extract_code_facts() -> dict[str, Any]:
         "eq(workspaces.kind, WorkspaceKind.enum.personal)" in tr_src
         and "eq(workspaces.personalOwnerHumanId, humanId)" in tr_src
     )
-    # Authorization needs only source ownership: a destination authority is not required
-    # at authorize time, which is what makes the two-party flow possible.
-    m18_two_party = "hasCreateProjectsAuthority" not in authorize_impl
+    # Authorization needs only source ownership: a destination authority is not *required*
+    # at authorize time, which is what makes the two-party flow possible. It may be read
+    # to decide whether the authorizer is also the receiver, but it must not gate authorize.
+    m18_two_party = (
+        'throw new TransfersError("destination_authority_required")' not in authorize_impl
+    )
     m18_dest_authority = "membership.isOwner || membership.canCreateProjects" in tr_src
     m18_recheck_source = (
         'throw new TransfersError("source_authority_lost")' in accept_fn
@@ -1120,6 +1125,40 @@ def extract_code_facts() -> dict[str, Any]:
     m18_authorization_persisted = (
         'CREATE TABLE "project_transfer_authorizations"' in mig_0023
         and "token_hash" in mig_0023
+    )
+    # Destination non-enumeration and the receiver's own pre-confirmation view.
+    m18_dest_membership_preview = (
+        "requireDestinationMember(tx, destinationWorkspaceId, account.humanId)" in preview_impl
+    )
+    m18_dest_membership_complete = (
+        "requireDestinationMember(tx, destinationWorkspaceId, account.humanId)" in complete_impl
+    )
+    m18_authorize_redaction = (
+        "canSeeDestination ? fullPreview : null" in authorize_impl
+        and "hasDestinationMembership(" in authorize_impl
+    )
+    m18_receiver_preview = (
+        "/api/transfers/preview" in tr_rest
+        and "receiverPreviewTransfer" in tr_rest
+        and "async receiverPreview(" in tr_src
+    )
+    m18_receiver_authority = (
+        "hasDestinationMembership(" in receiver_preview_impl
+        and "hasCreateProjectsAuthority(" in receiver_preview_impl
+        and 'throw new TransfersError("destination_authority_required")' in receiver_preview_impl
+    )
+    m18_accept_membership = (
+        "hasDestinationMembership(tx, auth.destinationWorkspaceId, acceptorHumanId)" in accept_fn
+    )
+    m18_receiver_recipient = (
+        "const receiver = (await hasCreateProjectsAuthority" in preview_impl
+        and "const receiver = (await hasCreateProjectsAuthority" in authorize_impl
+    )
+    # Acceptance cleanup that keeps no stale leases, settled offers or rival tokens.
+    m18_expire_lapsed = 'status: "expired"' in accept_fn and "lte(workSessions.leaseExpiresAt" in accept_fn
+    m18_pending_offers_only = "eq(workspaceInvitations.status, InvitationStatus.enum.pending)" in accept_fn
+    m18_revoke_siblings = (
+        'status: "revoked"' in accept_fn and "ne(projectTransferAuthorizations.id, auth.id)" in accept_fn
     )
 
     return {
@@ -1290,6 +1329,16 @@ def extract_code_facts() -> dict[str, Any]:
         "m18_http_problems": m18_http_problems,
         "m18_human_only": m18_human_only,
         "m18_authorization_persisted": m18_authorization_persisted,
+        "m18_dest_membership_preview": m18_dest_membership_preview,
+        "m18_dest_membership_complete": m18_dest_membership_complete,
+        "m18_authorize_redaction": m18_authorize_redaction,
+        "m18_receiver_preview": m18_receiver_preview,
+        "m18_receiver_authority": m18_receiver_authority,
+        "m18_receiver_recipient": m18_receiver_recipient,
+        "m18_expire_lapsed": m18_expire_lapsed,
+        "m18_pending_offers_only": m18_pending_offers_only,
+        "m18_revoke_siblings": m18_revoke_siblings,
+        "m18_accept_membership": m18_accept_membership,
     }
 
 
@@ -2896,9 +2945,10 @@ def check_m17(facts: dict[str, Any]) -> CheckResult:
 def check_m18(facts: dict[str, Any]) -> CheckResult:
     """#39: a personal-to-shared transfer is atomic, rechecks both authorities and the
     project's current ownership, blocks live work in database time, and leaves no source
-    key, source grant or pending offer behind. The destination rebuilds Manage and records
-    its own receipt and grant events while the source keeps its access history. Each
-    transition consults a guard extracted from the live transfer source; mutating one
+    key, source grant or pending offer behind. Destination membership gates every reveal
+    of a destination's name and owners: the source owner's authorization carries no PII
+    for a stranger, and a separate Create-projects receiver can preview the pending token
+    before accepting. Each transition consults a source-extracted guard; flipping one
     produces a shortest counterexample naming the exact broken operation."""
     g = facts
 
@@ -2906,7 +2956,8 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
         return violations | {reason}
 
     def apply_transfer(state, violations):
-        phase, auth, dest_ok, source_ok, pws, claim, keys, grants, events, offers, auth_live, v = state
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
         v = violations
 
         # One transaction, ownership lock first, workspace guards before the project row
@@ -2922,7 +2973,7 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
         if not g["m18_preserve_identity"]:
             v = bad(v, "authorship_rewritten_on_move")
 
-        # Cleanup: source grants, source keys' project scope and pending offers all go.
+        # Cleanup: source grants, source keys' project scope and only still-pending offers.
         if not g["m18_grant_cleanup"]:
             v = bad(v, "source_grant_survived")
         else:
@@ -2931,10 +2982,14 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
             v = bad(v, "source_key_followed_project")
         else:
             keys = False
-        if not g["m18_offer_cleanup"]:
+        if not g["m18_offer_cleanup"] or not g["m18_pending_offers_only"]:
             v = bad(v, "pending_offer_not_invalidated")
         else:
             offers = False
+        if not g["m18_expire_lapsed"]:
+            v = bad(v, "stale_active_session_moved")
+        if not g["m18_revoke_siblings"]:
+            v = bad(v, "sibling_authorization_left_pending")
 
         # Rebuild access and the destination's own audit trail; source events stay source.
         if not g["m18_grant_rebuild"]:
@@ -2949,45 +3004,56 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
             v = bad(v, "source_access_history_leaked_to_destination")
         events = events | {"dest_grants", "receipt", "source_out"}
 
-        return (
-            "transferred",
-            "accepted",
-            dest_ok,
-            source_ok,
-            "dest",
-            "none",
-            keys,
-            grants,
-            events,
-            offers,
-            auth_live,
-            v,
-        )
+        return ("transferred", "accepted", dest_ok, dest_member, source_ok, "dest",
+                "none", keys, grants, events, offers, auth_live, v)
 
     def preview(state):
-        phase, auth, dest_ok, source_ok, pws, claim, keys, grants, events, offers, auth_live, v = state
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
         if not g["m18_preview"]:
             v = bad(v, "no_preview_before_confirmation")
         if not g["m18_http_problems"]:
             v = bad(v, "validated_route_without_400_problem")
         if not g["m18_human_only"]:
             v = bad(v, "agent_key_can_authorize_transfer")
-        return (phase, auth, dest_ok, source_ok, pws, claim, keys, grants, events, offers, auth_live, v)
+        if not dest_member and not g["m18_dest_membership_preview"]:
+            v = bad(v, "destination_enumerated_by_preview")
+        return (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys,
+                grants, events, offers, auth_live, v)
 
     def lose_source(state):
-        phase, auth, dest_ok, source_ok, pws, claim, keys, grants, events, offers, auth_live, v = state
-        return (phase, auth, dest_ok, False, pws, claim, keys, grants, events, offers, auth_live, v)
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        return (phase, auth, dest_ok, dest_member, False, pws, claim, keys,
+                grants, events, offers, auth_live, v)
+
+    def join_dest(state):
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        return (phase, auth, False, True, source_ok, pws, claim, keys,
+                grants, events, offers, auth_live, v)
+
+    def leave_dest(state):
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        return (phase, auth, False, False, source_ok, pws, claim, keys,
+                grants, events, offers, auth_live, v)
 
     def gain_dest(state):
-        phase, auth, dest_ok, source_ok, pws, claim, keys, grants, events, offers, auth_live, v = state
-        return (phase, auth, True, source_ok, pws, claim, keys, grants, events, offers, auth_live, v)
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        return (phase, auth, True, True, source_ok, pws, claim, keys,
+                grants, events, offers, auth_live, v)
 
     def lose_dest(state):
-        phase, auth, dest_ok, source_ok, pws, claim, keys, grants, events, offers, auth_live, v = state
-        return (phase, auth, False, source_ok, pws, claim, keys, grants, events, offers, auth_live, v)
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        return (phase, auth, False, dest_member, source_ok, pws, claim, keys,
+                grants, events, offers, auth_live, v)
 
     def authorize(state):
-        phase, auth, dest_ok, source_ok, pws, claim, keys, grants, events, offers, auth_live, v = state
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
         if phase != "start":
             return state
         if not source_ok:
@@ -2995,44 +3061,57 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
                 v = bad(v, "authorized_without_source_ownership")
             else:
                 return state  # correctly refused
-        if not dest_ok:
-            if not g["m18_two_party"]:
-                v = bad(v, "two_party_authorization_required_destination_authority")
+        if not dest_ok and not g["m18_two_party"]:
+            v = bad(v, "two_party_authorization_required_destination_authority")
         if not g["m18_authorization_persisted"]:
             v = bad(v, "authorization_not_persisted")
-        return (
-            "authorized",
-            "pending",
-            dest_ok,
-            source_ok,
-            pws,
-            claim,
-            keys,
-            grants,
-            events,
-            offers,
-            True,
-            v,
-        )
+        if not dest_member and not g["m18_authorize_redaction"]:
+            v = bad(v, "destination_owner_pii_leaked")
+        return ("authorized", "pending", dest_ok, dest_member, source_ok, pws,
+                claim, keys, grants, events, offers, True, v)
+
+    def receiver_preview(state):
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        if phase != "authorized" or auth != "pending":
+            return state
+        if not g["m18_receiver_preview"]:
+            v = bad(v, "no_receiver_preview")
+        if not dest_member or not dest_ok:
+            if not g["m18_receiver_authority"]:
+                v = bad(v, "unauthorized_receiver_saw_preview")
+        elif not g["m18_receiver_recipient"]:
+            v = bad(v, "receiver_not_listed_for_acceptor")
+        return (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys,
+                grants, events, offers, auth_live, v)
 
     def claim(state):
-        phase, auth, dest_ok, source_ok, pws, claim, keys, grants, events, offers, auth_live, v = state
-        return (phase, auth, dest_ok, source_ok, pws, "live", keys, grants, events, offers, auth_live, v)
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        return (phase, auth, dest_ok, dest_member, source_ok, pws, "live", keys,
+                grants, events, offers, auth_live, v)
 
     def expire_claim(state):
-        phase, auth, dest_ok, source_ok, pws, claim, keys, grants, events, offers, auth_live, v = state
-        return (phase, auth, dest_ok, source_ok, pws, "expired", keys, grants, events, offers, auth_live, v)
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        return (phase, auth, dest_ok, dest_member, source_ok, pws, "expired", keys,
+                grants, events, offers, auth_live, v)
 
     def expire_auth(state):
-        phase, auth, dest_ok, source_ok, pws, claim, keys, grants, events, offers, auth_live, v = state
-        return (phase, auth, dest_ok, source_ok, pws, claim, keys, grants, events, offers, False, v)
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        return (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys,
+                grants, events, offers, False, v)
 
     def move_project(state):
-        phase, auth, dest_ok, source_ok, pws, claim, keys, grants, events, offers, auth_live, v = state
-        return (phase, auth, dest_ok, source_ok, "elsewhere", claim, keys, grants, events, offers, auth_live, v)
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        return (phase, auth, dest_ok, dest_member, source_ok, "elsewhere", claim,
+                keys, grants, events, offers, auth_live, v)
 
     def accept(state):
-        phase, auth, dest_ok, source_ok, pws, claim, keys, grants, events, offers, auth_live, v = state
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
         if phase != "authorized" or auth != "pending":
             return state
         if not g["m18_authorization_persisted"]:
@@ -3040,7 +3119,11 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
         if not auth_live:
             if not g["m18_db_time_expiry"]:
                 return apply_transfer(state, bad(v, "expired_authorization_accepted"))
-            return state  # expired in database time
+            return state
+        if not dest_member:
+            if not g["m18_accept_membership"]:
+                return apply_transfer(state, bad(v, "non_member_accepted_transfer"))
+            return state
         if not source_ok:
             if not g["m18_recheck_source"]:
                 return apply_transfer(state, bad(v, "accepted_after_source_lost"))
@@ -3058,16 +3141,22 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
         if claim == "live":
             if not (g["m18_active_work"] and g["m18_db_time_live"]):
                 return apply_transfer(state, bad(v, "transferred_with_live_work"))
-            return state  # correctly blocked
+            return state
         if claim == "expired" and not g["m18_db_time_live"]:
             v = bad(v, "expired_claim_blocked_transfer")
         return apply_transfer(state, v)
 
     def complete(state):
-        phase, auth, dest_ok, source_ok, pws, claim, keys, grants, events, offers, auth_live, v = state
-        if phase != "start":
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        if phase != "start" or not source_ok:
             return state
-        if not source_ok or not dest_ok:
+        if not dest_member:
+            if not g["m18_dest_membership_complete"]:
+                v = bad(v, "complete_enumerated_destination")
+            return (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys,
+                    grants, events, offers, auth_live, v)
+        if not dest_ok:
             return state
         if not g["m18_dest_authority"]:
             v = bad(v, "direct_flow_denied_valid_authority")
@@ -3081,7 +3170,10 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
 
     actions = [
         ("the personal owner previews the destination, access changes and live work", preview),
+        ("a stranger or non-authority member previews the pending token", receiver_preview),
         ("the authorizing owner loses the source workspace", lose_source),
+        ("the receiver joins the destination without Create projects", join_dest),
+        ("a member leaves the destination", leave_dest),
         ("the destination grants Create projects to the receiver", gain_dest),
         ("destination Create projects authority is withdrawn", lose_dest),
         ("the source owner authorizes without destination authority", authorize),
@@ -3093,32 +3185,18 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
         ("one person with both authorities completes directly", complete),
     ]
 
-    init = (
-        "start",
-        "none",
-        False,
-        True,
-        "source",
-        "none",
-        True,
-        frozenset({"old"}),
-        frozenset(),
-        True,
-        True,
-        frozenset(),
-    )
+    init = ("start", "none", False, False, True, "source", "none", True,
+            frozenset({"old"}), frozenset(), True, True, frozenset())
 
     def next_states(state):
-        result = []
-        for label, action in actions:
-            result.append((label, action(state)))
-        return result
+        return [(label, action(state)) for label, action in actions]
 
     def inv(state):
         v = state[-1]
         if v:
             return False, f"project-transfer invariant broken: {sorted(v)[0]}"
-        phase, auth, dest_ok, source_ok, pws, claim, keys, grants, events, offers, auth_live, _ = state
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, _) = state
         if phase == "transferred":
             if keys:
                 return False, "a source key still names the moved project"
@@ -3137,7 +3215,7 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
     return bfs_check(
         "M18",
         "Personal-to-Shared Project Transfer (#39)",
-        "Authorization needs only source ownership; acceptance is one transaction that rechecks both authorities, current ownership and no live DB-time work, then rebuilds destination Manage and receipts while source keys, grants and offers are removed",
+        "Destination membership gates every reveal of its name and owners, including a redacted source-owner authorization and a receiver-only preview; acceptance is one transaction that rechecks both authorities, current ownership and no live DB-time work, expires lapsed leases, keeps settled offers, revokes rival tokens, rebuilds destination Manage and receipts, and removes source keys, grants and pending offers",
         "safety",
         init,
         next_states,
@@ -3151,7 +3229,6 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
             "db/migrations/0023_equal_doctor_octopus.sql",
         ],
     )
-
 
 def main() -> None:
     facts = extract_code_facts()

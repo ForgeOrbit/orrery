@@ -69,6 +69,27 @@ const authorizeTransfer = createRoute({
   },
 });
 
+const receiverPreviewTransfer = createRoute({
+  method: "post",
+  path: "/api/transfers/preview",
+  summary: "Preview an authorized transfer before accepting it",
+  description:
+    "A destination owner or a member with Create projects redeems the one-time token to see the destination, visibility and access changes, and any live work before confirming acceptance. A stranger, a non-member or a used token answers exactly like a missing authorization.",
+  request: {
+    body: { required: true, content: { "application/json": { schema: AcceptTransferRequest } } },
+  },
+  responses: {
+    200: {
+      description: "The access changes and active work the receiver would accept",
+      content: { "application/json": { schema: TransferPreview } },
+    },
+    400: problem("The request is invalid"),
+    401: problem("Not signed in"),
+    403: problem("The receiver lacks Create projects in the destination"),
+    404: problem("No pending transfer authorization is accessible to the caller"),
+  },
+});
+
 const completeTransfer = createRoute({
   method: "post",
   path: "/api/projects/{projectId}/transfer/complete",
@@ -112,20 +133,26 @@ const acceptTransfer = createRoute({
     400: problem("The request is invalid"),
     401: problem("Not signed in"),
     403: problem("The caller lacks Create projects in the destination"),
-    404: problem("No personal project or shared workspace with these ids is accessible"),
-    409: problem("The authorization is invalid, stale, or active work remains"),
+    404: problem("No accessible project, destination, or pending authorization"),
+    409: problem("The project changed since authorization, or active work remains"),
   },
 });
 
-export const routes = [previewTransfer, authorizeTransfer, completeTransfer, acceptTransfer];
+export const routes = [
+  previewTransfer,
+  authorizeTransfer,
+  receiverPreviewTransfer,
+  completeTransfer,
+  acceptTransfer,
+];
 
 const statusFor = {
   not_signed_in: 401,
   project_not_found: 404,
   workspace_not_found: 404,
-  not_personal_project_owner: 403,
   destination_authority_required: 403,
-  transfer_invalid: 409,
+  // A bad, expired or spent token must not confirm that an authorization ever existed.
+  transfer_invalid: 404,
   transfer_stale: 409,
   source_authority_lost: 409,
   active_work: 409,
@@ -139,6 +166,11 @@ function isKind<K extends readonly TransfersErrorKind[]>(
 }
 
 const ownerKinds = ["not_signed_in", "project_not_found", "workspace_not_found"] as const;
+const receiverKinds = [
+  "not_signed_in",
+  "destination_authority_required",
+  "transfer_invalid",
+] as const;
 const acceptKinds = [
   ...ownerKinds,
   "destination_authority_required",
@@ -191,6 +223,17 @@ export function createTransfersRest(service: TransfersService, sessionReader: Se
       );
     } catch (error) {
       return failure(c, error, ownerKinds);
+    }
+  });
+
+  app.openapi(receiverPreviewTransfer, async (c) => {
+    try {
+      return c.json(
+        await service.receiverPreview(await sessionReader(c), c.req.valid("json").token),
+        200,
+      );
+    } catch (error) {
+      return failure(c, error, receiverKinds);
     }
   });
 

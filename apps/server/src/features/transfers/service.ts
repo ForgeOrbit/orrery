@@ -6,8 +6,8 @@ import type {
   TransferAuthorization,
   TransferPreview,
 } from "@orrery/contract";
-import { ProjectAccessEventType, WorkspaceKind } from "@orrery/contract";
-import { and, eq, gt, inArray, sql } from "drizzle-orm";
+import { InvitationStatus, ProjectAccessEventType, WorkspaceKind } from "@orrery/contract";
+import { and, eq, gt, inArray, lte, ne, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import {
   agentApiKeyProjects,
@@ -20,6 +20,7 @@ import {
   workSessions,
   workspaceEvents,
   workspaceInvitationGrants,
+  workspaceInvitations,
   workspaceMemberships,
   workspaceOwnershipGuards,
   workspaces,
@@ -38,7 +39,6 @@ export type TransfersErrorKind =
   | "not_signed_in"
   | "project_not_found"
   | "workspace_not_found"
-  | "not_personal_project_owner"
   | "destination_authority_required"
   | "transfer_invalid"
   | "transfer_stale"
@@ -49,8 +49,6 @@ const messages: Record<TransfersErrorKind, string> = {
   not_signed_in: "Not signed in",
   project_not_found: "No project with this id is accessible to the caller",
   workspace_not_found: "No shared workspace with this id is accessible to the caller",
-  not_personal_project_owner:
-    "Only the owner of the personal workspace may authorize this transfer",
   destination_authority_required:
     "The receiver must be a destination owner or have Create projects in the destination",
   transfer_invalid: "The transfer authorization is invalid, expired or already used",
@@ -87,6 +85,7 @@ export interface TransfersService {
     projectId: string,
     destinationWorkspaceId: string,
   ): Promise<TransferAuthorization>;
+  receiverPreview(account: SessionAccount | null, token: string): Promise<TransferPreview>;
   accept(account: SessionAccount | null, token: string): Promise<Project>;
   complete(
     account: SessionAccount | null,
@@ -104,7 +103,7 @@ interface Authority {
 }
 
 interface AuthorizationLike {
-  id?: string;
+  id: string;
   projectId: string;
   sourceWorkspaceId: string;
   destinationWorkspaceId: string;
@@ -165,6 +164,36 @@ async function readSharedDestination(
   return row;
 }
 
+// A shared workspace's name and membership are not public. Routes that reveal them must
+// require membership first, so an arbitrary personal owner cannot enumerate destinations.
+async function hasDestinationMembership(
+  tx: DbTransaction,
+  workspaceId: string,
+  humanId: string,
+): Promise<boolean> {
+  const [membership] = await tx
+    .select({ id: workspaceMemberships.id })
+    .from(workspaceMemberships)
+    .where(
+      and(
+        eq(workspaceMemberships.workspaceId, workspaceId),
+        eq(workspaceMemberships.humanId, humanId),
+      ),
+    )
+    .limit(1);
+  return membership !== undefined;
+}
+
+async function requireDestinationMember(
+  tx: DbTransaction,
+  workspaceId: string,
+  humanId: string,
+): Promise<void> {
+  if (!(await hasDestinationMembership(tx, workspaceId, humanId))) {
+    throw new TransfersError("workspace_not_found");
+  }
+}
+
 // Owners hold Create projects implicitly; a member holds it only when granted. The
 // membership and the capability are both rechecked at acceptance, never cached from
 // authorization time.
@@ -187,11 +216,12 @@ async function hasCreateProjectsAuthority(
 }
 
 // Destination owners and the receiver are the only Manage grants a transfer creates.
-// The receiver is listed once even when they are already an owner.
+// A receiver is listed only when they can actually accept; an authorizer who is not a
+// destination member learns nothing about who will receive the project.
 async function manageRecipients(
   tx: DbTransaction,
   destinationWorkspaceId: string,
-  receiverHumanId: string,
+  receiverHumanId: string | null,
 ): Promise<TransferAccessChange[]> {
   const owners = await tx
     .select({ humanId: humans.id, email: humans.email })
@@ -204,11 +234,14 @@ async function manageRecipients(
       ),
     )
     .orderBy(humans.email);
-  const [receiver] = await tx
-    .select({ humanId: humans.id, email: humans.email })
-    .from(humans)
-    .where(eq(humans.id, receiverHumanId))
-    .limit(1);
+  const [receiver] =
+    receiverHumanId === null
+      ? []
+      : await tx
+          .select({ humanId: humans.id, email: humans.email })
+          .from(humans)
+          .where(eq(humans.id, receiverHumanId))
+          .limit(1);
 
   const changes: TransferAccessChange[] = [];
   const seen = new Set<string>();
@@ -266,7 +299,7 @@ async function buildPreview(
   tx: DbTransaction,
   authority: Authority,
   destination: WorkspaceRow,
-  receiverHumanId: string,
+  receiverHumanId: string | null,
 ): Promise<TransferPreview> {
   const [grants] = await tx
     .select({ count: sql<number>`count(*)::int` })
@@ -353,6 +386,71 @@ function workspaceEvent(
   };
 }
 
+// One insertion path for both the two-party authorization and the single-party direct
+// flow, so the stored authorization and its source audit event can never drift apart.
+async function createAuthorization(
+  tx: DbTransaction,
+  input: {
+    projectId: string;
+    sourceWorkspaceId: string;
+    destinationWorkspaceId: string;
+    authorizedByHumanId: string;
+    token: string;
+  },
+) {
+  const [authorization] = await tx
+    .insert(projectTransferAuthorizations)
+    .values({
+      id: randomUUID(),
+      projectId: input.projectId,
+      sourceWorkspaceId: input.sourceWorkspaceId,
+      destinationWorkspaceId: input.destinationWorkspaceId,
+      authorizedByHumanId: input.authorizedByHumanId,
+      tokenHash: hashToken(input.token),
+      status: "pending",
+      expiresAt: sql`statement_timestamp() + make_interval(secs => ${AUTHORIZATION_TTL_SECONDS})`,
+    })
+    .returning();
+  if (authorization === undefined) throw new TransfersError("transfer_invalid");
+  await tx
+    .insert(workspaceEvents)
+    .values(
+      workspaceEvent(
+        input.sourceWorkspaceId,
+        "project_transfer_authorized",
+        input.authorizedByHumanId,
+        input.authorizedByHumanId,
+      ),
+    );
+  return authorization;
+}
+
+// A token is a bearer secret for one pending authorization. Expiry is decided by the
+// database clock, never the Node clock; a used or expired token answers as missing.
+async function pendingAuthorizationByToken(
+  tx: DbTransaction,
+  token: string,
+): Promise<typeof projectTransferAuthorizations.$inferSelect> {
+  const [row] = await tx
+    .select()
+    .from(projectTransferAuthorizations)
+    .where(eq(projectTransferAuthorizations.tokenHash, hashToken(token)))
+    .limit(1);
+  if (row === undefined || row.status !== "pending") throw new TransfersError("transfer_invalid");
+  const [live] = await tx
+    .select({ id: projectTransferAuthorizations.id })
+    .from(projectTransferAuthorizations)
+    .where(
+      and(
+        eq(projectTransferAuthorizations.id, row.id),
+        gt(projectTransferAuthorizations.expiresAt, sql`statement_timestamp()`),
+      ),
+    )
+    .limit(1);
+  if (live === undefined) throw new TransfersError("transfer_invalid");
+  return row;
+}
+
 // The acceptance core. The caller holds the ownership advisory lock; everything below
 // runs on that same transaction, with no nested transaction. The project's activity
 // (project_activity) is keyed by project id and follows the row automatically; this
@@ -362,29 +460,26 @@ async function acceptInTransaction(
   auth: AuthorizationLike,
   acceptorHumanId: string,
 ): Promise<Project> {
-  if (auth.id !== undefined) {
-    const [row] = await tx
-      .select()
-      .from(projectTransferAuthorizations)
-      .where(eq(projectTransferAuthorizations.id, auth.id))
-      .for("update")
-      .limit(1);
-    if (row === undefined || row.status !== "pending") {
-      throw new TransfersError("transfer_invalid");
-    }
-    // Expiry is decided by the database clock, never the Node clock.
-    const [live] = await tx
-      .select({ id: projectTransferAuthorizations.id })
-      .from(projectTransferAuthorizations)
-      .where(
-        and(
-          eq(projectTransferAuthorizations.id, auth.id),
-          gt(projectTransferAuthorizations.expiresAt, sql`statement_timestamp()`),
-        ),
-      )
-      .limit(1);
-    if (live === undefined) throw new TransfersError("transfer_invalid");
+  const [row] = await tx
+    .select()
+    .from(projectTransferAuthorizations)
+    .where(eq(projectTransferAuthorizations.id, auth.id))
+    .for("update")
+    .limit(1);
+  if (row === undefined || row.status !== "pending") {
+    throw new TransfersError("transfer_invalid");
   }
+  const [live] = await tx
+    .select({ id: projectTransferAuthorizations.id })
+    .from(projectTransferAuthorizations)
+    .where(
+      and(
+        eq(projectTransferAuthorizations.id, auth.id),
+        gt(projectTransferAuthorizations.expiresAt, sql`statement_timestamp()`),
+      ),
+    )
+    .limit(1);
+  if (live === undefined) throw new TransfersError("transfer_invalid");
 
   const [source] = await tx
     .select()
@@ -399,6 +494,11 @@ async function acceptInTransaction(
     throw new TransfersError("source_authority_lost");
   }
 
+  // The acceptor must hold a live membership in the destination. A valid token in the
+  // hands of a stranger answers as a missing authorization, not as a workspace probe.
+  if (!(await hasDestinationMembership(tx, auth.destinationWorkspaceId, acceptorHumanId))) {
+    throw new TransfersError("transfer_invalid");
+  }
   const destination = await readSharedDestination(tx, auth.destinationWorkspaceId);
   if (!(await hasCreateProjectsAuthority(tx, destination.id, acceptorHumanId))) {
     throw new TransfersError("destination_authority_required");
@@ -423,31 +523,67 @@ async function acceptInTransaction(
     .where(eq(issues.projectId, auth.projectId))
     .orderBy(issues.id)
     .for("update");
-  if (issueIds.length > 0) {
-    const [live] = await tx
+  const issueIdList = issueIds.map((issue) => issue.id);
+  if (issueIdList.length > 0) {
+    const [liveSession] = await tx
       .select({ id: workSessions.id })
       .from(workSessions)
       .where(
         and(
-          inArray(
-            workSessions.issueId,
-            issueIds.map((issue) => issue.id),
-          ),
+          inArray(workSessions.issueId, issueIdList),
           eq(workSessions.status, "active"),
           gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
         ),
       )
       .limit(1);
-    if (live !== undefined) throw new TransfersError("active_work");
+    if (liveSession !== undefined) throw new TransfersError("active_work");
+    // No live claim remains, so materialize any lapsed leases. The destination must not
+    // inherit rows that still say 'active' but point at the source workspace.
+    await tx
+      .update(workSessions)
+      .set({
+        status: "expired",
+        endedAt: sql`statement_timestamp()`,
+        updatedAt: sql`statement_timestamp()`,
+      })
+      .where(
+        and(
+          inArray(workSessions.issueId, issueIdList),
+          eq(workSessions.status, "active"),
+          lte(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
+        ),
+      );
   }
 
-  // Remove the old world in one shot: source grants, source keys' project scope and any
-  // pending invitation offers naming the project. Nothing here revives after a move back.
+  // Remove the old world in one shot: source grants, source keys' project scope and only
+  // still-pending invitation offers naming the project. Settled invitations keep their
+  // historical grants. Nothing here revives after a move back.
   await tx.delete(projectAccessGrants).where(eq(projectAccessGrants.projectId, auth.projectId));
   await tx.delete(agentApiKeyProjects).where(eq(agentApiKeyProjects.projectId, auth.projectId));
-  await tx
-    .delete(workspaceInvitationGrants)
-    .where(eq(workspaceInvitationGrants.projectId, auth.projectId));
+  const pendingOffers = await tx
+    .select({ id: workspaceInvitations.id })
+    .from(workspaceInvitationGrants)
+    .innerJoin(
+      workspaceInvitations,
+      eq(workspaceInvitations.id, workspaceInvitationGrants.invitationId),
+    )
+    .where(
+      and(
+        eq(workspaceInvitationGrants.projectId, auth.projectId),
+        eq(workspaceInvitations.status, InvitationStatus.enum.pending),
+      ),
+    );
+  if (pendingOffers.length > 0) {
+    await tx.delete(workspaceInvitationGrants).where(
+      and(
+        eq(workspaceInvitationGrants.projectId, auth.projectId),
+        inArray(
+          workspaceInvitationGrants.invitationId,
+          pendingOffers.map((offer) => offer.id),
+        ),
+      ),
+    );
+  }
 
   // Move the identity. Issues, comments, knowledge, activity and runs all key on the
   // project id, so the whole history travels with this one row change.
@@ -503,12 +639,22 @@ async function acceptInTransaction(
       ),
     );
 
-  if (auth.id !== undefined) {
-    await tx
-      .update(projectTransferAuthorizations)
-      .set({ status: "accepted", acceptedAt: sql`statement_timestamp()` })
-      .where(eq(projectTransferAuthorizations.id, auth.id));
-  }
+  await tx
+    .update(projectTransferAuthorizations)
+    .set({ status: "accepted", acceptedAt: sql`statement_timestamp()` })
+    .where(eq(projectTransferAuthorizations.id, auth.id));
+  // A project can be authorized for several destinations; only one can win. Every other
+  // pending authorization is revoked, never revived into access after a later move.
+  await tx
+    .update(projectTransferAuthorizations)
+    .set({ status: "revoked", revokedAt: sql`statement_timestamp()` })
+    .where(
+      and(
+        eq(projectTransferAuthorizations.projectId, auth.projectId),
+        eq(projectTransferAuthorizations.status, "pending"),
+        ne(projectTransferAuthorizations.id, auth.id),
+      ),
+    );
 
   // Project activity deliberately keeps its original attribution (createdByHumanId), so
   // authorship survives the move without a rewritten receipt in the project's own feed.
@@ -522,8 +668,13 @@ export function createTransfersService({ db }: TransfersDeps): TransfersService 
       return db.transaction(
         async (tx) => {
           const authority = await readPersonalProject(tx, projectId, account.humanId);
+          // Membership first: a destination's name and owners are not public data.
+          await requireDestinationMember(tx, destinationWorkspaceId, account.humanId);
           const destination = await readSharedDestination(tx, destinationWorkspaceId);
-          return buildPreview(tx, authority, destination, account.humanId);
+          const receiver = (await hasCreateProjectsAuthority(tx, destination.id, account.humanId))
+            ? account.humanId
+            : null;
+          return buildPreview(tx, authority, destination, receiver);
         },
         { accessMode: "read only" },
       );
@@ -535,33 +686,25 @@ export function createTransfersService({ db }: TransfersDeps): TransfersService 
         await lockOwnershipWrites(tx);
         const authority = await readPersonalProject(tx, projectId, account.humanId);
         const destination = await readSharedDestination(tx, destinationWorkspaceId);
-        const preview = await buildPreview(tx, authority, destination, account.humanId);
-
+        // The authorizer may not belong to the destination at all. Only a member may see
+        // its name and owners; a non-member gets a token and no destination detail.
+        const canSeeDestination = await hasDestinationMembership(
+          tx,
+          destination.id,
+          account.humanId,
+        );
+        const receiver = (await hasCreateProjectsAuthority(tx, destination.id, account.humanId))
+          ? account.humanId
+          : null;
+        const fullPreview = await buildPreview(tx, authority, destination, receiver);
         const token = randomBytes(32).toString("base64url");
-        const [authorization] = await tx
-          .insert(projectTransferAuthorizations)
-          .values({
-            id: randomUUID(),
-            projectId,
-            sourceWorkspaceId: authority.source.id,
-            destinationWorkspaceId: destination.id,
-            authorizedByHumanId: account.humanId,
-            tokenHash: hashToken(token),
-            status: "pending",
-            expiresAt: sql`statement_timestamp() + make_interval(secs => ${AUTHORIZATION_TTL_SECONDS})`,
-          })
-          .returning();
-        if (authorization === undefined) throw new TransfersError("transfer_invalid");
-        await tx
-          .insert(workspaceEvents)
-          .values(
-            workspaceEvent(
-              authority.source.id,
-              "project_transfer_authorized",
-              account.humanId,
-              account.humanId,
-            ),
-          );
+        const authorization = await createAuthorization(tx, {
+          projectId,
+          sourceWorkspaceId: authority.source.id,
+          destinationWorkspaceId: destination.id,
+          authorizedByHumanId: account.humanId,
+          token,
+        });
 
         return {
           token,
@@ -573,21 +716,62 @@ export function createTransfersService({ db }: TransfersDeps): TransfersService 
           status: authorization.status,
           createdAt: authorization.createdAt.toISOString(),
           expiresAt: authorization.expiresAt.toISOString(),
-          preview,
+          preview: canSeeDestination ? fullPreview : null,
         };
       });
+    },
+
+    async receiverPreview(account, token) {
+      if (account === null) throw new TransfersError("not_signed_in");
+      return db.transaction(
+        async (tx) => {
+          const authorization = await pendingAuthorizationByToken(tx, token);
+          // The receiver's view is gated by the destination, not the source. A non-member
+          // gets the same 404 as a stranger probing any other workspace by id: the token
+          // is the only capability here, so membership alone must not be revealed.
+          if (
+            !(await hasDestinationMembership(
+              tx,
+              authorization.destinationWorkspaceId,
+              account.humanId,
+            ))
+          ) {
+            throw new TransfersError("transfer_invalid");
+          }
+          if (
+            !(await hasCreateProjectsAuthority(
+              tx,
+              authorization.destinationWorkspaceId,
+              account.humanId,
+            ))
+          ) {
+            throw new TransfersError("destination_authority_required");
+          }
+          const [project] = await tx
+            .select()
+            .from(projects)
+            .where(eq(projects.id, authorization.projectId))
+            .limit(1);
+          const [source] = await tx
+            .select()
+            .from(workspaces)
+            .where(eq(workspaces.id, authorization.sourceWorkspaceId))
+            .limit(1);
+          if (project === undefined || source === undefined) {
+            throw new TransfersError("transfer_invalid");
+          }
+          const destination = await readSharedDestination(tx, authorization.destinationWorkspaceId);
+          return buildPreview(tx, { project, source }, destination, account.humanId);
+        },
+        { accessMode: "read only" },
+      );
     },
 
     async accept(account, token) {
       if (account === null) throw new TransfersError("not_signed_in");
       return db.transaction(async (tx) => {
         await lockOwnershipWrites(tx);
-        const [row] = await tx
-          .select()
-          .from(projectTransferAuthorizations)
-          .where(eq(projectTransferAuthorizations.tokenHash, hashToken(token)))
-          .limit(1);
-        if (row === undefined) throw new TransfersError("transfer_invalid");
+        const row = await pendingAuthorizationByToken(tx, token);
         return acceptInTransaction(tx, row, account.humanId);
       });
     },
@@ -597,37 +781,21 @@ export function createTransfersService({ db }: TransfersDeps): TransfersService 
       return db.transaction(async (tx) => {
         await lockOwnershipWrites(tx);
         const authority = await readPersonalProject(tx, projectId, account.humanId);
+        // Membership before capability: a non-member cannot enumerate the destination
+        // through a 403 that would confirm the workspace exists.
+        await requireDestinationMember(tx, destinationWorkspaceId, account.humanId);
         const destination = await readSharedDestination(tx, destinationWorkspaceId);
-        // One party with both authorities finishes directly; still no Create projects
-        // means the destination has not accepted the incoming project.
         if (!(await hasCreateProjectsAuthority(tx, destination.id, account.humanId))) {
           throw new TransfersError("destination_authority_required");
         }
         const token = randomBytes(32).toString("base64url");
-        const [authorization] = await tx
-          .insert(projectTransferAuthorizations)
-          .values({
-            id: randomUUID(),
-            projectId,
-            sourceWorkspaceId: authority.source.id,
-            destinationWorkspaceId: destination.id,
-            authorizedByHumanId: account.humanId,
-            tokenHash: hashToken(token),
-            status: "pending",
-            expiresAt: sql`statement_timestamp() + make_interval(secs => ${AUTHORIZATION_TTL_SECONDS})`,
-          })
-          .returning();
-        if (authorization === undefined) throw new TransfersError("transfer_invalid");
-        await tx
-          .insert(workspaceEvents)
-          .values(
-            workspaceEvent(
-              authority.source.id,
-              "project_transfer_authorized",
-              account.humanId,
-              account.humanId,
-            ),
-          );
+        const authorization = await createAuthorization(tx, {
+          projectId,
+          sourceWorkspaceId: authority.source.id,
+          destinationWorkspaceId: destination.id,
+          authorizedByHumanId: account.humanId,
+          token,
+        });
         return acceptInTransaction(
           tx,
           {

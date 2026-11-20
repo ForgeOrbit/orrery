@@ -2510,7 +2510,17 @@
             "$ref": "#/components/schemas/Timestamp"
           },
           "preview": {
-            "$ref": "#/components/schemas/TransferPreview"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TransferPreview"
+              },
+              {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              }
+            ]
           }
         },
         "required": [
@@ -7261,6 +7271,74 @@
         }
       }
     },
+    "/api/transfers/preview": {
+      "post": {
+        "summary": "Preview an authorized transfer before accepting it",
+        "description": "A destination owner or a member with Create projects redeems the one-time token to see the destination, visibility and access changes, and any live work before confirming acceptance. A stranger, a non-member or a used token answers exactly like a missing authorization.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcceptTransferRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The access changes and active work the receiver would accept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferPreview"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The receiver lacks Create projects in the destination",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No pending transfer authorization is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/projects/{projectId}/transfer/complete": {
       "post": {
         "summary": "Transfer a personal project directly",
@@ -7407,7 +7485,7 @@
             }
           },
           "404": {
-            "description": "No personal project or shared workspace with these ids is accessible",
+            "description": "No accessible project, destination, or pending authorization",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -7417,7 +7495,7 @@
             }
           },
           "409": {
-            "description": "The authorization is invalid, stale, or active work remains",
+            "description": "The project changed since authorization, or active work remains",
             "content": {
               "application/problem+json": {
                 "schema": {

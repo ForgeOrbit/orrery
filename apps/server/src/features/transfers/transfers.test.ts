@@ -21,6 +21,7 @@ import {
   projectTransferAuthorizations,
   projects,
   runs,
+  workSessions,
   workspaceEvents,
   workspaceInvitationGrants,
   workspaceInvitations,
@@ -238,6 +239,12 @@ async function authorize(cookie: string, projectId: string, destinationWorkspace
   );
   expect(res.status).toBe(201);
   return TransferAuthorization.parse(await res.json());
+}
+
+async function receiverPreview(cookie: string, token: string) {
+  const res = await postJson("/api/transfers/preview", { token }, cookie);
+  expect(res.status).toBe(200);
+  return TransferPreview.parse(await res.json());
 }
 
 async function accept(cookie: string, token: string) {
@@ -468,6 +475,12 @@ describe("personal-to-shared project transfer against real Postgres", () => {
     const authorization = await authorize(s.cookie, s.project.id, dest.workspaceId);
     const res = await accept(s.cookie, authorization.token);
     expect(res.status).toBe(200);
+    const sessions = await database.db
+      .select({ status: workSessions.status })
+      .from(workSessions)
+      .where(eq(workSessions.issueId, issueId));
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.status).toBe("expired");
   });
 
   it("completes directly when one person owns both sides", async () => {
@@ -675,5 +688,155 @@ describe("personal-to-shared project transfer against real Postgres", () => {
         .from(workspaceInvitationGrants)
         .where(eq(workspaceInvitationGrants.projectId, s.project.id)),
     ).toHaveLength(0);
+  });
+
+  it("does not enumerate a destination the caller is not a member of", async () => {
+    const s = await source();
+    const destinationOwner = await insertHuman("hidden-owner@example.com");
+    const ownerCookie = await sessionFor(destinationOwner.id);
+    const dest = await createSharedWorkspace(
+      ownerCookie,
+      "Hidden Team",
+      "hidden-owner@example.com",
+    );
+    const outsider = await insertHuman("outsider@example.com");
+    const outsiderCookie = await sessionFor(outsider.id);
+
+    await expectProblem(
+      await postJson(
+        `/api/projects/${s.project.id}/transfer/preview`,
+        { destinationWorkspaceId: dest.workspaceId },
+        s.cookie,
+      ),
+      404,
+      "workspace_not_found",
+    );
+    await expectProblem(
+      await complete(s.cookie, s.project.id, dest.workspaceId),
+      404,
+      "workspace_not_found",
+    );
+
+    // The authorizer is not a destination member either, so the receiver must be one.
+    const authorization = await authorize(s.cookie, s.project.id, dest.workspaceId);
+    await expectProblem(
+      await postJson("/api/transfers/preview", { token: authorization.token }, outsiderCookie),
+      404,
+      "transfer_invalid",
+    );
+    await expectProblem(await accept(outsiderCookie, authorization.token), 404, "transfer_invalid");
+    expect(await database.db.select().from(projectTransferAuthorizations)).toHaveLength(1);
+  });
+
+  it("leaks no destination name or owner identities to a non-member authorizer", async () => {
+    const s = await source();
+    const destinationOwner = await insertHuman("private-owner@example.com");
+    const ownerCookie = await sessionFor(destinationOwner.id);
+    const dest = await createSharedWorkspace(
+      ownerCookie,
+      "Private Team Name",
+      "private-owner@example.com",
+    );
+
+    const authorization = await authorize(s.cookie, s.project.id, dest.workspaceId);
+    expect(authorization.preview).toBeNull();
+    expect(JSON.stringify(authorization)).not.toContain("private-owner@example.com");
+    expect(JSON.stringify(authorization)).not.toContain("Private Team Name");
+  });
+
+  it("lets a separate Create projects member preview the pending transfer before accepting", async () => {
+    const s = await source();
+    const dest = await createSharedWorkspace(s.cookie, "Receiver Team", ADMIN_EMAIL);
+    const receiver = await insertHuman("preview-receiver@example.com");
+    await addMembership(dest.workspaceId, receiver.id, true);
+    const receiverCookie = await sessionFor(receiver.id);
+    const member = await insertHuman("plain-member@example.com");
+    await addMembership(dest.workspaceId, member.id, false);
+    const memberCookie = await sessionFor(member.id);
+
+    const authorization = await authorize(s.cookie, s.project.id, dest.workspaceId);
+    const view = await receiverPreview(receiverCookie, authorization.token);
+    expect(view).toMatchObject({
+      projectId: s.project.id,
+      destination: { workspaceId: dest.workspaceId },
+      visibilityChange: "personal_to_shared",
+    });
+    expect(view.accessChanges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          humanId: s.humanId,
+          reason: "destination_owner",
+          level: "manage",
+        }),
+        expect.objectContaining({ humanId: receiver.id, reason: "receiver", level: "manage" }),
+      ]),
+    );
+    await expectProblem(
+      await postJson("/api/transfers/preview", { token: authorization.token }, memberCookie),
+      403,
+      "destination_authority_required",
+    );
+    const res = await accept(receiverCookie, authorization.token);
+    expect(res.status).toBe(200);
+  });
+
+  it("keeps settled invitation offers and revokes sibling authorization tokens", async () => {
+    const s = await source();
+    const first = await createSharedWorkspace(s.cookie, "Destination First", ADMIN_EMAIL);
+    const second = await createSharedWorkspace(s.cookie, "Destination Second", ADMIN_EMAIL);
+    const firstAuth = await authorize(s.cookie, s.project.id, first.workspaceId);
+    const secondAuth = await authorize(s.cookie, s.project.id, second.workspaceId);
+
+    const [settled] = await database.db
+      .insert(workspaceInvitations)
+      .values({
+        id: randomUUID(),
+        workspaceId: first.workspaceId,
+        email: `settled-${randomUUID()}@example.com`,
+        status: "accepted",
+        tokenHash: randomBytes(32).toString("base64url"),
+        invitedByHumanId: s.humanId,
+        expiresAt: sql`statement_timestamp() + interval '7 days'`,
+      })
+      .returning();
+    const [pending] = await database.db
+      .insert(workspaceInvitations)
+      .values({
+        id: randomUUID(),
+        workspaceId: first.workspaceId,
+        email: `pending-${randomUUID()}@example.com`,
+        status: "pending",
+        tokenHash: randomBytes(32).toString("base64url"),
+        invitedByHumanId: s.humanId,
+        expiresAt: sql`statement_timestamp() + interval '7 days'`,
+      })
+      .returning();
+    if (settled === undefined || pending === undefined) throw new Error("invitations not created");
+    await database.db.insert(workspaceInvitationGrants).values([
+      { id: randomUUID(), invitationId: settled.id, projectId: s.project.id, level: "read" },
+      { id: randomUUID(), invitationId: pending.id, projectId: s.project.id, level: "read" },
+    ]);
+
+    const res = await accept(s.cookie, firstAuth.token);
+    expect(res.status).toBe(200);
+    const remaining = await database.db
+      .select({ invitationId: workspaceInvitationGrants.invitationId })
+      .from(workspaceInvitationGrants)
+      .where(eq(workspaceInvitationGrants.projectId, s.project.id));
+    expect(remaining.map((row) => row.invitationId)).toEqual([settled.id]);
+
+    const authorizations = await database.db
+      .select({
+        id: projectTransferAuthorizations.id,
+        status: projectTransferAuthorizations.status,
+      })
+      .from(projectTransferAuthorizations)
+      .where(eq(projectTransferAuthorizations.projectId, s.project.id));
+    expect(authorizations.find((row) => row.id === firstAuth.authorizationId)?.status).toBe(
+      "accepted",
+    );
+    expect(authorizations.find((row) => row.id === secondAuth.authorizationId)?.status).toBe(
+      "revoked",
+    );
   });
 });

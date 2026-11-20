@@ -92,7 +92,9 @@ export const TransferAuthorization = z
     status: TransferAuthorizationStatus,
     createdAt: Timestamp,
     expiresAt: Timestamp,
-    preview: TransferPreview,
+    // Null when the authorizer is not a member of the destination: a source owner can
+    // hand over a token without learning the destination's name or its owners' identities.
+    preview: TransferPreview.nullable(),
   })
   .meta({ id: "TransferAuthorization" });
 export type TransferAuthorization = z.infer<typeof TransferAuthorization>;
