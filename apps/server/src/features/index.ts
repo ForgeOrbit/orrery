@@ -10,6 +10,7 @@ import type { AgentAuthenticator } from "./agents/index.ts";
 import { createHistoryFeature, historyRoutes } from "./history/index.ts";
 import { createInvitationsFeature, invitationsRoutes } from "./invitations/index.ts";
 import { createProjectsFeature, projectAccessAtLeast, projectsRoutes } from "./projects/index.ts";
+import { createRecoveryFeature, recoveryRoutes } from "./recovery/index.ts";
 import { createRunsFeature, runsRoutes } from "./runs/index.ts";
 import { createSettingsFeature, settingsRoutes } from "./settings/index.ts";
 import { createSystemFeature, systemRoutes } from "./system/index.ts";
@@ -59,6 +60,19 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     createSystemFeature({ ping: database.ping }),
     accounts,
     settings,
+    // Recovery borrows accounts' credential seams and settings' one mail sender. The
+    // local command uses the same service, so its policy cannot drift from the HTTP flow.
+    createRecoveryFeature({
+      db: database.db,
+      accounts: {
+        accountByEmail: (email, tx) => accounts.accountByEmail(email, tx),
+        setPassword: (humanId, password, tx) => accounts.setPassword(humanId, password, tx),
+        invalidateBrowserSessions: (humanId, tx) => accounts.invalidateBrowserSessions(humanId, tx),
+      },
+      deliver: settings.deliver,
+      publicUrl: config.PUBLIC_URL,
+      log,
+    }),
     // Invitations borrows the same things from accounts (the reader, the
     // registered-email guard, the account-creation seam, the verified mark) and sends
     // mail only through settings' exported sender, so no second mail path exists.
@@ -113,6 +127,7 @@ export const routes = [
   ...accountsRoutes,
   ...agentsRoutes,
   ...settingsRoutes,
+  ...recoveryRoutes,
   ...invitationsRoutes,
   ...workspacesRoutes,
   ...projectsRoutes,

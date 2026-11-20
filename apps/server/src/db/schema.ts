@@ -297,6 +297,52 @@ export const emailVerificationTokens = pgTable("email_verification_tokens", {
   usedAt: timestamp("used_at", { withTimezone: true }),
 });
 
+// A single-use password reset token (issue #31). The emailed link carries the raw
+// token; only its SHA-256 hash is stored. Redemption is one conditional update in
+// database time: unused, unexpired. A token is never issued to an unverified address,
+// and a failed delivery removes its token so an email that never left cannot redeem.
+export const passwordResetTokens = pgTable("password_reset_tokens", {
+  id: text("id").primaryKey(),
+  humanId: text("human_id")
+    .notNull()
+    .references(() => humans.id),
+  tokenHash: text("token_hash").notNull().unique(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  usedAt: timestamp("used_at", { withTimezone: true }),
+});
+
+// Recovery and password-reset events (#20 history): a reset was requested and mailed,
+// a reset link was redeemed, or an administrator used the local recovery command.
+// There is deliberately no token, hash, or password column — not even a snapshot of
+// one — so reading this history can never expose a credential. The flow that earns
+// each event writes it in the same transaction as the change it describes.
+export const accountRecoveryEventTypes = [
+  "password_reset_requested",
+  "password_reset_completed",
+  "local_recovery_completed",
+] as const;
+export type AccountRecoveryEventType = (typeof accountRecoveryEventTypes)[number];
+
+export const accountRecoveryEvents = pgTable(
+  "account_recovery_events",
+  {
+    id: text("id").primaryKey(),
+    humanId: text("human_id")
+      .notNull()
+      .references(() => humans.id),
+    type: text("type").$type<AccountRecoveryEventType>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "account_recovery_events_type",
+      sql`${t.type} in (${sql.raw(sqlLiteralList({ options: accountRecoveryEventTypes }))})`,
+    ),
+    index("account_recovery_events_human_created").on(t.humanId, t.createdAt),
+  ],
+);
+
 // An invitation (issue #23): a system administrator's offer to register on the
 // installation, sent to one email. The emailed link carries a random token; only its
 // SHA-256 hash is stored. The lifecycle is tracked separately from delivery and account
