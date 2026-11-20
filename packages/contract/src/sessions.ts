@@ -54,9 +54,9 @@ export const WorkSession = z
     stopRequestedAt: Timestamp.nullable(),
     stopReason: z.string().nullable(),
     // Cumulative telemetry, null until the client first reports it (#96).
-    inputTokens: z.number().int().nullable(),
-    outputTokens: z.number().int().nullable(),
-    costUsdMicros: z.number().int().nullable(),
+    inputTokens: z.number().int().nonnegative().nullable(),
+    outputTokens: z.number().int().nonnegative().nullable(),
+    costUsdMicros: z.number().int().nonnegative().nullable(),
     createdAt: Timestamp,
     updatedAt: Timestamp,
     endedAt: Timestamp.nullable(),
@@ -270,19 +270,16 @@ export const ActivityDetailBlockV1 = z
   .meta({ id: "ActivityDetailBlockV1" });
 export type ActivityDetailBlockV1 = z.infer<typeof ActivityDetailBlockV1>;
 
-// A flat JSON object. z.json() is deliberately avoided: its recursive schema makes the
-// OpenAPI generator recurse forever; an unknown-valued record is still fully extensible.
+// A loose object keeps `detail` extensible for custom harness telemetry while making the
+// optional v1 `block` structural, so it is emitted into the generated OpenAPI and MCP JSON
+// Schemas rather than hidden inside a validation refine. A present block must be one of the
+// four v1 shapes; an absent (or explicitly undefined) one keeps arbitrary JSON accepted.
 // The bound keeps a single telemetry entry from becoming an unbounded JSONB payload; an
 // oversized detail is a 400 validation_failed, not a silently truncated value.
-// When `block` is present it must be a valid v1 block; without it, arbitrary JSON objects
-// remain accepted so custom harness telemetry is never rejected (#96).
 export const SessionActivityDetail = z
-  .record(z.string(), z.unknown())
+  .looseObject({ block: ActivityDetailBlockV1.optional() })
   .refine((value) => JSON.stringify(value).length <= 64_000, {
     message: "Activity detail must be at most 64000 characters when serialized.",
-  })
-  .refine((value) => !("block" in value) || ActivityDetailBlockV1.safeParse(value.block).success, {
-    message: "Activity detail.block must be a valid v1 block.",
   })
   .meta({ id: "SessionActivityDetail" });
 export type SessionActivityDetail = z.infer<typeof SessionActivityDetail>;

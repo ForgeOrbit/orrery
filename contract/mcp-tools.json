@@ -3503,7 +3503,7 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "minimum": -9007199254740991,
+                  "minimum": 0,
                   "maximum": 9007199254740991
                 },
                 {
@@ -3515,7 +3515,7 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "minimum": -9007199254740991,
+                  "minimum": 0,
                   "maximum": 9007199254740991
                 },
                 {
@@ -3527,7 +3527,7 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "minimum": -9007199254740991,
+                  "minimum": 0,
                   "maximum": 9007199254740991
                 },
                 {
@@ -3710,7 +3710,7 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "minimum": -9007199254740991,
+                  "minimum": 0,
                   "maximum": 9007199254740991
                 },
                 {
@@ -3722,7 +3722,7 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "minimum": -9007199254740991,
+                  "minimum": 0,
                   "maximum": 9007199254740991
                 },
                 {
@@ -3734,7 +3734,7 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "minimum": -9007199254740991,
+                  "minimum": 0,
                   "maximum": 9007199254740991
                 },
                 {
@@ -3923,7 +3923,7 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "minimum": -9007199254740991,
+                  "minimum": 0,
                   "maximum": 9007199254740991
                 },
                 {
@@ -3935,7 +3935,7 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "minimum": -9007199254740991,
+                  "minimum": 0,
                   "maximum": 9007199254740991
                 },
                 {
@@ -3947,7 +3947,7 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "minimum": -9007199254740991,
+                  "minimum": 0,
                   "maximum": 9007199254740991
                 },
                 {
@@ -4142,7 +4142,7 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "minimum": -9007199254740991,
+                  "minimum": 0,
                   "maximum": 9007199254740991
                 },
                 {
@@ -4154,7 +4154,7 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "minimum": -9007199254740991,
+                  "minimum": 0,
                   "maximum": 9007199254740991
                 },
                 {
@@ -4166,7 +4166,7 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "minimum": -9007199254740991,
+                  "minimum": 0,
                   "maximum": 9007199254740991
                 },
                 {
@@ -4329,7 +4329,7 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "minimum": -9007199254740991,
+                  "minimum": 0,
                   "maximum": 9007199254740991
                 },
                 {
@@ -4341,7 +4341,7 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "minimum": -9007199254740991,
+                  "minimum": 0,
                   "maximum": 9007199254740991
                 },
                 {
@@ -4353,7 +4353,7 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "minimum": -9007199254740991,
+                  "minimum": 0,
                   "maximum": 9007199254740991
                 },
                 {
@@ -4562,7 +4562,7 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "minimum": -9007199254740991,
+                  "minimum": 0,
                   "maximum": 9007199254740991
                 },
                 {
@@ -4574,7 +4574,7 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "minimum": -9007199254740991,
+                  "minimum": 0,
                   "maximum": 9007199254740991
                 },
                 {
@@ -4586,7 +4586,7 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "minimum": -9007199254740991,
+                  "minimum": 0,
                   "maximum": 9007199254740991
                 },
                 {
@@ -4755,7 +4755,7 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "minimum": -9007199254740991,
+                  "minimum": 0,
                   "maximum": 9007199254740991
                 },
                 {
@@ -4767,7 +4767,7 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "minimum": -9007199254740991,
+                  "minimum": 0,
                   "maximum": 9007199254740991
                 },
                 {
@@ -4779,7 +4779,7 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "minimum": -9007199254740991,
+                  "minimum": 0,
                   "maximum": 9007199254740991
                 },
                 {
@@ -5186,7 +5186,7 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "minimum": -9007199254740991,
+                  "minimum": 0,
                   "maximum": 9007199254740991
                 },
                 {
@@ -5198,7 +5198,7 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "minimum": -9007199254740991,
+                  "minimum": 0,
                   "maximum": 9007199254740991
                 },
                 {
@@ -5210,7 +5210,7 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "minimum": -9007199254740991,
+                  "minimum": 0,
                   "maximum": 9007199254740991
                 },
                 {
@@ -5323,10 +5323,189 @@
         },
         "SessionActivityDetail": {
           "type": "object",
-          "propertyNames": {
-            "type": "string"
+          "properties": {
+            "block": {
+              "$ref": "#/$defs/ActivityDetailBlockV1"
+            }
           },
           "additionalProperties": {}
+        },
+        "ActivityDetailBlockV1": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "number",
+                  "const": 1
+                },
+                "type": {
+                  "type": "string",
+                  "const": "key_value"
+                },
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "key": {
+                        "type": "string"
+                      },
+                      "value": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "value"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "type",
+                "items"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "number",
+                  "const": 1
+                },
+                "type": {
+                  "type": "string",
+                  "const": "table"
+                },
+                "columns": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "rows": {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "type",
+                "columns",
+                "rows"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "number",
+                  "const": 1
+                },
+                "type": {
+                  "type": "string",
+                  "const": "checklist"
+                },
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "label": {
+                        "type": "string"
+                      },
+                      "checked": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "label",
+                      "checked"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "type",
+                "items"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "number",
+                  "const": 1
+                },
+                "type": {
+                  "type": "string",
+                  "const": "test_results"
+                },
+                "passed": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "failed": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "skipped": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "cases": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "passed",
+                          "failed",
+                          "skipped"
+                        ]
+                      },
+                      "message": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "status"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "type",
+                "passed",
+                "failed"
+              ],
+              "additionalProperties": false
+            }
+          ]
         }
       }
     },
@@ -5399,10 +5578,189 @@
         },
         "SessionActivityDetail": {
           "type": "object",
-          "propertyNames": {
-            "type": "string"
+          "properties": {
+            "block": {
+              "$ref": "#/$defs/ActivityDetailBlockV1"
+            }
           },
           "additionalProperties": {}
+        },
+        "ActivityDetailBlockV1": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "number",
+                  "const": 1
+                },
+                "type": {
+                  "type": "string",
+                  "const": "key_value"
+                },
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "key": {
+                        "type": "string"
+                      },
+                      "value": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "value"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "type",
+                "items"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "number",
+                  "const": 1
+                },
+                "type": {
+                  "type": "string",
+                  "const": "table"
+                },
+                "columns": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "rows": {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "type",
+                "columns",
+                "rows"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "number",
+                  "const": 1
+                },
+                "type": {
+                  "type": "string",
+                  "const": "checklist"
+                },
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "label": {
+                        "type": "string"
+                      },
+                      "checked": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "label",
+                      "checked"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "type",
+                "items"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "number",
+                  "const": 1
+                },
+                "type": {
+                  "type": "string",
+                  "const": "test_results"
+                },
+                "passed": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "failed": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "skipped": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "cases": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "passed",
+                          "failed",
+                          "skipped"
+                        ]
+                      },
+                      "message": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "status"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "type",
+                "passed",
+                "failed"
+              ],
+              "additionalProperties": false
+            }
+          ]
         },
         "Timestamp": {
           "type": "string",
@@ -5516,10 +5874,189 @@
         },
         "SessionActivityDetail": {
           "type": "object",
-          "propertyNames": {
-            "type": "string"
+          "properties": {
+            "block": {
+              "$ref": "#/$defs/ActivityDetailBlockV1"
+            }
           },
           "additionalProperties": {}
+        },
+        "ActivityDetailBlockV1": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "number",
+                  "const": 1
+                },
+                "type": {
+                  "type": "string",
+                  "const": "key_value"
+                },
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "key": {
+                        "type": "string"
+                      },
+                      "value": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "value"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "type",
+                "items"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "number",
+                  "const": 1
+                },
+                "type": {
+                  "type": "string",
+                  "const": "table"
+                },
+                "columns": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "rows": {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "type",
+                "columns",
+                "rows"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "number",
+                  "const": 1
+                },
+                "type": {
+                  "type": "string",
+                  "const": "checklist"
+                },
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "label": {
+                        "type": "string"
+                      },
+                      "checked": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "label",
+                      "checked"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "type",
+                "items"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "number",
+                  "const": 1
+                },
+                "type": {
+                  "type": "string",
+                  "const": "test_results"
+                },
+                "passed": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "failed": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "skipped": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "cases": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "passed",
+                          "failed",
+                          "skipped"
+                        ]
+                      },
+                      "message": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "status"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "type",
+                "passed",
+                "failed"
+              ],
+              "additionalProperties": false
+            }
+          ]
         },
         "Timestamp": {
           "type": "string",

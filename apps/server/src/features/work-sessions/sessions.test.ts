@@ -1015,7 +1015,11 @@ describe("work sessions against real Postgres", () => {
     const runId = await newRun(identity);
     const actor = { kind: "agent" as const, identity };
     const original = await sessionsService.claim(actor, { issueId: issue.id, runId });
-    await sessionsService.progress(actor, issue.id, "Halfway through");
+    await sessionsService.progress(actor, issue.id, "Halfway through", undefined, {
+      inputTokens: 50,
+      outputTokens: 10,
+      costUsdMicros: 200,
+    });
     await setLease(issue.id, "statement_timestamp() - interval '1 second'");
 
     const reacquired = await sessionsService.reacquire(actor, { issueId: issue.id, runId });
@@ -1025,6 +1029,23 @@ describe("work sessions against real Postgres", () => {
       agentId: identity.agentId,
       issueId: issue.id,
       progress: "Halfway through",
+    });
+    // A reacquired row is fresh: it never inherits the expired row's reported totals,
+    // which stay on that row instead of being double-counted in list_work_sessions (#96).
+    expect(reacquired).toMatchObject({
+      inputTokens: null,
+      outputTokens: null,
+      costUsdMicros: null,
+    });
+    const sessions = await database.db
+      .select()
+      .from(workSessions)
+      .where(eq(workSessions.issueId, issue.id));
+    expect(sessions.find((row) => row.id === original.id)).toMatchObject({
+      status: "expired",
+      inputTokens: 50,
+      outputTokens: 10,
+      costUsdMicros: 200,
     });
     expect(reacquired.id).not.toBe(original.id); // a fresh session, not a resurrected lease
     expect(await activeCount(issue.id)).toBe(1);
@@ -2360,13 +2381,15 @@ describe("cumulative session telemetry and v1 activity blocks (#96)", () => {
       issueId: issue.id,
       runId: await newRun(identity),
     });
+    // Parse gives a mutable, typed block from the readonly fixture literal.
+    const testResults = ActivityDetailBlockV1.parse(blocks[3]);
     const withBlock = await sessionsService.logActivity(actor, {
       issueId: issue.id,
       kind: "status",
       summary: "Tests finished",
-      detail: { source: "ci", block: blocks[3] },
+      detail: { source: "ci", block: testResults },
     });
-    expect(withBlock.detail).toEqual({ source: "ci", block: blocks[3] });
+    expect(withBlock.detail).toEqual({ source: "ci", block: testResults });
     const custom = await sessionsService.logActivity(actor, {
       issueId: issue.id,
       kind: "thought",

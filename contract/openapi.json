@@ -2734,19 +2734,22 @@
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "minimum": 0
           },
           "outputTokens": {
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "minimum": 0
           },
           "costUsdMicros": {
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "minimum": 0
           },
           "createdAt": {
             "$ref": "#/components/schemas/Timestamp"
@@ -2892,7 +2895,195 @@
           "object",
           "null"
         ],
+        "properties": {
+          "block": {
+            "$ref": "#/components/schemas/ActivityDetailBlockV1"
+          }
+        },
         "additionalProperties": {}
+      },
+      "ActivityDetailBlockV1": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "number",
+                "enum": [
+                  1
+                ]
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "key_value"
+                ]
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "value"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "version",
+              "type",
+              "items"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "number",
+                "enum": [
+                  1
+                ]
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "table"
+                ]
+              },
+              "columns": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "rows": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "required": [
+              "version",
+              "type",
+              "columns",
+              "rows"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "number",
+                "enum": [
+                  1
+                ]
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "checklist"
+                ]
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string"
+                    },
+                    "checked": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "label",
+                    "checked"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "version",
+              "type",
+              "items"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "number",
+                "enum": [
+                  1
+                ]
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "test_results"
+                ]
+              },
+              "passed": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "failed": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "skipped": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "cases": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "passed",
+                        "failed",
+                        "skipped"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "status"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "version",
+              "type",
+              "passed",
+              "failed"
+            ]
+          }
+        ]
       },
       "SessionActivitiesResponse": {
         "type": "array",
@@ -2952,19 +3143,22 @@
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "minimum": 0
           },
           "outputTokens": {
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "minimum": 0
           },
           "costUsdMicros": {
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "minimum": 0
           },
           "createdAt": {
             "$ref": "#/components/schemas/Timestamp"

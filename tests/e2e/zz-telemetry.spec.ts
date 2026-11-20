@@ -120,8 +120,15 @@ test("MCP agent loop reports cumulative totals and a v1 test_results block", asy
     });
     expect(created.isError).toBe(false);
     const issueId = requiredText(field(asRecord(created.data.issue), "id"), "the issue id");
-    const runId = await newRun(client);
 
+    // The new issue is offered as ready work before this agent claims it.
+    const ready = await call(client, "ready_work", { projectId });
+    expect(ready.isError).toBe(false);
+    expect(asArray(field(ready.data, "issues")).map((issue) => field(issue, "id"))).toContain(
+      issueId,
+    );
+
+    const runId = await newRun(client);
     const claim = await call(client, "claim_issue", { issueId, runId });
     expect(claim.isError).toBe(false);
     expect(field(claim.data.session, "inputTokens")).toBeNull();

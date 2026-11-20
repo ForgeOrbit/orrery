@@ -1306,11 +1306,9 @@ export function createSessionsService({
           leaseExpiresAt: fiveMinutes,
           progress: prior.progress,
           progressUpdatedAt: prior.progressUpdatedAt,
-          // An interruption must not erase reported totals either: they carry forward
-          // with the progress of the same run's work (#96).
-          inputTokens: prior.inputTokens,
-          outputTokens: prior.outputTokens,
-          costUsdMicros: prior.costUsdMicros,
+          // Cumulative telemetry belongs to the session row that reported it (#96). A
+          // reacquire inserts a new row while the expired one keeps its totals, so copying
+          // them here would synthesize unreported data and double-count cost in listings.
           createdAt: sql`statement_timestamp()`,
           updatedAt: sql`statement_timestamp()`,
         });
