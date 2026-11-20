@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { AgentIdentity } from "@orrery/contract";
+import { ReadyWorkFilter, SessionActivityKind, type AgentIdentity } from "@orrery/contract";
 import { sessionTools } from "@orrery/contract";
 import { isAgentError, type AgentAuthenticator } from "../agents/index.ts";
 import { SessionsError, type SessionsService } from "./service.ts";
@@ -19,6 +19,14 @@ const str = (value: unknown, field: string): string => {
 // one keeps #36 callers working, a present one pins the write to that exact session.
 const sessionFence = (args: Args): string | undefined =>
   typeof args.sessionId === "string" ? args.sessionId : undefined;
+
+// The tool's input schema already validated the detail; this narrows the parsed `unknown`
+// to the service's type without a second parser or an unchecked assertion. The kind uses
+// the shared contract schema directly so the two transports cannot drift apart.
+const activityDetail = (value: unknown): Record<string, unknown> | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  return Object.fromEntries(Object.entries(value));
+};
 
 export function createSessionsMcp(service: SessionsService, authenticate: AgentAuthenticator) {
   const strategies: Record<string, (identity: AgentIdentity, args: Args) => Promise<Args>> = {
@@ -72,10 +80,30 @@ export function createSessionsMcp(service: SessionsService, authenticate: AgentA
         str(args.issueId, "issueId"),
       ),
     }),
+    log_session_activity: async (identity, args) => ({
+      activity: await service.logActivity(
+        { kind: "agent", identity },
+        {
+          issueId: str(args.issueId, "issueId"),
+          kind: SessionActivityKind.parse(args.kind),
+          summary: str(args.summary, "summary"),
+          detail: activityDetail(args.detail),
+          sessionId: sessionFence(args),
+        },
+      ),
+    }),
+    list_session_activities: async (identity, args) => ({
+      activities: await service.listActivities(
+        { kind: "agent", identity },
+        str(args.issueId, "issueId"),
+        str(args.sessionId, "sessionId"),
+      ),
+    }),
     ready_work: async (identity, args) => ({
       issues: await service.readyWork(
         { kind: "agent", identity },
         str(args.projectId, "projectId"),
+        args.filter === undefined ? undefined : ReadyWorkFilter.parse(args.filter),
       ),
     }),
   };

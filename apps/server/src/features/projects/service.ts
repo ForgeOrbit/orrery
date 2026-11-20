@@ -1,18 +1,28 @@
 import { randomUUID } from "node:crypto";
 import {
   FallbackPolicy,
+  ISSUE_SORT_STEP,
   IssueStatus,
   ProjectAccessEventType,
   ProjectAccessLevel,
   WorkspaceKind,
   type Actor,
   type AgentIdentity,
+  type AddBlockedByRequest,
+  type Assignee,
+  type AssigneeType,
   type CreateIssueCommentRequest,
+  type CreateIssueLinkRequest,
   type CreateIssueRequest,
   type CreateKnowledgeEntryRequest,
   type CreateProjectRequest,
   type Issue,
   type IssueComment,
+  type IssueDependency,
+  type IssueDetail,
+  type IssueLink,
+  IssueLinkKind,
+  IssuePriority,
   type KnowledgeEntry,
   type Project,
   type ProjectAccessGrant,
@@ -25,14 +35,18 @@ import {
   type UpdateKnowledgeEntryRequest,
   type UpdateProjectRequest,
 } from "@orrery/contract";
-import { and, eq, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
+import { uniqueConstraintName } from "../../platform/errors.ts";
 import {
+  agentApiKeys,
   agents,
   humans,
   issueComments,
+  issueDependencies,
+  issueLinks,
   issues,
   knowledgeEntries,
   projectAccessEvents,
@@ -57,19 +71,27 @@ export type ProjectsErrorKind =
   | "workspace_not_found"
   | "project_not_found"
   | "issue_not_found"
+  | "issue_link_not_found"
+  | "issue_link_exists"
   | "knowledge_entry_not_found"
   | "project_creation_not_allowed"
   | "insufficient_project_access"
   | "member_not_found"
   | "personal_project_access"
   | "workspace_owner_access"
-  | "session_required";
+  | "session_required"
+  | "self_dependency"
+  | "cross_project_dependency"
+  | "dependency_cycle"
+  | "assignee_not_found";
 
 const messages = {
   not_signed_in: "Not signed in.",
   workspace_not_found: "This workspace does not exist.",
   project_not_found: "This project does not exist.",
   issue_not_found: "This issue does not exist.",
+  issue_link_not_found: "This link does not exist on the issue.",
+  issue_link_exists: "This URL is already attached to the issue.",
   knowledge_entry_not_found: "This knowledge entry does not exist.",
   project_creation_not_allowed: "You do not have Create projects in this workspace.",
   insufficient_project_access: "This project access level cannot do that.",
@@ -77,6 +99,10 @@ const messages = {
   personal_project_access: "Personal projects have no direct collaborators.",
   workspace_owner_access: "Workspace owners already have Manage access to every project.",
   session_required: "This agent holds no live work session for this issue.",
+  self_dependency: "An issue cannot block itself.",
+  cross_project_dependency: "Dependencies can only link issues in the same project.",
+  dependency_cycle: "That dependency would create a cycle.",
+  assignee_not_found: "No active member or registered agent in this workspace has that id.",
 } as const satisfies Record<ProjectsErrorKind, string>;
 
 const ACCESS_RANK: Record<ProjectAccessLevel, number> = {
@@ -306,12 +332,38 @@ function actorFromRow(
   return { displayName: "Unknown author" };
 }
 
+// The assignee's display identity. The database CHECK guarantees the type and id agree;
+// a missing joined row means the identity was removed after assignment, so the badge
+// disappears rather than inventing a name. A deactivated assignee keeps its label.
+function assigneeFromRow(row: {
+  assigneeType: AssigneeType | null;
+  assigneeId: string | null;
+  assigneeHumanEmail: string | null;
+  assigneeHumanDeactivatedAt: Date | null;
+  assigneeAgentName: string | null;
+}): Actor | null {
+  if (row.assigneeType === "human" && row.assigneeId !== null && row.assigneeHumanEmail !== null) {
+    return actorFromRow(
+      row.assigneeId,
+      row.assigneeHumanEmail,
+      null,
+      null,
+      row.assigneeHumanDeactivatedAt,
+    );
+  }
+  if (row.assigneeType === "agent" && row.assigneeId !== null && row.assigneeAgentName !== null) {
+    return actorFromRow(null, null, row.assigneeId, row.assigneeAgentName);
+  }
+  return null;
+}
+
 // Aliases let one query join humans several times: a creator and a last editor, or an
 // issue's author and a comment's author. Each alias is a separate SQL name.
 const projectCreator = alias(humans, "project_creator");
 const issueCreator = alias(humans, "issue_creator");
 const issueEditor = alias(humans, "issue_editor");
 const commentAuthor = alias(humans, "comment_author");
+const linkCreator = alias(humans, "link_creator");
 const knowledgeCreator = alias(humans, "knowledge_creator");
 const knowledgeEditor = alias(humans, "knowledge_editor");
 const activityActor = alias(humans, "activity_actor");
@@ -320,10 +372,18 @@ const accessGrantor = alias(humans, "access_grantor");
 // carries the identity. Left joins keep agent-authored rows in the same query.
 const issueAgentCreator = alias(agents, "issue_agent_creator");
 const issueAgentEditor = alias(agents, "issue_agent_editor");
+// #84: assignment is displayed with the same Actor shape as authorship, so the row's
+// assignee_type decides which of these two aliases carries display information.
+const assigneeHuman = alias(humans, "assignee_human");
+const assigneeAgent = alias(agents, "assignee_agent");
 const commentAgentAuthor = alias(agents, "comment_agent_author");
+const linkAgentCreator = alias(agents, "link_agent_creator");
 const knowledgeAgentCreator = alias(agents, "knowledge_agent_creator");
 const knowledgeAgentEditor = alias(agents, "knowledge_agent_editor");
 const activityAgentActor = alias(agents, "activity_agent_actor");
+// A dependency edge keeps who added it; both aliases are needed to render that actor.
+const dependencyHumanCreator = alias(humans, "dependency_human_creator");
+const dependencyAgentCreator = alias(agents, "dependency_agent_creator");
 
 const projectColumns = {
   id: projects.id,
@@ -336,6 +396,18 @@ const projectColumns = {
   fallbackPolicy: projects.fallbackPolicy,
 };
 
+// One deterministic board/ready-work order (#88): importance, position, then creation.
+// The CASE ranks the contract enum explicitly because the text values are not in that
+// order lexicographically. Once assignees exist (#84), assigned-to-caller sorts ahead of
+// this list; until then this is the whole queue order.
+const issuePriorityRank = sql`case ${issues.priority} when 'urgent' then 0 when 'high' then 1 when 'medium' then 2 when 'low' then 3 else 4 end`;
+const issueBoardOrder = [
+  issuePriorityRank,
+  asc(issues.sortOrder),
+  asc(issues.createdAt),
+  asc(issues.number),
+];
+
 const issueColumns = {
   id: issues.id,
   projectId: issues.projectId,
@@ -343,6 +415,14 @@ const issueColumns = {
   title: issues.title,
   body: issues.body,
   status: issues.status,
+  priority: issues.priority,
+  sortOrder: issues.sortOrder,
+  needsInput: issues.needsInput,
+  assigneeType: issues.assigneeType,
+  assigneeId: issues.assigneeId,
+  assigneeHumanEmail: assigneeHuman.email,
+  assigneeHumanDeactivatedAt: assigneeHuman.deactivatedAt,
+  assigneeAgentName: assigneeAgent.name,
   fallbackPolicyOverride: issues.fallbackPolicyOverride,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
@@ -371,6 +451,20 @@ const commentColumns = {
   authorAgentName: commentAgentAuthor.name,
 };
 
+const linkColumns = {
+  id: issueLinks.id,
+  issueId: issueLinks.issueId,
+  url: issueLinks.url,
+  title: issueLinks.title,
+  kind: issueLinks.kind,
+  createdAt: issueLinks.createdAt,
+  createdByHumanId: issueLinks.createdByHumanId,
+  createdByEmail: linkCreator.email,
+  createdByDeactivatedAt: linkCreator.deactivatedAt,
+  createdByAgentId: issueLinks.createdByAgentId,
+  createdByAgentName: linkAgentCreator.name,
+};
+
 const knowledgeColumns = {
   id: knowledgeEntries.id,
   projectId: knowledgeEntries.projectId,
@@ -388,6 +482,17 @@ const knowledgeColumns = {
   updatedByDeactivatedAt: knowledgeEditor.deactivatedAt,
   updatedByAgentId: knowledgeEntries.updatedByAgentId,
   updatedByAgentName: knowledgeAgentEditor.name,
+};
+
+const dependencyColumns = {
+  issueId: issueDependencies.issueId,
+  blockedByIssueId: issueDependencies.blockedByIssueId,
+  createdAt: issueDependencies.createdAt,
+  createdByHumanId: issueDependencies.createdByHumanId,
+  createdByEmail: dependencyHumanCreator.email,
+  createdByDeactivatedAt: dependencyHumanCreator.deactivatedAt,
+  createdByAgentId: issueDependencies.createdByAgentId,
+  createdByAgentName: dependencyAgentCreator.name,
 };
 
 const activityColumns = {
@@ -436,6 +541,14 @@ type IssueRow = {
   title: string;
   body: string;
   status: IssueStatus;
+  priority: IssuePriority;
+  sortOrder: number;
+  needsInput: boolean;
+  assigneeType: AssigneeType | null;
+  assigneeId: string | null;
+  assigneeHumanEmail: string | null;
+  assigneeHumanDeactivatedAt: Date | null;
+  assigneeAgentName: string | null;
   fallbackPolicyOverride: FallbackPolicy | null;
   // The project's policy, joined by requireIssue so a single DTO carries the resolved one.
   projectFallbackPolicy: FallbackPolicy;
@@ -454,6 +567,17 @@ type IssueRow = {
   updatedByAgentName: string | null;
 };
 
+type IssueDependencyRow = {
+  issueId: string;
+  blockedByIssueId: string;
+  createdAt: Date;
+  createdByHumanId: string | null;
+  createdByEmail: string | null;
+  createdByDeactivatedAt: Date | null;
+  createdByAgentId: string | null;
+  createdByAgentName: string | null;
+};
+
 type CommentRow = {
   id: string;
   issueId: string;
@@ -464,6 +588,20 @@ type CommentRow = {
   authorDeactivatedAt: Date | null;
   authorAgentId: string | null;
   authorAgentName: string | null;
+};
+
+type LinkRow = {
+  id: string;
+  issueId: string;
+  url: string;
+  title: string;
+  kind: IssueLinkKind;
+  createdAt: Date;
+  createdByHumanId: string | null;
+  createdByEmail: string | null;
+  createdByDeactivatedAt: Date | null;
+  createdByAgentId: string | null;
+  createdByAgentName: string | null;
 };
 
 type KnowledgeRow = {
@@ -544,6 +682,10 @@ function toIssue(row: IssueRow): Issue {
     title: row.title,
     body: row.body,
     status: row.status,
+    priority: row.priority,
+    sortOrder: row.sortOrder,
+    needsInput: row.needsInput,
+    assignee: assigneeFromRow(row),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     closedAt: row.closedAt?.toISOString() ?? null,
@@ -566,6 +708,21 @@ function toIssue(row: IssueRow): Issue {
   };
 }
 
+function toIssueDependency(row: IssueDependencyRow): IssueDependency {
+  return {
+    issueId: row.issueId,
+    blockedByIssueId: row.blockedByIssueId,
+    createdAt: row.createdAt.toISOString(),
+    createdBy: actorFromRow(
+      row.createdByHumanId,
+      row.createdByEmail,
+      row.createdByAgentId,
+      row.createdByAgentName,
+      row.createdByDeactivatedAt,
+    ),
+  };
+}
+
 function toComment(row: CommentRow): IssueComment {
   return {
     id: row.id,
@@ -580,6 +737,37 @@ function toComment(row: CommentRow): IssueComment {
       row.authorDeactivatedAt,
     ),
   };
+}
+
+function toLink(row: LinkRow): IssueLink {
+  return {
+    id: row.id,
+    issueId: row.issueId,
+    url: row.url,
+    title: row.title,
+    kind: IssueLinkKind.parse(row.kind),
+    createdAt: row.createdAt.toISOString(),
+    createdBy: actorFromRow(
+      row.createdByHumanId,
+      row.createdByEmail,
+      row.createdByAgentId,
+      row.createdByAgentName,
+      row.createdByDeactivatedAt,
+    ),
+  };
+}
+
+// The links on an issue, newest last. The detail read is the one place that loads them,
+// so order and author display come from a single query.
+async function loadIssueLinks(tx: DbTransaction, issueId: string): Promise<IssueLink[]> {
+  const rows = await tx
+    .select(linkColumns)
+    .from(issueLinks)
+    .leftJoin(linkCreator, eq(linkCreator.id, issueLinks.createdByHumanId))
+    .leftJoin(linkAgentCreator, eq(linkAgentCreator.id, issueLinks.createdByAgentId))
+    .where(eq(issueLinks.issueId, issueId))
+    .orderBy(issueLinks.createdAt, issueLinks.id);
+  return rows.map(toLink);
 }
 
 function toKnowledge(row: KnowledgeRow): KnowledgeEntry {
@@ -756,6 +944,14 @@ async function requireIssue(
     .leftJoin(issueEditor, eq(issueEditor.id, issues.updatedByHumanId))
     .leftJoin(issueAgentEditor, eq(issueAgentEditor.id, issues.updatedByAgentId))
     .leftJoin(
+      assigneeHuman,
+      and(eq(assigneeHuman.id, issues.assigneeId), eq(issues.assigneeType, "human")),
+    )
+    .leftJoin(
+      assigneeAgent,
+      and(eq(assigneeAgent.id, issues.assigneeId), eq(issues.assigneeType, "agent")),
+    )
+    .leftJoin(
       workspaceMemberships,
       and(eq(workspaceMemberships.workspaceId, projects.workspaceId), membershipMatch),
     )
@@ -765,6 +961,91 @@ async function requireIssue(
 
   if (row === undefined) throw new ProjectsError("issue_not_found");
   return { ...row, accessLevel: requireLevel(row, actor, required, "issue_not_found") };
+}
+
+// #84: resolve and validate an assignee in the caller's transaction. The locks are taken
+// in Orrery's shared M22 order — account (KEY SHARE), membership (KEY SHARE) — BEFORE the
+// caller locks the issue, so a deactivation or member removal that commits first is seen
+// here and one in flight waits rather than deadlocking. Human and agent callers both use
+// this one decision; a missing, deactivated, suspended or unregistered identity answers
+// the same 404 instead of revealing which check failed.
+async function validateAssignee(
+  tx: DbTransaction,
+  workspaceId: string,
+  assignee: Assignee,
+): Promise<Actor> {
+  const [workspace] = await tx
+    .select({ personalOwnerHumanId: workspaces.personalOwnerHumanId })
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId))
+    .limit(1);
+  if (workspace === undefined) throw new ProjectsError("assignee_not_found");
+
+  let targetHumanId: string;
+  let resolved: Actor;
+  if (assignee.type === "human") {
+    const [human] = await tx
+      .select({ id: humans.id, email: humans.email })
+      .from(humans)
+      .where(and(eq(humans.id, assignee.id), isNull(humans.deactivatedAt)))
+      .limit(1)
+      .for("key share");
+    if (human === undefined) throw new ProjectsError("assignee_not_found");
+    targetHumanId = human.id;
+    resolved = { humanId: human.id, email: human.email, displayName: human.email };
+  } else {
+    const [agent] = await tx
+      .select({ id: agents.id, humanId: agents.humanId, name: agents.name })
+      .from(agents)
+      .where(eq(agents.id, assignee.id))
+      .limit(1);
+    if (agent === undefined) throw new ProjectsError("assignee_not_found");
+    // An agent is registered in this workspace while a live key scoped to it exists.
+    const [key] = await tx
+      .select({ id: agentApiKeys.id })
+      .from(agentApiKeys)
+      .where(
+        and(
+          eq(agentApiKeys.agentId, agent.id),
+          eq(agentApiKeys.workspaceId, workspaceId),
+          isNull(agentApiKeys.revokedAt),
+          or(
+            isNull(agentApiKeys.expiresAt),
+            gt(agentApiKeys.expiresAt, sql`statement_timestamp()`),
+          ),
+        ),
+      )
+      .limit(1);
+    if (key === undefined) throw new ProjectsError("assignee_not_found");
+    const [owner] = await tx
+      .select({ id: humans.id })
+      .from(humans)
+      .where(and(eq(humans.id, agent.humanId), isNull(humans.deactivatedAt)))
+      .limit(1)
+      .for("key share");
+    if (owner === undefined) throw new ProjectsError("assignee_not_found");
+    targetHumanId = agent.humanId;
+    resolved = { agentId: agent.id, agentName: agent.name, displayName: agent.name };
+  }
+
+  // A personal workspace's owner needs no membership; a shared workspace needs a live
+  // membership for the target human, whichever kind of identity is being assigned.
+  if (workspace.personalOwnerHumanId !== targetHumanId) {
+    const [membership] = await tx
+      .select({ id: workspaceMemberships.id })
+      .from(workspaceMemberships)
+      .where(
+        and(
+          eq(workspaceMemberships.workspaceId, workspaceId),
+          eq(workspaceMemberships.humanId, targetHumanId),
+          isNull(workspaceMemberships.suspendedAt),
+        ),
+      )
+      .limit(1)
+      .for("key share");
+    if (membership === undefined) throw new ProjectsError("assignee_not_found");
+  }
+  return resolved;
 }
 
 async function requireKnowledge(
@@ -821,7 +1102,11 @@ type RecordActivityInput =
         | "issue_commented"
         | "issue_closed"
         | "issue_reopened"
-        | "issue_fallback_policy_override_changed";
+        | "issue_fallback_policy_override_changed"
+        | "issue_dependency_added"
+        | "issue_dependency_removed"
+        | "issue_link_added"
+        | "issue_link_removed";
       actor: WorkActor;
       summary: string;
       issueId: string;
@@ -1142,19 +1427,39 @@ export interface ProjectsService {
     projectIds: readonly string[],
   ): Promise<Map<string, ProjectAccessLevel | null>>;
   listIssues(actor: WorkActor | null, projectId: string): Promise<Issue[]>;
-  getIssue(actor: WorkActor | null, issueId: string): Promise<Issue>;
+  getIssue(actor: WorkActor | null, issueId: string): Promise<IssueDetail>;
   createIssue(
     actor: WorkActor | null,
     projectId: string,
     input: CreateIssueRequest,
   ): Promise<Issue>;
   updateIssue(actor: WorkActor | null, issueId: string, input: UpdateIssueRequest): Promise<Issue>;
+  // Directed blocked_by edges (#86). Modifying an edge needs Contribute; either direction
+  // can be listed with Read. Both issues must be in the same project.
+  addBlockedBy(
+    actor: WorkActor | null,
+    issueId: string,
+    input: AddBlockedByRequest,
+  ): Promise<IssueDependency>;
+  removeBlockedBy(
+    actor: WorkActor | null,
+    issueId: string,
+    blockedByIssueId: string,
+  ): Promise<void>;
+  listBlockedBy(actor: WorkActor | null, issueId: string): Promise<Issue[]>;
+  listBlocking(actor: WorkActor | null, issueId: string): Promise<Issue[]>;
   listComments(actor: WorkActor | null, issueId: string): Promise<IssueComment[]>;
   createComment(
     actor: WorkActor | null,
     issueId: string,
     input: CreateIssueCommentRequest,
   ): Promise<IssueComment>;
+  addIssueLink(
+    actor: WorkActor | null,
+    issueId: string,
+    input: CreateIssueLinkRequest,
+  ): Promise<IssueLink>;
+  removeIssueLink(actor: WorkActor | null, issueId: string, linkId: string): Promise<void>;
   listActivity(actor: WorkActor | null, projectId: string): Promise<ProjectActivity[]>;
   listKnowledge(actor: WorkActor | null, projectId: string): Promise<KnowledgeEntry[]>;
   getKnowledge(actor: WorkActor | null, entryId: string): Promise<KnowledgeEntry>;
@@ -1175,6 +1480,36 @@ export function createProjectsService({
   sessionGate,
   evaluateQuestionDeadline,
 }: ProjectsDeps): ProjectsService {
+  // The one issue listing, borrowed by the blocked_by readers so a relation resolves to the
+  // same Issue shape every other listing returns. Dependency edges live in one project, so
+  // listing by that project and selecting the related ids keeps both reads in one place.
+  async function readIssues(actor: WorkActor, projectId: string): Promise<Issue[]> {
+    return db.transaction(
+      async (tx) => {
+        await requireProject(tx, projectId, actor, ProjectAccessLevel.enum.read);
+        const rows = await tx
+          .select({ ...issueColumns, projectFallbackPolicy: projects.fallbackPolicy })
+          .from(issues)
+          .innerJoin(projects, eq(projects.id, issues.projectId))
+          .leftJoin(issueCreator, eq(issueCreator.id, issues.createdByHumanId))
+          .leftJoin(issueAgentCreator, eq(issueAgentCreator.id, issues.createdByAgentId))
+          .leftJoin(issueEditor, eq(issueEditor.id, issues.updatedByHumanId))
+          .leftJoin(issueAgentEditor, eq(issueAgentEditor.id, issues.updatedByAgentId))
+          .leftJoin(
+            assigneeHuman,
+            and(eq(assigneeHuman.id, issues.assigneeId), eq(issues.assigneeType, "human")),
+          )
+          .leftJoin(
+            assigneeAgent,
+            and(eq(assigneeAgent.id, issues.assigneeId), eq(issues.assigneeType, "agent")),
+          )
+          .where(eq(issues.projectId, projectId))
+          .orderBy(...issueBoardOrder);
+        return rows.map(toIssue);
+      },
+      { accessMode: "read only" },
+    );
+  }
   return {
     // The listing is the caller's accessible projects in the workspace: all of a personal
     // workspace's own projects, all of a shared workspace's projects for an owner, and
@@ -1683,30 +2018,16 @@ export function createProjectsService({
     },
 
     async listIssues(actorArg, projectId) {
-      const actor = requireActor(actorArg);
-      return db.transaction(
-        async (tx) => {
-          await requireProject(tx, projectId, actor, ProjectAccessLevel.enum.read);
-          const rows = await tx
-            .select({ ...issueColumns, projectFallbackPolicy: projects.fallbackPolicy })
-            .from(issues)
-            .innerJoin(projects, eq(projects.id, issues.projectId))
-            .leftJoin(issueCreator, eq(issueCreator.id, issues.createdByHumanId))
-            .leftJoin(issueAgentCreator, eq(issueAgentCreator.id, issues.createdByAgentId))
-            .leftJoin(issueEditor, eq(issueEditor.id, issues.updatedByHumanId))
-            .leftJoin(issueAgentEditor, eq(issueAgentEditor.id, issues.updatedByAgentId))
-            .where(eq(issues.projectId, projectId))
-            .orderBy(issues.number);
-          return rows.map(toIssue);
-        },
-        { accessMode: "read only" },
-      );
+      return readIssues(requireActor(actorArg), projectId);
     },
 
     async getIssue(actorArg, issueId) {
       const actor = requireActor(actorArg);
       return db.transaction(
-        async (tx) => toIssue(await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.read)),
+        async (tx) => {
+          const issue = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.read);
+          return { ...toIssue(issue), links: await loadIssueLinks(tx, issueId) };
+        },
         { accessMode: "read only" },
       );
     },
@@ -1739,6 +2060,8 @@ export function createProjectsService({
             title: input.title,
             body: input.body ?? "",
             status: IssueStatus.enum.open,
+            priority: input.priority ?? IssuePriority.enum.none,
+            sortOrder: input.sortOrder ?? counter.number * ISSUE_SORT_STEP,
             createdByHumanId: humanIdOf(actor),
             createdByAgentId: agentIdOf(actor),
             updatedByHumanId: humanIdOf(actor),
@@ -1753,6 +2076,8 @@ export function createProjectsService({
             title: issues.title,
             body: issues.body,
             status: issues.status,
+            priority: issues.priority,
+            sortOrder: issues.sortOrder,
             createdAt: issues.createdAt,
             updatedAt: issues.updatedAt,
             closedAt: issues.closedAt,
@@ -1773,6 +2098,10 @@ export function createProjectsService({
           title: created.title,
           body: created.body,
           status: IssueStatus.parse(created.status),
+          priority: created.priority,
+          sortOrder: created.sortOrder,
+          needsInput: false,
+          assignee: null,
           createdAt: created.createdAt.toISOString(),
           updatedAt: created.updatedAt.toISOString(),
           closedAt: created.closedAt === null ? null : created.closedAt.toISOString(),
@@ -1789,11 +2118,37 @@ export function createProjectsService({
     // was, so a repeated close cannot invent a second event.
     async updateIssue(actorArg, issueId, input) {
       const actor = requireActor(actorArg);
+      // Authorize and resolve the workspace in a read first, so an inaccessible issue
+      // answers 404 before any assignee probe and no lock is held during that lookup.
+      const target = await db.transaction(
+        async (tx) => {
+          const issue = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
+          return { workspaceId: issue.workspaceId };
+        },
+        { accessMode: "read only" },
+      );
       return db.transaction(async (tx) => {
+        // #84: account/membership KEY SHARE locks for assignment validation come BEFORE
+        // the issue lock below, matching claim and deactivation's M22 lock order.
+        const resolvedAssignee =
+          input.assignee === undefined || input.assignee === null
+            ? null
+            : await validateAssignee(tx, target.workspaceId, input.assignee);
         // Serialize concurrent updates to the same issue so two PATCHes cannot lose
         // each other's changes or diverge the activity feed from the issue's status.
         await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issueId)).for("update");
         const current = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
+        // #84: the access precheck and the assignee validation ran in separate committed
+        // transactions. A project transfer that committed between them may have moved the
+        // issue to another workspace; recheck under the issue lock so a source-workspace
+        // assignee can never be written onto a transferred issue.
+        if (
+          input.assignee !== undefined &&
+          input.assignee !== null &&
+          current.workspaceId !== target.workspaceId
+        ) {
+          throw new ProjectsError("issue_not_found");
+        }
         // #20 fences an agent's issue state/body edits (including close and reopen) on a
         // live session it holds. Humans, comments, creation and knowledge stay unfenced.
         // The gate runs after access and under the same issue row lock, so a downgrade to
@@ -1807,10 +2162,30 @@ export function createProjectsService({
         const title = input.title ?? current.title;
         const body = input.body ?? current.body;
         const status = input.status ?? current.status;
+        const priority = input.priority ?? current.priority;
+        const sortOrder = input.sortOrder ?? current.sortOrder;
+        // An omitted assignee leaves it unchanged; an explicit null clears the pair.
+        const assigneeType =
+          input.assignee === undefined ? current.assigneeType : (input.assignee?.type ?? null);
+        const assigneeId =
+          input.assignee === undefined ? current.assigneeId : (input.assignee?.id ?? null);
         const titleChanged = title !== current.title;
         const bodyChanged = body !== current.body;
         const statusChanged = status !== current.status;
-        if (!titleChanged && !bodyChanged && !statusChanged) return toIssue(current);
+        const priorityChanged = priority !== current.priority;
+        const orderChanged = sortOrder !== current.sortOrder;
+        const assigneeChanged =
+          assigneeType !== current.assigneeType || assigneeId !== current.assigneeId;
+        if (
+          !titleChanged &&
+          !bodyChanged &&
+          !statusChanged &&
+          !priorityChanged &&
+          !orderChanged &&
+          !assigneeChanged
+        ) {
+          return toIssue(current);
+        }
 
         const closedAt =
           status === IssueStatus.enum.closed
@@ -1824,6 +2199,10 @@ export function createProjectsService({
             title,
             body,
             status,
+            priority,
+            sortOrder,
+            assigneeType,
+            assigneeId,
             updatedByHumanId: humanIdOf(actor),
             updatedByAgentId: agentIdOf(actor),
             updatedAt: sql`statement_timestamp()`,
@@ -1836,7 +2215,10 @@ export function createProjectsService({
           });
         if (updated === undefined) throw new ProjectsError("issue_not_found");
 
-        if (titleChanged || bodyChanged) {
+        // A priority change is a real edit and is recorded. A reorder is not: dragging a
+        // card writes only its midpoint, and an activity event per drag would drown the
+        // feed, so sortOrder updates stay invisible there (the issue's updatedAt still moves).
+        if (titleChanged || bodyChanged || priorityChanged || assigneeChanged) {
           await recordActivity(tx, {
             projectId: current.projectId,
             type: "issue_edited",
@@ -1861,6 +2243,14 @@ export function createProjectsService({
           title,
           body,
           status: IssueStatus.parse(status),
+          priority,
+          sortOrder,
+          needsInput: current.needsInput,
+          assignee: assigneeChanged
+            ? input.assignee === null
+              ? null
+              : resolvedAssignee
+            : assigneeFromRow(current),
           createdAt: current.createdAt.toISOString(),
           updatedAt: updated.updatedAt.toISOString(),
           closedAt: updated.closedAt === null ? null : updated.closedAt.toISOString(),
@@ -1875,6 +2265,180 @@ export function createProjectsService({
           effectiveFallbackPolicy: current.fallbackPolicyOverride ?? current.projectFallbackPolicy,
         };
       });
+    },
+
+    // An edge is added under a lock on both issue rows so two writers cannot race past
+    // the acyclicity check (A blocked by B while B is blocked by A). Locking in id order
+    // keeps concurrent writers from deadlocking on the pair.
+    async addBlockedBy(actorArg, issueId, input) {
+      const actor = requireActor(actorArg);
+      const blockedByIssueId = input.blockedByIssueId;
+      return db.transaction(async (tx) => {
+        const current = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
+        if (issueId === blockedByIssueId) throw new ProjectsError("self_dependency");
+        const blocker = await requireIssue(
+          tx,
+          blockedByIssueId,
+          actor,
+          ProjectAccessLevel.enum.read,
+        );
+        if (blocker.projectId !== current.projectId) {
+          throw new ProjectsError("cross_project_dependency");
+        }
+
+        // Lock the parent project row FIRST (matching Orrery's global projects -> issues
+        // lock order shared with transfers M21/M24 so concurrent transfer + dependency
+        // writes cannot AB-BA deadlock), then lock the two endpoint issues in id order.
+        // Serializing on the project row also closes the >=4-node concurrent cycle race.
+        await tx
+          .select({ id: projects.id })
+          .from(projects)
+          .where(eq(projects.id, current.projectId))
+          .for("update");
+
+        await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(inArray(issues.id, [issueId, blockedByIssueId].toSorted()))
+          .orderBy(issues.id)
+          .for("update");
+
+        // Re-adding an edge is a no-op: the unique constraint stays the database's final
+        // word, and a repeated agent call must not invent a second activity event.
+        const [existing] = await tx
+          .select(dependencyColumns)
+          .from(issueDependencies)
+          .leftJoin(
+            dependencyHumanCreator,
+            eq(dependencyHumanCreator.id, issueDependencies.createdByHumanId),
+          )
+          .leftJoin(
+            dependencyAgentCreator,
+            eq(dependencyAgentCreator.id, issueDependencies.createdByAgentId),
+          )
+          .where(
+            and(
+              eq(issueDependencies.issueId, issueId),
+              eq(issueDependencies.blockedByIssueId, blockedByIssueId),
+            ),
+          )
+          .limit(1);
+        if (existing !== undefined) return toIssueDependency(existing);
+
+        // Walk forward from the new blocker. Reaching the issue being blocked means the
+        // new edge would close a cycle. Bounded by the project's graph; the project row is
+        // locked for the whole check-and-insert, so no concurrent add can race past it.
+        const visited = new Set<string>([blockedByIssueId]);
+        let frontier: string[] = [blockedByIssueId];
+        while (frontier.length > 0) {
+          const rows = await tx
+            .select({ next: issueDependencies.blockedByIssueId })
+            .from(issueDependencies)
+            .where(inArray(issueDependencies.issueId, frontier));
+          const next: string[] = [];
+          for (const row of rows) {
+            if (row.next === issueId) throw new ProjectsError("dependency_cycle");
+            if (!visited.has(row.next)) {
+              visited.add(row.next);
+              next.push(row.next);
+            }
+          }
+          frontier = next;
+        }
+
+        const [inserted] = await tx
+          .insert(issueDependencies)
+          .values({
+            id: randomUUID(),
+            issueId,
+            blockedByIssueId,
+            createdByHumanId: humanIdOf(actor),
+            createdByAgentId: agentIdOf(actor),
+            createdAt: sql`statement_timestamp()`,
+          })
+          .returning({ createdAt: issueDependencies.createdAt });
+        if (inserted === undefined) throw new Error("the dependency was not created");
+        await recordActivity(tx, {
+          projectId: current.projectId,
+          type: "issue_dependency_added",
+          actor,
+          issueId,
+          summary: `${current.title} blocked by ${blocker.title}`,
+        });
+        return {
+          issueId,
+          blockedByIssueId,
+          createdAt: inserted.createdAt.toISOString(),
+          createdBy: actorForWrite(actor),
+        };
+      });
+    },
+
+    // Removing a relation that is not there is a no-op, so a repeated UI click or agent
+    // retry cannot fail or write a spurious activity event.
+    async removeBlockedBy(actorArg, issueId, blockedByIssueId) {
+      const actor = requireActor(actorArg);
+      return db.transaction(async (tx) => {
+        const current = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
+        const [blocker] = await tx
+          .select({ title: issues.title })
+          .from(issues)
+          .where(eq(issues.id, blockedByIssueId))
+          .limit(1);
+        const deleted = await tx
+          .delete(issueDependencies)
+          .where(
+            and(
+              eq(issueDependencies.issueId, issueId),
+              eq(issueDependencies.blockedByIssueId, blockedByIssueId),
+            ),
+          )
+          .returning({ issueId: issueDependencies.issueId });
+        if (deleted.length === 0) return;
+        await recordActivity(tx, {
+          projectId: current.projectId,
+          type: "issue_dependency_removed",
+          actor,
+          issueId,
+          summary: `${current.title} no longer blocked by ${blocker?.title ?? blockedByIssueId}`,
+        });
+      });
+    },
+
+    async listBlockedBy(actorArg, issueId) {
+      const actor = requireActor(actorArg);
+      const found = await db.transaction(
+        async (tx) => {
+          const current = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.read);
+          const rows = await tx
+            .select({ id: issueDependencies.blockedByIssueId })
+            .from(issueDependencies)
+            .where(eq(issueDependencies.issueId, issueId));
+          return { projectId: current.projectId, ids: rows.map((row) => row.id) };
+        },
+        { accessMode: "read only" },
+      );
+      if (found.ids.length === 0) return [];
+      const blockers = new Set(found.ids);
+      return (await readIssues(actor, found.projectId)).filter((issue) => blockers.has(issue.id));
+    },
+
+    async listBlocking(actorArg, issueId) {
+      const actor = requireActor(actorArg);
+      const found = await db.transaction(
+        async (tx) => {
+          const current = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.read);
+          const rows = await tx
+            .select({ id: issueDependencies.issueId })
+            .from(issueDependencies)
+            .where(eq(issueDependencies.blockedByIssueId, issueId));
+          return { projectId: current.projectId, ids: rows.map((row) => row.id) };
+        },
+        { accessMode: "read only" },
+      );
+      if (found.ids.length === 0) return [];
+      const dependants = new Set(found.ids);
+      return (await readIssues(actor, found.projectId)).filter((issue) => dependants.has(issue.id));
     },
 
     async listComments(actorArg, issueId) {
@@ -1933,6 +2497,88 @@ export function createProjectsService({
           createdAt: created.createdAt.toISOString(),
           author: actorForWrite(actor),
         };
+      });
+    },
+
+    // Links need no work session, just like comments (#20). Contribute is enough; the
+    // unique index makes a repeated (issue, url) a clean 409 instead of a second row.
+    async addIssueLink(actorArg, issueId, input) {
+      const actor = requireActor(actorArg);
+      return db.transaction(async (tx) => {
+        const issue = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
+        let created:
+          | {
+              id: string;
+              issueId: string;
+              url: string;
+              title: string;
+              kind: IssueLinkKind;
+              createdAt: Date;
+            }
+          | undefined;
+        try {
+          [created] = await tx
+            .insert(issueLinks)
+            .values({
+              id: randomUUID(),
+              issueId,
+              url: input.url,
+              title: input.title,
+              kind: input.kind,
+              createdByHumanId: humanIdOf(actor),
+              createdByAgentId: agentIdOf(actor),
+              createdAt: sql`statement_timestamp()`,
+            })
+            .returning({
+              id: issueLinks.id,
+              issueId: issueLinks.issueId,
+              url: issueLinks.url,
+              title: issueLinks.title,
+              kind: issueLinks.kind,
+              createdAt: issueLinks.createdAt,
+            });
+        } catch (error) {
+          if (uniqueConstraintName(error) === "one_link_per_issue_and_url") {
+            throw new ProjectsError("issue_link_exists");
+          }
+          throw error;
+        }
+        if (created === undefined) throw new Error("the link was not created");
+        await recordActivity(tx, {
+          projectId: issue.projectId,
+          type: "issue_link_added",
+          actor,
+          issueId,
+          summary: `${issue.title} — ${input.title}`,
+        });
+        return {
+          id: created.id,
+          issueId: created.issueId,
+          url: created.url,
+          title: created.title,
+          kind: IssueLinkKind.parse(created.kind),
+          createdAt: created.createdAt.toISOString(),
+          createdBy: actorForWrite(actor),
+        };
+      });
+    },
+
+    async removeIssueLink(actorArg, issueId, linkId) {
+      const actor = requireActor(actorArg);
+      await db.transaction(async (tx) => {
+        const issue = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
+        const [removed] = await tx
+          .delete(issueLinks)
+          .where(and(eq(issueLinks.id, linkId), eq(issueLinks.issueId, issueId)))
+          .returning({ title: issueLinks.title });
+        if (removed === undefined) throw new ProjectsError("issue_link_not_found");
+        await recordActivity(tx, {
+          projectId: issue.projectId,
+          type: "issue_link_removed",
+          actor,
+          issueId,
+          summary: `${issue.title} — ${removed.title}`,
+        });
       });
     },
 

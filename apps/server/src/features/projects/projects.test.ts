@@ -4,7 +4,11 @@ import {
   Issue,
   IssueComment,
   IssueCommentsResponse,
+  IssueDependency,
+  IssueDetail,
+  IssueLink,
   IssuesResponse,
+  type CreateIssueRequest,
   KnowledgeEntriesResponse,
   KnowledgeEntry,
   Problem,
@@ -16,8 +20,11 @@ import { eq, sql } from "drizzle-orm";
 import type { Hono } from "hono";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  agentApiKeys,
+  agents,
   humans,
   issueComments,
+  issueDependencies,
   issues,
   knowledgeEntries,
   projectActivity,
@@ -58,10 +65,32 @@ const patchJson = async (app: Hono, path: string, body: unknown, cookie?: string
     body: JSON.stringify(body),
   });
 
+const patchIssue = (app: Hono, issueId: string, body: unknown, cookie: string) =>
+  patchJson(app, `/api/issues/${issueId}`, body, cookie);
+
 const getJson = async (app: Hono, path: string, cookie?: string) =>
   app.request(path, cookie ? { headers: { cookie } } : undefined);
 
+const deleteJson = async (app: Hono, path: string, cookie?: string) =>
+  app.request(path, { method: "DELETE", ...(cookie ? { headers: { cookie } } : {}) });
+
+const addDependency = async (
+  app: Hono,
+  cookie: string,
+  issueId: string,
+  blockedByIssueId: string,
+) => postJson(app, `/api/issues/${issueId}/blocked-by`, { blockedByIssueId }, cookie);
+
+const deleteRequest = (app: Hono, path: string, cookie?: string) =>
+  app.request(path, { method: "DELETE", ...(cookie ? { headers: { cookie } } : {}) });
+
 const problemBody = async (res: Response) => Problem.parse(await res.json());
+
+async function expectProblem(res: Response, status: number, code: string) {
+  expect(res.status).toBe(status);
+  expect(res.headers.get("content-type")).toBe("application/problem+json");
+  expect(await problemBody(res)).toMatchObject({ status, code });
+}
 
 async function bootstrapAdmin(app: Hono) {
   const res = await postJson(app, "/api/setup/admin", {
@@ -131,7 +160,7 @@ async function createIssue(
   app: Hono,
   cookie: string,
   projectId: string,
-  input: { title: string; body?: string } = { title: "First issue" },
+  input: CreateIssueRequest = { title: "First issue" },
 ) {
   const res = await postJson(app, `/api/projects/${projectId}/issues`, input, cookie);
   expect(res.status).toBe(201);
@@ -164,6 +193,10 @@ describe("projects", () => {
   afterEach(async () => {
     await database.db.transaction(async (tx) => {
       await tx.execute(sql`delete from project_activity`);
+      await tx.execute(sql`delete from agent_api_keys`);
+      await tx.execute(sql`delete from agents`);
+      await tx.execute(sql`delete from issue_dependencies`);
+      await tx.execute(sql`delete from issue_links`);
       await tx.execute(sql`delete from issue_comments`);
       await tx.execute(sql`delete from knowledge_entries`);
       await tx.execute(sql`delete from issues`);
@@ -443,6 +476,105 @@ describe("projects", () => {
       .from(issues)
       .where(eq(issues.projectId, project.id));
     expect(rows.map((row) => row.number).toSorted((a, b) => a - b)).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it("creates and updates priority and sortOrder, and lists issues in board order", async () => {
+    const { app, adminCookie, workspaceId } = await readyApp();
+    const project = await createProject(app, adminCookie, workspaceId);
+
+    // Defaults: priority is neutral and the first card is spaced by 65535 from zero.
+    const plain = await createIssue(app, adminCookie, project.id, { title: "Plain" });
+    expect(plain).toMatchObject({ priority: "none", sortOrder: 65535 });
+
+    const urgent = await createIssue(app, adminCookie, project.id, {
+      title: "Urgent",
+      priority: "urgent",
+      sortOrder: 42,
+    });
+    expect(urgent).toMatchObject({ priority: "urgent", sortOrder: 42 });
+    const low = await createIssue(app, adminCookie, project.id, {
+      title: "Low",
+      priority: "low",
+      sortOrder: 10,
+    });
+
+    // Priority dominates position: urgent (42) precedes low (10), which precedes the
+    // unprioritized card even though its sortOrder is larger.
+    const listed = await getJson(app, `/api/projects/${project.id}/issues`, adminCookie);
+    expect(listed.status).toBe(200);
+    expect(IssuesResponse.parse(await listed.json()).map((issue) => issue.id)).toEqual([
+      urgent.id,
+      low.id,
+      plain.id,
+    ]);
+
+    // A human may reprioritize and reorder freely; a priority edit is activity, a pure
+    // reorder is not (otherwise dragging a card would drown the feed).
+    const updated = await patchJson(
+      app,
+      `/api/issues/${plain.id}`,
+      { priority: "high", sortOrder: 20 },
+      adminCookie,
+    );
+    expect(updated.status).toBe(200);
+    const updatedIssue = Issue.parse(await updated.json());
+    expect(updatedIssue).toMatchObject({
+      priority: "high",
+      sortOrder: 20,
+      updatedBy: { humanId: await adminId() },
+    });
+    const afterReorder = await getJson(app, `/api/projects/${project.id}/issues`, adminCookie);
+    expect(IssuesResponse.parse(await afterReorder.json()).map((issue) => issue.id)).toEqual([
+      urgent.id,
+      plain.id,
+      low.id,
+    ]);
+
+    // A no-op request writes neither a new timestamp nor a new activity event.
+    const before = await activityFor(app, adminCookie, project.id);
+    const noop = await patchJson(
+      app,
+      `/api/issues/${plain.id}`,
+      { priority: "high", sortOrder: 20 },
+      adminCookie,
+    );
+    expect(noop.status).toBe(200);
+    expect(Issue.parse(await noop.json()).updatedAt).toBe(updatedIssue.updatedAt);
+    expect((await activityFor(app, adminCookie, project.id)).length).toBe(before.length);
+
+    // The database repeats the enum: a bypassing writer cannot store an unknown priority.
+    // Raw SQL here is deliberate — the typed insert would reject the value before it ever
+    // reached the constraint this test is checking.
+    const writerId = await adminId();
+    expect(
+      await rejection(
+        database.db.execute(sql`
+          insert into issues
+            (id, project_id, number, title, status, priority, sort_order, created_by_human_id, updated_by_human_id)
+          values
+            (${randomUUID()}, ${project.id}, 99, 'Bypass', 'open', 'critical', 1, ${writerId}, ${writerId})
+        `),
+      ),
+    ).toContain("issues_priority");
+
+    // A position must be finite. Postgres orders NaN above Infinity, so bounding the value
+    // on both sides rejects NaN as well as both infinities — including from a raw writer.
+    for (const nonFinite of [
+      "'Infinity'::double precision",
+      "'-Infinity'::double precision",
+      "'NaN'::double precision",
+    ]) {
+      expect(
+        await rejection(
+          database.db.execute(sql`
+            insert into issues
+              (id, project_id, number, title, status, priority, sort_order, created_by_human_id, updated_by_human_id)
+            values
+              (${randomUUID()}, ${project.id}, 98, 'Non-finite', 'open', 'none', ${sql.raw(nonFinite)}, ${writerId}, ${writerId})
+          `),
+        ),
+      ).toContain("issues_sort_order_finite");
+    }
   });
 
   it("creates and edits a basic Markdown knowledge entry with authorship and activity", async () => {
@@ -728,5 +860,354 @@ describe("projects", () => {
     const activity = await activityFor(app, adminCookie, project.id);
     expect(activity.filter((entry) => entry.type === "issue_closed")).toHaveLength(1);
     expect(activity.filter((entry) => entry.type === "issue_edited")).toHaveLength(1);
+  });
+
+  it("records blocked_by relations in both directions and in activity", async () => {
+    const { app, admin, adminCookie, workspaceId } = await readyApp();
+    const project = await createProject(app, adminCookie, workspaceId);
+    const blocker = await createIssue(app, adminCookie, project.id, { title: "Prerequisite" });
+    const downstream = await createIssue(app, adminCookie, project.id, { title: "Downstream" });
+
+    const added = await addDependency(app, adminCookie, downstream.id, blocker.id);
+    expect(added.status).toBe(201);
+    expect(IssueDependency.parse(await added.json())).toMatchObject({
+      issueId: downstream.id,
+      blockedByIssueId: blocker.id,
+      createdBy: { humanId: admin.id, email: EMAIL },
+    });
+
+    // Re-adding is a no-op: one edge, one activity event.
+    expect((await addDependency(app, adminCookie, downstream.id, blocker.id)).status).toBe(201);
+    const rows = await database.db
+      .select()
+      .from(issueDependencies)
+      .where(eq(issueDependencies.issueId, downstream.id));
+    expect(rows).toHaveLength(1);
+
+    const blockedBy = await getJson(app, `/api/issues/${downstream.id}/blocked-by`, adminCookie);
+    expect(blockedBy.status).toBe(200);
+    expect(IssuesResponse.parse(await blockedBy.json()).map((issue) => issue.id)).toEqual([
+      blocker.id,
+    ]);
+    const blocking = await getJson(app, `/api/issues/${blocker.id}/blocking`, adminCookie);
+    expect(blocking.status).toBe(200);
+    expect(IssuesResponse.parse(await blocking.json()).map((issue) => issue.id)).toEqual([
+      downstream.id,
+    ]);
+
+    const activity = await activityFor(app, adminCookie, project.id);
+    expect(activity.filter((entry) => entry.type === "issue_dependency_added")).toHaveLength(1);
+
+    expect(
+      (await deleteJson(app, `/api/issues/${downstream.id}/blocked-by/${blocker.id}`, adminCookie))
+        .status,
+    ).toBe(204);
+    // A repeated removal is a no-op, so a retry cannot write a second event.
+    expect(
+      (await deleteJson(app, `/api/issues/${downstream.id}/blocked-by/${blocker.id}`, adminCookie))
+        .status,
+    ).toBe(204);
+    const afterRemoval = await getJson(app, `/api/issues/${downstream.id}/blocked-by`, adminCookie);
+    expect(IssuesResponse.parse(await afterRemoval.json())).toEqual([]);
+    const afterActivity = await activityFor(app, adminCookie, project.id);
+    expect(afterActivity.filter((entry) => entry.type === "issue_dependency_removed")).toHaveLength(
+      1,
+    );
+  });
+
+  it("refuses self-links, cross-project links and cycles as Problems", async () => {
+    const { app, admin, adminCookie, workspaceId } = await readyApp();
+    const project = await createProject(app, adminCookie, workspaceId, "Deps");
+    const other = await createProject(app, adminCookie, workspaceId, "Other");
+    const a = await createIssue(app, adminCookie, project.id, { title: "A" });
+    const b = await createIssue(app, adminCookie, project.id, { title: "B" });
+    const c = await createIssue(app, adminCookie, project.id, { title: "C" });
+    const foreign = await createIssue(app, adminCookie, other.id, { title: "Foreign" });
+
+    const self = await addDependency(app, adminCookie, a.id, a.id);
+    expect(self.status).toBe(400);
+    expect(await problemBody(self)).toMatchObject({ status: 400, code: "self_dependency" });
+
+    const cross = await addDependency(app, adminCookie, a.id, foreign.id);
+    expect(cross.status).toBe(400);
+    expect(await problemBody(cross)).toMatchObject({
+      status: 400,
+      code: "cross_project_dependency",
+    });
+
+    expect((await addDependency(app, adminCookie, a.id, b.id)).status).toBe(201);
+    expect((await addDependency(app, adminCookie, b.id, c.id)).status).toBe(201);
+    const cycle = await addDependency(app, adminCookie, c.id, a.id);
+    expect(cycle.status).toBe(409);
+    expect(await problemBody(cycle)).toMatchObject({ status: 409, code: "dependency_cycle" });
+
+    // The database constraint is the final word, even for a writer that skips the service.
+    const constraint = await rejection(
+      database.db.insert(issueDependencies).values({
+        id: randomUUID(),
+        issueId: a.id,
+        blockedByIssueId: a.id,
+        createdByHumanId: admin.id,
+        createdAt: new Date(),
+      }),
+    );
+    expect(constraint).toContain("issue_dependencies_no_self_link");
+  });
+
+  it("serializes concurrent adds so two disjoint pairs cannot close a longer cycle", async () => {
+    const { app, adminCookie, workspaceId } = await readyApp();
+    const project = await createProject(app, adminCookie, workspaceId, "Concurrent deps");
+    const a = await createIssue(app, adminCookie, project.id, { title: "A" });
+    const b = await createIssue(app, adminCookie, project.id, { title: "B" });
+    const c = await createIssue(app, adminCookie, project.id, { title: "C" });
+    const d = await createIssue(app, adminCookie, project.id, { title: "D" });
+
+    // A -> B and C -> D on their own are acyclic. Racing B -> C and D -> A closes the
+    // four-node cycle; the project-level lock must serialize the two checks so the
+    // second writer sees the first edge and refuses it.
+    expect((await addDependency(app, adminCookie, a.id, b.id)).status).toBe(201);
+    expect((await addDependency(app, adminCookie, c.id, d.id)).status).toBe(201);
+    const raced = await Promise.all([
+      addDependency(app, adminCookie, b.id, c.id),
+      addDependency(app, adminCookie, d.id, a.id),
+    ]);
+    const accepted = raced.filter((res) => res.status === 201);
+    const refused = raced.filter((res) => res.status === 409);
+    expect(accepted).toHaveLength(1);
+    expect(refused).toHaveLength(1);
+    expect(await problemBody(refused[0]!)).toMatchObject({
+      status: 409,
+      code: "dependency_cycle",
+    });
+  });
+
+  it("persists structured links with web-only validation, uniqueness, and activity", async () => {
+    const { app, admin, adminCookie, workspaceId } = await readyApp();
+    const project = await createProject(app, adminCookie, workspaceId, "Linked");
+    const issue = await createIssue(app, adminCookie, project.id, { title: "With links" });
+
+    const detail = async () => {
+      const res = await getJson(app, `/api/issues/${issue.id}`, adminCookie);
+      expect(res.status).toBe(200);
+      return IssueDetail.parse(await res.json());
+    };
+    expect((await detail()).links).toEqual([]);
+
+    const prUrl = "https://github.com/forge-orbit/orrery/pull/87";
+    const added = await postJson(
+      app,
+      `/api/issues/${issue.id}/links`,
+      { url: prUrl, title: "Structured links PR", kind: "pr" },
+      adminCookie,
+    );
+    expect(added.status).toBe(201);
+    const link = IssueLink.parse(await added.json());
+    expect(link).toMatchObject({
+      issueId: issue.id,
+      url: prUrl,
+      title: "Structured links PR",
+      kind: "pr",
+      createdBy: { humanId: admin.id, email: EMAIL },
+    });
+
+    const doc = await postJson(
+      app,
+      `/api/issues/${issue.id}/links`,
+      { url: "http://docs.example.com/design", title: "Design note", kind: "doc" },
+      adminCookie,
+    );
+    expect(doc.status).toBe(201);
+    expect((await detail()).links.map((entry) => entry.kind)).toEqual(["pr", "doc"]);
+
+    // The same URL twice on one issue is a clean conflict from the unique index.
+    const duplicate = await postJson(
+      app,
+      `/api/issues/${issue.id}/links`,
+      { url: prUrl, title: "Again", kind: "link" },
+      adminCookie,
+    );
+    await expectProblem(duplicate, 409, "issue_link_exists");
+
+    // Non-web schemes are refused by the shared contract before any write.
+    for (const scheme of ["javascript:alert(1)", "file:///etc/passwd"]) {
+      const rejected = await postJson(
+        app,
+        `/api/issues/${issue.id}/links`,
+        { url: scheme, title: "Unsafe", kind: "link" },
+        adminCookie,
+      );
+      await expectProblem(rejected, 400, "validation_failed");
+    }
+    expect((await detail()).links).toHaveLength(2);
+
+    const activity = await activityFor(app, adminCookie, project.id);
+    expect(activity.filter((entry) => entry.type === "issue_link_added")).toHaveLength(2);
+
+    const removed = await deleteRequest(
+      app,
+      `/api/issues/${issue.id}/links/${link.id}`,
+      adminCookie,
+    );
+    expect(removed.status).toBe(204);
+    expect((await detail()).links).toHaveLength(1);
+
+    const removedAgain = await deleteRequest(
+      app,
+      `/api/issues/${issue.id}/links/${link.id}`,
+      adminCookie,
+    );
+    await expectProblem(removedAgain, 404, "issue_link_not_found");
+
+    const afterRemoval = await activityFor(app, adminCookie, project.id);
+    expect(afterRemoval.filter((entry) => entry.type === "issue_link_removed")).toHaveLength(1);
+  });
+
+  // #84: board assignment is a pull-queue hint stored as one identity. The tests exercise
+  // the real workspace key/membership rows the service validates against.
+  async function seedAgent(workspaceId: string, humanId: string, name: string) {
+    const agentId = randomUUID();
+    await database.db.insert(agents).values({
+      id: agentId,
+      humanId,
+      name,
+      createdAt: sql`statement_timestamp()`,
+    });
+    const keyId = randomUUID();
+    await database.db.insert(agentApiKeys).values({
+      id: keyId,
+      agentId,
+      workspaceId,
+      createdByHumanId: humanId,
+      validity: "never",
+      tokenHash: randomUUID(),
+      createdAt: sql`statement_timestamp()`,
+    });
+    return { agentId, keyId };
+  }
+
+  it("sets, changes and clears an assignee, and validates it against the workspace", async () => {
+    const { app, admin, adminCookie, workspaceId } = await readyApp();
+    const project = await createProject(app, adminCookie, workspaceId, "Assigned");
+    const issue = await createIssue(app, adminCookie, project.id, { title: "Assign me" });
+    expect(issue.assignee).toBeNull();
+    expect(issue.needsInput).toBe(false);
+    const { agentId } = await seedAgent(workspaceId, admin.id, "Builder");
+
+    const toHuman = await patchIssue(
+      app,
+      issue.id,
+      { assignee: { type: "human", id: admin.id } },
+      adminCookie,
+    );
+    expect(toHuman.status).toBe(200);
+    expect(Issue.parse(await toHuman.json()).assignee).toMatchObject({
+      humanId: admin.id,
+      email: EMAIL,
+      displayName: EMAIL,
+    });
+
+    const toAgent = await patchIssue(
+      app,
+      issue.id,
+      { assignee: { type: "agent", id: agentId } },
+      adminCookie,
+    );
+    expect(toAgent.status).toBe(200);
+    expect(Issue.parse(await toAgent.json()).assignee).toMatchObject({
+      agentId,
+      agentName: "Builder",
+      displayName: "Builder",
+    });
+    const [row] = await database.db
+      .select({ type: issues.assigneeType, id: issues.assigneeId })
+      .from(issues)
+      .where(eq(issues.id, issue.id));
+    expect(row).toEqual({ type: "agent", id: agentId });
+
+    const cleared = await patchIssue(app, issue.id, { assignee: null }, adminCookie);
+    expect(cleared.status).toBe(200);
+    expect(Issue.parse(await cleared.json()).assignee).toBeNull();
+    const [afterClear] = await database.db
+      .select({ type: issues.assigneeType, id: issues.assigneeId })
+      .from(issues)
+      .where(eq(issues.id, issue.id));
+    expect(afterClear).toEqual({ type: null, id: null });
+
+    // An unrelated edit must not resurrect a cleared assignment.
+    const kept = await patchIssue(app, issue.id, { title: "Still unassigned" }, adminCookie);
+    expect(Issue.parse(await kept.json()).assignee).toBeNull();
+  });
+
+  it("refuses unknown, unregistered and deactivated assignees with one 404", async () => {
+    const { app, admin, adminCookie, workspaceId } = await readyApp();
+    const project = await createProject(app, adminCookie, workspaceId, "Bad assignees");
+    const issue = await createIssue(app, adminCookie, project.id, { title: "Guarded" });
+
+    await expectProblem(
+      await patchIssue(
+        app,
+        issue.id,
+        { assignee: { type: "human", id: randomUUID() } },
+        adminCookie,
+      ),
+      404,
+      "assignee_not_found",
+    );
+    const { agentId } = await seedAgent(workspaceId, admin.id, "No key here");
+    await database.db.delete(agentApiKeys).where(eq(agentApiKeys.agentId, agentId));
+    await expectProblem(
+      await patchIssue(app, issue.id, { assignee: { type: "agent", id: agentId } }, adminCookie),
+      404,
+      "assignee_not_found",
+    );
+
+    const { agentId: revokedId, keyId } = await seedAgent(workspaceId, admin.id, "Revoked");
+    await database.db
+      .update(agentApiKeys)
+      .set({ revokedAt: sql`statement_timestamp()` })
+      .where(eq(agentApiKeys.id, keyId));
+    await expectProblem(
+      await patchIssue(app, issue.id, { assignee: { type: "agent", id: revokedId } }, adminCookie),
+      404,
+      "assignee_not_found",
+    );
+    // None of the refusals wrote a partial assignee.
+    const [row] = await database.db
+      .select({ type: issues.assigneeType, id: issues.assigneeId })
+      .from(issues)
+      .where(eq(issues.id, issue.id));
+    expect(row).toEqual({ type: null, id: null });
+  });
+
+  it("keeps the assignee pair integral in the database and records only real changes", async () => {
+    const { app, admin, adminCookie, workspaceId } = await readyApp();
+    const project = await createProject(app, adminCookie, workspaceId, "Integral");
+    const issue = await createIssue(app, adminCookie, project.id, { title: "Integrity" });
+
+    expect(
+      await rejection(
+        database.db.execute(sql`update issues set assignee_type = 'human' where id = ${issue.id}`),
+      ),
+    ).toContain("issues_assignee_pair");
+    expect(
+      await rejection(
+        database.db.execute(
+          sql`update issues set assignee_type = 'robot', assignee_id = ${randomUUID()} where id = ${issue.id}`,
+        ),
+      ),
+    ).toContain("issues_assignee_type");
+
+    await patchIssue(app, issue.id, { assignee: { type: "human", id: admin.id } }, adminCookie);
+    const before = await activityFor(app, adminCookie, project.id);
+    const repeat = await patchIssue(
+      app,
+      issue.id,
+      { assignee: { type: "human", id: admin.id } },
+      adminCookie,
+    );
+    expect(repeat.status).toBe(200);
+    const after = await activityFor(app, adminCookie, project.id);
+    expect(after.length).toBe(before.length);
+    expect(after.filter((entry) => entry.type === "issue_edited")).toHaveLength(1);
   });
 });

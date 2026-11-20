@@ -3,10 +3,11 @@ import { ApiProblemError } from "../../lib/api.ts";
 
 // The one failure page for a project, issue, or knowledge entry. A 401 asks the reader to
 // sign in; a 404 keeps the resource's existence private; anything else is a load failure.
-type Resource = "project" | "issue" | "knowledge" | "workspace" | "history";
+type Resource = "project" | "board" | "issue" | "knowledge" | "workspace" | "history";
 
 const labels: Record<Resource, { title: string; noun: string }> = {
   project: { title: "Project", noun: "project" },
+  board: { title: "Board", noun: "board" },
   issue: { title: "Issue", noun: "issue" },
   knowledge: { title: "Knowledge", noun: "knowledge entry" },
   workspace: { title: "Workspace", noun: "workspace" },

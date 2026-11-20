@@ -1,8 +1,18 @@
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { AgentKeyValidity, ProjectAccessLevel, type Agent, type AgentKey } from "@orrery/contract";
+import { Link } from "@tanstack/react-router";
+import {
+  AgentKeyValidity,
+  ProjectAccessLevel,
+  type Agent,
+  type AgentKey,
+  type Project,
+  type RunDetail,
+} from "@orrery/contract";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { projectsQuery } from "../projects/index.ts";
+import { workspaceRunsQuery } from "../runs/index.ts";
+import { activeSessionsQuery, SessionStatus } from "../work-sessions/index.ts";
 import {
   createAgent,
   issueAgentKey,
@@ -37,6 +47,9 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
   const { data: agents } = useSuspenseQuery(agentsQuery);
   const { data: mine } = useSuspenseQuery(agentKeysQuery(workspaceId));
   const { data: projects } = useSuspenseQuery(projectsQuery(workspaceId));
+  // Run metadata is joined on the client by run id: it supplies harness/model/subagent
+  // attribution without a cross-feature SQL join.
+  const { data: runs } = useSuspenseQuery(workspaceRunsQuery(workspaceId));
   // An owner also sees keys issued by other humans in this workspace. The query is
   // disabled for ordinary members, whose view stays their own keys.
   const workspaceKeys = useQuery({ ...workspaceAgentKeysQuery(workspaceId), enabled: isOwner });
@@ -111,6 +124,8 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
           ))}
         </ul>
       )}
+      <h3>Active work sessions</h3>
+      <ActiveSessions workspaceId={workspaceId} projects={projects} runs={runs} />
       <RegisterAgentForm />
       {agents.length > 0 && (
         <IssueKeyForm
@@ -171,6 +186,71 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
         </ul>
       )}
     </section>
+  );
+}
+
+// #82: the agents view lists only live sessions from the workspace-level read, rather
+// than polling every issue of every project. The same badge and one-click stop control
+// as the issue page lets a human stop an agent without revoking its key.
+function ActiveSessions({
+  workspaceId,
+  projects,
+  runs,
+}: {
+  workspaceId: string;
+  projects: readonly Project[];
+  runs: readonly RunDetail[];
+}) {
+  const { data: sessions } = useSuspenseQuery(activeSessionsQuery(workspaceId));
+  if (sessions.length === 0) return <p>No active work sessions.</p>;
+  const levels = new Map(projects.map((project) => [project.id, project.accessLevel]));
+  const runById = new Map(runs.map((run) => [run.id, run]));
+  return (
+    <ul>
+      {sessions.map((session) => {
+        const run = runById.get(session.runId);
+        const canContribute = levels.get(session.projectId) !== "read";
+        return (
+          <li
+            key={session.id}
+            data-agent-session-id={session.id}
+            data-issue-id={session.issueId}
+            {...(run?.harness ? { "data-session-harness": run.harness } : {})}
+          >
+            <Link to="/issues/$issueId" params={{ issueId: session.issueId }}>
+              Issue {session.issueId}
+            </Link>{" "}
+            <span>harness: {run?.harness ?? "unknown"}</span>{" "}
+            <span data-session-model={run?.model ?? "unknown"}>
+              model: {run?.model ?? "unknown"}
+            </span>{" "}
+            <span data-subagent-count={run?.children.length ?? 0}>
+              subagents: {run?.children.length ?? 0}
+            </span>{" "}
+            <span data-run-heartbeat={run?.lastHeartbeatAt ?? ""}>
+              last run heartbeat: {run?.lastHeartbeatAt ?? "unknown"}
+            </span>{" "}
+            <span data-lease-expires-at={session.leaseExpiresAt}>
+              lease until {session.leaseExpiresAt}
+            </span>{" "}
+            <span data-last-heartbeat={session.updatedAt}>last check-in {session.updatedAt}</span>{" "}
+            <SessionStatus
+              issueId={session.issueId}
+              projectId={session.projectId}
+              canContribute={canContribute}
+            />{" "}
+            <Link
+              to="/issues/$issueId"
+              params={{ issueId: session.issueId }}
+              search={{ inspector: true, session: session.id }}
+              data-sidecar-link
+            >
+              Sidecar
+            </Link>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 

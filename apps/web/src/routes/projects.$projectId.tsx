@@ -1,11 +1,17 @@
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { ProjectAccessLevel, type Project, type ProjectActivityType } from "@orrery/contract";
+import {
+  ProjectAccessLevel,
+  type IssueDetail,
+  type Project,
+  type ProjectActivityType,
+} from "@orrery/contract";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import {
   createIssue,
   createKnowledgeEntry,
+  IssuePriorityControls,
   issueQuery,
   issuesQuery,
   knowledgeEntriesQuery,
@@ -14,6 +20,7 @@ import {
   projectActivityQuery,
   projectQuery,
   projectsQuery,
+  PriorityBadge,
   removeProjectAccess,
   ResourceLoadError,
   setProjectAccess,
@@ -50,12 +57,17 @@ const activityLabels: Record<ProjectActivityType, string> = {
   issue_commented: "commented on issue",
   issue_closed: "closed issue",
   issue_reopened: "reopened issue",
+  issue_dependency_added: "added a blocker to issue",
+  issue_dependency_removed: "removed a blocker from issue",
+  issue_link_added: "linked on issue",
+  issue_link_removed: "unlinked from issue",
   issue_question_asked: "asked for input on issue",
   issue_question_answered: "answered a question on issue",
   issue_question_paused: "paused a question on issue",
   issue_question_fallback_used: "used an authorized fallback on issue",
   issue_question_follow_up: "added a follow-up to an authorized fallback on issue",
   issue_fallback_policy_override_changed: "changed the fallback policy override on issue",
+  issue_stop_requested: "asked the agent to stop on issue",
   knowledge_created: "created knowledge",
   knowledge_edited: "edited knowledge",
 };
@@ -77,6 +89,10 @@ function ProjectPage() {
         ·{" "}
         <Link to="/history/project/$projectId" params={{ projectId: project.id }}>
           View history
+        </Link>{" "}
+        ·{" "}
+        <Link to="/board/$projectId" params={{ projectId: project.id }} data-board-link>
+          Board
         </Link>
       </p>
       <h1>{project.name}</h1>
@@ -98,7 +114,11 @@ function ProjectPage() {
                 <Link to="/issues/$issueId" params={{ issueId: issue.id }}>
                   #{issue.number} {issue.title}
                 </Link>{" "}
-                <span data-issue-status={issue.status}>{issue.status}</span>
+                <PriorityBadge priority={issue.priority} />{" "}
+                <span data-issue-status={issue.status}>{issue.status}</span>{" "}
+                {canContribute && (
+                  <IssuePriorityControls issue={issue} issues={issues} projectId={project.id} />
+                )}
               </li>
             ))}
           </ul>
@@ -290,7 +310,11 @@ function CreateIssueForm({ projectId }: { projectId: string }) {
       resetOnSuccess
       onSubmit={async ({ title, body }) => {
         const issue = await createIssue(projectId, { title, body });
-        queryClient.setQueryData(issueQuery(issue.id).queryKey, issue);
+        // A new issue has no links yet; seed the detail cache the loader will read.
+        queryClient.setQueryData<IssueDetail>(issueQuery(issue.id).queryKey, {
+          ...issue,
+          links: [],
+        });
         await Promise.all([
           queryClient.invalidateQueries({ queryKey: issuesQuery(projectId).queryKey }),
           queryClient.invalidateQueries({ queryKey: projectActivityQuery(projectId).queryKey }),

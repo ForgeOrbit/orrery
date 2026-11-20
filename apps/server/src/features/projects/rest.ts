@@ -1,13 +1,18 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import {
+  AddBlockedByRequest,
   CreateIssueCommentRequest,
+  CreateIssueLinkRequest,
   CreateIssueRequest,
   CreateKnowledgeEntryRequest,
   CreateProjectRequest,
   Issue,
   IssueComment,
   IssueCommentsResponse,
+  IssueDependency,
+  IssueDetail,
+  IssueLink,
   IssuesResponse,
   KnowledgeEntriesResponse,
   KnowledgeEntry,
@@ -36,6 +41,10 @@ import { ProjectsError, type ProjectsErrorKind, type ProjectsService } from "./s
 const workspaceParams = z.object({ workspaceId: z.string().min(1).max(200) });
 const projectParams = z.object({ projectId: z.string().min(1).max(200) });
 const issueParams = z.object({ issueId: z.string().min(1).max(200) });
+const dependencyParams = issueParams.extend({
+  blockedByIssueId: z.string().min(1).max(200),
+});
+const linkParams = issueParams.extend({ linkId: z.string().min(1).max(200) });
 const knowledgeParams = z.object({ entryId: z.string().min(1).max(200) });
 const accessParams = projectParams.extend({ humanId: z.string().min(1).max(200) });
 
@@ -260,12 +269,12 @@ const getIssue = createRoute({
   path: "/api/issues/{issueId}",
   summary: "One issue the caller can access",
   description:
-    "The issue's title, Markdown body, status, and authorship.A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
+    "The issue's title, Markdown body, status, authorship, and structured links (each with its kind). A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
   request: { params: issueParams },
   responses: {
     200: {
-      description: "The issue",
-      content: { "application/json": { schema: Issue } },
+      description: "The issue with its links",
+      content: { "application/json": { schema: IssueDetail } },
     },
     400: problem("The issue id is invalid"),
     401: problem(
@@ -280,7 +289,7 @@ const updateIssue = createRoute({
   path: "/api/issues/{issueId}",
   summary: "Edit, close, or reopen an issue",
   description:
-    "Contribute or Manage. Every field is optional. A title or body change records an edit; a status change records a close or a reopen. A request that changes nothing returns the issue unchanged and records no event. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
+    'Contribute or Manage. Every field is optional. A title, body, assignee or priority change records an edit; a status change records a close or a reopen. Set `assignee` to `{"type":"human"|"agent","id":"..."}` or null to clear it; the identity must be an active member or a registered agent in the workspace. A request that changes nothing returns the issue unchanged and records no event. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key\'s effective project access.',
   request: {
     params: issueParams,
     body: { required: true, content: { "application/json": { schema: UpdateIssueRequest } } },
@@ -295,7 +304,9 @@ const updateIssue = createRoute({
       "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
     ),
     403: problem("Read access cannot change the issue"),
-    404: problem("No issue with this id is accessible to the caller"),
+    404: problem(
+      "No issue with this id is accessible to the caller, or the assignee is unknown or inactive in the workspace",
+    ),
     409: problem("The agent holds no live work session for this issue"),
   },
 });
@@ -321,6 +332,91 @@ const setIssueFallbackPolicyOverride = createRoute({
     400: problem("The request is invalid"),
     401: problem("Not signed in as a human"),
     403: problem("Contribute access, or Manage to loosen, is required"),
+    404: problem("No issue with this id is accessible to the caller"),
+  },
+});
+
+const addBlockedBy = createRoute({
+  method: "post",
+  path: "/api/issues/{issueId}/blocked-by",
+  summary: "Record that an issue is blocked by another issue in the same project",
+  description:
+    "Contribute or Manage. The edge is added in one transaction with an activity event; a self-link, a cross-project link, and a cycle are refused. Re-adding an existing edge is a no-op. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
+  request: {
+    params: issueParams,
+    body: { required: true, content: { "application/json": { schema: AddBlockedByRequest } } },
+  },
+  responses: {
+    201: {
+      description: "The dependency edge, written",
+      content: { "application/json": { schema: IssueDependency } },
+    },
+    400: problem(
+      "The request is invalid, the issue blocks itself, or the two issues are in different projects",
+    ),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
+    403: problem("Read access cannot change dependencies"),
+    404: problem("No issue with either id is accessible to the caller"),
+    409: problem("That dependency would create a cycle"),
+  },
+});
+
+const removeBlockedBy = createRoute({
+  method: "delete",
+  path: "/api/issues/{issueId}/blocked-by/{blockedByIssueId}",
+  summary: "Remove a blocked_by relation from an issue",
+  description:
+    "Contribute or Manage. Removing an edge that is not there is a no-op. A real removal is recorded in the project's activity. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
+  request: { params: dependencyParams },
+  responses: {
+    204: { description: "The relation is no longer in place" },
+    400: problem("The issue ids are invalid"),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
+    403: problem("Read access cannot change dependencies"),
+    404: problem("No issue with this id is accessible to the caller"),
+  },
+});
+
+const listBlockedBy = createRoute({
+  method: "get",
+  path: "/api/issues/{issueId}/blocked-by",
+  summary: "The issues that block an issue",
+  description:
+    "Read access is enough. Lists the issue's prerequisites, open or closed, in issue-number order. An issue with any blocker that is not closed is omitted from ready work. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
+  request: { params: issueParams },
+  responses: {
+    200: {
+      description: "The issues that block this one",
+      content: { "application/json": { schema: IssuesResponse } },
+    },
+    400: problem("The issue id is invalid"),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
+    404: problem("No issue with this id is accessible to the caller"),
+  },
+});
+
+const listBlocking = createRoute({
+  method: "get",
+  path: "/api/issues/{issueId}/blocking",
+  summary: "The issues that an issue blocks",
+  description:
+    "Read access is enough. Lists the issue's dependants, open or closed, in issue-number order. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
+  request: { params: issueParams },
+  responses: {
+    200: {
+      description: "The issues this one blocks",
+      content: { "application/json": { schema: IssuesResponse } },
+    },
+    400: problem("The issue id is invalid"),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
     404: problem("No issue with this id is accessible to the caller"),
   },
 });
@@ -369,6 +465,52 @@ const createComment = createRoute({
     ),
     403: problem("Read access cannot comment"),
     404: problem("No issue with this id is accessible to the caller"),
+  },
+});
+
+const createIssueLink = createRoute({
+  method: "post",
+  path: "/api/issues/{issueId}/links",
+  summary: "Attach a structured link to an issue",
+  description:
+    "Contribute or Manage. Attaches an http or https URL classified as a PR, commit, doc, or general link. The same URL cannot be attached twice to one issue. Like a comment, a link needs no work session, and it is recorded in the project's activity. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
+  request: {
+    params: issueParams,
+    body: {
+      required: true,
+      content: { "application/json": { schema: CreateIssueLinkRequest } },
+    },
+  },
+  responses: {
+    201: {
+      description: "The link, attached",
+      content: { "application/json": { schema: IssueLink } },
+    },
+    400: problem("The request is invalid, or the URL scheme is not http or https"),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
+    403: problem("Read access cannot attach a link"),
+    404: problem("No issue with this id is accessible to the caller"),
+    409: problem("This URL is already attached to the issue"),
+  },
+});
+
+const removeIssueLink = createRoute({
+  method: "delete",
+  path: "/api/issues/{issueId}/links/{linkId}",
+  summary: "Remove a structured link from an issue",
+  description:
+    "Contribute or Manage. Removes one link by id from an issue and records the removal in the project's activity. Removing a link that is not attached is a 404, not a silent no-op. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
+  request: { params: linkParams },
+  responses: {
+    204: { description: "The link was removed" },
+    400: problem("The issue or link id is invalid"),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
+    403: problem("Read access cannot remove a link"),
+    404: problem("No issue or link with this id is accessible to the caller"),
   },
 });
 
@@ -501,8 +643,14 @@ export const routes = [
   getIssue,
   updateIssue,
   setIssueFallbackPolicyOverride,
+  addBlockedBy,
+  removeBlockedBy,
+  listBlockedBy,
+  listBlocking,
   listComments,
   createComment,
+  createIssueLink,
+  removeIssueLink,
   listActivity,
   listKnowledge,
   createKnowledge,
@@ -516,6 +664,8 @@ const statusFor = {
   workspace_not_found: 404,
   project_not_found: 404,
   issue_not_found: 404,
+  issue_link_not_found: 404,
+  issue_link_exists: 409,
   knowledge_entry_not_found: 404,
   project_creation_not_allowed: 403,
   insufficient_project_access: 403,
@@ -523,6 +673,10 @@ const statusFor = {
   personal_project_access: 403,
   workspace_owner_access: 409,
   session_required: 409,
+  self_dependency: 400,
+  cross_project_dependency: 400,
+  dependency_cycle: 409,
+  assignee_not_found: 404,
 } as const satisfies Record<ProjectsErrorKind, number>;
 
 function isKind<K extends readonly ProjectsErrorKind[]>(
@@ -547,10 +701,22 @@ const issueWriteKinds = [
   ...issueReadKinds,
   "insufficient_project_access",
   "session_required",
+  "assignee_not_found",
 ] as const;
 // Comments, creation and knowledge stay unfenced (#20), so their failure set has no
 // session_required and their routes need no 409 response.
 const commentWriteKinds = [...issueReadKinds, "insufficient_project_access"] as const;
+// Dependency edges, like comments, are unfenced: no live session is needed, so the
+// failure set has no session_required and the routes need no session 409.
+const dependencyWriteKinds = [
+  ...issueReadKinds,
+  "insufficient_project_access",
+  "self_dependency",
+  "cross_project_dependency",
+  "dependency_cycle",
+] as const;
+const linkAddKinds = [...commentWriteKinds, "issue_link_exists"] as const;
+const linkRemoveKinds = [...commentWriteKinds, "issue_link_not_found"] as const;
 const knowledgeReadKinds = ["not_signed_in", "knowledge_entry_not_found"] as const;
 const knowledgeWriteKinds = [...knowledgeReadKinds, "insufficient_project_access"] as const;
 
@@ -741,6 +907,45 @@ export function createProjectsRest(
     }
   });
 
+  app.openapi(addBlockedBy, async (c) => {
+    try {
+      const { issueId } = c.req.valid("param");
+      return c.json(
+        await service.addBlockedBy(await workActor(c), issueId, c.req.valid("json")),
+        201,
+      );
+    } catch (error) {
+      return failure(c, error, dependencyWriteKinds);
+    }
+  });
+
+  app.openapi(removeBlockedBy, async (c) => {
+    try {
+      const { issueId, blockedByIssueId } = c.req.valid("param");
+      await service.removeBlockedBy(await workActor(c), issueId, blockedByIssueId);
+      return c.body(null, 204);
+    } catch (error) {
+      return failure(c, error, commentWriteKinds);
+    }
+  });
+
+  app.openapi(listBlockedBy, async (c) => {
+    try {
+      const { issueId } = c.req.valid("param");
+      return c.json(await service.listBlockedBy(await workActor(c), issueId), 200);
+    } catch (error) {
+      return failure(c, error, issueReadKinds);
+    }
+  });
+
+  app.openapi(listBlocking, async (c) => {
+    try {
+      const { issueId } = c.req.valid("param");
+      return c.json(await service.listBlocking(await workActor(c), issueId), 200);
+    } catch (error) {
+      return failure(c, error, issueReadKinds);
+    }
+  });
   app.openapi(listComments, async (c) => {
     try {
       const { issueId } = c.req.valid("param");
@@ -759,6 +964,28 @@ export function createProjectsRest(
       );
     } catch (error) {
       return failure(c, error, commentWriteKinds);
+    }
+  });
+
+  app.openapi(createIssueLink, async (c) => {
+    try {
+      const { issueId } = c.req.valid("param");
+      return c.json(
+        await service.addIssueLink(await workActor(c), issueId, c.req.valid("json")),
+        201,
+      );
+    } catch (error) {
+      return failure(c, error, linkAddKinds);
+    }
+  });
+
+  app.openapi(removeIssueLink, async (c) => {
+    try {
+      const { issueId, linkId } = c.req.valid("param");
+      await service.removeIssueLink(await workActor(c), issueId, linkId);
+      return c.body(null, 204);
+    } catch (error) {
+      return failure(c, error, linkRemoveKinds);
     }
   });
 

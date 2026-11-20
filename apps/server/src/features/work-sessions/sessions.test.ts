@@ -1,15 +1,29 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { AgentIdentity, CreateAgentKeyResponse, Problem, WorkSession } from "@orrery/contract";
+import {
+  ActiveWorkSessionsResponse,
+  AgentIdentity,
+  CreateAgentKeyResponse,
+  IssuesResponse,
+  Problem,
+  RequestStopWorkSessionInput,
+  SessionActivitiesResponse,
+  SessionActivity,
+  WorkSession,
+} from "@orrery/contract";
 import { and, eq, sql } from "drizzle-orm";
 import type { Hono } from "hono";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   browserSessions,
   humans,
+  issueComments,
   issues,
   projectAccessGrants,
+  projectActivity,
+  projects,
   runs as runRows,
+  workSessionActivities,
   workSessions,
   workspaceMemberships,
   workspaces,
@@ -152,6 +166,8 @@ afterAll(async () => {
 
 afterEach(async () => {
   await database.db.transaction(async (tx) => {
+    // Activities have a deliberate no-action FK to their session: cleanup must go first.
+    await tx.execute(sql`delete from work_session_activities`);
     await tx.execute(sql`delete from work_sessions`);
     await tx.execute(sql`delete from agent_key_events`);
     await tx.execute(sql`delete from agent_api_key_projects`);
@@ -159,6 +175,7 @@ afterEach(async () => {
     await tx.execute(sql`delete from project_access_events`);
     await tx.execute(sql`delete from project_access_grants`);
     await tx.execute(sql`delete from project_activity`);
+    await tx.execute(sql`delete from issue_dependencies`);
     await tx.execute(sql`delete from knowledge_entries`);
     await tx.execute(sql`delete from issue_comments`);
     await tx.execute(sql`delete from issues`);
@@ -259,6 +276,19 @@ async function newRun(identity: AgentIdentity): Promise<string> {
   return run.id;
 }
 
+// A human actor in the bootstrap fixture's personal workspace, used to request stops.
+function humanActor(f: Fixture) {
+  return {
+    kind: "human" as const,
+    account: {
+      humanId: f.humanId,
+      email: ADMIN_EMAIL,
+      isSystemAdministrator: false,
+      emailVerifiedAt: new Date(),
+    },
+  };
+}
+
 async function humanIssue(f: Fixture, title: string) {
   return projectsService.createIssue(
     {
@@ -273,6 +303,34 @@ async function humanIssue(f: Fixture, title: string) {
     f.projectId,
     { title },
   );
+}
+
+// A second registered agent in the same workspace, with its own key and project grant.
+async function registerSecondAgent(f: Fixture) {
+  const created = await postJson("/api/agents", { name: `other-agent-${randomUUID()}` }, f.cookie);
+  expect(created.status).toBe(201);
+  const agentId = idOf(await created.json(), "agent");
+  const key = await postJson(
+    "/api/agents/keys",
+    {
+      agentId,
+      workspaceId: f.workspaceId,
+      validity: "90",
+      projects: [{ projectId: f.projectId, level: "contribute" }],
+    },
+    f.cookie,
+  );
+  expect(key.status).toBe(201);
+  const secret = CreateAgentKeyResponse.parse(await key.json()).secret;
+  return { agentId, secret, identity: await identityFor(secret) };
+}
+
+async function assign(
+  issueId: string,
+  f: Fixture,
+  assignee: { type: "human" | "agent"; id: string },
+) {
+  await projectsService.updateIssue(humanActor(f), issueId, { assignee });
 }
 
 async function setLease(issueId: string, sqlExpression: string) {
@@ -701,6 +759,150 @@ describe("work sessions against real Postgres", () => {
     await setLease(claimed.id, "statement_timestamp() - interval '1 second'");
     const afterExpiry = await sessionsService.readyWork({ kind: "agent", identity }, f.projectId);
     expect(afterExpiry.map((item) => item.id)).toEqual([plain.id, claimed.id]);
+  });
+
+  it("excludes an issue with an open blocker and includes it once the blocker closes", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const human = {
+      kind: "human" as const,
+      account: {
+        humanId: f.humanId,
+        email: ADMIN_EMAIL,
+        isSystemAdministrator: false,
+        emailVerifiedAt: new Date(),
+      },
+    };
+    const blocker = await humanIssue(f, "Prerequisite");
+    const downstream = await humanIssue(f, "Downstream");
+    await projectsService.addBlockedBy(human, downstream.id, { blockedByIssueId: blocker.id });
+
+    const before = await sessionsService.readyWork({ kind: "agent", identity }, f.projectId);
+    expect(before.map((item) => item.id)).toContain(blocker.id);
+    expect(before.map((item) => item.id)).not.toContain(downstream.id);
+
+    await projectsService.updateIssue(human, blocker.id, { status: "closed" });
+    const after = await sessionsService.readyWork({ kind: "agent", identity }, f.projectId);
+    expect(after.map((item) => item.id)).toContain(downstream.id);
+
+    // Removing the edge changes nothing for a closed blocker, but proves both reads use
+    // the live dependency state rather than a cached snapshot.
+    await projectsService.removeBlockedBy(human, downstream.id, blocker.id);
+    const afterRemoval = await sessionsService.readyWork({ kind: "agent", identity }, f.projectId);
+    expect(afterRemoval.map((item) => item.id)).toContain(downstream.id);
+  });
+
+  it("orders ready work by priority, then sortOrder, then createdAt", async () => {
+    const f = await bootstrap();
+    const human = humanActor(f);
+    const identity = await identityFor(f.secret);
+    const actor = { kind: "agent" as const, identity };
+    const make = (
+      title: string,
+      input: { priority?: "urgent" | "high" | "medium" | "low" | "none"; sortOrder?: number } = {},
+    ) => projectsService.createIssue(human, f.projectId, { title, ...input });
+
+    // Priority dominates position: each card here has a larger sortOrder than the one
+    // before it, so only the priority ranking produces this order.
+    const urgent = await make("Urgent", { priority: "urgent", sortOrder: 100_000 });
+    const high = await make("High", { priority: "high", sortOrder: 200_000 });
+    const medium = await make("Medium", { priority: "medium", sortOrder: 300_000 });
+    const low = await make("Low", { priority: "low", sortOrder: 400_000 });
+    const none = await make("None", { sortOrder: 500_000 });
+
+    const first = await sessionsService.readyWork(actor, f.projectId);
+    expect(first.map((issue) => issue.id)).toEqual([
+      urgent.id,
+      high.id,
+      medium.id,
+      low.id,
+      none.id,
+    ]);
+
+    // Within one priority, the smaller sortOrder wins; equal positions fall back to
+    // creation time, which is set explicitly here to make the tie unambiguous.
+    const earlier = await make("Earlier", { priority: "urgent", sortOrder: 10 });
+    const later = await make("Later", { priority: "urgent", sortOrder: 10 });
+    await database.db
+      .update(issues)
+      .set({ createdAt: new Date("2020-01-01T00:00:00Z") })
+      .where(eq(issues.id, earlier.id));
+    await database.db
+      .update(issues)
+      .set({ createdAt: new Date("2021-01-01T00:00:00Z") })
+      .where(eq(issues.id, later.id));
+
+    const second = await sessionsService.readyWork(actor, f.projectId);
+    expect(second.map((issue) => issue.id)).toEqual([
+      earlier.id,
+      later.id,
+      urgent.id,
+      high.id,
+      medium.id,
+      low.id,
+      none.id,
+    ]);
+  });
+
+  it("reorders ready work by writing only the dragged card's midpoint", async () => {
+    const f = await bootstrap();
+    const human = humanActor(f);
+    const identity = await identityFor(f.secret);
+    const actor = { kind: "agent" as const, identity };
+    const a = await projectsService.createIssue(human, f.projectId, { title: "A", sortOrder: 0 });
+    const b = await projectsService.createIssue(human, f.projectId, {
+      title: "B",
+      sortOrder: 100,
+    });
+    const c = await projectsService.createIssue(human, f.projectId, {
+      title: "C",
+      sortOrder: 200,
+    });
+
+    expect((await sessionsService.readyWork(actor, f.projectId)).map((i) => i.id)).toEqual([
+      a.id,
+      b.id,
+      c.id,
+    ]);
+
+    // Move C between A and B. Only C's row changes; its siblings keep their positions.
+    await projectsService.updateIssue(human, c.id, { sortOrder: 50 });
+    expect((await sessionsService.readyWork(actor, f.projectId)).map((i) => i.id)).toEqual([
+      a.id,
+      c.id,
+      b.id,
+    ]);
+    const positions = new Map(
+      (await database.db.select({ id: issues.id, sortOrder: issues.sortOrder }).from(issues)).map(
+        (row) => [row.id, row.sortOrder],
+      ),
+    );
+    expect(positions.get(a.id)).toBe(0);
+    expect(positions.get(b.id)).toBe(100);
+    expect(positions.get(c.id)).toBe(50);
+  });
+
+  it("lets an agent set priority and position at creation and update it while holding a session", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const actor = { kind: "agent" as const, identity };
+
+    // Creation is unfenced (#20), so an agent may triage a new card's importance and
+    // position immediately; changing an existing card stays fenced on a live session.
+    const issue = await projectsService.createIssue(actor, f.projectId, {
+      title: "Agent triage",
+      priority: "high",
+      sortOrder: 500,
+    });
+    expect(issue).toMatchObject({ priority: "high", sortOrder: 500 });
+
+    const runId = await newRun(identity);
+    await sessionsService.claim(actor, { issueId: issue.id, runId });
+    const updated = await projectsService.updateIssue(actor, issue.id, {
+      priority: "urgent",
+      sortOrder: 250,
+    });
+    expect(updated).toMatchObject({ priority: "urgent", sortOrder: 250 });
   });
 
   it("exposes claim, progress, read and stop through bearer REST", async () => {
@@ -1145,5 +1347,831 @@ describe("work sessions against real Postgres", () => {
     });
     expect(trulyBodyless.status).toBe(200);
     expect(identity.agentId).toBe(f.agentId);
+  });
+});
+
+// #82: a human stop request is a signal on a live session, not a new status. These tests
+// drive the service and its REST adapter against real Postgres so the atomic write, the
+// database-time liveness check and the activity record are proved on the same rows the
+// agent's heartbeat reads.
+describe("human stop requests on active work sessions (#82)", () => {
+  it("sets the stop fields atomically, records activity and surfaces the signal on heartbeat and progress", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "Stop requested issue");
+    const runId = await newRun(identity);
+    const agent = { kind: "agent" as const, identity };
+    const claim = await sessionsService.claim(agent, { issueId: issue.id, runId });
+    expect(claim).toMatchObject({ stopRequested: false, stopRequestedAt: null, stopReason: null });
+
+    const requested = await sessionsService.requestStop(humanActor(f), issue.id, "Wrong direction");
+    expect(requested).toMatchObject({
+      id: claim.id,
+      status: "active",
+      stopRequested: true,
+      stopReason: "Wrong direction",
+    });
+    expect(requested.stopRequestedAt).not.toBeNull();
+    expect(requested.endedAt).toBeNull();
+
+    const [row] = await database.db
+      .select()
+      .from(workSessions)
+      .where(eq(workSessions.id, claim.id));
+    expect(row).toMatchObject({
+      status: "active",
+      stopRequestedByHumanId: f.humanId,
+      stopReason: "Wrong direction",
+    });
+    expect(row?.stopRequestedAt).toBeInstanceOf(Date);
+    expect(row?.endedAt).toBeNull();
+
+    // The agent detects the signal on its next renew and progress check-in.
+    const renewed = await sessionsService.renew(agent, issue.id);
+    expect(renewed).toMatchObject({
+      id: claim.id,
+      status: "active",
+      stopRequested: true,
+      stopReason: "Wrong direction",
+    });
+    const progressed = await sessionsService.progress(agent, issue.id, "Writing a handoff");
+    expect(progressed).toMatchObject({ stopRequested: true, progress: "Writing a handoff" });
+
+    // The request is in the permanent project activity feed, in the same transaction.
+    const activity = await database.db
+      .select()
+      .from(projectActivity)
+      .where(
+        and(
+          eq(projectActivity.issueId, issue.id),
+          eq(projectActivity.type, "issue_stop_requested"),
+        ),
+      );
+    expect(activity).toHaveLength(1);
+    expect(activity[0]).toMatchObject({
+      actorHumanId: f.humanId,
+      actorAgentId: null,
+      summary: "Wrong direction",
+    });
+
+    // REST reads expose the same fields as the bare resource (ADR-0003).
+    const current = await getJson(`/api/issues/${issue.id}/work-sessions`, f.cookie);
+    expect(current.status).toBe(200);
+    expect(WorkSession.parse(await current.json())).toMatchObject({
+      stopRequested: true,
+      stopReason: "Wrong direction",
+    });
+
+    // The lease is still the backstop: acknowledging the stop ends the session normally.
+    const ended = await sessionsService.stop(agent, issue.id, "completed");
+    expect(ended).toMatchObject({ status: "completed", stopRequested: true });
+  });
+
+  it("refuses agents, unauthenticated callers, readers, non-members and inactive or expired sessions", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "Guarded stop issue");
+    const runId = await newRun(identity);
+    const agent = { kind: "agent" as const, identity };
+    await sessionsService.claim(agent, { issueId: issue.id, runId });
+
+    // A second issue with no session cannot be stopped.
+    const other = await humanIssue(f, "No session issue");
+    expect(errorKind(await rejection(sessionsService.requestStop(humanActor(f), other.id)))).toBe(
+      "session_not_active",
+    );
+
+    // Agents are refused at both layers with one stable code, and a missing actor at REST
+    // cannot fall back to a browser session.
+    expect(errorKind(await rejection(sessionsService.requestStop(agent, issue.id)))).toBe(
+      "agents_cannot_request_stop",
+    );
+    await expectProblem(
+      await postJson(
+        `/api/issues/${issue.id}/work-sessions/stop-request`,
+        { reason: "agent asked" },
+        undefined,
+        f.secret,
+      ),
+      403,
+      "agents_cannot_request_stop",
+    );
+    await expectProblem(
+      await postJson(`/api/issues/${issue.id}/work-sessions/stop-request`, {}, undefined),
+      401,
+      "human_sign_in_required",
+    );
+
+    // A human outside the workspace gets the same 404 as a missing issue: a stop probe
+    // must never reveal that an issue exists.
+    const outsider = {
+      kind: "human" as const,
+      account: {
+        humanId: randomUUID(),
+        email: "outsider@example.com",
+        isSystemAdministrator: false,
+        emailVerifiedAt: new Date(),
+      },
+    };
+    expect(errorKind(await rejection(sessionsService.requestStop(outsider, issue.id)))).toBe(
+      "issue_not_found",
+    );
+
+    // A Read human inside a shared workspace is refused the Contribute-level action.
+    // Grants are only legal on shared projects, so build that workspace with its owner
+    // in one transaction (the deferred owner guard checks at commit).
+    const readerId = randomUUID();
+    const readerEmail = `reader-${readerId}@example.com`;
+    await database.db.insert(humans).values({
+      id: readerId,
+      email: readerEmail,
+      passwordHash: "unused",
+      emailVerifiedAt: new Date(),
+    });
+    const sharedId = randomUUID();
+    let sharedProjectId = "";
+    await database.db.transaction(async (tx) => {
+      await tx.insert(workspaces).values({
+        id: sharedId,
+        kind: "shared",
+        name: "Shared stop workspace",
+        createdAt: new Date(),
+      });
+      await tx.insert(workspaceMemberships).values({
+        id: randomUUID(),
+        workspaceId: sharedId,
+        humanId: f.humanId,
+        isOwner: true,
+      });
+      await tx.insert(workspaceMemberships).values({
+        id: randomUUID(),
+        workspaceId: sharedId,
+        humanId: readerId,
+      });
+      const [project] = await tx
+        .insert(projects)
+        .values({
+          id: randomUUID(),
+          workspaceId: sharedId,
+          name: "Shared stop project",
+          createdByHumanId: f.humanId,
+        })
+        .returning({ id: projects.id });
+      if (project === undefined) throw new Error("no shared project");
+      sharedProjectId = project.id;
+      await tx.insert(projectAccessGrants).values({
+        id: randomUUID(),
+        projectId: project.id,
+        humanId: readerId,
+        level: "read",
+        grantedByHumanId: f.humanId,
+      });
+    });
+    const readerIssue = await projectsService.createIssue(humanActor(f), sharedProjectId, {
+      title: "Reader issue",
+    });
+    const sharedKey = await postJson(
+      "/api/agents/keys",
+      {
+        agentId: f.agentId,
+        workspaceId: sharedId,
+        validity: "90",
+        projects: [{ projectId: sharedProjectId, level: "contribute" }],
+      },
+      f.cookie,
+    );
+    expect(sharedKey.status).toBe(201);
+    const sharedIdentity = await identityFor(
+      CreateAgentKeyResponse.parse(await sharedKey.json()).secret,
+    );
+    await sessionsService.claim(
+      { kind: "agent", identity: sharedIdentity },
+      { issueId: readerIssue.id, runId: await newRun(sharedIdentity) },
+    );
+    const reader = {
+      kind: "human" as const,
+      account: {
+        humanId: readerId,
+        email: readerEmail,
+        isSystemAdministrator: false,
+        emailVerifiedAt: new Date(),
+      },
+    };
+    expect(errorKind(await rejection(sessionsService.requestStop(reader, readerIssue.id)))).toBe(
+      "insufficient_access",
+    );
+
+    // A live lease lapses in database time; the expired session rejects the request and
+    // no stop fields are written to it.
+    await setLease(issue.id, "statement_timestamp() - interval '1 second'");
+    expect(errorKind(await rejection(sessionsService.requestStop(humanActor(f), issue.id)))).toBe(
+      "session_not_active",
+    );
+    expect(await activeCount(issue.id)).toBe(0);
+    const [raw] = await database.db
+      .select({ stopAt: workSessions.stopRequestedAt })
+      .from(workSessions)
+      .where(eq(workSessions.issueId, issue.id));
+    expect(raw?.stopAt).toBeNull();
+    const activity = await database.db
+      .select({ id: projectActivity.id })
+      .from(projectActivity)
+      .where(eq(projectActivity.type, "issue_stop_requested"));
+    expect(activity).toHaveLength(0);
+  });
+
+  it("records a stop request once: repeated calls and blank reasons neither overwrite nor duplicate", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "Idempotent stop issue");
+    const runId = await newRun(identity);
+    await sessionsService.claim({ kind: "agent", identity }, { issueId: issue.id, runId });
+
+    const first = await sessionsService.requestStop(humanActor(f), issue.id, "  First reason  ");
+    expect(first.stopReason).toBe("First reason");
+    const again = await sessionsService.requestStop(
+      humanActor(f),
+      issue.id,
+      "A later reason must be ignored",
+    );
+    expect(again.id).toBe(first.id);
+    expect(again.stopReason).toBe("First reason");
+    expect(again.stopRequestedAt).toBe(first.stopRequestedAt);
+    expect(again.stopRequested).toBe(true);
+    const blank = await sessionsService.requestStop(humanActor(f), issue.id, "   ");
+    expect(blank.stopReason).toBe("First reason");
+
+    const rows = await database.db
+      .select()
+      .from(projectActivity)
+      .where(
+        and(
+          eq(projectActivity.issueId, issue.id),
+          eq(projectActivity.type, "issue_stop_requested"),
+        ),
+      );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.summary).toBe("First reason");
+
+    // The shared contract normalizes a whitespace-only reason before it reaches a route.
+    expect(RequestStopWorkSessionInput.parse({ issueId: issue.id, reason: "   " }).reason).toBe(
+      undefined,
+    );
+  });
+
+  it("does not mutate a lease before authorization and refuses a deactivated human", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "Unauthorized stop issue");
+    const runId = await newRun(identity);
+    await sessionsService.claim({ kind: "agent", identity }, { issueId: issue.id, runId });
+    await setLease(issue.id, "statement_timestamp() - interval '1 second'");
+
+    const outsider = {
+      kind: "human" as const,
+      account: {
+        humanId: randomUUID(),
+        email: "outsider@example.com",
+        isSystemAdministrator: false,
+        emailVerifiedAt: new Date(),
+      },
+    };
+    expect(errorKind(await rejection(sessionsService.requestStop(outsider, issue.id)))).toBe(
+      "issue_not_found",
+    );
+    // The refused, unauthorized call left the lapsed row untouched: no pre-authz expiry.
+    const [before] = await database.db
+      .select({ status: workSessions.status })
+      .from(workSessions)
+      .where(eq(workSessions.issueId, issue.id));
+    expect(before?.status).toBe("active");
+
+    // An authorized call commits that expiry while refusing the inactive session.
+    expect(errorKind(await rejection(sessionsService.requestStop(humanActor(f), issue.id)))).toBe(
+      "session_not_active",
+    );
+    const [after] = await database.db
+      .select({ status: workSessions.status })
+      .from(workSessions)
+      .where(eq(workSessions.issueId, issue.id));
+    expect(after?.status).toBe("expired");
+
+    // A deactivated caller is refused like a non-member even with a live session.
+    const liveIssue = await humanIssue(f, "Deactivated stop issue");
+    const liveRun = await newRun(identity);
+    await sessionsService.claim(
+      { kind: "agent", identity },
+      { issueId: liveIssue.id, runId: liveRun },
+    );
+    await database.db
+      .update(humans)
+      .set({ deactivatedAt: sql`statement_timestamp()` })
+      .where(eq(humans.id, f.humanId));
+    expect(
+      errorKind(await rejection(sessionsService.requestStop(humanActor(f), liveIssue.id))),
+    ).toBe("issue_not_found");
+  });
+
+  it("lists only live readable sessions for the agents view", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "Active listing issue");
+    const runId = await newRun(identity);
+    const claim = await sessionsService.claim(
+      { kind: "agent", identity },
+      { issueId: issue.id, runId },
+    );
+
+    expect(await sessionsService.activeSessions(humanActor(f), f.workspaceId)).toEqual([
+      expect.objectContaining({ id: claim.id, projectId: f.projectId, status: "active" }),
+    ]);
+    // REST answers with the bare array (ADR-0003), carrying the project id the UI needs.
+    const res = await getJson(`/api/workspaces/${f.workspaceId}/work-sessions/active`, f.cookie);
+    expect(res.status).toBe(200);
+    expect(ActiveWorkSessionsResponse.parse(await res.json())).toEqual([
+      expect.objectContaining({ id: claim.id, projectId: f.projectId }),
+    ]);
+
+    // A lapsed lease drops out of the live listing in database time without a write.
+    await setLease(issue.id, "statement_timestamp() - interval '1 second'");
+    expect(await sessionsService.activeSessions(humanActor(f), f.workspaceId)).toEqual([]);
+  });
+});
+
+describe("ephemeral session activities (#83)", () => {
+  // Activities are append-only, tied to the one live session the calling agent holds, and
+  // kept in their own table so expiry/completion never erase the trail.
+  it("lets only the live holder append activities and keeps them after expiry", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "Activity issue");
+    const runId = await newRun(identity);
+    const session = await sessionsService.claim(
+      { kind: "agent", identity },
+      { issueId: issue.id, runId },
+    );
+    const actor = { kind: "agent" as const, identity };
+
+    const thought = await sessionsService.logActivity(actor, {
+      issueId: issue.id,
+      kind: "thought",
+      summary: "Considering the options",
+      detail: { step: 1, confidence: 0.7 },
+    });
+    expect(SessionActivity.parse(thought)).toMatchObject({
+      workSessionId: session.id,
+      runId,
+      kind: "thought",
+      summary: "Considering the options",
+      detail: { step: 1, confidence: 0.7 },
+    });
+    const action = await sessionsService.logActivity(actor, {
+      issueId: issue.id,
+      kind: "action",
+      summary: "Edited service.ts",
+    });
+    expect(action).toMatchObject({ kind: "action", detail: null });
+
+    // A different agent, even with Contribute on the same project, holds no session.
+    const otherAgent = await postJson(
+      "/api/agents",
+      { name: `activity-other-${randomUUID()}` },
+      f.cookie,
+    );
+    expect(otherAgent.status).toBe(201);
+    const otherKey = await postJson(
+      "/api/agents/keys",
+      {
+        agentId: idOf(await otherAgent.json(), "agent"),
+        workspaceId: f.workspaceId,
+        validity: "90",
+        projects: [{ projectId: f.projectId, level: "contribute" }],
+      },
+      f.cookie,
+    );
+    expect(otherKey.status).toBe(201);
+    const other = await identityFor(CreateAgentKeyResponse.parse(await otherKey.json()).secret);
+    expect(
+      errorKind(
+        await rejection(
+          sessionsService.logActivity(
+            { kind: "agent", identity: other },
+            {
+              issueId: issue.id,
+              kind: "status",
+              summary: "Not mine",
+            },
+          ),
+        ),
+      ),
+    ).toBe("session_required");
+
+    // A fence naming another session never falls through to the live one.
+    expect(
+      errorKind(
+        await rejection(
+          sessionsService.logActivity(actor, {
+            issueId: issue.id,
+            kind: "status",
+            summary: "Stale write",
+            sessionId: randomUUID(),
+          }),
+        ),
+      ),
+    ).toBe("session_required");
+
+    // Once the lease lapses, neither a plain nor a correctly fenced append is accepted:
+    // an expired session is never revived and the two existing entries are untouched.
+    await setLease(issue.id, "statement_timestamp() - interval '1 second'");
+    for (const fenced of [false, true]) {
+      expect(
+        errorKind(
+          await rejection(
+            sessionsService.logActivity(actor, {
+              issueId: issue.id,
+              kind: "status",
+              summary: "After lapse",
+              ...(fenced ? { sessionId: session.id } : {}),
+            }),
+          ),
+        ),
+      ).toBe("session_required");
+    }
+    const stored = await sessionsService.getSession(actor, issue.id);
+    expect(stored.status).toBe("expired");
+    const timeline = await sessionsService.listActivities(humanActor(f), issue.id, session.id);
+    expect(SessionActivitiesResponse.parse(timeline).map((entry) => entry.summary)).toEqual([
+      "Edited service.ts",
+      "Considering the options",
+    ]);
+    const rows = await database.db
+      .select({ id: workSessionActivities.id })
+      .from(workSessionActivities)
+      .where(eq(workSessionActivities.workSessionId, session.id));
+    expect(rows).toHaveLength(2);
+    const comments = await database.db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issue.id));
+    expect(comments).toHaveLength(0);
+
+    // Completion is equally harmless to the recorded trail.
+    const secondIssue = await humanIssue(f, "Completed activity issue");
+    const secondRun = await newRun(identity);
+    const second = await sessionsService.claim(
+      { kind: "agent", identity },
+      { issueId: secondIssue.id, runId: secondRun },
+    );
+    await sessionsService.logActivity(actor, {
+      issueId: secondIssue.id,
+      kind: "thought",
+      summary: "Before completion",
+    });
+    await sessionsService.stop(actor, secondIssue.id, "completed");
+    expect(
+      (await sessionsService.listActivities(humanActor(f), secondIssue.id, second.id)).map(
+        (entry) => entry.summary,
+      ),
+    ).toEqual(["Before completion"]);
+  });
+
+  it("reads an activity timeline with project Read and denies unrelated callers 404", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "Readable activity issue");
+    const runId = await newRun(identity);
+    const session = await sessionsService.claim(
+      { kind: "agent", identity },
+      { issueId: issue.id, runId },
+    );
+    await sessionsService.logActivity(
+      { kind: "agent", identity },
+      { issueId: issue.id, kind: "thought", summary: "Visible to readers" },
+    );
+
+    // A human in the project and a Read-scoped agent key can both read the timeline.
+    expect(await sessionsService.listActivities(humanActor(f), issue.id, session.id)).toHaveLength(
+      1,
+    );
+    const readKey = await postJson(
+      "/api/agents/keys",
+      {
+        agentId: f.agentId,
+        workspaceId: f.workspaceId,
+        validity: "90",
+        projects: [{ projectId: f.projectId, level: "read" }],
+      },
+      f.cookie,
+    );
+    expect(readKey.status).toBe(201);
+    const reader = await identityFor(CreateAgentKeyResponse.parse(await readKey.json()).secret);
+    expect(
+      await sessionsService.listActivities(
+        { kind: "agent", identity: reader },
+        issue.id,
+        session.id,
+      ),
+    ).toHaveLength(1);
+
+    // A session id from a different issue is indistinguishable from a missing one.
+    expect(
+      errorKind(
+        await rejection(sessionsService.listActivities(humanActor(f), issue.id, randomUUID())),
+      ),
+    ).toBe("session_not_found");
+
+    // A human outside the workspace gets the same 404 as a missing issue.
+    const outsider = {
+      kind: "human" as const,
+      account: {
+        humanId: randomUUID(),
+        email: "activity-outsider@example.com",
+        isSystemAdministrator: false,
+        emailVerifiedAt: new Date(),
+      },
+    };
+    expect(
+      errorKind(await rejection(sessionsService.listActivities(outsider, issue.id, session.id))),
+    ).toBe("issue_not_found");
+    // An agent key scoped to another workspace cannot reach the issue either.
+    const [otherWorkspace] = await database.db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(workspaces)
+        .values({ id: randomUUID(), kind: "shared", name: "Other activity team" })
+        .returning();
+      if (created === undefined) throw new Error("no other workspace");
+      await tx.insert(workspaceMemberships).values({
+        id: randomUUID(),
+        workspaceId: created.id,
+        humanId: f.humanId,
+        isOwner: true,
+      });
+      return [created];
+    });
+    const otherAgent = await postJson(
+      "/api/agents",
+      { name: `activity-foreign-${randomUUID()}` },
+      f.cookie,
+    );
+    const foreignKey = await postJson(
+      "/api/agents/keys",
+      {
+        agentId: idOf(await otherAgent.json(), "agent"),
+        workspaceId: otherWorkspace.id,
+        validity: "90",
+        projects: [],
+      },
+      f.cookie,
+    );
+    expect(foreignKey.status).toBe(201);
+    const foreign = await identityFor(CreateAgentKeyResponse.parse(await foreignKey.json()).secret);
+    expect(
+      errorKind(
+        await rejection(
+          sessionsService.listActivities(
+            { kind: "agent", identity: foreign },
+            issue.id,
+            session.id,
+          ),
+        ),
+      ),
+    ).toBe("issue_not_found");
+
+    // REST exposes the same boundary: the bare array to a reader, 404 to a stranger.
+    const res = await getJson(
+      `/api/issues/${issue.id}/work-sessions/${session.id}/activities`,
+      f.cookie,
+    );
+    expect(res.status).toBe(200);
+    expect(SessionActivitiesResponse.parse(await res.json())).toHaveLength(1);
+    const anonymous = await getJson(
+      `/api/issues/${issue.id}/work-sessions/${session.id}/activities`,
+    );
+    await expectProblem(anonymous, 401, "not_signed_in");
+  });
+
+  it("denies activity reads to a deactivated human and to an agent whose owner is deactivated", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "Deactivated reader issue");
+    const session = await sessionsService.claim(
+      { kind: "agent", identity },
+      { issueId: issue.id, runId: await newRun(identity) },
+    );
+    await sessionsService.logActivity(
+      { kind: "agent", identity },
+      { issueId: issue.id, kind: "thought", summary: "Before deactivation" },
+    );
+    // The owner reads the trail before deactivation.
+    expect(await sessionsService.listActivities(humanActor(f), issue.id, session.id)).toHaveLength(
+      1,
+    );
+
+    // A deactivation that committed first is re-read inside the activity read's transaction:
+    // neither the human nor its agent can use a stale identity to inspect the timeline.
+    await database.db
+      .update(humans)
+      .set({ deactivatedAt: sql`statement_timestamp()` })
+      .where(eq(humans.id, f.humanId));
+    for (const actor of [humanActor(f), { kind: "agent" as const, identity }]) {
+      expect(
+        errorKind(await rejection(sessionsService.listActivities(actor, issue.id, session.id))),
+      ).toBe("issue_not_found");
+    }
+  });
+
+  it("appends over REST without adding an issue comment", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "REST activity issue");
+    await sessionsService.claim(
+      { kind: "agent", identity },
+      { issueId: issue.id, runId: await newRun(identity) },
+    );
+
+    const created = await postJson(
+      `/api/issues/${issue.id}/work-sessions/activities`,
+      { kind: "status", summary: "REST update", detail: { tool: "edit" } },
+      undefined,
+      f.secret,
+    );
+    expect(created.status).toBe(201);
+    expect(SessionActivity.parse(await created.json())).toMatchObject({
+      kind: "status",
+      summary: "REST update",
+      detail: { tool: "edit" },
+    });
+    // An oversized structured payload is a validation Problem, never a huge JSONB row.
+    const oversized = await postJson(
+      `/api/issues/${issue.id}/work-sessions/activities`,
+      { kind: "thought", summary: "Too large", detail: { blob: "x".repeat(64_001) } },
+      undefined,
+      f.secret,
+    );
+    await expectProblem(oversized, 400, "validation_failed");
+    const comments = await database.db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issue.id));
+    expect(comments).toHaveLength(0);
+  });
+});
+
+// #84: assignment is a pull-queue hint but the claim is authoritative. These tests prove
+// the strict policy and the ready-work filter/order against real rows and transactions.
+describe("agent assignment and the ready queue (#84)", () => {
+  it("refuses claims on work reserved for a human or another agent", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const other = await registerSecondAgent(f);
+    const humanOwned = await humanIssue(f, "Human reserved");
+    const otherOwned = await humanIssue(f, "Other agent reserved");
+    await assign(humanOwned.id, f, { type: "human", id: f.humanId });
+    await assign(otherOwned.id, f, { type: "agent", id: other.agentId });
+
+    const humanRefusal = await rejection(
+      sessionsService.claim(
+        { kind: "agent", identity },
+        { issueId: humanOwned.id, runId: await newRun(identity) },
+      ),
+    );
+    expect(errorKind(humanRefusal)).toBe("issue_assigned_to_human");
+    const otherRefusal = await rejection(
+      sessionsService.claim(
+        { kind: "agent", identity },
+        { issueId: otherOwned.id, runId: await newRun(identity) },
+      ),
+    );
+    expect(errorKind(otherRefusal)).toBe("issue_assigned_to_other_agent");
+    expect(await activeCount(humanOwned.id)).toBe(0);
+    expect(await activeCount(otherOwned.id)).toBe(0);
+
+    // The same refusal crosses both transports as an RFC 9457 Problem with a stable code.
+    await expectProblem(
+      await postJson(
+        `/api/issues/${humanOwned.id}/work-sessions`,
+        { runId: await newRun(identity) },
+        undefined,
+        f.secret,
+      ),
+      409,
+      "issue_assigned_to_human",
+    );
+    const otherRest = await postJson(
+      `/api/issues/${otherOwned.id}/work-sessions`,
+      { runId: await newRun(identity) },
+      undefined,
+      f.secret,
+    );
+    await expectProblem(otherRest, 409, "issue_assigned_to_other_agent");
+  });
+
+  it("allows claims on unassigned work and on work assigned to the calling agent", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const free = await humanIssue(f, "Free work");
+    const mine = await humanIssue(f, "Mine");
+    await assign(mine.id, f, { type: "agent", id: f.agentId });
+
+    const freeRun = await newRun(identity);
+    expect(
+      (
+        await sessionsService.claim(
+          { kind: "agent", identity },
+          { issueId: free.id, runId: freeRun },
+        )
+      ).status,
+    ).toBe("active");
+    const mineRun = await newRun(identity);
+    const claimed = await sessionsService.claim(
+      { kind: "agent", identity },
+      { issueId: mine.id, runId: mineRun },
+    );
+    expect(claimed.status).toBe("active");
+    // An idempotent retry by the same run joins the existing session.
+    expect(
+      (
+        await sessionsService.claim(
+          { kind: "agent", identity },
+          { issueId: mine.id, runId: mineRun },
+        )
+      ).id,
+    ).toBe(claimed.id);
+    expect(await activeCount(free.id)).toBe(1);
+    expect(await activeCount(mine.id)).toBe(1);
+  });
+
+  it("refuses reacquisition once the expired claim's issue is reassigned", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "Interrupted");
+    const runId = await newRun(identity);
+    await sessionsService.claim({ kind: "agent", identity }, { issueId: issue.id, runId });
+    await setLease(issue.id, "statement_timestamp() - interval '1 second'");
+    await assign(issue.id, f, { type: "human", id: f.humanId });
+    const refused = await rejection(
+      sessionsService.reacquire({ kind: "agent", identity }, { issueId: issue.id, runId }),
+    );
+    expect(errorKind(refused)).toBe("issue_assigned_to_human");
+  });
+
+  it("filters the ready queue and puts the caller's own work first", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const other = await registerSecondAgent(f);
+    const mineUrgent = await humanIssue(f, "Mine urgent");
+    const mineLow = await humanIssue(f, "Mine low");
+    const unassigned = await humanIssue(f, "Unassigned high");
+    const humanOwned = await humanIssue(f, "Human medium");
+    const otherOwned = await humanIssue(f, "Other low");
+    await projectsService.updateIssue(humanActor(f), mineUrgent.id, {
+      priority: "urgent",
+      sortOrder: 900_000,
+      assignee: { type: "agent", id: f.agentId },
+    });
+    await projectsService.updateIssue(humanActor(f), mineLow.id, {
+      priority: "low",
+      sortOrder: 800_000,
+      assignee: { type: "agent", id: f.agentId },
+    });
+    await projectsService.updateIssue(humanActor(f), unassigned.id, {
+      priority: "high",
+      sortOrder: 100_000,
+    });
+    await assign(humanOwned.id, f, { type: "human", id: f.humanId });
+    await projectsService.updateIssue(humanActor(f), humanOwned.id, { priority: "medium" });
+    await assign(otherOwned.id, f, { type: "agent", id: other.agentId });
+
+    const agent = { kind: "agent" as const, identity };
+    expect((await sessionsService.readyWork(agent, f.projectId, "all")).map((i) => i.id)).toEqual([
+      mineUrgent.id,
+      mineLow.id,
+      unassigned.id,
+    ]);
+    expect(
+      (await sessionsService.readyWork(agent, f.projectId, "assignedToMe")).map((i) => i.id),
+    ).toEqual([mineUrgent.id, mineLow.id]);
+    expect(
+      (await sessionsService.readyWork(agent, f.projectId, "unassigned")).map((i) => i.id),
+    ).toEqual([unassigned.id]);
+    // Humans see all ready work under `all`, but may narrow to their own assignments.
+    expect(
+      (await sessionsService.readyWork(humanActor(f), f.projectId, "all")).map((i) => i.id),
+    ).toEqual([humanOwned.id, mineUrgent.id, unassigned.id, mineLow.id, otherOwned.id]);
+    expect(
+      (await sessionsService.readyWork(humanActor(f), f.projectId, "assignedToMe")).map(
+        (i) => i.id,
+      ),
+    ).toEqual([humanOwned.id]);
+
+    // The query filter is available over REST as well as MCP.
+    const rest = await getJson(
+      `/api/projects/${f.projectId}/ready-work?filter=assignedToMe`,
+      undefined,
+      f.secret,
+    );
+    expect(rest.status).toBe(200);
+    const rows = IssuesResponse.parse(await rest.json());
+    expect(rows.map((row) => row.id)).toEqual([mineUrgent.id, mineLow.id]);
   });
 });

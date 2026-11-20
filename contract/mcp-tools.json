@@ -363,6 +363,18 @@
             "status": {
               "$ref": "#/$defs/IssueStatus"
             },
+            "priority": {
+              "$ref": "#/$defs/IssuePriority"
+            },
+            "sortOrder": {
+              "$ref": "#/$defs/IssueSortOrder"
+            },
+            "needsInput": {
+              "type": "boolean"
+            },
+            "assignee": {
+              "$ref": "#/$defs/IssueAssignee"
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -399,6 +411,10 @@
             "title",
             "body",
             "status",
+            "priority",
+            "sortOrder",
+            "needsInput",
+            "assignee",
             "createdAt",
             "updatedAt",
             "closedAt",
@@ -416,10 +432,28 @@
             "closed"
           ]
         },
-        "Timestamp": {
+        "IssuePriority": {
           "type": "string",
-          "format": "date-time",
-          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          "enum": [
+            "urgent",
+            "high",
+            "medium",
+            "low",
+            "none"
+          ]
+        },
+        "IssueSortOrder": {
+          "type": "number"
+        },
+        "IssueAssignee": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "Actor": {
           "type": "object",
@@ -468,6 +502,11 @@
           "type": "string",
           "format": "email",
           "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
         },
         "FallbackPolicyOverride": {
           "anyOf": [
@@ -491,7 +530,7 @@
   },
   {
     "name": "get_issue",
-    "description": "Read one issue in an in-scope project.",
+    "description": "Read one issue in an in-scope project. The issue includes its structured links (PRs, commits, docs and other web URLs) with each link's kind.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
@@ -512,7 +551,7 @@
       "type": "object",
       "properties": {
         "issue": {
-          "$ref": "#/$defs/Issue"
+          "$ref": "#/$defs/IssueDetail"
         }
       },
       "required": [
@@ -520,7 +559,7 @@
       ],
       "additionalProperties": false,
       "$defs": {
-        "Issue": {
+        "IssueDetail": {
           "type": "object",
           "properties": {
             "id": {
@@ -542,6 +581,18 @@
             },
             "status": {
               "$ref": "#/$defs/IssueStatus"
+            },
+            "priority": {
+              "$ref": "#/$defs/IssuePriority"
+            },
+            "sortOrder": {
+              "$ref": "#/$defs/IssueSortOrder"
+            },
+            "needsInput": {
+              "type": "boolean"
+            },
+            "assignee": {
+              "$ref": "#/$defs/IssueAssignee"
             },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
@@ -570,6 +621,12 @@
             },
             "effectiveFallbackPolicy": {
               "$ref": "#/$defs/FallbackPolicy"
+            },
+            "links": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/IssueLink"
+              }
             }
           },
           "required": [
@@ -579,13 +636,18 @@
             "title",
             "body",
             "status",
+            "priority",
+            "sortOrder",
+            "needsInput",
+            "assignee",
             "createdAt",
             "updatedAt",
             "closedAt",
             "createdBy",
             "updatedBy",
             "fallbackPolicyOverride",
-            "effectiveFallbackPolicy"
+            "effectiveFallbackPolicy",
+            "links"
           ],
           "additionalProperties": false
         },
@@ -596,10 +658,28 @@
             "closed"
           ]
         },
-        "Timestamp": {
+        "IssuePriority": {
           "type": "string",
-          "format": "date-time",
-          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          "enum": [
+            "urgent",
+            "high",
+            "medium",
+            "low",
+            "none"
+          ]
+        },
+        "IssueSortOrder": {
+          "type": "number"
+        },
+        "IssueAssignee": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "Actor": {
           "type": "object",
@@ -649,6 +729,11 @@
           "format": "email",
           "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
         },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        },
         "FallbackPolicyOverride": {
           "anyOf": [
             {
@@ -665,13 +750,63 @@
             "require_human",
             "fallback_allowed"
           ]
+        },
+        "IssueLink": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "issueId": {
+              "type": "string"
+            },
+            "url": {
+              "$ref": "#/$defs/IssueLinkUrl"
+            },
+            "title": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/IssueLinkKind"
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "createdBy": {
+              "$ref": "#/$defs/Actor"
+            }
+          },
+          "required": [
+            "id",
+            "issueId",
+            "url",
+            "title",
+            "kind",
+            "createdAt",
+            "createdBy"
+          ],
+          "additionalProperties": false
+        },
+        "IssueLinkUrl": {
+          "type": "string",
+          "maxLength": 2048,
+          "format": "uri"
+        },
+        "IssueLinkKind": {
+          "type": "string",
+          "enum": [
+            "pr",
+            "commit",
+            "doc",
+            "link"
+          ]
         }
       }
     }
   },
   {
     "name": "create_issue",
-    "description": "Create an issue in an in-scope project. Requires Contribute access on the key and on its human owner.",
+    "description": "Create an issue in an in-scope project. Priority and sortOrder may be set at creation; omitted priority defaults to none and omitted sortOrder is spaced by 65535 from the project-local issue number. Requires Contribute access on the key and on its human owner.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
@@ -683,6 +818,12 @@
         },
         "body": {
           "$ref": "#/$defs/IssueBody"
+        },
+        "priority": {
+          "$ref": "#/$defs/IssuePriority"
+        },
+        "sortOrder": {
+          "$ref": "#/$defs/IssueSortOrder"
         },
         "projectId": {
           "type": "string",
@@ -699,6 +840,19 @@
         "IssueBody": {
           "type": "string",
           "maxLength": 100000
+        },
+        "IssuePriority": {
+          "type": "string",
+          "enum": [
+            "urgent",
+            "high",
+            "medium",
+            "low",
+            "none"
+          ]
+        },
+        "IssueSortOrder": {
+          "type": "number"
         }
       }
     },
@@ -738,6 +892,18 @@
             "status": {
               "$ref": "#/$defs/IssueStatus"
             },
+            "priority": {
+              "$ref": "#/$defs/IssuePriority"
+            },
+            "sortOrder": {
+              "$ref": "#/$defs/IssueSortOrder"
+            },
+            "needsInput": {
+              "type": "boolean"
+            },
+            "assignee": {
+              "$ref": "#/$defs/IssueAssignee"
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -774,6 +940,10 @@
             "title",
             "body",
             "status",
+            "priority",
+            "sortOrder",
+            "needsInput",
+            "assignee",
             "createdAt",
             "updatedAt",
             "closedAt",
@@ -791,10 +961,28 @@
             "closed"
           ]
         },
-        "Timestamp": {
+        "IssuePriority": {
           "type": "string",
-          "format": "date-time",
-          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          "enum": [
+            "urgent",
+            "high",
+            "medium",
+            "low",
+            "none"
+          ]
+        },
+        "IssueSortOrder": {
+          "type": "number"
+        },
+        "IssueAssignee": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "Actor": {
           "type": "object",
@@ -843,6 +1031,11 @@
           "type": "string",
           "format": "email",
           "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
         },
         "FallbackPolicyOverride": {
           "anyOf": [
@@ -866,7 +1059,7 @@
   },
   {
     "name": "update_issue",
-    "description": "Edit an issue's title or body, or close/reopen it. Requires Contribute access. The actor recorded is the agent, not its human owner.",
+    "description": "Edit an issue's title or body, close/reopen it, change its priority or sortOrder (a float; the midpoint of two neighbours moves one card without rewriting them), or set/clear its assignee (`{\"type\":\"human\"|\"agent\",\"id\":\"...\"}`, or null to clear). An assignee must be an active member or a registered agent in the workspace. Requires Contribute access and, for an agent, a live work session on the issue. The actor recorded is the agent, not its human owner.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
@@ -881,6 +1074,22 @@
         },
         "status": {
           "$ref": "#/$defs/IssueStatus"
+        },
+        "priority": {
+          "$ref": "#/$defs/IssuePriority"
+        },
+        "sortOrder": {
+          "$ref": "#/$defs/IssueSortOrder"
+        },
+        "assignee": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Assignee"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "issueId": {
           "type": "string",
@@ -902,6 +1111,44 @@
           "enum": [
             "open",
             "closed"
+          ]
+        },
+        "IssuePriority": {
+          "type": "string",
+          "enum": [
+            "urgent",
+            "high",
+            "medium",
+            "low",
+            "none"
+          ]
+        },
+        "IssueSortOrder": {
+          "type": "number"
+        },
+        "Assignee": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "$ref": "#/$defs/AssigneeType"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        "AssigneeType": {
+          "type": "string",
+          "enum": [
+            "human",
+            "agent"
           ]
         }
       }
@@ -942,6 +1189,18 @@
             "status": {
               "$ref": "#/$defs/IssueStatus"
             },
+            "priority": {
+              "$ref": "#/$defs/IssuePriority"
+            },
+            "sortOrder": {
+              "$ref": "#/$defs/IssueSortOrder"
+            },
+            "needsInput": {
+              "type": "boolean"
+            },
+            "assignee": {
+              "$ref": "#/$defs/IssueAssignee"
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -978,6 +1237,10 @@
             "title",
             "body",
             "status",
+            "priority",
+            "sortOrder",
+            "needsInput",
+            "assignee",
             "createdAt",
             "updatedAt",
             "closedAt",
@@ -994,6 +1257,163 @@
             "open",
             "closed"
           ]
+        },
+        "IssuePriority": {
+          "type": "string",
+          "enum": [
+            "urgent",
+            "high",
+            "medium",
+            "low",
+            "none"
+          ]
+        },
+        "IssueSortOrder": {
+          "type": "number"
+        },
+        "IssueAssignee": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "Actor": {
+          "type": "object",
+          "properties": {
+            "humanId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "email": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Email"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "agentId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "agentName": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "displayName": {
+              "type": "string"
+            },
+            "deactivated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "displayName"
+          ],
+          "additionalProperties": false
+        },
+        "Email": {
+          "type": "string",
+          "format": "email",
+          "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        },
+        "FallbackPolicyOverride": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FallbackPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "FallbackPolicy": {
+          "type": "string",
+          "enum": [
+            "require_human",
+            "fallback_allowed"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "add_blocked_by",
+    "description": "Record that an issue is blocked by another issue in the same project. A self-link, a cross-project link, and any edge that would form a cycle are refused. Requires Contribute access.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "issueId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The issue that is being blocked"
+        },
+        "blockedByIssueId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The issue in the same project that blocks it"
+        }
+      },
+      "required": [
+        "issueId",
+        "blockedByIssueId"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "dependency": {
+          "$ref": "#/$defs/IssueDependency"
+        }
+      },
+      "required": [
+        "dependency"
+      ],
+      "additionalProperties": false,
+      "$defs": {
+        "IssueDependency": {
+          "type": "object",
+          "properties": {
+            "issueId": {
+              "type": "string"
+            },
+            "blockedByIssueId": {
+              "type": "string"
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "createdBy": {
+              "$ref": "#/$defs/Actor"
+            }
+          },
+          "required": [
+            "issueId",
+            "blockedByIssueId",
+            "createdAt",
+            "createdBy"
+          ],
+          "additionalProperties": false
         },
         "Timestamp": {
           "type": "string",
@@ -1047,6 +1467,478 @@
           "type": "string",
           "format": "email",
           "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        }
+      }
+    }
+  },
+  {
+    "name": "remove_blocked_by",
+    "description": "Remove a blocked_by relation between two issues in the same project. Requires Contribute access; removing a relation that is not there is a no-op.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "issueId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The issue that is being unblocked"
+        },
+        "blockedByIssueId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The issue that no longer blocks it"
+        }
+      },
+      "required": [
+        "issueId",
+        "blockedByIssueId"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "removed": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "removed"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_blocked_by",
+    "description": "List the issues that block an issue (its prerequisites, open or closed). Read access is enough.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "issueId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The issue id"
+        }
+      },
+      "required": [
+        "issueId"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "issues": {
+          "$ref": "#/$defs/IssuesResponse"
+        }
+      },
+      "required": [
+        "issues"
+      ],
+      "additionalProperties": false,
+      "$defs": {
+        "IssuesResponse": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Issue"
+          }
+        },
+        "Issue": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "number": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "title": {
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/$defs/IssueStatus"
+            },
+            "priority": {
+              "$ref": "#/$defs/IssuePriority"
+            },
+            "sortOrder": {
+              "$ref": "#/$defs/IssueSortOrder"
+            },
+            "needsInput": {
+              "type": "boolean"
+            },
+            "assignee": {
+              "$ref": "#/$defs/IssueAssignee"
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updatedAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "closedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "createdBy": {
+              "$ref": "#/$defs/Actor"
+            },
+            "updatedBy": {
+              "$ref": "#/$defs/Actor"
+            },
+            "fallbackPolicyOverride": {
+              "$ref": "#/$defs/FallbackPolicyOverride"
+            },
+            "effectiveFallbackPolicy": {
+              "$ref": "#/$defs/FallbackPolicy"
+            }
+          },
+          "required": [
+            "id",
+            "projectId",
+            "number",
+            "title",
+            "body",
+            "status",
+            "priority",
+            "sortOrder",
+            "needsInput",
+            "assignee",
+            "createdAt",
+            "updatedAt",
+            "closedAt",
+            "createdBy",
+            "updatedBy",
+            "fallbackPolicyOverride",
+            "effectiveFallbackPolicy"
+          ],
+          "additionalProperties": false
+        },
+        "IssueStatus": {
+          "type": "string",
+          "enum": [
+            "open",
+            "closed"
+          ]
+        },
+        "IssuePriority": {
+          "type": "string",
+          "enum": [
+            "urgent",
+            "high",
+            "medium",
+            "low",
+            "none"
+          ]
+        },
+        "IssueSortOrder": {
+          "type": "number"
+        },
+        "IssueAssignee": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "Actor": {
+          "type": "object",
+          "properties": {
+            "humanId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "email": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Email"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "agentId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "agentName": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "displayName": {
+              "type": "string"
+            },
+            "deactivated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "displayName"
+          ],
+          "additionalProperties": false
+        },
+        "Email": {
+          "type": "string",
+          "format": "email",
+          "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        },
+        "FallbackPolicyOverride": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FallbackPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "FallbackPolicy": {
+          "type": "string",
+          "enum": [
+            "require_human",
+            "fallback_allowed"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "list_blocking",
+    "description": "List the issues that an issue blocks (its dependants, open or closed). Read access is enough.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "issueId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The issue id"
+        }
+      },
+      "required": [
+        "issueId"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "issues": {
+          "$ref": "#/$defs/IssuesResponse"
+        }
+      },
+      "required": [
+        "issues"
+      ],
+      "additionalProperties": false,
+      "$defs": {
+        "IssuesResponse": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Issue"
+          }
+        },
+        "Issue": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "number": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "title": {
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/$defs/IssueStatus"
+            },
+            "priority": {
+              "$ref": "#/$defs/IssuePriority"
+            },
+            "sortOrder": {
+              "$ref": "#/$defs/IssueSortOrder"
+            },
+            "needsInput": {
+              "type": "boolean"
+            },
+            "assignee": {
+              "$ref": "#/$defs/IssueAssignee"
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updatedAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "closedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "createdBy": {
+              "$ref": "#/$defs/Actor"
+            },
+            "updatedBy": {
+              "$ref": "#/$defs/Actor"
+            },
+            "fallbackPolicyOverride": {
+              "$ref": "#/$defs/FallbackPolicyOverride"
+            },
+            "effectiveFallbackPolicy": {
+              "$ref": "#/$defs/FallbackPolicy"
+            }
+          },
+          "required": [
+            "id",
+            "projectId",
+            "number",
+            "title",
+            "body",
+            "status",
+            "priority",
+            "sortOrder",
+            "needsInput",
+            "assignee",
+            "createdAt",
+            "updatedAt",
+            "closedAt",
+            "createdBy",
+            "updatedBy",
+            "fallbackPolicyOverride",
+            "effectiveFallbackPolicy"
+          ],
+          "additionalProperties": false
+        },
+        "IssueStatus": {
+          "type": "string",
+          "enum": [
+            "open",
+            "closed"
+          ]
+        },
+        "IssuePriority": {
+          "type": "string",
+          "enum": [
+            "urgent",
+            "high",
+            "medium",
+            "low",
+            "none"
+          ]
+        },
+        "IssueSortOrder": {
+          "type": "number"
+        },
+        "IssueAssignee": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "Actor": {
+          "type": "object",
+          "properties": {
+            "humanId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "email": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Email"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "agentId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "agentName": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "displayName": {
+              "type": "string"
+            },
+            "deactivated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "displayName"
+          ],
+          "additionalProperties": false
+        },
+        "Email": {
+          "type": "string",
+          "format": "email",
+          "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
         },
         "FallbackPolicyOverride": {
           "anyOf": [
@@ -1311,6 +2203,211 @@
     }
   },
   {
+    "name": "add_issue_link",
+    "description": "Attach a PR, commit, external doc, or other web URL to an in-scope issue. Requires Contribute access. Only http and https URLs are accepted, and the same URL cannot be attached twice to one issue. The actor recorded is the agent, not its human owner.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "url": {
+          "$ref": "#/$defs/IssueLinkUrl"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "kind": {
+          "$ref": "#/$defs/IssueLinkKind"
+        },
+        "issueId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The issue id"
+        }
+      },
+      "required": [
+        "url",
+        "title",
+        "kind",
+        "issueId"
+      ],
+      "additionalProperties": false,
+      "$defs": {
+        "IssueLinkUrl": {
+          "type": "string",
+          "maxLength": 2048,
+          "format": "uri"
+        },
+        "IssueLinkKind": {
+          "type": "string",
+          "enum": [
+            "pr",
+            "commit",
+            "doc",
+            "link"
+          ]
+        }
+      }
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "link": {
+          "$ref": "#/$defs/IssueLink"
+        }
+      },
+      "required": [
+        "link"
+      ],
+      "additionalProperties": false,
+      "$defs": {
+        "IssueLink": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "issueId": {
+              "type": "string"
+            },
+            "url": {
+              "$ref": "#/$defs/IssueLinkUrl"
+            },
+            "title": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/IssueLinkKind"
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "createdBy": {
+              "$ref": "#/$defs/Actor"
+            }
+          },
+          "required": [
+            "id",
+            "issueId",
+            "url",
+            "title",
+            "kind",
+            "createdAt",
+            "createdBy"
+          ],
+          "additionalProperties": false
+        },
+        "IssueLinkUrl": {
+          "type": "string",
+          "maxLength": 2048,
+          "format": "uri"
+        },
+        "IssueLinkKind": {
+          "type": "string",
+          "enum": [
+            "pr",
+            "commit",
+            "doc",
+            "link"
+          ]
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        },
+        "Actor": {
+          "type": "object",
+          "properties": {
+            "humanId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "email": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Email"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "agentId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "agentName": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "displayName": {
+              "type": "string"
+            },
+            "deactivated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "displayName"
+          ],
+          "additionalProperties": false
+        },
+        "Email": {
+          "type": "string",
+          "format": "email",
+          "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        }
+      }
+    }
+  },
+  {
+    "name": "remove_issue_link",
+    "description": "Remove a previously attached link from an in-scope issue. Requires Contribute access. Removing a link that is not attached is an error, not a silent no-op.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "issueId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The issue id"
+        },
+        "linkId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The link id"
+        }
+      },
+      "required": [
+        "issueId",
+        "linkId"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "removed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "removed"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "list_activity",
     "description": "Read an in-scope project's activity feed, including which agent performed each action.",
     "inputSchema": {
@@ -1404,12 +2501,17 @@
             "issue_commented",
             "issue_closed",
             "issue_reopened",
+            "issue_dependency_added",
+            "issue_dependency_removed",
+            "issue_link_added",
+            "issue_link_removed",
             "issue_question_asked",
             "issue_question_answered",
             "issue_question_paused",
             "issue_question_fallback_used",
             "issue_question_follow_up",
             "issue_fallback_policy_override_changed",
+            "issue_stop_requested",
             "knowledge_created",
             "knowledge_edited"
           ]
@@ -2298,7 +3400,7 @@
   },
   {
     "name": "claim_issue",
-    "description": "Claim an issue this agent needs to work on, for this agent and run. The issue may already be closed: a worker reopening it must claim it first, because a fenced update_issue needs a live session. One active session per issue: a second worker is refused. Helpers on the same issue pass the same runId and join the existing session. The claim is a five-minute lease in database time; renew it while working.",
+    "description": "Claim an issue this agent needs to work on, for this agent and run. An agent may claim only work that is unassigned or assigned to that same agent; issues assigned to a human or another agent are refused. The issue may already be closed: a worker reopening it must claim it first, because a fenced update_issue needs a live session. One active session per issue: a second worker is refused. Helpers on the same issue pass the same runId and join the existing session. The claim is a five-minute lease in database time; renew it while working.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "$ref": "#/$defs/ClaimWorkSessionInput",
@@ -2378,6 +3480,25 @@
                 }
               ]
             },
+            "stopRequested": {
+              "type": "boolean"
+            },
+            "stopRequestedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "stopReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -2405,6 +3526,9 @@
             "leaseExpiresAt",
             "progress",
             "progressUpdatedAt",
+            "stopRequested",
+            "stopRequestedAt",
+            "stopReason",
             "createdAt",
             "updatedAt",
             "endedAt"
@@ -2430,7 +3554,7 @@
   },
   {
     "name": "renew_claim",
-    "description": "Check in on an issue this agent currently holds and refresh its five-minute lease in database time. Requires a live session; an expired or released session is never renewed or silently reacquired. Pass sessionId to fence a delayed call from an interrupted session: it is refused if that session is no longer the live one, even after reacquisition.",
+    "description": "Check in on an issue this agent currently holds and refresh its five-minute lease in database time. Requires a live session; an expired or released session is never renewed or silently reacquired. Pass sessionId to fence a delayed call from an interrupted session: it is refused if that session is no longer the live one, even after reacquisition. The returned session carries stopRequested, stopRequestedAt and stopReason: when stopRequested is true a human has asked you to stop, so flush a brief handoff and call stop_session promptly. The five-minute lease remains the hard backstop.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "$ref": "#/$defs/RenewWorkSessionInput",
@@ -2509,6 +3633,25 @@
                 }
               ]
             },
+            "stopRequested": {
+              "type": "boolean"
+            },
+            "stopRequestedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "stopReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -2536,6 +3679,9 @@
             "leaseExpiresAt",
             "progress",
             "progressUpdatedAt",
+            "stopRequested",
+            "stopRequestedAt",
+            "stopReason",
             "createdAt",
             "updatedAt",
             "endedAt"
@@ -2561,7 +3707,7 @@
   },
   {
     "name": "report_progress",
-    "description": "Record progress on the live session this agent holds for an issue. Progress is stored independently of the lease, so an interruption never erases it. Requires a live session; pass sessionId to refuse a delayed report from an expired session instead of writing to a newer one.",
+    "description": "Record progress on the live session this agent holds for an issue. Progress is stored independently of the lease, so an interruption never erases it. Requires a live session; pass sessionId to refuse a delayed report from an expired session instead of writing to a newer one. The returned session carries stopRequested, stopRequestedAt and stopReason: check them on every report and stop promptly if a human has asked you to stop.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "$ref": "#/$defs/ReportProgressInput",
@@ -2646,6 +3792,25 @@
                 }
               ]
             },
+            "stopRequested": {
+              "type": "boolean"
+            },
+            "stopRequestedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "stopReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -2673,6 +3838,9 @@
             "leaseExpiresAt",
             "progress",
             "progressUpdatedAt",
+            "stopRequested",
+            "stopRequestedAt",
+            "stopReason",
             "createdAt",
             "updatedAt",
             "endedAt"
@@ -2789,6 +3957,25 @@
                 }
               ]
             },
+            "stopRequested": {
+              "type": "boolean"
+            },
+            "stopRequestedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "stopReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -2816,6 +4003,9 @@
             "leaseExpiresAt",
             "progress",
             "progressUpdatedAt",
+            "stopRequested",
+            "stopRequestedAt",
+            "stopReason",
             "createdAt",
             "updatedAt",
             "endedAt"
@@ -2915,6 +4105,25 @@
                 }
               ]
             },
+            "stopRequested": {
+              "type": "boolean"
+            },
+            "stopRequestedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "stopReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -2942,6 +4151,9 @@
             "leaseExpiresAt",
             "progress",
             "progressUpdatedAt",
+            "stopRequested",
+            "stopRequestedAt",
+            "stopReason",
             "createdAt",
             "updatedAt",
             "endedAt"
@@ -3087,6 +4299,25 @@
                 }
               ]
             },
+            "stopRequested": {
+              "type": "boolean"
+            },
+            "stopRequestedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "stopReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -3114,6 +4345,9 @@
             "leaseExpiresAt",
             "progress",
             "progressUpdatedAt",
+            "stopRequested",
+            "stopRequestedAt",
+            "stopReason",
             "createdAt",
             "updatedAt",
             "endedAt"
@@ -3219,6 +4453,25 @@
                 }
               ]
             },
+            "stopRequested": {
+              "type": "boolean"
+            },
+            "stopRequestedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "stopReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -3246,6 +4499,9 @@
             "leaseExpiresAt",
             "progress",
             "progressUpdatedAt",
+            "stopRequested",
+            "stopRequestedAt",
+            "stopReason",
             "createdAt",
             "updatedAt",
             "endedAt"
@@ -3271,7 +4527,7 @@
   },
   {
     "name": "ready_work",
-    "description": "List minimal ready work in a project: open issues that are not Needs input and have no live active session, evaluated in database time. Needs no claim.",
+    "description": "List minimal ready work in a project: open issues that are not Needs input, have no live active session, and have no blocker whose status is not closed, evaluated in database time. Optional `filter` is all (default), assignedToMe or unassigned; an agent never sees issues assigned to a human or another agent. Work assigned to the caller sorts first, then priority urgent > high > medium > low > none, then sortOrder ascending, then creation time ascending. Needs no claim.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "$ref": "#/$defs/ReadyWorkInput",
@@ -3283,12 +4539,23 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 200
+            },
+            "filter": {
+              "$ref": "#/$defs/ReadyWorkFilter"
             }
           },
           "required": [
             "projectId"
           ],
           "additionalProperties": false
+        },
+        "ReadyWorkFilter": {
+          "type": "string",
+          "enum": [
+            "all",
+            "assignedToMe",
+            "unassigned"
+          ]
         }
       }
     },
@@ -3334,6 +4601,18 @@
             "status": {
               "$ref": "#/$defs/IssueStatus"
             },
+            "priority": {
+              "$ref": "#/$defs/IssuePriority"
+            },
+            "sortOrder": {
+              "$ref": "#/$defs/IssueSortOrder"
+            },
+            "needsInput": {
+              "type": "boolean"
+            },
+            "assignee": {
+              "$ref": "#/$defs/IssueAssignee"
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -3370,6 +4649,10 @@
             "title",
             "body",
             "status",
+            "priority",
+            "sortOrder",
+            "needsInput",
+            "assignee",
             "createdAt",
             "updatedAt",
             "closedAt",
@@ -3387,10 +4670,28 @@
             "closed"
           ]
         },
-        "Timestamp": {
+        "IssuePriority": {
           "type": "string",
-          "format": "date-time",
-          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          "enum": [
+            "urgent",
+            "high",
+            "medium",
+            "low",
+            "none"
+          ]
+        },
+        "IssueSortOrder": {
+          "type": "number"
+        },
+        "IssueAssignee": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "Actor": {
           "type": "object",
@@ -3439,6 +4740,11 @@
           "type": "string",
           "format": "email",
           "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
         },
         "FallbackPolicyOverride": {
           "anyOf": [
@@ -3539,6 +4845,25 @@
                 }
               ]
             },
+            "stopRequested": {
+              "type": "boolean"
+            },
+            "stopRequestedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "stopReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -3566,6 +4891,9 @@
             "leaseExpiresAt",
             "progress",
             "progressUpdatedAt",
+            "stopRequested",
+            "stopRequestedAt",
+            "stopReason",
             "createdAt",
             "updatedAt",
             "endedAt"
@@ -3580,6 +4908,261 @@
             "released",
             "expired"
           ]
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        }
+      }
+    }
+  },
+  {
+    "name": "log_session_activity",
+    "description": "Append an ephemeral thought, action or status entry to the live work session this agent holds on an issue. Optional detail is an extensible JSON object for structured blocks. Entries are kept independently of the claim lease, so an interrupted or completed session keeps its whole trail, and are never posted as issue comments. Requires a live session; pass sessionId to refuse a delayed write from an expired session instead of writing to a newer one.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$ref": "#/$defs/LogSessionActivityInput",
+      "$defs": {
+        "LogSessionActivityInput": {
+          "type": "object",
+          "properties": {
+            "issueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "kind": {
+              "$ref": "#/$defs/SessionActivityKind"
+            },
+            "summary": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 20000
+            },
+            "detail": {
+              "$ref": "#/$defs/SessionActivityDetail"
+            },
+            "sessionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
+          "required": [
+            "issueId",
+            "kind",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "SessionActivityKind": {
+          "type": "string",
+          "enum": [
+            "thought",
+            "action",
+            "status"
+          ]
+        },
+        "SessionActivityDetail": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        }
+      }
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$ref": "#/$defs/LogSessionActivityResponse",
+      "$defs": {
+        "LogSessionActivityResponse": {
+          "type": "object",
+          "properties": {
+            "activity": {
+              "$ref": "#/$defs/SessionActivity"
+            }
+          },
+          "required": [
+            "activity"
+          ],
+          "additionalProperties": false
+        },
+        "SessionActivity": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "workSessionId": {
+              "type": "string"
+            },
+            "runId": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/SessionActivityKind"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SessionActivityDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            }
+          },
+          "required": [
+            "id",
+            "workSessionId",
+            "runId",
+            "kind",
+            "summary",
+            "detail",
+            "createdAt"
+          ],
+          "additionalProperties": false
+        },
+        "SessionActivityKind": {
+          "type": "string",
+          "enum": [
+            "thought",
+            "action",
+            "status"
+          ]
+        },
+        "SessionActivityDetail": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        }
+      }
+    }
+  },
+  {
+    "name": "list_session_activities",
+    "description": "List the ephemeral thought/action/status timeline of one work session on an issue, newest first. Read access to the issue's project is enough; no claim is needed. These entries are separate from the permanent issue comments and survive expiry or completion.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$ref": "#/$defs/ListSessionActivitiesInput",
+      "$defs": {
+        "ListSessionActivitiesInput": {
+          "type": "object",
+          "properties": {
+            "issueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "sessionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
+          "required": [
+            "issueId",
+            "sessionId"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$ref": "#/$defs/ListSessionActivitiesResponse",
+      "$defs": {
+        "ListSessionActivitiesResponse": {
+          "type": "object",
+          "properties": {
+            "activities": {
+              "$ref": "#/$defs/SessionActivitiesResponse"
+            }
+          },
+          "required": [
+            "activities"
+          ],
+          "additionalProperties": false
+        },
+        "SessionActivitiesResponse": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SessionActivity"
+          }
+        },
+        "SessionActivity": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "workSessionId": {
+              "type": "string"
+            },
+            "runId": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/SessionActivityKind"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SessionActivityDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            }
+          },
+          "required": [
+            "id",
+            "workSessionId",
+            "runId",
+            "kind",
+            "summary",
+            "detail",
+            "createdAt"
+          ],
+          "additionalProperties": false
+        },
+        "SessionActivityKind": {
+          "type": "string",
+          "enum": [
+            "thought",
+            "action",
+            "status"
+          ]
+        },
+        "SessionActivityDetail": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
         },
         "Timestamp": {
           "type": "string",

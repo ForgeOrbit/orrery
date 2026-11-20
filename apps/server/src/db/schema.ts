@@ -1,15 +1,19 @@
 import {
   AgentKeyEventType,
   AgentKeyValidity,
+  AssigneeType,
   FallbackPolicy,
   InvitationDelivery,
   InvitationStatus,
+  IssueLinkKind,
+  IssuePriority,
   IssueStatus,
   ProjectAccessEventType,
   ProjectAccessLevel,
   ProjectActivityType,
   QuestionStatus,
   RunStatus,
+  SessionActivityKind,
   TransferAuthorizationStatus,
   WorkSessionStatus,
   WorkspaceKind,
@@ -20,8 +24,10 @@ import {
   type AnyPgColumn,
   boolean,
   check,
+  doublePrecision,
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -844,6 +850,13 @@ export const issues = pgTable(
     title: text("title").notNull(),
     body: text("body").notNull().default(""),
     status: text("status").$type<IssueStatus>().notNull(),
+    // Board importance (#88), defaulting to the neutral `none`. The database repeats the
+    // contract's enum so a writer that bypasses the service cannot invent a level.
+    priority: text("priority").$type<IssuePriority>().notNull().default("none"),
+    // Board position (#88). A float, so moving a card only writes that row's new midpoint
+    // between its neighbours. Created issues get number * 65535; an index keeps the ready
+    // work ordering (priority, then position, then creation) backed by the database.
+    sortOrder: doublePrecision("sort_order").notNull(),
     // Authorship is one identity, never two: a human or an agent, recorded in its own
     // column. An agent's work is attributed to the agent, not to its human owner.
     createdByHumanId: text("created_by_human_id").references(() => humans.id),
@@ -858,6 +871,12 @@ export const issues = pgTable(
     // project's fallback policy; null means "use the project's policy".
     needsInput: boolean("needs_input").notNull().default(false),
     fallbackPolicyOverride: text("fallback_policy_override").$type<FallbackPolicy>(),
+    // Board assignment (#84). The type decides which identity table the id names; there
+    // is deliberately no single FK because the target is one of two tables. The service
+    // validates the pair against current membership/keys inside the writing transaction,
+    // and the CHECK below keeps a bypassing writer from storing a half or unknown assignee.
+    assigneeType: text("assignee_type").$type<AssigneeType>(),
+    assigneeId: text("assignee_id"),
   },
   (t) => [
     // Exactly one author/editor identity: a human or an agent.
@@ -872,9 +891,30 @@ export const issues = pgTable(
     // Issue numbers never repeat inside a project, and two concurrent creations cannot
     // both take the same one.
     uniqueIndex("one_issue_number_per_project").on(t.projectId, t.number),
+    // Ready work and the board read a project's cards in position order; the priority
+    // ranking is applied in the query, so this index serves the sortOrder/createdAt tail.
+    index("issues_project_sort_order").on(t.projectId, t.sortOrder, t.createdAt),
+    // Assignment-driven queue lookups (board badges, ready-work filtering).
+    index("issues_assignee").on(t.assigneeType, t.assigneeId),
     check("issues_number_positive", sql`${t.number} > 0`),
     // DDL cannot bind parameters; the values come from the IssueStatus contract enum.
     check("issues_status", sql`${t.status} in (${sql.raw(sqlLiteralList(IssueStatus))})`),
+    check("issues_priority", sql`${t.priority} in (${sql.raw(sqlLiteralList(IssuePriority))})`),
+    // Both columns are null, or both are present. A present type must be a contract value.
+    check("issues_assignee_pair", sql`(${t.assigneeType} is null) = (${t.assigneeId} is null)`),
+    check(
+      "issues_assignee_type",
+      sql`(${t.assigneeType} is null or ${t.assigneeType} in (${sql.raw(
+        sqlLiteralList(AssigneeType),
+      )}))`,
+    ),
+    // Postgres sorts NaN above Infinity, so bounding the value on both sides rejects NaN
+    // as well as ±Infinity. Midpoint arithmetic can otherwise produce a non-finite position
+    // that no client can reorder past, and the CHECK holds even for a bypassing writer.
+    check(
+      "issues_sort_order_finite",
+      sql`${t.sortOrder} > '-Infinity'::double precision and ${t.sortOrder} < 'Infinity'::double precision`,
+    ),
     check(
       "issues_fallback_policy_override",
       sql`(${t.fallbackPolicyOverride} is null or ${t.fallbackPolicyOverride} in (${sql.raw(
@@ -885,6 +925,38 @@ export const issues = pgTable(
       "issues_closed_at_matches_status",
       sql`(${t.status} = 'closed') = (${t.closedAt} is not null)`,
     ),
+  ],
+);
+
+// A directed blocked_by edge (#86): `issue_id` cannot be ready work until
+// `blocked_by_issue_id` is closed. Both issues belong to one project; the service checks
+// project scope and acyclicity before writing, and these constraints make the data rule
+// hold even for a writer that bypasses it. The unique index stops duplicate edges, and the
+// reverse index keeps "what does this issue block" lookups indexed.
+export const issueDependencies = pgTable(
+  "issue_dependencies",
+  {
+    id: text("id").primaryKey(),
+    issueId: text("issue_id")
+      .notNull()
+      .references(() => issues.id),
+    blockedByIssueId: text("blocked_by_issue_id")
+      .notNull()
+      .references(() => issues.id),
+    // Authorship is one identity, never two: a human or an agent, recorded in its own
+    // column. An agent's work is attributed to the agent, not to its human owner.
+    createdByHumanId: text("created_by_human_id").references(() => humans.id),
+    createdByAgentId: text("created_by_agent_id").references(() => agents.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check("issue_dependencies_no_self_link", sql`${t.issueId} <> ${t.blockedByIssueId}`),
+    check(
+      "issue_dependencies_created_by_actor",
+      sql`(${t.createdByHumanId} is not null) <> (${t.createdByAgentId} is not null)`,
+    ),
+    uniqueIndex("one_blocked_by_per_issue").on(t.issueId, t.blockedByIssueId),
+    index("issue_dependencies_blocked_by").on(t.blockedByIssueId),
   ],
 );
 
@@ -908,6 +980,38 @@ export const issueComments = pgTable(
       sql`(${t.createdByHumanId} is not null) <> (${t.createdByAgentId} is not null)`,
     ),
     index("issue_comments_issue_created").on(t.issueId, t.createdAt),
+  ],
+);
+
+// A structured external link attached to an issue (#87). The kind classifies the artifact
+// so agents and humans can attach PRs and commits without burying URLs in Markdown. The
+// author is one identity, human or agent, kept after either leaves. Like every data rule,
+// the URL scheme and the (issue, url) uniqueness are enforced here too, not only in the
+// contract, so no writer can store an unsafe or duplicated link.
+export const issueLinks = pgTable(
+  "issue_links",
+  {
+    id: text("id").primaryKey(),
+    issueId: text("issue_id")
+      .notNull()
+      .references(() => issues.id),
+    url: text("url").notNull(),
+    title: text("title").notNull(),
+    kind: text("kind").$type<IssueLinkKind>().notNull(),
+    createdByHumanId: text("created_by_human_id").references(() => humans.id),
+    createdByAgentId: text("created_by_agent_id").references(() => agents.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "issue_links_created_by_actor",
+      sql`(${t.createdByHumanId} is not null) <> (${t.createdByAgentId} is not null)`,
+    ),
+    check("issue_links_kind", sql`${t.kind} in (${sql.raw(sqlLiteralList(IssueLinkKind))})`),
+    // DDL binds no parameters; the pattern is a fixed literal, never input.
+    check("issue_links_url_http_s", sql`${t.url} ~* '^https?://'`),
+    uniqueIndex("one_link_per_issue_and_url").on(t.issueId, t.url),
+    index("issue_links_issue_created").on(t.issueId, t.createdAt),
   ],
 );
 
@@ -942,6 +1046,12 @@ export const workSessions = pgTable(
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }).notNull(),
     progress: text("progress").notNull().default(""),
     progressUpdatedAt: timestamp("progress_updated_at", { withTimezone: true }),
+    // A human stop request (#82) is recorded on the still-active session in one atomic
+    // write: a timestamp and the requesting human are set together, with an optional
+    // reason. It is a signal the agent reads on its next check-in, never a status change.
+    stopRequestedAt: timestamp("stop_requested_at", { withTimezone: true }),
+    stopRequestedByHumanId: text("stop_requested_by_human_id").references(() => humans.id),
+    stopReason: text("stop_reason"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     endedAt: timestamp("ended_at", { withTimezone: true }),
@@ -951,6 +1061,15 @@ export const workSessions = pgTable(
       "work_sessions_status",
       sql`${t.status} in (${sql.raw(sqlLiteralList(WorkSessionStatus))})`,
     ),
+    // A stop request is one fact: its actor and time are always written together, and a
+    // reason may only exist when a request does. No half-recorded signal can be read.
+    check(
+      "work_sessions_stop_request",
+      sql`(
+        (${t.stopRequestedAt} is null and ${t.stopRequestedByHumanId} is null and ${t.stopReason} is null)
+        or (${t.stopRequestedAt} is not null and ${t.stopRequestedByHumanId} is not null)
+      )`,
+    ),
     // At most one active session per issue, enforced by Postgres under a concurrent race.
     uniqueIndex("one_active_work_session_per_issue")
       .on(t.issueId)
@@ -958,6 +1077,36 @@ export const workSessions = pgTable(
     index("work_sessions_agent_created").on(t.agentId, t.createdAt),
     index("work_sessions_run_created").on(t.runId, t.createdAt),
     index("work_sessions_issue_created").on(t.issueId, t.createdAt),
+  ],
+);
+
+// Ephemeral telemetry for a work session (#83). An activity is append-only and belongs to
+// a session and its run, never to issue_comments. There is no status column and no cascade
+// on lease expiry or session completion: an interrupted run keeps its whole trail for
+// debugging. `detail` is a JSONB object left deliberately unstructured for #15's blocks.
+// The kind check mirrors the shared contract so no writer can store an unknown kind.
+export const workSessionActivities = pgTable(
+  "work_session_activities",
+  {
+    id: text("id").primaryKey(),
+    workSessionId: text("work_session_id")
+      .notNull()
+      .references(() => workSessions.id),
+    runId: text("run_id")
+      .notNull()
+      .references(() => runs.id),
+    kind: text("kind").$type<SessionActivityKind>().notNull(),
+    summary: text("summary").notNull(),
+    detail: jsonb("detail").$type<Record<string, unknown>>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "work_session_activities_kind",
+      sql`${t.kind} in (${sql.raw(sqlLiteralList(SessionActivityKind))})`,
+    ),
+    // The inspector reads a whole session's timeline in created-at order; index that path.
+    index("work_session_activities_session_created").on(t.workSessionId, t.createdAt),
   ],
 );
 

@@ -785,6 +785,7 @@ describe("member removal and voluntary leave against real Postgres (#37)", () =>
       number: 1,
       title: "Personal issue kept after departure",
       status: "open",
+      sortOrder: 65535,
       needsInput: false,
       createdByHumanId: f.memberHumanId,
       updatedByHumanId: f.memberHumanId,

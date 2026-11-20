@@ -1,26 +1,35 @@
 import { randomUUID } from "node:crypto";
 import {
   ProjectAccessLevel,
+  ProjectActivityType,
   WorkSessionStatus,
+  type ActiveWorkSession,
   type AgentIdentity,
+  type AssigneeType,
   type Issue,
+  type ReadyWorkFilter,
   type ReacquireWorkSessionInput,
   type ResumeDisposition,
   type ResumeWorkSessionInput,
   type ResumeWorkSessionResult,
+  type LogSessionActivityInput,
+  type SessionActivity,
   type WorkSession,
   type WorkSessionOutcome,
 } from "@orrery/contract";
-import { and, desc, eq, gt, inArray, isNull, lte, sql } from "drizzle-orm";
-import type { PgInsertValue } from "drizzle-orm/pg-core";
+import { and, desc, eq, gt, inArray, isNull, lte, ne, notExists, or, sql } from "drizzle-orm";
+import { alias, type PgInsertValue } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
 import {
   agents,
   humans,
+  issueDependencies,
   issues,
+  projectActivity,
   projects,
   runs,
+  workSessionActivities,
   workSessions,
   workspaceMemberships,
   workspaces,
@@ -42,7 +51,13 @@ export type SessionsErrorKind =
   | "issue_claimed"
   | "issue_needs_input"
   | "issue_blocked"
-  | "session_required";
+  | "session_required"
+  | "human_sign_in_required"
+  | "agents_cannot_request_stop"
+  | "session_not_active"
+  | "session_not_found"
+  | "issue_assigned_to_human"
+  | "issue_assigned_to_other_agent";
 
 const messages: Record<SessionsErrorKind, string> = {
   not_signed_in: "An agent key is required.",
@@ -54,6 +69,12 @@ const messages: Record<SessionsErrorKind, string> = {
   issue_needs_input: "This issue needs human input and cannot be claimed yet.",
   issue_blocked: "This issue is closed or paused for input and cannot be reacquired yet.",
   session_required: "This agent holds no live session for this issue.",
+  human_sign_in_required: "Sign in as a human to request a stop.",
+  agents_cannot_request_stop: "Only a human with Contribute or Manage access may request a stop.",
+  session_not_active: "The work session is no longer active.",
+  session_not_found: "No such work session is in scope for the caller.",
+  issue_assigned_to_human: "This issue is assigned to a human and cannot be claimed by an agent.",
+  issue_assigned_to_other_agent: "This issue is assigned to another agent and cannot be claimed.",
 };
 
 export class SessionsError extends Error {
@@ -65,6 +86,10 @@ export class SessionsError extends Error {
     this.kind = kind;
   }
 }
+
+// The other side of a blocked_by edge in ready work: a distinct SQL name so the same
+// issues table can be the candidate row and the row that blocks it in one query.
+const blockerIssue = alias(issues, "blocker_issue");
 
 // The projects feature's one project-level resolver, borrowed through the registry so an
 // agent's effective level is capped by its human owner's *current* access on every claim,
@@ -119,6 +144,13 @@ export interface SessionsService {
     outcome: WorkSessionOutcome,
     sessionId?: string,
   ): Promise<WorkSession>;
+  // #82: a human-only stop request on an active session. It records the actor, time and
+  // optional reason and surfaces stopRequested on the agent's next check-in; it never
+  // ends the session or changes its status.
+  requestStop(actor: WorkActor | null, issueId: string, reason?: string): Promise<WorkSession>;
+  // Live sessions in a workspace the caller can read, for the agents view. A read in
+  // database time: it never renews a lease and never materializes expiry.
+  activeSessions(actor: WorkActor | null, workspaceId: string): Promise<ActiveWorkSession[]>;
   // #40: a pure, database-time read of the original run's claim, and the only way to
   // re-arm an expired claim. Resume never mutates; reacquire creates a fresh active
   // session (carrying the recorded progress) only when the issue is actually available.
@@ -126,7 +158,19 @@ export interface SessionsService {
   reacquire(actor: AgentActor | null, input: ReacquireWorkSessionInput): Promise<WorkSession>;
   getSession(actor: WorkActor | null, issueId: string): Promise<WorkSession>;
   listSessions(actor: WorkActor | null, issueId: string): Promise<WorkSession[]>;
-  readyWork(actor: WorkActor | null, projectId: string): Promise<Issue[]>;
+  // #83: append-only, ephemeral session telemetry. Append needs the live session the
+  // calling agent holds (with the same optional sessionId fence as the other writes);
+  // reading a session's timeline needs only Read access on the issue's project. Activities
+  // live in their own table, so expiry and completion never erase them.
+  logActivity(actor: AgentActor | null, input: LogSessionActivityInput): Promise<SessionActivity>;
+  listActivities(
+    actor: WorkActor | null,
+    issueId: string,
+    sessionId: string,
+  ): Promise<SessionActivity[]>;
+  // #84: the optional filter narrows the ready queue; the result is always ordered
+  // assigned-to-caller first, then priority, position and creation (#88).
+  readyWork(actor: WorkActor | null, projectId: string, filter?: ReadyWorkFilter): Promise<Issue[]>;
   // The narrow seam projects borrows to fence agent issue edits, closure and reopen. It
   // lazily expires a stale lease inside the caller's already issue-locked transaction and
   // answers whether this agent holds a live session. It never creates one.
@@ -154,6 +198,9 @@ const sessionColumns = {
   leaseExpiresAt: workSessions.leaseExpiresAt,
   progress: workSessions.progress,
   progressUpdatedAt: workSessions.progressUpdatedAt,
+  stopRequestedAt: workSessions.stopRequestedAt,
+  stopRequestedByHumanId: workSessions.stopRequestedByHumanId,
+  stopReason: workSessions.stopReason,
   createdAt: workSessions.createdAt,
   updatedAt: workSessions.updatedAt,
   endedAt: workSessions.endedAt,
@@ -172,15 +219,72 @@ function toSession(row: SessionView): WorkSession {
     leaseExpiresAt: row.leaseExpiresAt.toISOString(),
     progress: row.progress,
     progressUpdatedAt: iso(row.progressUpdatedAt),
+    // A stop request is a signal, not a status: the session stays active until the agent
+    // acknowledges it or the lease expires, so readers can tell "stopping" from "stopped".
+    stopRequested: row.stopRequestedAt !== null,
+    stopRequestedAt: iso(row.stopRequestedAt),
+    stopReason: row.stopReason,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     endedAt: iso(row.endedAt),
   };
 }
 
+// A projection of one activity row. The run id is read from the session at append time;
+// callers cannot attribute telemetry to a run the holding session never belonged to.
+const activityColumns = {
+  id: workSessionActivities.id,
+  workSessionId: workSessionActivities.workSessionId,
+  runId: workSessionActivities.runId,
+  kind: workSessionActivities.kind,
+  summary: workSessionActivities.summary,
+  detail: workSessionActivities.detail,
+  createdAt: workSessionActivities.createdAt,
+};
+
+type ActivityRow = typeof workSessionActivities.$inferSelect;
+
+function toActivity(row: ActivityRow): SessionActivity {
+  return {
+    id: row.id,
+    workSessionId: row.workSessionId,
+    runId: row.runId,
+    kind: row.kind,
+    summary: row.summary,
+    detail: row.detail ?? null,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
 function requireAgent(actor: AgentActor | null) {
   if (actor === null) throw new SessionsError("not_signed_in");
   return actor.identity;
+}
+
+// #84: the strict claim policy. Assignment is only a pull-queue hint, but an agent may
+// claim (or reacquire) an issue only while it is unassigned or assigned to that same
+// agent. A human assignee or a sibling agent keeps the claim reserved even when nobody
+// holds a lease. Called on the issue's locked row, so a concurrent reassignment cannot
+// slip between this decision and the session insert.
+function assertClaimAssignee(
+  assigneeType: AssigneeType | null,
+  assigneeId: string | null,
+  agentId: string,
+): void {
+  if (assigneeType === "human") throw new SessionsError("issue_assigned_to_human");
+  if (assigneeType === "agent" && assigneeId !== agentId) {
+    throw new SessionsError("issue_assigned_to_other_agent");
+  }
+}
+
+// The ready queue's stable first sort key: work assigned to the caller goes ahead of
+// everything else. Humans have no claim, but seeing their own assigned work first is the
+// same board hint; agents get the strict claimable queue.
+function assignedToActor(issue: Issue, actor: WorkActor): boolean {
+  if (issue.assignee === null) return false;
+  return actor.kind === "agent"
+    ? issue.assignee.agentId === actor.identity.agentId
+    : issue.assignee.humanId === actor.account.humanId;
 }
 
 // A claim is only as live as its agent's human's access to the workspace. Key
@@ -340,6 +444,8 @@ async function lockIssue(tx: DbTransaction, issueId: string) {
       projectId: issues.projectId,
       status: issues.status,
       needsInput: issues.needsInput,
+      assigneeType: issues.assigneeType,
+      assigneeId: issues.assigneeId,
     })
     .from(issues)
     .where(eq(issues.id, issueId))
@@ -520,6 +626,135 @@ function requireAccessArgs(
   };
 }
 
+// #82 human stop gate. Non-members and deactivated humans answer 404 like a missing
+// issue, so a stop probe cannot enumerate issues; members below Contribute answer 403.
+// Locks follow M22's order — human (KEY SHARE) -> membership (KEY SHARE) -> issue
+// (UPDATE) — so a deactivation that committed first is visible here and one in flight
+// waits for this decision instead of racing past it.
+async function requireHumanStopAccess(
+  tx: DbTransaction,
+  deps: Pick<SessionsDeps, "projectAccessCeiling" | "projectAccessAtLeast">,
+  humanId: string,
+  issueId: string,
+) {
+  // Read the project first, without a lock, only to learn which workspace to lock. The
+  // authoritative existence and access checks happen under the locks below.
+  const [issueRef] = await tx
+    .select({ projectId: issues.projectId })
+    .from(issues)
+    .where(eq(issues.id, issueId))
+    .limit(1);
+  if (issueRef === undefined) throw new SessionsError("issue_not_found");
+  const [projectRef] = await tx
+    .select({ workspaceId: projects.workspaceId })
+    .from(projects)
+    .where(eq(projects.id, issueRef.projectId))
+    .limit(1);
+  if (projectRef === undefined) throw new SessionsError("issue_not_found");
+
+  const [caller] = await tx
+    .select({ id: humans.id })
+    .from(humans)
+    .where(and(eq(humans.id, humanId), isNull(humans.deactivatedAt)))
+    .for("key share");
+  if (caller === undefined) throw new SessionsError("issue_not_found");
+
+  const [workspace] = await tx
+    .select({ personalOwnerHumanId: workspaces.personalOwnerHumanId })
+    .from(workspaces)
+    .where(eq(workspaces.id, projectRef.workspaceId))
+    .limit(1);
+  if (workspace === undefined) throw new SessionsError("issue_not_found");
+  if (workspace.personalOwnerHumanId !== humanId) {
+    // A suspended membership grants no access; a missing one is indistinguishable from
+    // a missing issue to the caller (404).
+    const [membership] = await tx
+      .select({ id: workspaceMemberships.id })
+      .from(workspaceMemberships)
+      .where(
+        and(
+          eq(workspaceMemberships.workspaceId, projectRef.workspaceId),
+          eq(workspaceMemberships.humanId, humanId),
+          isNull(workspaceMemberships.suspendedAt),
+        ),
+      )
+      .for("key share");
+    if (membership === undefined) throw new SessionsError("issue_not_found");
+  }
+
+  // Now the authoritative row lock and the project level on the same snapshot.
+  const issue = await lockIssue(tx, issueId);
+  const ceiling = await deps.projectAccessCeiling(tx, projectRef.workspaceId, humanId, [
+    issue.projectId,
+  ]);
+  const level = ceiling.get(issue.projectId) ?? null;
+  if (level === null || !deps.projectAccessAtLeast(level, ProjectAccessLevel.enum.contribute)) {
+    throw new SessionsError("insufficient_access");
+  }
+  return issue;
+}
+
+// #83 read boundary. Unlike a claim write, an activity read is allowed by project Read on
+// either actor kind. Every failure — missing issue, foreign workspace, absent membership,
+// a key without this project in scope, or a level below Read — answers 404 so an unrelated
+// caller cannot enumerate issues or sessions. The check is a read on the caller's own
+// transaction and never expires or renews a lease.
+async function requireActivityReadAccess(
+  tx: DbTransaction,
+  deps: Pick<SessionsDeps, "projectAccessCeiling" | "projectAccessAtLeast">,
+  actor: WorkActor,
+  issueId: string,
+): Promise<void> {
+  const [issue] = await tx
+    .select({ projectId: issues.projectId })
+    .from(issues)
+    .where(eq(issues.id, issueId))
+    .limit(1);
+  if (issue === undefined) throw new SessionsError("issue_not_found");
+  const [project] = await tx
+    .select({ workspaceId: projects.workspaceId })
+    .from(projects)
+    .where(eq(projects.id, issue.projectId))
+    .limit(1);
+  if (project === undefined) throw new SessionsError("issue_not_found");
+  if (actor.kind === "agent" && actor.identity.workspaceId !== project.workspaceId) {
+    throw new SessionsError("issue_not_found");
+  }
+  const humanId = actor.kind === "human" ? actor.account.humanId : actor.identity.humanId;
+  // #22/M22: a deactivated caller — human or an agent's human owner — gets the same 404
+  // as an unrelated one. Re-read this inside the caller's transaction so a deactivation
+  // that committed first cannot leave an activity read alive through a stale identity.
+  const [caller] = await tx
+    .select({ id: humans.id })
+    .from(humans)
+    .where(and(eq(humans.id, humanId), isNull(humans.deactivatedAt)))
+    .limit(1);
+  if (caller === undefined) throw new SessionsError("issue_not_found");
+  if (!(await humanStillHasWorkspaceAccess(tx, project.workspaceId, humanId))) {
+    throw new SessionsError("issue_not_found");
+  }
+  const ceiling = await deps.projectAccessCeiling(tx, project.workspaceId, humanId, [
+    issue.projectId,
+  ]);
+  const humanLevel = ceiling.get(issue.projectId) ?? null;
+  let level: ProjectAccessLevel | null = humanLevel;
+  if (actor.kind === "agent") {
+    const keyLevel = actor.identity.projects.find(
+      (grant) => grant.projectId === issue.projectId,
+    )?.level;
+    if (keyLevel === undefined) throw new SessionsError("issue_not_found");
+    level =
+      humanLevel === null
+        ? null
+        : deps.projectAccessAtLeast(humanLevel, keyLevel)
+          ? keyLevel
+          : humanLevel;
+  }
+  if (level === null || !deps.projectAccessAtLeast(level, ProjectAccessLevel.enum.read)) {
+    throw new SessionsError("issue_not_found");
+  }
+}
+
 export function createSessionsService({
   db,
   projectAccessCeiling,
@@ -561,19 +796,16 @@ export function createSessionsService({
     });
   };
 
-  // Renew, progress and stop share one live-session decision: lock the issue, expire a
-  // stale lease, re-check the agent's current project level, find the live session the
-  // agent holds, then apply the one update. Only the update differs between them.
-  const withLiveSession = async (
+  // Renew, progress, stop and activity logging share one live-session decision: lock the
+  // issue, expire a stale lease, re-check the agent's current project level, find the live
+  // session the agent holds, then apply the one write. Only that write differs. The session
+  // row is passed through so an activity can take its run id from the session itself.
+  const withLiveSession = async <T>(
     actor: AgentActor | null,
     issueId: string,
     sessionId: string | undefined,
-    update: (
-      tx: DbTransaction,
-      sessionId: string,
-      issueId: string,
-    ) => Promise<SessionView | undefined>,
-  ): Promise<WorkSession> => {
+    write: (tx: DbTransaction, session: SessionView, issueId: string) => Promise<T | undefined>,
+  ): Promise<T> => {
     const identity = requireAgent(actor);
     await deadlineCommitted(issueId);
     await expireCommitted(issueId);
@@ -610,9 +842,9 @@ export function createSessionsService({
         .limit(1);
       // An inactive session is never revived and a stale write never becomes a new claim.
       if (session === undefined) throw new SessionsError("session_required");
-      const updated = await update(tx, session.id, issue.id);
-      if (updated === undefined) throw new SessionsError("session_required");
-      return toSession(updated);
+      const result = await write(tx, session, issue.id);
+      if (result === undefined) throw new SessionsError("session_required");
+      return result;
     });
   };
 
@@ -646,6 +878,8 @@ export function createSessionsService({
         // A session follows the agent and run, not the key. An explicit run id must be a
         // run of this agent in this workspace; helpers on one issue pass the same id.
         await requireRun(tx, identity, input.runId);
+        // #84: an issue assigned elsewhere is not claimable, even by its prior run.
+        assertClaimAssignee(issue.assigneeType, issue.assigneeId, identity.agentId);
 
         const existing = await findActive(tx, issue.id);
         if (existing !== undefined) {
@@ -675,7 +909,7 @@ export function createSessionsService({
     },
 
     async renew(actor, issueId, sessionId) {
-      return withLiveSession(actor, issueId, sessionId, async (tx, id, issue) => {
+      return withLiveSession(actor, issueId, sessionId, async (tx, session, issue) => {
         // While a question is open, checking in keeps the claim but never past the one-hour
         // deadline. After the deadline the question has been paused by the evaluation above,
         // so there is no live session left to renew.
@@ -689,18 +923,18 @@ export function createSessionsService({
           .set({ leaseExpiresAt: lease, updatedAt: sql`statement_timestamp()` })
           .where(
             and(
-              eq(workSessions.id, id),
+              eq(workSessions.id, session.id),
               eq(workSessions.status, WorkSessionStatus.enum.active),
               liveLease,
             ),
           )
           .returning(sessionColumns);
-        return updated;
+        return updated === undefined ? undefined : toSession(updated);
       });
     },
 
     async progress(actor, issueId, summary, sessionId) {
-      return withLiveSession(actor, issueId, sessionId, async (tx, id) => {
+      return withLiveSession(actor, issueId, sessionId, async (tx, session) => {
         const [updated] = await tx
           .update(workSessions)
           .set({
@@ -710,19 +944,19 @@ export function createSessionsService({
           })
           .where(
             and(
-              eq(workSessions.id, id),
+              eq(workSessions.id, session.id),
               eq(workSessions.status, WorkSessionStatus.enum.active),
               liveLease,
             ),
           )
           .returning(sessionColumns);
-        return updated;
+        return updated === undefined ? undefined : toSession(updated);
       });
     },
 
     async stop(actor, issueId, outcome, sessionId) {
       const nextStatus = workSessionMachine.assertTransition("active", outcome);
-      return withLiveSession(actor, issueId, sessionId, async (tx, id) => {
+      return withLiveSession(actor, issueId, sessionId, async (tx, session) => {
         const [updated] = await tx
           .update(workSessions)
           .set({
@@ -732,14 +966,186 @@ export function createSessionsService({
           })
           .where(
             and(
-              eq(workSessions.id, id),
+              eq(workSessions.id, session.id),
               eq(workSessions.status, WorkSessionStatus.enum.active),
               liveLease,
             ),
           )
           .returning(sessionColumns);
-        return updated;
+        return updated === undefined ? undefined : toSession(updated);
       });
+    },
+
+    async logActivity(actor, input) {
+      // withLiveSession already locked the issue, expired a lapsed lease in database time
+      // and found this agent's one live session (or refused the fence). The INSERT happens
+      // on that same transaction, so the activity can never be written against a session
+      // that was not live at the moment of the append. No UPDATE to work_sessions follows:
+      // expiry and completion leave every already-written activity untouched.
+      return withLiveSession(actor, input.issueId, input.sessionId, async (tx, session) => {
+        const [row] = await tx
+          .insert(workSessionActivities)
+          .values({
+            id: randomUUID(),
+            workSessionId: session.id,
+            runId: session.runId,
+            kind: input.kind,
+            summary: input.summary,
+            detail: input.detail ?? null,
+            createdAt: sql`statement_timestamp()`,
+          })
+          .returning(activityColumns);
+        return row === undefined ? undefined : toActivity(row);
+      });
+    },
+
+    async requestStop(actor, issueId, reason) {
+      // A stop request is human-only: a bearer key must never ask its operator to stop,
+      // and a missing cookie is a different mistake from presenting an agent key.
+      if (actor === null) throw new SessionsError("human_sign_in_required");
+      if (actor.kind === "agent") throw new SessionsError("agents_cannot_request_stop");
+      const humanId = actor.account.humanId;
+      const normalized = reason?.trim() === "" ? undefined : reason?.trim();
+
+      // Nothing is mutated before authorization. Lazy expiry happens after the human,
+      // membership and issue checks on the same locked transaction. An inactive session
+      // returns a sentinel so its committed expiry survives the refusal; the error is
+      // raised only after that transaction commits.
+      const outcome = await db.transaction(async (tx) => {
+        const issue = await requireHumanStopAccess(
+          tx,
+          { projectAccessCeiling, projectAccessAtLeast },
+          humanId,
+          issueId,
+        );
+        await expireStale(tx, issue.id);
+
+        const [session] = await tx
+          .select(sessionColumns)
+          .from(workSessions)
+          .where(
+            and(
+              eq(workSessions.issueId, issue.id),
+              eq(workSessions.status, WorkSessionStatus.enum.active),
+              liveLease,
+            ),
+          )
+          .limit(1);
+        if (session === undefined) return { error: "session_not_active" as const };
+
+        // Idempotent: a repeated request never overwrites the recorded actor, time or
+        // reason, and never writes a second activity row.
+        if (session.stopRequestedAt !== null) return { session: toSession(session) };
+
+        // The UPDATE rechecks liveness in database time: a lease lapsing between the read
+        // and this write cannot receive a stop request.
+        const [updated] = await tx
+          .update(workSessions)
+          .set({
+            stopRequestedAt: sql`statement_timestamp()`,
+            stopRequestedByHumanId: humanId,
+            stopReason: normalized ?? null,
+            updatedAt: sql`statement_timestamp()`,
+          })
+          .where(
+            and(
+              eq(workSessions.id, session.id),
+              eq(workSessions.status, WorkSessionStatus.enum.active),
+              liveLease,
+            ),
+          )
+          .returning(sessionColumns);
+        if (updated === undefined) return { error: "session_not_active" as const };
+
+        // The stop request is part of the project's permanent history, written in the same
+        // transaction as the signal so activity can never disagree with the session. The
+        // summary is an optional reason snapshot, never a credential or internal id.
+        await tx.insert(projectActivity).values({
+          id: randomUUID(),
+          projectId: issue.projectId,
+          type: ProjectActivityType.enum.issue_stop_requested,
+          issueId: issue.id,
+          actorHumanId: humanId,
+          summary: normalized ?? "Stop requested",
+          createdAt: sql`statement_timestamp()`,
+        });
+
+        return { session: toSession(updated) };
+      });
+      if ("error" in outcome) throw new SessionsError(outcome.error);
+      return outcome.session;
+    },
+
+    async activeSessions(actor, workspaceId) {
+      const caller = requireActor(actor);
+      // A read in database time: it never renews a lease or materializes expiry. Projects
+      // the caller cannot read are omitted, so the listing is not an enumeration oracle.
+      return db.transaction(
+        async (tx) => {
+          let projectIds: string[];
+          if (caller.kind === "agent") {
+            if (caller.identity.workspaceId !== workspaceId) return [];
+            const ceiling = await projectAccessCeiling(
+              tx,
+              workspaceId,
+              caller.identity.humanId,
+              caller.identity.projects.map((grant) => grant.projectId),
+            );
+            projectIds = caller.identity.projects
+              .filter((grant) => projectAccessAtLeast(grant.level, ProjectAccessLevel.enum.read))
+              .filter((grant) => {
+                const current = ceiling.get(grant.projectId);
+                return (
+                  current !== null &&
+                  current !== undefined &&
+                  projectAccessAtLeast(current, ProjectAccessLevel.enum.read)
+                );
+              })
+              .map((grant) => grant.projectId);
+          } else {
+            if (!(await humanStillHasWorkspaceAccess(tx, workspaceId, caller.account.humanId))) {
+              return [];
+            }
+            const rows = await tx
+              .select({ id: projects.id })
+              .from(projects)
+              .where(eq(projects.workspaceId, workspaceId));
+            if (rows.length === 0) return [];
+            const ceiling = await projectAccessCeiling(
+              tx,
+              workspaceId,
+              caller.account.humanId,
+              rows.map((row) => row.id),
+            );
+            projectIds = rows
+              .filter((row) => {
+                const level = ceiling.get(row.id);
+                return (
+                  level !== null &&
+                  level !== undefined &&
+                  projectAccessAtLeast(level, ProjectAccessLevel.enum.read)
+                );
+              })
+              .map((row) => row.id);
+          }
+          if (projectIds.length === 0) return [];
+          const rows = await tx
+            .select({ ...sessionColumns, projectId: issues.projectId })
+            .from(workSessions)
+            .innerJoin(issues, eq(workSessions.issueId, issues.id))
+            .where(
+              and(
+                eq(workSessions.workspaceId, workspaceId),
+                eq(workSessions.status, WorkSessionStatus.enum.active),
+                liveLease,
+                inArray(issues.projectId, projectIds),
+              ),
+            )
+            .orderBy(desc(workSessions.createdAt));
+          return rows.map((row) => Object.assign(toSession(row), { projectId: row.projectId }));
+        },
+        { accessMode: "read only" },
+      );
     },
 
     async resume(actor, input) {
@@ -817,6 +1223,8 @@ export function createSessionsService({
           "issue_not_found",
         );
         await requireRun(tx, identity, input.runId);
+        // #84: reacquisition obeys the same strict policy as a fresh claim.
+        assertClaimAssignee(issue.assigneeType, issue.assigneeId, identity.agentId);
 
         // An idempotent retry after reconnect: the same run re-acquiring an issue it
         // already holds live returns that one session instead of registering a second.
@@ -931,8 +1339,54 @@ export function createSessionsService({
       );
     },
 
-    async readyWork(actorArg, projectId) {
+    async listActivities(actorArg, issueId, sessionId) {
       const actor = requireActor(actorArg);
+      return db.transaction(
+        async (tx) => {
+          // 404 for unrelated callers, not a 403 that would confirm the issue exists.
+          await requireActivityReadAccess(
+            tx,
+            { projectAccessCeiling, projectAccessAtLeast },
+            actor,
+            issueId,
+          );
+          const [session] = await tx
+            .select({ id: workSessions.id })
+            .from(workSessions)
+            .where(and(eq(workSessions.id, sessionId), eq(workSessions.issueId, issueId)))
+            .limit(1);
+          if (session === undefined) throw new SessionsError("session_not_found");
+          // A pure read: no lease expiry, no status change, no revival of a completed or
+          // expired session. Once written, an activity stays readable for the whole trail.
+          const rows = await tx
+            .select(activityColumns)
+            .from(workSessionActivities)
+            .where(eq(workSessionActivities.workSessionId, session.id))
+            .orderBy(desc(workSessionActivities.createdAt), desc(workSessionActivities.id));
+          return rows.map(toActivity);
+        },
+        { accessMode: "read only" },
+      );
+    },
+
+    async readyWork(actorArg, projectId, filter = "all") {
+      const actor = requireActor(actorArg);
+      // #84: an agent's `all` queue is exactly the claimable set — unassigned issues plus
+      // its own. Issues assigned to a human or a sibling agent are never offered, because
+      // the strict claim policy would refuse them anyway. Narrow filters are explicit.
+      const ownType = actor.kind === "agent" ? "agent" : "human";
+      const ownId = actor.kind === "agent" ? actor.identity.agentId : actor.account.humanId;
+      const assigneeFilter =
+        filter === "unassigned"
+          ? isNull(issues.assigneeId)
+          : filter === "assignedToMe"
+            ? and(eq(issues.assigneeType, ownType), eq(issues.assigneeId, ownId))
+            : actor.kind === "agent"
+              ? or(
+                  isNull(issues.assigneeId),
+                  and(eq(issues.assigneeType, "agent"), eq(issues.assigneeId, ownId)),
+                )
+              : undefined;
       // One read-only transaction decides which issues are ready, then the projects
       // feature's public listing supplies the same Issue shape as every other listing.
       // The two transactions are sequential, never nested on the connection pool.
@@ -947,18 +1401,36 @@ export function createSessionsService({
             eq(workSessions.status, WorkSessionStatus.enum.active),
             gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
           );
+          // #86: an issue is not ready while any of its blockers is still open. A closed
+          // blocker stops matching immediately, so the issue becomes ready without any
+          // dependency row being rewritten. The correlated NOT EXISTS keeps one row per
+          // candidate issue even when several blockers are open.
+          const noOpenBlocker = notExists(
+            tx
+              .select({ id: issueDependencies.id })
+              .from(issueDependencies)
+              .innerJoin(blockerIssue, eq(issueDependencies.blockedByIssueId, blockerIssue.id))
+              .where(
+                and(eq(issueDependencies.issueId, issues.id), ne(blockerIssue.status, "closed")),
+              ),
+          );
+          // This query only produces the eligible id set. The returned order comes from
+          // the projects listing below, which already orders by priority, then sortOrder,
+          // then createdAt (#88). The caller's own assignments are sorted to the front of
+          // that list, so REST and MCP ready work share one deterministic order (#84).
+          const conditions = [
+            eq(issues.projectId, projectId),
+            eq(issues.status, "open"),
+            eq(issues.needsInput, false),
+            isNull(workSessions.id),
+            noOpenBlocker,
+          ];
+          if (assigneeFilter !== undefined) conditions.push(assigneeFilter);
           const rows = await tx
             .select({ id: issues.id })
             .from(issues)
             .leftJoin(workSessions, live)
-            .where(
-              and(
-                eq(issues.projectId, projectId),
-                eq(issues.status, "open"),
-                eq(issues.needsInput, false),
-                isNull(workSessions.id),
-              ),
-            )
+            .where(and(...conditions))
             .orderBy(issues.number);
           return rows.map((row) => row.id);
         },
@@ -966,7 +1438,11 @@ export function createSessionsService({
       );
       if (eligible.length === 0) return [];
       const ready = new Set(eligible);
-      return (await listIssues(actor, projectId)).filter((issue) => ready.has(issue.id));
+      const ordered = (await listIssues(actor, projectId)).filter((issue) => ready.has(issue.id));
+      // Array.prototype.sort is stable: within each assignee group the board order from
+      // listIssues (priority, sortOrder, createdAt, number) is preserved exactly.
+      ordered.sort((a, b) => Number(assignedToActor(b, actor)) - Number(assignedToActor(a, actor)));
+      return ordered;
     },
 
     async agentHoldsSession(tx, agentId, workspaceId, issueId) {

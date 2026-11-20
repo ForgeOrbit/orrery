@@ -1,10 +1,14 @@
 import { z } from "zod";
 import {
   CreateIssueCommentRequest,
+  CreateIssueLinkRequest,
   CreateIssueRequest,
   CreateKnowledgeEntryRequest,
   Issue,
   IssueComment,
+  IssueDependency,
+  IssueDetail,
+  IssueLink,
   IssuesResponse,
   IssueCommentsResponse,
   KnowledgeEntriesResponse,
@@ -20,6 +24,10 @@ import { RunReportInput, RunReportResponse } from "./runs.ts";
 import {
   ClaimWorkSessionInput,
   GetWorkSessionInput,
+  ListSessionActivitiesInput,
+  ListSessionActivitiesResponse,
+  LogSessionActivityInput,
+  LogSessionActivityResponse,
   ReadyWorkInput,
   ReadyWorkResponse,
   ReacquireWorkSessionInput,
@@ -73,15 +81,16 @@ const listIssues = {
 
 const getIssue = {
   name: "get_issue",
-  description: "Read one issue in an in-scope project.",
+  description:
+    "Read one issue in an in-scope project. The issue includes its structured links (PRs, commits, docs and other web URLs) with each link's kind.",
   input: z.object({ issueId: id("The issue id") }),
-  output: z.object({ issue: Issue }),
+  output: z.object({ issue: IssueDetail }),
 };
 
 const createIssue = {
   name: "create_issue",
   description:
-    "Create an issue in an in-scope project. Requires Contribute access on the key and on its human owner.",
+    "Create an issue in an in-scope project. Priority and sortOrder may be set at creation; omitted priority defaults to none and omitted sortOrder is spaced by 65535 from the project-local issue number. Requires Contribute access on the key and on its human owner.",
   input: CreateIssueRequest.extend({ projectId: id("The project id") }),
   output: z.object({ issue: Issue }),
 };
@@ -89,9 +98,50 @@ const createIssue = {
 const updateIssue = {
   name: "update_issue",
   description:
-    "Edit an issue's title or body, or close/reopen it. Requires Contribute access. The actor recorded is the agent, not its human owner.",
+    "Edit an issue's title or body, close/reopen it, change its priority or sortOrder (a float; the midpoint of two neighbours moves one card without rewriting them), or set/clear its assignee (`{\"type\":\"human\"|\"agent\",\"id\":\"...\"}`, or null to clear). An assignee must be an active member or a registered agent in the workspace. Requires Contribute access and, for an agent, a live work session on the issue. The actor recorded is the agent, not its human owner.",
   input: UpdateIssueRequest.extend({ issueId: id("The issue id") }),
   output: z.object({ issue: Issue }),
+};
+
+// Directed blocked_by dependencies (#86). An issue with any open blocker is omitted from
+// ready work, so agents cannot claim downstream work before its prerequisites are closed.
+// Modifying an edge needs Contribute; reading either direction needs only Read.
+const addBlockedBy = {
+  name: "add_blocked_by",
+  description:
+    "Record that an issue is blocked by another issue in the same project. A self-link, a cross-project link, and any edge that would form a cycle are refused. Requires Contribute access.",
+  input: z.object({
+    issueId: id("The issue that is being blocked"),
+    blockedByIssueId: id("The issue in the same project that blocks it"),
+  }),
+  output: z.object({ dependency: IssueDependency }),
+};
+
+const removeBlockedBy = {
+  name: "remove_blocked_by",
+  description:
+    "Remove a blocked_by relation between two issues in the same project. Requires Contribute access; removing a relation that is not there is a no-op.",
+  input: z.object({
+    issueId: id("The issue that is being unblocked"),
+    blockedByIssueId: id("The issue that no longer blocks it"),
+  }),
+  output: z.object({ removed: z.literal(true) }),
+};
+
+const listBlockedBy = {
+  name: "list_blocked_by",
+  description:
+    "List the issues that block an issue (its prerequisites, open or closed). Read access is enough.",
+  input: z.object({ issueId: id("The issue id") }),
+  output: z.object({ issues: IssuesResponse }),
+};
+
+const listBlocking = {
+  name: "list_blocking",
+  description:
+    "List the issues that an issue blocks (its dependants, open or closed). Read access is enough.",
+  input: z.object({ issueId: id("The issue id") }),
+  output: z.object({ issues: IssuesResponse }),
 };
 
 const listComments = {
@@ -106,6 +156,24 @@ const createComment = {
   description: "Comment on an in-scope issue. Requires Contribute access.",
   input: CreateIssueCommentRequest.extend({ issueId: id("The issue id") }),
   output: z.object({ comment: IssueComment }),
+};
+
+// Structured issue links (#87). Adding or removing one requires Contribute access; reading
+// them is part of get_issue and needs only Read. Like comments, a link needs no work session.
+const addIssueLink = {
+  name: "add_issue_link",
+  description:
+    "Attach a PR, commit, external doc, or other web URL to an in-scope issue. Requires Contribute access. Only http and https URLs are accepted, and the same URL cannot be attached twice to one issue. The actor recorded is the agent, not its human owner.",
+  input: CreateIssueLinkRequest.extend({ issueId: id("The issue id") }),
+  output: z.object({ link: IssueLink }),
+};
+
+const removeIssueLink = {
+  name: "remove_issue_link",
+  description:
+    "Remove a previously attached link from an in-scope issue. Requires Contribute access. Removing a link that is not attached is an error, not a silent no-op.",
+  input: z.object({ issueId: id("The issue id"), linkId: id("The link id") }),
+  output: z.object({ removed: z.boolean() }),
 };
 
 const listActivity = {
@@ -162,7 +230,7 @@ const runCheckin = {
 const claimIssue = {
   name: "claim_issue",
   description:
-    "Claim an issue this agent needs to work on, for this agent and run. The issue may already be closed: a worker reopening it must claim it first, because a fenced update_issue needs a live session. One active session per issue: a second worker is refused. Helpers on the same issue pass the same runId and join the existing session. The claim is a five-minute lease in database time; renew it while working.",
+    "Claim an issue this agent needs to work on, for this agent and run. An agent may claim only work that is unassigned or assigned to that same agent; issues assigned to a human or another agent are refused. The issue may already be closed: a worker reopening it must claim it first, because a fenced update_issue needs a live session. One active session per issue: a second worker is refused. Helpers on the same issue pass the same runId and join the existing session. The claim is a five-minute lease in database time; renew it while working.",
   input: ClaimWorkSessionInput,
   output: WorkSessionResponse,
 };
@@ -170,7 +238,7 @@ const claimIssue = {
 const renewClaim = {
   name: "renew_claim",
   description:
-    "Check in on an issue this agent currently holds and refresh its five-minute lease in database time. Requires a live session; an expired or released session is never renewed or silently reacquired. Pass sessionId to fence a delayed call from an interrupted session: it is refused if that session is no longer the live one, even after reacquisition.",
+    "Check in on an issue this agent currently holds and refresh its five-minute lease in database time. Requires a live session; an expired or released session is never renewed or silently reacquired. Pass sessionId to fence a delayed call from an interrupted session: it is refused if that session is no longer the live one, even after reacquisition. The returned session carries stopRequested, stopRequestedAt and stopReason: when stopRequested is true a human has asked you to stop, so flush a brief handoff and call stop_session promptly. The five-minute lease remains the hard backstop.",
   input: RenewWorkSessionInput,
   output: WorkSessionResponse,
 };
@@ -178,7 +246,7 @@ const renewClaim = {
 const reportProgress = {
   name: "report_progress",
   description:
-    "Record progress on the live session this agent holds for an issue. Progress is stored independently of the lease, so an interruption never erases it. Requires a live session; pass sessionId to refuse a delayed report from an expired session instead of writing to a newer one.",
+    "Record progress on the live session this agent holds for an issue. Progress is stored independently of the lease, so an interruption never erases it. Requires a live session; pass sessionId to refuse a delayed report from an expired session instead of writing to a newer one. The returned session carries stopRequested, stopRequestedAt and stopReason: check them on every report and stop promptly if a human has asked you to stop.",
   input: ReportProgressInput,
   output: WorkSessionResponse,
 };
@@ -223,7 +291,7 @@ const reacquireWorkSession = {
 const readyWork = {
   name: "ready_work",
   description:
-    "List minimal ready work in a project: open issues that are not Needs input and have no live active session, evaluated in database time. Needs no claim.",
+    "List minimal ready work in a project: open issues that are not Needs input, have no live active session, and have no blocker whose status is not closed, evaluated in database time. Optional `filter` is all (default), assignedToMe or unassigned; an agent never sees issues assigned to a human or another agent. Work assigned to the caller sorts first, then priority urgent > high > medium > low > none, then sortOrder ascending, then creation time ascending. Needs no claim.",
   input: ReadyWorkInput,
   output: z.object({ issues: ReadyWorkResponse }),
 };
@@ -234,6 +302,25 @@ const allSessionsForIssue = {
     "List the work sessions recorded for an issue, including completed, released and expired ones. This is a read and needs no claim.",
   input: WorkSessionsListInput,
   output: z.object({ sessions: WorkSessionsResponse }),
+};
+
+// Ephemeral telemetry (#83): append-only thought/action/status entries stay with the work
+// session and are never mixed into issue comments. Appending requires a live session held
+// by this agent; reading needs only Read access on the issue's project.
+const logSessionActivity = {
+  name: "log_session_activity",
+  description:
+    "Append an ephemeral thought, action or status entry to the live work session this agent holds on an issue. Optional detail is an extensible JSON object for structured blocks. Entries are kept independently of the claim lease, so an interrupted or completed session keeps its whole trail, and are never posted as issue comments. Requires a live session; pass sessionId to refuse a delayed write from an expired session instead of writing to a newer one.",
+  input: LogSessionActivityInput,
+  output: LogSessionActivityResponse,
+};
+
+const listSessionActivities = {
+  name: "list_session_activities",
+  description:
+    "List the ephemeral thought/action/status timeline of one work session on an issue, newest first. Read access to the issue's project is enough; no claim is needed. These entries are separate from the permanent issue comments and survive expiry or completion.",
+  input: ListSessionActivitiesInput,
+  output: ListSessionActivitiesResponse,
 };
 
 // Human input (issue #41, fallback policy in #42). An agent asks through this tool;
@@ -267,8 +354,14 @@ export const projectTools: readonly ToolContract[] = [
   getIssue,
   createIssue,
   updateIssue,
+  addBlockedBy,
+  removeBlockedBy,
+  listBlockedBy,
+  listBlocking,
   listComments,
   createComment,
+  addIssueLink,
+  removeIssueLink,
   listActivity,
   listKnowledge,
   getKnowledge,
@@ -288,6 +381,8 @@ export const sessionTools: readonly ToolContract[] = [
   reacquireWorkSession,
   readyWork,
   allSessionsForIssue,
+  logSessionActivity,
+  listSessionActivities,
 ];
 
 export const questionTools: readonly ToolContract[] = [askForInput, listIssueQuestions];

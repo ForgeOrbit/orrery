@@ -1,10 +1,13 @@
 import {
   Issue,
   IssueComment,
+  IssueDependency,
+  IssueLink,
   KnowledgeEntry,
   Project,
   ProjectAccessGrant,
   type CreateIssueCommentRequest,
+  type CreateIssueLinkRequest,
   type CreateIssueRequest,
   type CreateKnowledgeEntryRequest,
   type CreateProjectRequest,
@@ -63,12 +66,40 @@ export function updateIssue(issueId: string, input: UpdateIssueRequest): Promise
   );
 }
 
+// Depended-on issue ids are never invented here: the server resolves both issues,
+// enforces same-project scope and acyclicity, and turns a bad edge into a Problem.
+export function addBlockedBy(issueId: string, blockedByIssueId: string): Promise<IssueDependency> {
+  return postJson(
+    `/api/issues/${encodeURIComponent(issueId)}/blocked-by`,
+    { blockedByIssueId },
+    (value) => IssueDependency.parse(value),
+  );
+}
+
+export function removeBlockedBy(issueId: string, blockedByIssueId: string): Promise<void> {
+  return deleteRequest(
+    `/api/issues/${encodeURIComponent(issueId)}/blocked-by/${encodeURIComponent(blockedByIssueId)}`,
+  );
+}
+
 export function createIssueComment(
   issueId: string,
   input: CreateIssueCommentRequest,
 ): Promise<IssueComment> {
   return postJson(`/api/issues/${encodeURIComponent(issueId)}/comments`, input, (value) =>
     IssueComment.parse(value),
+  );
+}
+
+export function addIssueLink(issueId: string, input: CreateIssueLinkRequest): Promise<IssueLink> {
+  return postJson(`/api/issues/${encodeURIComponent(issueId)}/links`, input, (value) =>
+    IssueLink.parse(value),
+  );
+}
+
+export function removeIssueLink(issueId: string, linkId: string): Promise<void> {
+  return deleteRequest(
+    `/api/issues/${encodeURIComponent(issueId)}/links/${encodeURIComponent(linkId)}`,
   );
 }
 

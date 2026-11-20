@@ -16,6 +16,38 @@ export type ProjectAccessLevel = z.infer<typeof ProjectAccessLevel>;
 export const IssueStatus = z.enum(["open", "closed"]).meta({ id: "IssueStatus" });
 export type IssueStatus = z.infer<typeof IssueStatus>;
 
+// Human-set importance (#88). `none` is the default so an unordered board stays neutral.
+// The order here is also the ready-work order: urgent first, none last.
+export const IssuePriority = z.enum(["urgent", "high", "medium", "low", "none"]).meta({
+  id: "IssuePriority",
+});
+export type IssuePriority = z.infer<typeof IssuePriority>;
+
+// A card's position in its project's board order. It is a float so a client can move one
+// card between two neighbours by storing their midpoint, rewriting only that one row.
+// New issues are spaced in increments of ISSUE_SORT_STEP by project-local issue number.
+export const IssueSortOrder = z.number().finite().meta({ id: "IssueSortOrder" });
+export type IssueSortOrder = z.infer<typeof IssueSortOrder>;
+
+// Board assignment (#84). An issue may be assigned to a human or to a registered agent in
+// the workspace. Assignment is a pull-queue hint, not a launch trigger: it never replaces
+// a claim. The pair is stored as two columns in the database with a CHECK that keeps both
+// null or both present, and the service validates the identity against current membership.
+export const AssigneeType = z.enum(["human", "agent"]).meta({ id: "AssigneeType" });
+export type AssigneeType = z.infer<typeof AssigneeType>;
+
+export const Assignee = z
+  .object({
+    type: AssigneeType,
+    id: z.string().trim().min(1).max(200),
+  })
+  .meta({ id: "Assignee" });
+export type Assignee = z.infer<typeof Assignee>;
+
+// The spacing between newly created cards, shared by the server's initializer and the UI's
+// midpoint reorder so both agree on how far apart neighbours start.
+export const ISSUE_SORT_STEP = 65535;
+
 // Fallback policy (#42). A project defaults to `require_human`: at the one-hour deadline
 // the question pauses and the claim is released. `fallback_allowed` authorizes returning
 // the agent's proposed fallback to the harness instead. An issue may tighten the project
@@ -44,12 +76,17 @@ export const ProjectActivityType = z
     "issue_commented",
     "issue_closed",
     "issue_reopened",
+    "issue_dependency_added",
+    "issue_dependency_removed",
+    "issue_link_added",
+    "issue_link_removed",
     "issue_question_asked",
     "issue_question_answered",
     "issue_question_paused",
     "issue_question_fallback_used",
     "issue_question_follow_up",
     "issue_fallback_policy_override_changed",
+    "issue_stop_requested",
     "knowledge_created",
     "knowledge_edited",
   ])
@@ -73,6 +110,11 @@ export const Actor = z
   })
   .meta({ id: "Actor" });
 export type Actor = z.infer<typeof Actor>;
+
+// The assignee is surfaced with the same identity shape as authorship so a card can show
+// one badge for either kind. Null means unassigned; a deactivated assignee keeps its label.
+export const IssueAssignee = Actor.nullable().meta({ id: "IssueAssignee" });
+export type IssueAssignee = z.infer<typeof IssueAssignee>;
 
 export const Project = z
   .object({
@@ -168,6 +210,14 @@ export const Issue = z
     title: z.string(),
     body: z.string(),
     status: IssueStatus,
+    priority: IssuePriority,
+    sortOrder: IssueSortOrder,
+    // The board renders a Needs input column from this flag; it is a human-input pause,
+    // not a work-session status (#37/#41).
+    needsInput: z.boolean(),
+    // Board assignment (#84): null means unassigned, otherwise the human or agent
+    // assigned to this issue. Assignment is a pull-queue hint, never a claim.
+    assignee: IssueAssignee,
     createdAt: Timestamp,
     updatedAt: Timestamp,
     closedAt: Timestamp.nullable(),
@@ -184,6 +234,55 @@ export type Issue = z.infer<typeof Issue>;
 export const IssuesResponse = z.array(Issue).meta({ id: "IssuesResponse" });
 export type IssuesResponse = z.infer<typeof IssuesResponse>;
 
+// A structured link attached to an issue (#87): a PR, a commit, an external doc, or any
+// other web URL. `link` is the fallback so a client never has to invent a kind for an
+// unfamiliar artifact.
+export const IssueLinkKind = z.enum(["pr", "commit", "doc", "link"]).meta({ id: "IssueLinkKind" });
+export type IssueLinkKind = z.infer<typeof IssueLinkKind>;
+
+// `z.url()` alone also accepts schemes such as javascript: and file:, which would make a
+// stored "link" unsafe to render as an anchor. Restrict the protocol to the web schemes;
+// the database repeats this rule so no writer can bypass the contract.
+export const IssueLinkUrl = z
+  .url()
+  .max(2048)
+  .refine(
+    (value) => {
+      const protocol = new URL(value).protocol;
+      return protocol === "http:" || protocol === "https:";
+    },
+    { message: "Only http and https links are allowed." },
+  )
+  .meta({ id: "IssueLinkUrl" });
+export type IssueLinkUrl = z.infer<typeof IssueLinkUrl>;
+
+export const IssueLink = z
+  .object({
+    id: z.string(),
+    issueId: z.string(),
+    url: IssueLinkUrl,
+    title: z.string(),
+    kind: IssueLinkKind,
+    createdAt: Timestamp,
+    createdBy: Actor,
+  })
+  .meta({ id: "IssueLink" });
+export type IssueLink = z.infer<typeof IssueLink>;
+
+export const CreateIssueLinkRequest = z
+  .object({
+    url: IssueLinkUrl,
+    title: z.string().trim().min(1, "Give the link a title.").max(200),
+    kind: IssueLinkKind,
+  })
+  .meta({ id: "CreateIssueLinkRequest" });
+export type CreateIssueLinkRequest = z.infer<typeof CreateIssueLinkRequest>;
+
+// The issue detail is the issue plus its structured links. The list and mutation responses
+// stay plain Issues so a project-wide listing does not pay for every issue's link rows.
+export const IssueDetail = Issue.extend({ links: z.array(IssueLink) }).meta({ id: "IssueDetail" });
+export type IssueDetail = z.infer<typeof IssueDetail>;
+
 // The issue body is Markdown, stored as written. The cap bounds the work of parsing and
 // storing it; it is not a rendering rule.
 export const IssueBody = z.string().max(100_000).meta({ id: "IssueBody" });
@@ -193,6 +292,8 @@ export const CreateIssueRequest = z
   .object({
     title: z.string().trim().min(1, "Give the issue a title.").max(200),
     body: IssueBody.optional(),
+    priority: IssuePriority.optional(),
+    sortOrder: IssueSortOrder.optional(),
   })
   .meta({ id: "CreateIssueRequest" });
 export type CreateIssueRequest = z.infer<typeof CreateIssueRequest>;
@@ -205,6 +306,11 @@ export const UpdateIssueRequest = z
     title: z.string().trim().min(1, "Give the issue a title.").max(200).optional(),
     body: IssueBody.optional(),
     status: IssueStatus.optional(),
+    priority: IssuePriority.optional(),
+    sortOrder: IssueSortOrder.optional(),
+    // Set or clear assignment (#84). Omitting the field leaves it unchanged; an explicit
+    // null clears it. Only Contribute and Manage may change it, just like other issue edits.
+    assignee: Assignee.nullable().optional(),
   })
   .meta({ id: "UpdateIssueRequest" });
 export type UpdateIssueRequest = z.infer<typeof UpdateIssueRequest>;
@@ -217,6 +323,28 @@ export const SetIssueFallbackPolicyRequest = z
   .object({ override: FallbackPolicyOverride })
   .meta({ id: "SetIssueFallbackPolicyRequest" });
 export type SetIssueFallbackPolicyRequest = z.infer<typeof SetIssueFallbackPolicyRequest>;
+
+// A directed dependency: `issueId` is blocked by `blockedByIssueId`. Both issues live in
+// one project, neither may be the other, and the graph is acyclic. The edge keeps the
+// identity that created it so the project's activity can name who changed the plan.
+export const IssueDependency = z
+  .object({
+    issueId: z.string(),
+    blockedByIssueId: z.string(),
+    createdAt: Timestamp,
+    createdBy: Actor,
+  })
+  .meta({ id: "IssueDependency" });
+export type IssueDependency = z.infer<typeof IssueDependency>;
+
+// Adding a blocker names the other issue in the same project. The service resolves both
+// ids before writing, so no database id is taken from anything else.
+export const AddBlockedByRequest = z
+  .object({
+    blockedByIssueId: z.string().trim().min(1, "Choose the blocking issue.").max(200),
+  })
+  .meta({ id: "AddBlockedByRequest" });
+export type AddBlockedByRequest = z.infer<typeof AddBlockedByRequest>;
 
 export const IssueComment = z
   .object({

@@ -1,5 +1,12 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import { projectTools } from "@orrery/contract";
+import {
+  Assignee,
+  type Assignee as AssigneeShape,
+  IssueLinkKind,
+  IssuePriority,
+  IssueSortOrder,
+  projectTools,
+} from "@orrery/contract";
 import { isAgentError, type AgentAuthenticator } from "../agents/index.ts";
 import { ProjectsError, type ProjectsService, type WorkActor } from "./service.ts";
 
@@ -16,6 +23,17 @@ const str = (value: unknown, field: string): string => {
   if (typeof value !== "string") throw new Error(`missing ${field}`);
   return value;
 };
+
+// The shared tool contract has already validated these optional fields. Parsing both with
+// their contract schemas keeps the service boundary typed and rejects non-finite positions
+// exactly as REST does, without inventing a second set of values here.
+const priority = (value: unknown): IssuePriority | undefined =>
+  value === undefined ? undefined : IssuePriority.parse(value);
+const sortOrder = (value: unknown): number | undefined =>
+  value === undefined ? undefined : IssueSortOrder.parse(value);
+// A missing field leaves assignment untouched; an explicit null clears it.
+const assignee = (value: unknown): AssigneeShape | null | undefined =>
+  value === undefined ? undefined : value === null ? null : Assignee.parse(value);
 
 export function createProjectsMcp(service: ProjectsService, authenticate: AgentAuthenticator) {
   const strategies: Record<string, Strategy> = {
@@ -35,6 +53,8 @@ export function createProjectsMcp(service: ProjectsService, authenticate: AgentA
       issue: await service.createIssue(actor, str(args.projectId, "projectId"), {
         title: str(args.title, "title"),
         body: args.body === undefined ? undefined : str(args.body, "body"),
+        priority: priority(args.priority),
+        sortOrder: sortOrder(args.sortOrder),
       }),
     }),
     update_issue: async (actor, args) => ({
@@ -42,7 +62,29 @@ export function createProjectsMcp(service: ProjectsService, authenticate: AgentA
         title: args.title === undefined ? undefined : str(args.title, "title"),
         body: args.body === undefined ? undefined : str(args.body, "body"),
         status: args.status === "open" || args.status === "closed" ? args.status : undefined,
+        priority: priority(args.priority),
+        sortOrder: sortOrder(args.sortOrder),
+        assignee: assignee(args.assignee),
       }),
+    }),
+    add_blocked_by: async (actor, args) => ({
+      dependency: await service.addBlockedBy(actor, str(args.issueId, "issueId"), {
+        blockedByIssueId: str(args.blockedByIssueId, "blockedByIssueId"),
+      }),
+    }),
+    remove_blocked_by: async (actor, args) => {
+      await service.removeBlockedBy(
+        actor,
+        str(args.issueId, "issueId"),
+        str(args.blockedByIssueId, "blockedByIssueId"),
+      );
+      return { removed: true as const };
+    },
+    list_blocked_by: async (actor, args) => ({
+      issues: await service.listBlockedBy(actor, str(args.issueId, "issueId")),
+    }),
+    list_blocking: async (actor, args) => ({
+      issues: await service.listBlocking(actor, str(args.issueId, "issueId")),
     }),
     list_comments: async (actor, args) => ({
       comments: await service.listComments(actor, str(args.issueId, "issueId")),
@@ -52,6 +94,21 @@ export function createProjectsMcp(service: ProjectsService, authenticate: AgentA
         body: str(args.body, "body"),
       }),
     }),
+    add_issue_link: async (actor, args) => ({
+      link: await service.addIssueLink(actor, str(args.issueId, "issueId"), {
+        url: str(args.url, "url"),
+        title: str(args.title, "title"),
+        kind: IssueLinkKind.parse(args.kind),
+      }),
+    }),
+    remove_issue_link: async (actor, args) => {
+      await service.removeIssueLink(
+        actor,
+        str(args.issueId, "issueId"),
+        str(args.linkId, "linkId"),
+      );
+      return { removed: true };
+    },
     list_activity: async (actor, args) => ({
       activity: await service.listActivity(actor, str(args.projectId, "projectId")),
     }),
