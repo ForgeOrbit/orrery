@@ -5,7 +5,7 @@ import type { Config } from "../platform/config.ts";
 import type { Feature } from "../platform/feature.ts";
 import type { Logger } from "../platform/log.ts";
 import { createAccountsFeature, accountsRoutes } from "./accounts/index.ts";
-import { createAgentsFeature, agentsRoutes } from "./agents/index.ts";
+import { createAgentsFeature, agentsRoutes, revokeMemberWorkspaceKeys } from "./agents/index.ts";
 import type { AgentAuthenticator } from "./agents/index.ts";
 import { createInvitationsFeature, invitationsRoutes } from "./invitations/index.ts";
 import { createProjectsFeature, projectAccessAtLeast, projectsRoutes } from "./projects/index.ts";
@@ -79,6 +79,8 @@ export function createFeatures(database: Database, config: Config, log: Logger):
       deliver: settings.deliver,
       revokeMemberProjectAccess: (tx, workspaceId, humanId, actorHumanId) =>
         projects.revokeMemberProjectAccess(tx, workspaceId, humanId, actorHumanId),
+      revokeMemberWorkspaceKeys: (tx, workspaceId, humanId, actorHumanId) =>
+        revokeMemberWorkspaceKeys(tx, workspaceId, humanId, actorHumanId),
       applyInvitationGrants: (tx, workspaceId, humanId, grantedByHumanId, offered) =>
         projects.applyInvitationGrants(tx, workspaceId, humanId, grantedByHumanId, offered),
       log,

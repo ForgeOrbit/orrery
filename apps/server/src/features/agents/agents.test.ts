@@ -20,6 +20,7 @@ import {
   workspaces,
 } from "../../db/schema.ts";
 import { createDb, type Database } from "../../platform/db.ts";
+import { rootCause } from "../../platform/errors.ts";
 import { createApp } from "../../platform/http.ts";
 import { createLogger, type Logger } from "../../platform/log.ts";
 import { migrate } from "../../platform/migrate.ts";
@@ -735,6 +736,42 @@ describe("workspace-scoped agent API keys", () => {
       workspaceId: team.id,
     });
     for (const event of events) expect(JSON.stringify(event)).not.toContain(teamKey.secret);
+  });
+
+  it("refuses a key project grant from another workspace at the database", async () => {
+    const app = await makeApp();
+    await bootstrapAdmin(app);
+    const adminCookie = await cookieFor(app, ADMIN_EMAIL, ADMIN_PASSWORD);
+    const [admin] = await database.db.select().from(humans).where(eq(humans.email, ADMIN_EMAIL));
+    if (admin === undefined) throw new Error("the admin was not found");
+    const workspace = await personalWorkspaceOf(admin.id);
+    const other = await sharedWorkspace("Other", admin.id);
+    const inScope = await project(workspace.id, "In scope", admin.id);
+    const outside = await project(other.id, "Out of scope", admin.id);
+    const agentId = await makeAgent(app, adminCookie, "scope-bot");
+    const issued = await issueKey(app, adminCookie, {
+      agentId,
+      workspaceId: workspace.id,
+      projects: [{ projectId: inScope.id, level: "read" }],
+    });
+
+    // A writer that bypasses the service cannot bind a key to a project in another
+    // workspace: the trigger is the database-level second line of defence.
+    const error = await rejection(
+      database.db.insert(agentApiKeyProjects).values({
+        id: randomUUID(),
+        keyId: issued.key.id,
+        projectId: outside.id,
+        level: "read",
+      }),
+    );
+    expect(rootCause(error)?.message ?? String(error)).toContain("agent_key_project_workspace");
+    expect(
+      await database.db
+        .select()
+        .from(agentApiKeyProjects)
+        .where(eq(agentApiKeyProjects.keyId, issued.key.id)),
+    ).toHaveLength(1);
   });
 
   describe("agent project work (issue #33)", () => {

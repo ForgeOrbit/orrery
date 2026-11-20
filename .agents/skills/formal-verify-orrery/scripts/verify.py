@@ -280,6 +280,23 @@ def extract_code_facts() -> dict[str, Any]:
         and 'WorkspacesError("invitation_scope_invalid")' in preview_fn
     )
 
+    # An owner whose offered project moved out of the workspace must no longer make the
+    # address look live: inviterStillAuthorized checks the offered scope before its owner
+    # early-return, so a fresh invite supersedes the dead offer instead of 409-ing.
+    still_live_fn = slice_between(
+        ws_src, "async function inviterStillAuthorized(", "// The listing projection"
+    )
+    scope_check = still_live_fn.find("await offeredProjectsInWorkspace(tx, workspaceId, offered)")
+    owner_return = still_live_fn.find("if (inviter.isOwner) return true")
+    m9_owner_stale_supersedes = (
+        scope_check >= 0
+        and owner_return >= 0
+        and scope_check < owner_return
+        and "eq(projects.workspaceId, workspaceId)" in slice_between(
+            ws_src, "async function offeredProjectsInWorkspace(", "async function requireOfferedProjectsInWorkspace("
+        )
+    )
+
     # M10: #28 delegation ceilings and the inviter's authority at redemption. Each guard
     # is scoped to the function that owns the decision; a check in another endpoint does
     # not satisfy it.
@@ -386,10 +403,39 @@ def extract_code_facts() -> dict[str, Any]:
         ag_src, "async function resolveKeyInTransaction(", "export function createAgentsService"
     )
     issue_fn = slice_between(ag_src, "async issueKey(", "async listKeys(")
-    revoke_own_fn = slice_between(ag_src, "async function revokeInTransaction(", "async function resolveKeyInTransaction(")
+    revoke_own_fn = slice_between(ag_src, "async function revokeInTransaction(", "export async function revokeMemberWorkspaceKeys(")
+    revoke_member_fn = slice_between(
+        ag_src, "export async function revokeMemberWorkspaceKeys(", "// Bearer resolution inside one transaction"
+    )
+    authenticate_fn = slice_between(ag_src, "async authenticate(", "  };")
     record_fn = slice_between(ag_src, "async function recordEvent(", "type KeyRow")
     owner_fn = slice_between(ag_src, "async ownerRevokeKey(", "async authenticate(")
     events_table = slice_between(ag_schema, "export const agentKeyEvents = pgTable(", "// An issue in a project.")
+    mig_0018 = read_text("db/migrations/0018_agent_key_project_scope.sql")
+
+    # Removal revokes the member's workspace keys in the removal's own transaction, with
+    # one secret-free event per newly revoked key; issuance takes the ownership lock so
+    # no INSERT can land after that revocation. Authentication reads one REPEATABLE READ
+    # snapshot, and the database rejects a key grant outside the key's workspace.
+    m11_member_removal_revokes_keys = (
+        "revokeMemberWorkspaceKeys(tx, workspaceId, humanId, actor.humanId)" in remove_member_fn
+        and "revokedAt: sql`now()`" in revoke_member_fn
+        and "isNull(agentApiKeys.revokedAt)" in revoke_member_fn
+        and "AgentKeyEventType.enum.agent_key_revoked" in revoke_member_fn
+    )
+    m11_issue_serialized = "await lockWorkspaceOwnershipWrites(tx)" in issue_fn.split(
+        "const [agent]", 1
+    )[0]
+    m11_repeatable_read_auth = (
+        'isolationLevel: "repeatable read"' in authenticate_fn
+        and 'accessMode: "read only"' in authenticate_fn
+    )
+    m11_key_project_scope_db = (
+        "CREATE TRIGGER agent_key_project_scope\n" in mig_0018
+        and "BEFORE INSERT OR UPDATE ON agent_api_key_projects" in mig_0018
+        and "key_workspace <> project_workspace" in mig_0018
+        and "RAISE EXCEPTION" in mig_0018
+    )
 
     m11_revocation = (
         "row.key.revokedAt !== null" in resolve_fn
@@ -554,6 +600,7 @@ def extract_code_facts() -> dict[str, Any]:
         "m9_grant_writer": m9_grant_writer,
         "m9_apply_validates": m9_apply_validates,
         "m9_resend_copies": m9_resend_copies,
+        "m9_owner_stale_supersedes": m9_owner_stale_supersedes,
         "m7_endpoint_reads": m7_endpoint_reads,
         "m7_get_404": m7_get_404,
         "m7_read_membership_404": m7_read_membership_404,
@@ -592,6 +639,10 @@ def extract_code_facts() -> dict[str, Any]:
         "m11_key_hash_only": m11_key_hash_only,
         "m11_events": m11_events,
         "m11_events_without_secret": m11_events_without_secret,
+        "m11_member_removal_revokes_keys": m11_member_removal_revokes_keys,
+        "m11_issue_serialized": m11_issue_serialized,
+        "m11_repeatable_read_auth": m11_repeatable_read_auth,
+        "m11_key_project_scope_db": m11_key_project_scope_db,
         "m12_agent_scope": m12_agent_scope,
         "m12_shared_gate": m12_shared_gate,
         "m12_agent_actor": m12_agent_actor,
@@ -1152,6 +1203,24 @@ def check_m9(facts: dict[str, Any]) -> CheckResult:
                 )
             )
         scope_valid = not offer_present or project_workspace == "invited"
+        # A dead offer must not lock the address for seven days even when its inviter is
+        # still an owner. A fresh invite supersedes it only if the liveness check also
+        # verifies the offered scope, not just the inviter's role and mailbox.
+        if token == "pending" and offer_present and not scope_valid:
+            if facts["m9_owner_stale_supersedes"]:
+                out.append(
+                    (
+                        "invite: a fresh offer supersedes the owner's stale-scope offer",
+                        ("invited", True, "superseded", membership, grant, resent),
+                    )
+                )
+            else:
+                out.append(
+                    (
+                        "invite: the owner's stale-scope offer blocks the address (invitation_pending)",
+                        (project_workspace, offer_present, "blocked", membership, grant, resent),
+                    )
+                )
         if token == "pending" and not membership:
             out.append(("recipient: joins via a newer offer after the original expires", (project_workspace, offer_present, "expired", True, grant, resent)))
         if token in ("pending", "expired") and not resent:
@@ -1200,6 +1269,8 @@ def check_m9(facts: dict[str, Any]) -> CheckResult:
             return False, "Invitation creation does not persist any offered project grant!"
         if token == "member_resend":
             return False, "An existing workspace member was sent a replacement invitation!"
+        if token == "blocked":
+            return False, "A dead owner invitation blocked a fresh offer for seven days!"
         if token in ("stale_resend", "stale_preview"):
             return False, "An invitation with stale project scope was exposed or rotated!"
         if grant and project_workspace != "invited":
@@ -1333,6 +1404,10 @@ def check_m11(facts: dict[str, Any]) -> CheckResult:
         ("repeating a revocation writes no second event", "events=1_no_duplicate", facts["m11_single_event"], "events=2_duplicate"),
         ("the owner's revocation in A leaves a key in B live", "live", isolation, "revoked"),
         ("creation and revocation each write one event, without a secret", "events=2_no_secret", audit, "events=0"),
+        ("removeMember revokes the member's workspace keys, so rejoin cannot revive them", "revoked_on_removal", facts["m11_member_removal_revokes_keys"], "live_after_rejoin"),
+        ("POST /api/agents/keys racing removeMember leaves no unrevoked key for a removed member", "no_live_key", facts["m11_issue_serialized"], "live_key_for_removed_member"),
+        ("GET /api/agents/me reads membership, revocation, and ceilings in one REPEATABLE READ snapshot", "consistent", facts["m11_repeatable_read_auth"], "torn_read"),
+        ("direct insert of agent_api_key_projects for a project in another workspace", "rejected", facts["m11_key_project_scope_db"], "committed"),
     ]
     init = ("start",)
 
@@ -1363,9 +1438,13 @@ def check_m11(facts: dict[str, Any]) -> CheckResult:
         inv,
         [
             "apps/server/src/features/agents/service.ts",
+            "apps/server/src/features/agents/index.ts",
+            "apps/server/src/features/index.ts",
+            "apps/server/src/features/workspaces/service.ts",
             "apps/server/src/features/projects/service.ts",
             "apps/server/src/db/schema.ts",
             "db/migrations/0016_clumsy_masked_marvel.sql",
+            "db/migrations/0018_agent_key_project_scope.sql",
         ],
     )
 
