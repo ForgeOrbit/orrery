@@ -605,17 +605,26 @@ export const issues = pgTable(
     title: text("title").notNull(),
     body: text("body").notNull().default(""),
     status: text("status").$type<IssueStatus>().notNull(),
-    createdByHumanId: text("created_by_human_id")
-      .notNull()
-      .references(() => humans.id),
-    updatedByHumanId: text("updated_by_human_id")
-      .notNull()
-      .references(() => humans.id),
+    // Authorship is one identity, never two: a human or an agent, recorded in its own
+    // column. An agent's work is attributed to the agent, not to its human owner.
+    createdByHumanId: text("created_by_human_id").references(() => humans.id),
+    createdByAgentId: text("created_by_agent_id").references(() => agents.id),
+    updatedByHumanId: text("updated_by_human_id").references(() => humans.id),
+    updatedByAgentId: text("updated_by_agent_id").references(() => agents.id),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     closedAt: timestamp("closed_at", { withTimezone: true }),
   },
   (t) => [
+    // Exactly one author/editor identity: a human or an agent.
+    check(
+      "issues_created_by_actor",
+      sql`(${t.createdByHumanId} is not null) <> (${t.createdByAgentId} is not null)`,
+    ),
+    check(
+      "issues_updated_by_actor",
+      sql`(${t.updatedByHumanId} is not null) <> (${t.updatedByAgentId} is not null)`,
+    ),
     // Issue numbers never repeat inside a project, and two concurrent creations cannot
     // both take the same one.
     uniqueIndex("one_issue_number_per_project").on(t.projectId, t.number),
@@ -639,12 +648,17 @@ export const issueComments = pgTable(
       .notNull()
       .references(() => issues.id),
     body: text("body").notNull(),
-    createdByHumanId: text("created_by_human_id")
-      .notNull()
-      .references(() => humans.id),
+    createdByHumanId: text("created_by_human_id").references(() => humans.id),
+    createdByAgentId: text("created_by_agent_id").references(() => agents.id),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("issue_comments_issue_created").on(t.issueId, t.createdAt)],
+  (t) => [
+    check(
+      "issue_comments_created_by_actor",
+      sql`(${t.createdByHumanId} is not null) <> (${t.createdByAgentId} is not null)`,
+    ),
+    index("issue_comments_issue_created").on(t.issueId, t.createdAt),
+  ],
 );
 
 // A basic Markdown knowledge entry (issue #26). This is deliberately not the full vault
@@ -658,16 +672,24 @@ export const knowledgeEntries = pgTable(
       .references(() => projects.id),
     title: text("title").notNull(),
     body: text("body").notNull().default(""),
-    createdByHumanId: text("created_by_human_id")
-      .notNull()
-      .references(() => humans.id),
-    updatedByHumanId: text("updated_by_human_id")
-      .notNull()
-      .references(() => humans.id),
+    createdByHumanId: text("created_by_human_id").references(() => humans.id),
+    createdByAgentId: text("created_by_agent_id").references(() => agents.id),
+    updatedByHumanId: text("updated_by_human_id").references(() => humans.id),
+    updatedByAgentId: text("updated_by_agent_id").references(() => agents.id),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("knowledge_entries_project_created").on(t.projectId, t.createdAt)],
+  (t) => [
+    check(
+      "knowledge_entries_created_by_actor",
+      sql`(${t.createdByHumanId} is not null) <> (${t.createdByAgentId} is not null)`,
+    ),
+    check(
+      "knowledge_entries_updated_by_actor",
+      sql`(${t.updatedByHumanId} is not null) <> (${t.updatedByAgentId} is not null)`,
+    ),
+    index("knowledge_entries_project_created").on(t.projectId, t.createdAt),
+  ],
 );
 
 // The project's activity feed (issue #26). Each event is written in the same transaction
@@ -704,15 +726,20 @@ export const projectActivity = pgTable(
       .notNull()
       .references(() => projects.id),
     type: text("type").$type<ProjectActivityType>().notNull(),
-    actorHumanId: text("actor_human_id")
-      .notNull()
-      .references(() => humans.id),
+    // The actor is a human or an agent; both stay attached after either leaves.
+    actorHumanId: text("actor_human_id").references(() => humans.id),
+    actorAgentId: text("actor_agent_id").references(() => agents.id),
     issueId: text("issue_id").references(() => issues.id),
     knowledgeEntryId: text("knowledge_entry_id").references(() => knowledgeEntries.id),
     summary: text("summary").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    // Exactly one actor identity: a human or an agent.
+    check(
+      "project_activity_actor",
+      sql`(${t.actorHumanId} is not null) <> (${t.actorAgentId} is not null)`,
+    ),
     // DDL cannot bind parameters; the values come from the ProjectActivityType enum.
     check(
       "project_activity_type",

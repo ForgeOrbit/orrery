@@ -7,6 +7,8 @@ export interface Feature {
   name: string;
   // REST routes, mounted at the root. Route paths are absolute, for example /api/v1/issues.
   rest?: OpenAPIHono;
-  // Adds the feature's MCP tools to a server. Called once per MCP request.
-  registerTools?: (server: McpServer) => void;
+  // Adds the feature's MCP tools to a server. Called once per MCP request. The request is
+  // passed in so a tool adapter can read its Authorization header; the platform never
+  // interprets credentials or imports a feature to do it.
+  registerTools?: (server: McpServer, request: Request) => void;
 }

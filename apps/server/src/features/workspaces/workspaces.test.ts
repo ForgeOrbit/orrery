@@ -357,6 +357,7 @@ describe("workspaces", () => {
     const projectsFeature = createProjectsFeature({
       db: database.db,
       sessionReader: accounts.sessionReader,
+      agentAuthenticator: async () => null,
     });
     const workspacesFeature = createWorkspacesFeature({
       db: database.db,

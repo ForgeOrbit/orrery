@@ -4,6 +4,8 @@ import {
   ProjectAccessEventType,
   ProjectAccessLevel,
   WorkspaceKind,
+  type Actor,
+  type AgentIdentity,
   type CreateIssueCommentRequest,
   type CreateIssueRequest,
   type CreateKnowledgeEntryRequest,
@@ -25,6 +27,7 @@ import { alias } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
 import {
+  agents,
   humans,
   issueComments,
   issues,
@@ -172,13 +175,29 @@ export function projectAccessAtLeast(
   return ACCESS_RANK[actual] >= ACCESS_RANK[required];
 }
 
+// The actor's effective level for one project. A human's level comes from the same
+// workspace/grant resolver as every REST route. An agent's level is the key's effective
+// grant (already capped by its owner's current access at authentication) and nothing
+// else. An agent cannot see a project outside its key's one workspace: that answers just
+// like a missing project, so an out-of-scope id reveals nothing.
+function actorAccessLevel(
+  facts: AccessFacts & { projectId: string; workspaceId: string },
+  actor: WorkActor,
+): ProjectAccessLevel | null {
+  if (actor.kind === "human") return resolveAccessLevel(facts, actor.account.humanId);
+  if (facts.workspaceId !== actor.identity.workspaceId) return null;
+  return (
+    actor.identity.projects.find((grant) => grant.projectId === facts.projectId)?.level ?? null
+  );
+}
+
 function requireLevel(
-  facts: AccessFacts,
-  humanId: string,
+  facts: AccessFacts & { projectId: string; workspaceId: string },
+  actor: WorkActor,
   required: ProjectAccessLevel,
   missingKind: ProjectsErrorKind,
 ): ProjectAccessLevel {
-  const level = resolveAccessLevel(facts, humanId);
+  const level = actorAccessLevel(facts, actor);
   if (level === null) throw new ProjectsError(missingKind);
   if (!projectAccessAtLeast(level, required)) {
     throw new ProjectsError("insufficient_project_access");
@@ -201,6 +220,71 @@ function requireAccount(account: SessionAccount | null): SessionAccount {
   return account;
 }
 
+// Human project work and agent project work share one policy path. A human acts with
+// their own session; an agent acts with the identity its key resolved, including the key's
+// effective project levels. Both are decided only here, never by a transport adapter.
+export type WorkActor =
+  | { kind: "human"; account: SessionAccount }
+  | { kind: "agent"; identity: AgentIdentity };
+
+function requireActor(actor: WorkActor | null): WorkActor {
+  if (actor === null) throw new ProjectsError("not_signed_in");
+  return actor;
+}
+
+function humanIdOf(actor: WorkActor): string | null {
+  return actor.kind === "human" ? actor.account.humanId : null;
+}
+
+function agentIdOf(actor: WorkActor): string | null {
+  return actor.kind === "agent" ? actor.identity.agentId : null;
+}
+
+// An agent has no human id to join on. Use a false predicate rather than a made-up
+// sentinel id, so an agent query cannot accidentally match a row.
+function humanIdMatch(actor: WorkActor, table: "membership" | "grant") {
+  const humanId = humanIdOf(actor);
+  if (humanId === null) return sql`false`;
+  const column =
+    table === "membership" ? workspaceMemberships.humanId : projectAccessGrants.humanId;
+  return eq(column, humanId);
+}
+
+// The display actor for a write: the human's email or the agent's name. An agent action
+// never carries its owner's human id or email, so history cannot misattribute it.
+function actorForWrite(actor: WorkActor): Actor {
+  if (actor.kind === "human") {
+    return {
+      humanId: actor.account.humanId,
+      email: actor.account.email,
+      displayName: actor.account.email,
+    };
+  }
+  return {
+    agentId: actor.identity.agentId,
+    agentName: actor.identity.name,
+    displayName: actor.identity.name,
+  };
+}
+
+// The display actor for a stored row: exactly one of the human or agent columns is set.
+function actorFromRow(
+  humanId: string | null,
+  email: string | null,
+  agentId: string | null,
+  agentName: string | null,
+): Actor {
+  if (humanId !== null && email !== null) {
+    return { humanId, email, displayName: email };
+  }
+  if (agentId !== null && agentName !== null) {
+    return { agentId, agentName, displayName: agentName };
+  }
+  // The actor constraint guarantees one identity; this is a defensive fallback for a
+  // deactivated author whose row is still present.
+  return { displayName: "Unknown" };
+}
+
 // Aliases let one query join humans several times: a creator and a last editor, or an
 // issue's author and a comment's author. Each alias is a separate SQL name.
 const projectCreator = alias(humans, "project_creator");
@@ -211,6 +295,14 @@ const knowledgeCreator = alias(humans, "knowledge_creator");
 const knowledgeEditor = alias(humans, "knowledge_editor");
 const activityActor = alias(humans, "activity_actor");
 const accessGrantor = alias(humans, "access_grantor");
+// Agent aliases mirror the human aliases above; a row's actor column decides which one
+// carries the identity. Left joins keep agent-authored rows in the same query.
+const issueAgentCreator = alias(agents, "issue_agent_creator");
+const issueAgentEditor = alias(agents, "issue_agent_editor");
+const commentAgentAuthor = alias(agents, "comment_agent_author");
+const knowledgeAgentCreator = alias(agents, "knowledge_agent_creator");
+const knowledgeAgentEditor = alias(agents, "knowledge_agent_editor");
+const activityAgentActor = alias(agents, "activity_agent_actor");
 
 const projectColumns = {
   id: projects.id,
@@ -233,8 +325,12 @@ const issueColumns = {
   closedAt: issues.closedAt,
   createdByHumanId: issues.createdByHumanId,
   createdByEmail: issueCreator.email,
+  createdByAgentId: issues.createdByAgentId,
+  createdByAgentName: issueAgentCreator.name,
   updatedByHumanId: issues.updatedByHumanId,
   updatedByEmail: issueEditor.email,
+  updatedByAgentId: issues.updatedByAgentId,
+  updatedByAgentName: issueAgentEditor.name,
 };
 
 const commentColumns = {
@@ -244,6 +340,8 @@ const commentColumns = {
   createdAt: issueComments.createdAt,
   authorHumanId: issueComments.createdByHumanId,
   authorEmail: commentAuthor.email,
+  authorAgentId: issueComments.createdByAgentId,
+  authorAgentName: commentAgentAuthor.name,
 };
 
 const knowledgeColumns = {
@@ -255,8 +353,12 @@ const knowledgeColumns = {
   updatedAt: knowledgeEntries.updatedAt,
   createdByHumanId: knowledgeEntries.createdByHumanId,
   createdByEmail: knowledgeCreator.email,
+  createdByAgentId: knowledgeEntries.createdByAgentId,
+  createdByAgentName: knowledgeAgentCreator.name,
   updatedByHumanId: knowledgeEntries.updatedByHumanId,
   updatedByEmail: knowledgeEditor.email,
+  updatedByAgentId: knowledgeEntries.updatedByAgentId,
+  updatedByAgentName: knowledgeAgentEditor.name,
 };
 
 const activityColumns = {
@@ -269,6 +371,8 @@ const activityColumns = {
   createdAt: projectActivity.createdAt,
   actorHumanId: projectActivity.actorHumanId,
   actorEmail: activityActor.email,
+  actorAgentId: projectActivity.actorAgentId,
+  actorAgentName: activityAgentActor.name,
 };
 
 type ProjectRow = {
@@ -302,10 +406,14 @@ type IssueRow = {
   createdAt: Date;
   updatedAt: Date;
   closedAt: Date | null;
-  createdByHumanId: string;
-  createdByEmail: string;
-  updatedByHumanId: string;
-  updatedByEmail: string;
+  createdByHumanId: string | null;
+  createdByEmail: string | null;
+  createdByAgentId: string | null;
+  createdByAgentName: string | null;
+  updatedByHumanId: string | null;
+  updatedByEmail: string | null;
+  updatedByAgentId: string | null;
+  updatedByAgentName: string | null;
 };
 
 type CommentRow = {
@@ -313,8 +421,10 @@ type CommentRow = {
   issueId: string;
   body: string;
   createdAt: Date;
-  authorHumanId: string;
-  authorEmail: string;
+  authorHumanId: string | null;
+  authorEmail: string | null;
+  authorAgentId: string | null;
+  authorAgentName: string | null;
 };
 
 type KnowledgeRow = {
@@ -324,10 +434,14 @@ type KnowledgeRow = {
   body: string;
   createdAt: Date;
   updatedAt: Date;
-  createdByHumanId: string;
-  createdByEmail: string;
-  updatedByHumanId: string;
-  updatedByEmail: string;
+  createdByHumanId: string | null;
+  createdByEmail: string | null;
+  createdByAgentId: string | null;
+  createdByAgentName: string | null;
+  updatedByHumanId: string | null;
+  updatedByEmail: string | null;
+  updatedByAgentId: string | null;
+  updatedByAgentName: string | null;
 };
 
 type ActivityRow = {
@@ -338,8 +452,10 @@ type ActivityRow = {
   issueId: string | null;
   knowledgeEntryId: string | null;
   createdAt: Date;
-  actorHumanId: string;
-  actorEmail: string;
+  actorHumanId: string | null;
+  actorEmail: string | null;
+  actorAgentId: string | null;
+  actorAgentName: string | null;
 };
 
 function toProject(row: ProjectRow): Project {
@@ -348,7 +464,11 @@ function toProject(row: ProjectRow): Project {
     workspaceId: row.workspaceId,
     name: row.name,
     createdAt: row.createdAt.toISOString(),
-    createdBy: { humanId: row.createdByHumanId, email: row.createdByEmail },
+    createdBy: {
+      humanId: row.createdByHumanId,
+      email: row.createdByEmail,
+      displayName: row.createdByEmail,
+    },
     workspaceKind: row.workspaceKind,
     accessLevel: row.accessLevel,
   };
@@ -359,7 +479,11 @@ function toProjectGrant(row: ProjectGrantRow): ProjectAccessGrant {
     humanId: row.humanId,
     email: row.email,
     level: row.level,
-    grantedBy: { humanId: row.grantedByHumanId, email: row.grantedByEmail },
+    grantedBy: {
+      humanId: row.grantedByHumanId,
+      email: row.grantedByEmail,
+      displayName: row.grantedByEmail,
+    },
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -376,8 +500,18 @@ function toIssue(row: IssueRow): Issue {
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     closedAt: row.closedAt?.toISOString() ?? null,
-    createdBy: { humanId: row.createdByHumanId, email: row.createdByEmail },
-    updatedBy: { humanId: row.updatedByHumanId, email: row.updatedByEmail },
+    createdBy: actorFromRow(
+      row.createdByHumanId,
+      row.createdByEmail,
+      row.createdByAgentId,
+      row.createdByAgentName,
+    ),
+    updatedBy: actorFromRow(
+      row.updatedByHumanId,
+      row.updatedByEmail,
+      row.updatedByAgentId,
+      row.updatedByAgentName,
+    ),
   };
 }
 
@@ -387,7 +521,12 @@ function toComment(row: CommentRow): IssueComment {
     issueId: row.issueId,
     body: row.body,
     createdAt: row.createdAt.toISOString(),
-    author: { humanId: row.authorHumanId, email: row.authorEmail },
+    author: actorFromRow(
+      row.authorHumanId,
+      row.authorEmail,
+      row.authorAgentId,
+      row.authorAgentName,
+    ),
   };
 }
 
@@ -399,8 +538,18 @@ function toKnowledge(row: KnowledgeRow): KnowledgeEntry {
     body: row.body,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
-    createdBy: { humanId: row.createdByHumanId, email: row.createdByEmail },
-    updatedBy: { humanId: row.updatedByHumanId, email: row.updatedByEmail },
+    createdBy: actorFromRow(
+      row.createdByHumanId,
+      row.createdByEmail,
+      row.createdByAgentId,
+      row.createdByAgentName,
+    ),
+    updatedBy: actorFromRow(
+      row.updatedByHumanId,
+      row.updatedByEmail,
+      row.updatedByAgentId,
+      row.updatedByAgentName,
+    ),
   };
 }
 
@@ -413,7 +562,7 @@ function toActivity(row: ActivityRow): ProjectActivity {
     issueId: row.issueId,
     knowledgeEntryId: row.knowledgeEntryId,
     createdAt: row.createdAt.toISOString(),
-    actor: { humanId: row.actorHumanId, email: row.actorEmail },
+    actor: actorFromRow(row.actorHumanId, row.actorEmail, row.actorAgentId, row.actorAgentName),
   };
 }
 
@@ -476,9 +625,13 @@ async function readWorkspaceFacts(
 async function requireProject(
   tx: DbTransaction,
   projectId: string,
-  humanId: string,
+  actor: WorkActor,
   required: ProjectAccessLevel,
 ) {
+  // The human joins still run for an agent (with an id that matches nothing); the agent's
+  // level comes from its key, so a human grant can never leak into an agent's decision.
+  const membershipMatch = humanIdMatch(actor, "membership");
+  const grantMatch = humanIdMatch(actor, "grant");
   const [row] = await tx
     .select({
       ...projectColumns,
@@ -492,33 +645,37 @@ async function requireProject(
     .innerJoin(projectCreator, eq(projectCreator.id, projects.createdByHumanId))
     .leftJoin(
       workspaceMemberships,
-      and(
-        eq(workspaceMemberships.workspaceId, projects.workspaceId),
-        eq(workspaceMemberships.humanId, humanId),
-      ),
+      and(eq(workspaceMemberships.workspaceId, projects.workspaceId), membershipMatch),
     )
-    .leftJoin(
-      projectAccessGrants,
-      and(eq(projectAccessGrants.projectId, projects.id), eq(projectAccessGrants.humanId, humanId)),
-    )
+    .leftJoin(projectAccessGrants, and(eq(projectAccessGrants.projectId, projects.id), grantMatch))
     .where(eq(projects.id, projectId))
     .limit(1);
 
   if (row === undefined) throw new ProjectsError("project_not_found");
+  const grantLevel = row.grantLevel === null ? null : ProjectAccessLevel.parse(row.grantLevel);
+  const facts = {
+    workspaceKind: WorkspaceKind.parse(row.workspaceKind),
+    personalOwnerHumanId: row.personalOwnerHumanId,
+    membershipIsOwner: row.membershipIsOwner,
+    grantLevel,
+    projectId: row.id,
+    workspaceId: row.workspaceId,
+  };
   return {
     ...row,
-    workspaceKind: WorkspaceKind.parse(row.workspaceKind),
-    grantLevel: row.grantLevel === null ? null : ProjectAccessLevel.parse(row.grantLevel),
-    accessLevel: requireLevel(row, humanId, required, "project_not_found"),
+    ...facts,
+    accessLevel: requireLevel(facts, actor, required, "project_not_found"),
   };
 }
 
 async function requireIssue(
   tx: DbTransaction,
   issueId: string,
-  humanId: string,
+  actor: WorkActor,
   required: ProjectAccessLevel,
 ) {
+  const membershipMatch = humanIdMatch(actor, "membership");
+  const grantMatch = humanIdMatch(actor, "grant");
   const [row] = await tx
     .select({
       ...issueColumns,
@@ -526,36 +683,35 @@ async function requireIssue(
       personalOwnerHumanId: workspaces.personalOwnerHumanId,
       membershipIsOwner: workspaceMemberships.isOwner,
       grantLevel: projectAccessGrants.level,
+      workspaceId: projects.workspaceId,
     })
     .from(issues)
     .innerJoin(projects, eq(projects.id, issues.projectId))
     .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
-    .innerJoin(issueCreator, eq(issueCreator.id, issues.createdByHumanId))
-    .innerJoin(issueEditor, eq(issueEditor.id, issues.updatedByHumanId))
+    .leftJoin(issueCreator, eq(issueCreator.id, issues.createdByHumanId))
+    .leftJoin(issueAgentCreator, eq(issueAgentCreator.id, issues.createdByAgentId))
+    .leftJoin(issueEditor, eq(issueEditor.id, issues.updatedByHumanId))
+    .leftJoin(issueAgentEditor, eq(issueAgentEditor.id, issues.updatedByAgentId))
     .leftJoin(
       workspaceMemberships,
-      and(
-        eq(workspaceMemberships.workspaceId, projects.workspaceId),
-        eq(workspaceMemberships.humanId, humanId),
-      ),
+      and(eq(workspaceMemberships.workspaceId, projects.workspaceId), membershipMatch),
     )
-    .leftJoin(
-      projectAccessGrants,
-      and(eq(projectAccessGrants.projectId, projects.id), eq(projectAccessGrants.humanId, humanId)),
-    )
+    .leftJoin(projectAccessGrants, and(eq(projectAccessGrants.projectId, projects.id), grantMatch))
     .where(eq(issues.id, issueId))
     .limit(1);
 
   if (row === undefined) throw new ProjectsError("issue_not_found");
-  return { ...row, accessLevel: requireLevel(row, humanId, required, "issue_not_found") };
+  return { ...row, accessLevel: requireLevel(row, actor, required, "issue_not_found") };
 }
 
 async function requireKnowledge(
   tx: DbTransaction,
   entryId: string,
-  humanId: string,
+  actor: WorkActor,
   required: ProjectAccessLevel,
 ) {
+  const membershipMatch = humanIdMatch(actor, "membership");
+  const grantMatch = humanIdMatch(actor, "grant");
   const [row] = await tx
     .select({
       ...knowledgeColumns,
@@ -563,35 +719,35 @@ async function requireKnowledge(
       personalOwnerHumanId: workspaces.personalOwnerHumanId,
       membershipIsOwner: workspaceMemberships.isOwner,
       grantLevel: projectAccessGrants.level,
+      workspaceId: projects.workspaceId,
     })
     .from(knowledgeEntries)
     .innerJoin(projects, eq(projects.id, knowledgeEntries.projectId))
     .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
-    .innerJoin(knowledgeCreator, eq(knowledgeCreator.id, knowledgeEntries.createdByHumanId))
-    .innerJoin(knowledgeEditor, eq(knowledgeEditor.id, knowledgeEntries.updatedByHumanId))
+    .leftJoin(knowledgeCreator, eq(knowledgeCreator.id, knowledgeEntries.createdByHumanId))
+    .leftJoin(
+      knowledgeAgentCreator,
+      eq(knowledgeAgentCreator.id, knowledgeEntries.createdByAgentId),
+    )
+    .leftJoin(knowledgeEditor, eq(knowledgeEditor.id, knowledgeEntries.updatedByHumanId))
+    .leftJoin(knowledgeAgentEditor, eq(knowledgeAgentEditor.id, knowledgeEntries.updatedByAgentId))
     .leftJoin(
       workspaceMemberships,
-      and(
-        eq(workspaceMemberships.workspaceId, projects.workspaceId),
-        eq(workspaceMemberships.humanId, humanId),
-      ),
+      and(eq(workspaceMemberships.workspaceId, projects.workspaceId), membershipMatch),
     )
-    .leftJoin(
-      projectAccessGrants,
-      and(eq(projectAccessGrants.projectId, projects.id), eq(projectAccessGrants.humanId, humanId)),
-    )
+    .leftJoin(projectAccessGrants, and(eq(projectAccessGrants.projectId, projects.id), grantMatch))
     .where(eq(knowledgeEntries.id, entryId))
     .limit(1);
 
   if (row === undefined) throw new ProjectsError("knowledge_entry_not_found");
-  return { ...row, accessLevel: requireLevel(row, humanId, required, "knowledge_entry_not_found") };
+  return { ...row, accessLevel: requireLevel(row, actor, required, "knowledge_entry_not_found") };
 }
 
 type RecordActivityInput =
   | {
       projectId: string;
       type: "project_created" | "project_renamed";
-      actorHumanId: string;
+      actor: WorkActor;
       summary: string;
     }
   | {
@@ -602,26 +758,28 @@ type RecordActivityInput =
         | "issue_commented"
         | "issue_closed"
         | "issue_reopened";
-      actorHumanId: string;
+      actor: WorkActor;
       summary: string;
       issueId: string;
     }
   | {
       projectId: string;
       type: "knowledge_created" | "knowledge_edited";
-      actorHumanId: string;
+      actor: WorkActor;
       summary: string;
       knowledgeEntryId: string;
     };
 
 // One activity event, written inside the caller's transaction so the change and its
 // history commit together or not at all. The summary is the item's title at this moment.
+// The actor identity is the human or the agent — never both, never the agent's owner.
 async function recordActivity(tx: DbTransaction, input: RecordActivityInput) {
   await tx.insert(projectActivity).values({
     id: randomUUID(),
     projectId: input.projectId,
     type: input.type,
-    actorHumanId: input.actorHumanId,
+    actorHumanId: humanIdOf(input.actor),
+    actorAgentId: agentIdOf(input.actor),
     summary: input.summary,
     createdAt: sql`statement_timestamp()`,
     ...("issueId" in input ? { issueId: input.issueId } : {}),
@@ -815,8 +973,8 @@ export interface ProjectsDeps {
 }
 
 export interface ProjectsService {
-  listProjects(account: SessionAccount | null, workspaceId: string): Promise<Project[]>;
-  getProject(account: SessionAccount | null, projectId: string): Promise<Project>;
+  listProjects(actor: WorkActor | null, workspaceId: string): Promise<Project[]>;
+  getProject(actor: WorkActor | null, projectId: string): Promise<Project>;
   createProject(
     account: SessionAccount | null,
     workspaceId: string,
@@ -864,34 +1022,30 @@ export interface ProjectsService {
     humanId: string,
     projectIds: readonly string[],
   ): Promise<Map<string, ProjectAccessLevel | null>>;
-  listIssues(account: SessionAccount | null, projectId: string): Promise<Issue[]>;
-  getIssue(account: SessionAccount | null, issueId: string): Promise<Issue>;
+  listIssues(actor: WorkActor | null, projectId: string): Promise<Issue[]>;
+  getIssue(actor: WorkActor | null, issueId: string): Promise<Issue>;
   createIssue(
-    account: SessionAccount | null,
+    actor: WorkActor | null,
     projectId: string,
     input: CreateIssueRequest,
   ): Promise<Issue>;
-  updateIssue(
-    account: SessionAccount | null,
-    issueId: string,
-    input: UpdateIssueRequest,
-  ): Promise<Issue>;
-  listComments(account: SessionAccount | null, issueId: string): Promise<IssueComment[]>;
+  updateIssue(actor: WorkActor | null, issueId: string, input: UpdateIssueRequest): Promise<Issue>;
+  listComments(actor: WorkActor | null, issueId: string): Promise<IssueComment[]>;
   createComment(
-    account: SessionAccount | null,
+    actor: WorkActor | null,
     issueId: string,
     input: CreateIssueCommentRequest,
   ): Promise<IssueComment>;
-  listActivity(account: SessionAccount | null, projectId: string): Promise<ProjectActivity[]>;
-  listKnowledge(account: SessionAccount | null, projectId: string): Promise<KnowledgeEntry[]>;
-  getKnowledge(account: SessionAccount | null, entryId: string): Promise<KnowledgeEntry>;
+  listActivity(actor: WorkActor | null, projectId: string): Promise<ProjectActivity[]>;
+  listKnowledge(actor: WorkActor | null, projectId: string): Promise<KnowledgeEntry[]>;
+  getKnowledge(actor: WorkActor | null, entryId: string): Promise<KnowledgeEntry>;
   createKnowledge(
-    account: SessionAccount | null,
+    actor: WorkActor | null,
     projectId: string,
     input: CreateKnowledgeEntryRequest,
   ): Promise<KnowledgeEntry>;
   updateKnowledge(
-    account: SessionAccount | null,
+    actor: WorkActor | null,
     entryId: string,
     input: UpdateKnowledgeEntryRequest,
   ): Promise<KnowledgeEntry>;
@@ -903,11 +1057,20 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
     // workspace's own projects, all of a shared workspace's projects for an owner, and
     // only explicitly granted projects for an ordinary member. Membership validates the
     // workspace; it does not reveal the projects themselves.
-    async listProjects(account, workspaceId) {
-      const actor = requireAccount(account);
+    async listProjects(actorArg, workspaceId) {
+      const actor = requireActor(actorArg);
+      // A key is scoped to one workspace. Refuse another workspace id before any lookup:
+      // answering empty for a workspace the owner happens to belong to would both bypass
+      // the scope and leak the owner's membership through a 200-vs-404 oracle.
+      if (actor.kind === "agent" && workspaceId !== actor.identity.workspaceId) {
+        throw new ProjectsError("workspace_not_found");
+      }
       return db.transaction(
         async (tx) => {
-          const workspace = await readWorkspaceFacts(tx, workspaceId, actor.humanId);
+          // The key's human owner is whose workspace membership is checked; the
+          // project levels still come from the key, not from that membership's grants.
+          const humanId = actor.kind === "human" ? actor.account.humanId : actor.identity.humanId;
+          const workspace = await readWorkspaceFacts(tx, workspaceId, humanId);
           const rows = await tx
             .select({
               ...projectColumns,
@@ -923,14 +1086,14 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
               workspaceMemberships,
               and(
                 eq(workspaceMemberships.workspaceId, projects.workspaceId),
-                eq(workspaceMemberships.humanId, actor.humanId),
+                eq(workspaceMemberships.humanId, humanId),
               ),
             )
             .leftJoin(
               projectAccessGrants,
               and(
                 eq(projectAccessGrants.projectId, projects.id),
-                eq(projectAccessGrants.humanId, actor.humanId),
+                eq(projectAccessGrants.humanId, humanId),
               ),
             )
             .where(
@@ -946,7 +1109,8 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
             .orderBy(projects.createdAt, projects.id);
 
           return rows.flatMap((row) => {
-            const accessLevel = resolveAccessLevel(row, actor.humanId);
+            const facts = { ...row, projectId: row.id, workspaceId: row.workspaceId };
+            const accessLevel = actorAccessLevel(facts, actor);
             return accessLevel === null ? [] : [toProject({ ...row, accessLevel })];
           });
         },
@@ -954,13 +1118,11 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
       );
     },
 
-    async getProject(account, projectId) {
-      const actor = requireAccount(account);
+    async getProject(actorArg, projectId) {
+      const actor = requireActor(actorArg);
       return db.transaction(
         async (tx) =>
-          toProject(
-            await requireProject(tx, projectId, actor.humanId, ProjectAccessLevel.enum.read),
-          ),
+          toProject(await requireProject(tx, projectId, actor, ProjectAccessLevel.enum.read)),
         { accessMode: "read only" },
       );
     },
@@ -972,6 +1134,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
     // and revocable rather than inferred from creation.
     async createProject(account, workspaceId, input) {
       const actor = requireAccount(account);
+      const workActor: WorkActor = { kind: "human", account: actor };
       const id = randomUUID();
       return db.transaction(async (tx) => {
         // Serialize with workspace membership/capability mutations so a removed member
@@ -1021,7 +1184,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
         await recordActivity(tx, {
           projectId: id,
           type: "project_created",
-          actorHumanId: actor.humanId,
+          actor: workActor,
           summary: input.name,
         });
         return {
@@ -1029,7 +1192,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
           workspaceId: created.workspaceId,
           name: created.name,
           createdAt: created.createdAt.toISOString(),
-          createdBy: { humanId: actor.humanId, email: actor.email },
+          createdBy: { humanId: actor.humanId, email: actor.email, displayName: actor.email },
           workspaceKind: workspace.kind,
           accessLevel: ProjectAccessLevel.enum.manage,
         };
@@ -1040,6 +1203,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
     // unchanged, so a repeated save cannot invent history.
     async updateProject(account, projectId, input) {
       const actor = requireAccount(account);
+      const workActor: WorkActor = { kind: "human", account: actor };
       return db.transaction(async (tx) => {
         // Lock first, then authorize: a concurrent grant change cannot slip between the
         // access check and the rename.
@@ -1047,7 +1211,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
         const current = await requireProject(
           tx,
           projectId,
-          actor.humanId,
+          workActor,
           ProjectAccessLevel.enum.manage,
         );
         if (input.name === current.name) return toProject(current);
@@ -1060,7 +1224,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
         await recordActivity(tx, {
           projectId,
           type: "project_renamed",
-          actorHumanId: actor.humanId,
+          actor: workActor,
           summary: updated.name,
         });
         return toProject({ ...current, name: updated.name });
@@ -1072,12 +1236,13 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
     // project has no collaborators at all.
     async listProjectAccess(account, projectId) {
       const actor = requireAccount(account);
+      const workActor: WorkActor = { kind: "human", account: actor };
       return db.transaction(
         async (tx) => {
           const project = await requireProject(
             tx,
             projectId,
-            actor.humanId,
+            workActor,
             ProjectAccessLevel.enum.manage,
           );
           if (project.workspaceKind === WorkspaceKind.enum.personal) return [];
@@ -1112,6 +1277,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
     // workspace owners already hold implicit Manage that project managers cannot alter.
     async setProjectAccess(account, projectId, input) {
       const actor = requireAccount(account);
+      const workActor: WorkActor = { kind: "human", account: actor };
       return db.transaction(async (tx) => {
         // Lock workspace membership writes before the project row so granting access
         // cannot race with removeMember() (orphaning a grant) or appointOwner().
@@ -1120,7 +1286,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
         const project = await requireProject(
           tx,
           projectId,
-          actor.humanId,
+          workActor,
           ProjectAccessLevel.enum.manage,
         );
         if (project.workspaceKind === WorkspaceKind.enum.personal) {
@@ -1205,6 +1371,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
     // owners cannot have their implicit Manage revoked here.
     async removeProjectAccess(account, projectId, humanId) {
       const actor = requireAccount(account);
+      const workActor: WorkActor = { kind: "human", account: actor };
       await db.transaction(async (tx) => {
         // Lock workspace membership writes before the project row so revoking access
         // cannot race with removeMember() and emit duplicate revocation events.
@@ -1213,7 +1380,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
         const project = await requireProject(
           tx,
           projectId,
-          actor.humanId,
+          workActor,
           ProjectAccessLevel.enum.manage,
         );
         if (project.workspaceKind === WorkspaceKind.enum.personal) {
@@ -1283,16 +1450,18 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
       return projectAccessCeilingInTransaction(tx, workspaceId, humanId, projectIds);
     },
 
-    async listIssues(account, projectId) {
-      const actor = requireAccount(account);
+    async listIssues(actorArg, projectId) {
+      const actor = requireActor(actorArg);
       return db.transaction(
         async (tx) => {
-          await requireProject(tx, projectId, actor.humanId, ProjectAccessLevel.enum.read);
+          await requireProject(tx, projectId, actor, ProjectAccessLevel.enum.read);
           const rows = await tx
             .select(issueColumns)
             .from(issues)
-            .innerJoin(issueCreator, eq(issueCreator.id, issues.createdByHumanId))
-            .innerJoin(issueEditor, eq(issueEditor.id, issues.updatedByHumanId))
+            .leftJoin(issueCreator, eq(issueCreator.id, issues.createdByHumanId))
+            .leftJoin(issueAgentCreator, eq(issueAgentCreator.id, issues.createdByAgentId))
+            .leftJoin(issueEditor, eq(issueEditor.id, issues.updatedByHumanId))
+            .leftJoin(issueAgentEditor, eq(issueAgentEditor.id, issues.updatedByAgentId))
             .where(eq(issues.projectId, projectId))
             .orderBy(issues.number);
           return rows.map(toIssue);
@@ -1301,21 +1470,20 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
       );
     },
 
-    async getIssue(account, issueId) {
-      const actor = requireAccount(account);
+    async getIssue(actorArg, issueId) {
+      const actor = requireActor(actorArg);
       return db.transaction(
-        async (tx) =>
-          toIssue(await requireIssue(tx, issueId, actor.humanId, ProjectAccessLevel.enum.read)),
+        async (tx) => toIssue(await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.read)),
         { accessMode: "read only" },
       );
     },
 
     // The project row is updated before the issue is inserted: the row lock serializes
     // concurrent creations, and the returned value is the number this issue takes.
-    async createIssue(account, projectId, input) {
-      const actor = requireAccount(account);
+    async createIssue(actorArg, projectId, input) {
+      const actor = requireActor(actorArg);
       return db.transaction(async (tx) => {
-        await requireProject(tx, projectId, actor.humanId, ProjectAccessLevel.enum.contribute);
+        await requireProject(tx, projectId, actor, ProjectAccessLevel.enum.contribute);
         const [counter] = await tx
           .update(projects)
           .set({ nextIssueNumber: sql`${projects.nextIssueNumber} + 1` })
@@ -1333,8 +1501,10 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
             title: input.title,
             body: input.body ?? "",
             status: IssueStatus.enum.open,
-            createdByHumanId: actor.humanId,
-            updatedByHumanId: actor.humanId,
+            createdByHumanId: humanIdOf(actor),
+            createdByAgentId: agentIdOf(actor),
+            updatedByHumanId: humanIdOf(actor),
+            updatedByAgentId: agentIdOf(actor),
             createdAt: sql`statement_timestamp()`,
             updatedAt: sql`statement_timestamp()`,
           })
@@ -1353,11 +1523,11 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
         await recordActivity(tx, {
           projectId,
           type: "issue_created",
-          actorHumanId: actor.humanId,
+          actor,
           issueId: id,
           summary: input.title,
         });
-        const author = { humanId: actor.humanId, email: actor.email };
+        const author = actorForWrite(actor);
         return {
           id: created.id,
           projectId: created.projectId,
@@ -1377,18 +1547,13 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
     // A title or body edit, a close, and a reopen are all this one transition. Only real
     // changes update the issue and write activity; a no-op answers with the issue as it
     // was, so a repeated close cannot invent a second event.
-    async updateIssue(account, issueId, input) {
-      const actor = requireAccount(account);
+    async updateIssue(actorArg, issueId, input) {
+      const actor = requireActor(actorArg);
       return db.transaction(async (tx) => {
         // Serialize concurrent updates to the same issue so two PATCHes cannot lose
         // each other's changes or diverge the activity feed from the issue's status.
         await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issueId)).for("update");
-        const current = await requireIssue(
-          tx,
-          issueId,
-          actor.humanId,
-          ProjectAccessLevel.enum.contribute,
-        );
+        const current = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
         const title = input.title ?? current.title;
         const body = input.body ?? current.body;
         const status = input.status ?? current.status;
@@ -1409,7 +1574,8 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
             title,
             body,
             status,
-            updatedByHumanId: actor.humanId,
+            updatedByHumanId: humanIdOf(actor),
+            updatedByAgentId: agentIdOf(actor),
             updatedAt: sql`statement_timestamp()`,
             closedAt,
           })
@@ -1424,7 +1590,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
           await recordActivity(tx, {
             projectId: current.projectId,
             type: "issue_edited",
-            actorHumanId: actor.humanId,
+            actor,
             issueId,
             summary: title,
           });
@@ -1433,7 +1599,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
           await recordActivity(tx, {
             projectId: current.projectId,
             type: status === IssueStatus.enum.closed ? "issue_closed" : "issue_reopened",
-            actorHumanId: actor.humanId,
+            actor,
             issueId,
             summary: title,
           });
@@ -1448,21 +1614,27 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
           createdAt: current.createdAt.toISOString(),
           updatedAt: updated.updatedAt.toISOString(),
           closedAt: updated.closedAt === null ? null : updated.closedAt.toISOString(),
-          createdBy: { humanId: current.createdByHumanId, email: current.createdByEmail },
-          updatedBy: { humanId: actor.humanId, email: actor.email },
+          createdBy: actorFromRow(
+            current.createdByHumanId,
+            current.createdByEmail,
+            current.createdByAgentId,
+            current.createdByAgentName,
+          ),
+          updatedBy: actorForWrite(actor),
         };
       });
     },
 
-    async listComments(account, issueId) {
-      const actor = requireAccount(account);
+    async listComments(actorArg, issueId) {
+      const actor = requireActor(actorArg);
       return db.transaction(
         async (tx) => {
-          await requireIssue(tx, issueId, actor.humanId, ProjectAccessLevel.enum.read);
+          await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.read);
           const rows = await tx
             .select(commentColumns)
             .from(issueComments)
-            .innerJoin(commentAuthor, eq(commentAuthor.id, issueComments.createdByHumanId))
+            .leftJoin(commentAuthor, eq(commentAuthor.id, issueComments.createdByHumanId))
+            .leftJoin(commentAgentAuthor, eq(commentAgentAuthor.id, issueComments.createdByAgentId))
             .where(eq(issueComments.issueId, issueId))
             .orderBy(issueComments.createdAt, issueComments.id);
           return rows.map(toComment);
@@ -1473,15 +1645,10 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
 
     // Comments need no work session (#20); they still need project access, which
     // requireIssue enforces, and they keep their author.
-    async createComment(account, issueId, input) {
-      const actor = requireAccount(account);
+    async createComment(actorArg, issueId, input) {
+      const actor = requireActor(actorArg);
       return db.transaction(async (tx) => {
-        const issue = await requireIssue(
-          tx,
-          issueId,
-          actor.humanId,
-          ProjectAccessLevel.enum.contribute,
-        );
+        const issue = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
         const id = randomUUID();
         const [created] = await tx
           .insert(issueComments)
@@ -1489,7 +1656,8 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
             id,
             issueId,
             body: input.body,
-            createdByHumanId: actor.humanId,
+            createdByHumanId: humanIdOf(actor),
+            createdByAgentId: agentIdOf(actor),
             createdAt: sql`statement_timestamp()`,
           })
           .returning({
@@ -1502,7 +1670,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
         await recordActivity(tx, {
           projectId: issue.projectId,
           type: "issue_commented",
-          actorHumanId: actor.humanId,
+          actor,
           issueId,
           summary: issue.title,
         });
@@ -1511,20 +1679,21 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
           issueId: created.issueId,
           body: created.body,
           createdAt: created.createdAt.toISOString(),
-          author: { humanId: actor.humanId, email: actor.email },
+          author: actorForWrite(actor),
         };
       });
     },
 
-    async listActivity(account, projectId) {
-      const actor = requireAccount(account);
+    async listActivity(actorArg, projectId) {
+      const actor = requireActor(actorArg);
       return db.transaction(
         async (tx) => {
-          await requireProject(tx, projectId, actor.humanId, ProjectAccessLevel.enum.read);
+          await requireProject(tx, projectId, actor, ProjectAccessLevel.enum.read);
           const rows = await tx
             .select(activityColumns)
             .from(projectActivity)
-            .innerJoin(activityActor, eq(activityActor.id, projectActivity.actorHumanId))
+            .leftJoin(activityActor, eq(activityActor.id, projectActivity.actorHumanId))
+            .leftJoin(activityAgentActor, eq(activityAgentActor.id, projectActivity.actorAgentId))
             .where(eq(projectActivity.projectId, projectId))
             .orderBy(projectActivity.createdAt, projectActivity.id);
           return rows.map(toActivity);
@@ -1533,16 +1702,24 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
       );
     },
 
-    async listKnowledge(account, projectId) {
-      const actor = requireAccount(account);
+    async listKnowledge(actorArg, projectId) {
+      const actor = requireActor(actorArg);
       return db.transaction(
         async (tx) => {
-          await requireProject(tx, projectId, actor.humanId, ProjectAccessLevel.enum.read);
+          await requireProject(tx, projectId, actor, ProjectAccessLevel.enum.read);
           const rows = await tx
             .select(knowledgeColumns)
             .from(knowledgeEntries)
-            .innerJoin(knowledgeCreator, eq(knowledgeCreator.id, knowledgeEntries.createdByHumanId))
-            .innerJoin(knowledgeEditor, eq(knowledgeEditor.id, knowledgeEntries.updatedByHumanId))
+            .leftJoin(knowledgeCreator, eq(knowledgeCreator.id, knowledgeEntries.createdByHumanId))
+            .leftJoin(
+              knowledgeAgentCreator,
+              eq(knowledgeAgentCreator.id, knowledgeEntries.createdByAgentId),
+            )
+            .leftJoin(knowledgeEditor, eq(knowledgeEditor.id, knowledgeEntries.updatedByHumanId))
+            .leftJoin(
+              knowledgeAgentEditor,
+              eq(knowledgeAgentEditor.id, knowledgeEntries.updatedByAgentId),
+            )
             .where(eq(knowledgeEntries.projectId, projectId))
             .orderBy(knowledgeEntries.createdAt, knowledgeEntries.id);
           return rows.map(toKnowledge);
@@ -1551,21 +1728,19 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
       );
     },
 
-    async getKnowledge(account, entryId) {
-      const actor = requireAccount(account);
+    async getKnowledge(actorArg, entryId) {
+      const actor = requireActor(actorArg);
       return db.transaction(
         async (tx) =>
-          toKnowledge(
-            await requireKnowledge(tx, entryId, actor.humanId, ProjectAccessLevel.enum.read),
-          ),
+          toKnowledge(await requireKnowledge(tx, entryId, actor, ProjectAccessLevel.enum.read)),
         { accessMode: "read only" },
       );
     },
 
-    async createKnowledge(account, projectId, input) {
-      const actor = requireAccount(account);
+    async createKnowledge(actorArg, projectId, input) {
+      const actor = requireActor(actorArg);
       return db.transaction(async (tx) => {
-        await requireProject(tx, projectId, actor.humanId, ProjectAccessLevel.enum.contribute);
+        await requireProject(tx, projectId, actor, ProjectAccessLevel.enum.contribute);
         const id = randomUUID();
         const [created] = await tx
           .insert(knowledgeEntries)
@@ -1574,8 +1749,10 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
             projectId,
             title: input.title,
             body: input.body ?? "",
-            createdByHumanId: actor.humanId,
-            updatedByHumanId: actor.humanId,
+            createdByHumanId: humanIdOf(actor),
+            createdByAgentId: agentIdOf(actor),
+            updatedByHumanId: humanIdOf(actor),
+            updatedByAgentId: agentIdOf(actor),
             createdAt: sql`statement_timestamp()`,
             updatedAt: sql`statement_timestamp()`,
           })
@@ -1591,11 +1768,11 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
         await recordActivity(tx, {
           projectId,
           type: "knowledge_created",
-          actorHumanId: actor.humanId,
+          actor,
           knowledgeEntryId: id,
           summary: input.title,
         });
-        const author = { humanId: actor.humanId, email: actor.email };
+        const author = actorForWrite(actor);
         return {
           id: created.id,
           projectId: created.projectId,
@@ -1609,8 +1786,8 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
       });
     },
 
-    async updateKnowledge(account, entryId, input) {
-      const actor = requireAccount(account);
+    async updateKnowledge(actorArg, entryId, input) {
+      const actor = requireActor(actorArg);
       return db.transaction(async (tx) => {
         // Serialize concurrent edits to the same knowledge entry so partial PATCHes
         // never overwrite each other's changes.
@@ -1622,7 +1799,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
         const current = await requireKnowledge(
           tx,
           entryId,
-          actor.humanId,
+          actor,
           ProjectAccessLevel.enum.contribute,
         );
         const title = input.title ?? current.title;
@@ -1633,7 +1810,8 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
           .set({
             title,
             body,
-            updatedByHumanId: actor.humanId,
+            updatedByHumanId: humanIdOf(actor),
+            updatedByAgentId: agentIdOf(actor),
             updatedAt: sql`statement_timestamp()`,
           })
           .where(eq(knowledgeEntries.id, entryId))
@@ -1642,7 +1820,7 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
         await recordActivity(tx, {
           projectId: current.projectId,
           type: "knowledge_edited",
-          actorHumanId: actor.humanId,
+          actor,
           knowledgeEntryId: entryId,
           summary: title,
         });
@@ -1653,8 +1831,13 @@ export function createProjectsService({ db }: ProjectsDeps): ProjectsService {
           body,
           createdAt: current.createdAt.toISOString(),
           updatedAt: updated.updatedAt.toISOString(),
-          createdBy: { humanId: current.createdByHumanId, email: current.createdByEmail },
-          updatedBy: { humanId: actor.humanId, email: actor.email },
+          createdBy: actorFromRow(
+            current.createdByHumanId,
+            current.createdByEmail,
+            current.createdByAgentId,
+            current.createdByAgentName,
+          ),
+          updatedBy: actorForWrite(actor),
         };
       });
     },

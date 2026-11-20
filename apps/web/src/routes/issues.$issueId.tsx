@@ -46,8 +46,8 @@ function IssuePage() {
       </p>
       <h1>{issue.title}</h1>
       <p data-issue-status={issue.status}>
-        Issue #{issue.number} · {issue.status} · created by {issue.createdBy.email} · last edited by{" "}
-        {issue.updatedBy.email}
+        Issue #{issue.number} · {issue.status} · created by {issue.createdBy.displayName} · last
+        edited by {issue.updatedBy.displayName}
       </p>
       {issue.body === "" ? (
         <p>No description.</p>
@@ -72,7 +72,7 @@ function IssuePage() {
             {comments.map((comment) => (
               <li key={comment.id} data-comment-id={comment.id}>
                 <p>
-                  {comment.author.email} ·{" "}
+                  {comment.author.displayName} ·{" "}
                   <time dateTime={comment.createdAt}>{comment.createdAt}</time>
                 </p>
                 <div style={{ whiteSpace: "pre-wrap" }}>{comment.body}</div>

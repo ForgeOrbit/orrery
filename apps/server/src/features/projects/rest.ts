@@ -27,6 +27,8 @@ import {
   validationHook,
 } from "../../platform/problem.ts";
 import type { SessionReader } from "../accounts/index.ts";
+import { isAgentError, type AgentAuthenticator } from "../agents/index.ts";
+import type { WorkActor } from "./service.ts";
 import { ProjectsError, type ProjectsErrorKind, type ProjectsService } from "./service.ts";
 
 const workspaceParams = z.object({ workspaceId: z.string().min(1).max(200) });
@@ -40,7 +42,7 @@ const listProjects = createRoute({
   path: "/api/workspaces/{workspaceId}/projects",
   summary: "The projects the caller can access in a workspace",
   description:
-    "A personal workspace's owner sees its projects. A shared workspace's owner sees every project; an ordinary member sees only the projects explicitly granted to them. Membership alone never reveals a project. A workspace outside the caller's access answers exactly like a missing one.",
+    "A personal workspace's owner sees its projects. A shared workspace's owner sees every project; an ordinary member sees only the projects explicitly granted to them. Membership alone never reveals a project. A workspace outside the caller's access answers exactly like a missing one. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
   request: { params: workspaceParams },
   responses: {
     200: {
@@ -48,7 +50,9 @@ const listProjects = createRoute({
       content: { "application/json": { schema: ProjectsResponse } },
     },
     400: problem("The workspace id is invalid"),
-    401: problem("Not signed in"),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
     404: problem("No workspace with this id is accessible to the caller"),
   },
 });
@@ -165,7 +169,7 @@ const getProject = createRoute({
   path: "/api/projects/{projectId}",
   summary: "One project the caller can access",
   description:
-    "A project's own view. A project outside the caller's access answers exactly like a missing one, so ids cannot be enumerated.",
+    "A project's own view. A project outside the caller's access answers exactly like a missing one, so ids cannot be enumerated. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
   request: { params: projectParams },
   responses: {
     200: {
@@ -173,7 +177,9 @@ const getProject = createRoute({
       content: { "application/json": { schema: Project } },
     },
     400: problem("The project id is invalid"),
-    401: problem("Not signed in"),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
     404: problem("No project with this id is accessible to the caller"),
   },
 });
@@ -182,7 +188,8 @@ const listIssues = createRoute({
   method: "get",
   path: "/api/projects/{projectId}/issues",
   summary: "The issues in a project",
-  description: "Every issue in the project, oldest number first, with its author and last editor.",
+  description:
+    "Every issue in the project, oldest number first, with its author and last editor.A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
   request: { params: projectParams },
   responses: {
     200: {
@@ -190,7 +197,9 @@ const listIssues = createRoute({
       content: { "application/json": { schema: IssuesResponse } },
     },
     400: problem("The project id is invalid"),
-    401: problem("Not signed in"),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
     404: problem("No project with this id is accessible to the caller"),
   },
 });
@@ -200,7 +209,7 @@ const createIssue = createRoute({
   path: "/api/projects/{projectId}/issues",
   summary: "Create an issue in a project",
   description:
-    "Contribute or Manage. The issue gets the project's next local number, starts open, and records its creator. The creation is recorded in the project's activity.",
+    "Contribute or Manage. The issue gets the project's next local number, starts open, and records its creator. The creation is recorded in the project's activity. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
   request: {
     params: projectParams,
     body: { required: true, content: { "application/json": { schema: CreateIssueRequest } } },
@@ -211,7 +220,9 @@ const createIssue = createRoute({
       content: { "application/json": { schema: Issue } },
     },
     400: problem("The request is invalid"),
-    401: problem("Not signed in"),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
     403: problem("Read access cannot create an issue"),
     404: problem("No project with this id is accessible to the caller"),
   },
@@ -221,7 +232,8 @@ const getIssue = createRoute({
   method: "get",
   path: "/api/issues/{issueId}",
   summary: "One issue the caller can access",
-  description: "The issue's title, Markdown body, status, and authorship.",
+  description:
+    "The issue's title, Markdown body, status, and authorship.A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
   request: { params: issueParams },
   responses: {
     200: {
@@ -229,7 +241,9 @@ const getIssue = createRoute({
       content: { "application/json": { schema: Issue } },
     },
     400: problem("The issue id is invalid"),
-    401: problem("Not signed in"),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
     404: problem("No issue with this id is accessible to the caller"),
   },
 });
@@ -239,7 +253,7 @@ const updateIssue = createRoute({
   path: "/api/issues/{issueId}",
   summary: "Edit, close, or reopen an issue",
   description:
-    "Contribute or Manage. Every field is optional. A title or body change records an edit; a status change records a close or a reopen. A request that changes nothing returns the issue unchanged and records no event.",
+    "Contribute or Manage. Every field is optional. A title or body change records an edit; a status change records a close or a reopen. A request that changes nothing returns the issue unchanged and records no event. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
   request: {
     params: issueParams,
     body: { required: true, content: { "application/json": { schema: UpdateIssueRequest } } },
@@ -250,7 +264,9 @@ const updateIssue = createRoute({
       content: { "application/json": { schema: Issue } },
     },
     400: problem("The request is invalid"),
-    401: problem("Not signed in"),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
     403: problem("Read access cannot change the issue"),
     404: problem("No issue with this id is accessible to the caller"),
   },
@@ -260,7 +276,8 @@ const listComments = createRoute({
   method: "get",
   path: "/api/issues/{issueId}/comments",
   summary: "The comments on an issue",
-  description: "The issue's comments in the order they were written, each with its author.",
+  description:
+    "The issue's comments in the order they were written, each with its author.A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
   request: { params: issueParams },
   responses: {
     200: {
@@ -268,7 +285,9 @@ const listComments = createRoute({
       content: { "application/json": { schema: IssueCommentsResponse } },
     },
     400: problem("The issue id is invalid"),
-    401: problem("Not signed in"),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
     404: problem("No issue with this id is accessible to the caller"),
   },
 });
@@ -278,7 +297,7 @@ const createComment = createRoute({
   path: "/api/issues/{issueId}/comments",
   summary: "Comment on an issue",
   description:
-    "Contribute or Manage. A comment needs no work session (#20), only project access. It records its author and appears in the project's activity.",
+    "Contribute or Manage. A comment needs no work session (#20), only project access. It records its author and appears in the project's activity. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
   request: {
     params: issueParams,
     body: {
@@ -292,7 +311,9 @@ const createComment = createRoute({
       content: { "application/json": { schema: IssueComment } },
     },
     400: problem("The request is invalid"),
-    401: problem("Not signed in"),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
     403: problem("Read access cannot comment"),
     404: problem("No issue with this id is accessible to the caller"),
   },
@@ -303,7 +324,7 @@ const listActivity = createRoute({
   path: "/api/projects/{projectId}/activity",
   summary: "A project's activity",
   description:
-    "Project creation, issue creation, edits, comments, closes, reopens, and knowledge creation and edits, in the order they happened, each with the human who caused it.",
+    "Project creation, issue creation, edits, comments, closes, reopens, and knowledge creation and edits, in the order they happened, each with the human who caused it. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
   request: { params: projectParams },
   responses: {
     200: {
@@ -311,7 +332,9 @@ const listActivity = createRoute({
       content: { "application/json": { schema: ProjectActivityResponse } },
     },
     400: problem("The project id is invalid"),
-    401: problem("Not signed in"),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
     404: problem("No project with this id is accessible to the caller"),
   },
 });
@@ -321,7 +344,7 @@ const listKnowledge = createRoute({
   path: "/api/projects/{projectId}/knowledge",
   summary: "The basic Markdown knowledge entries in a project",
   description:
-    "A title and a Markdown body per entry, with who created and last edited it. This is the basic entry from #26, not the full vault editor (#6).",
+    "A title and a Markdown body per entry, with who created and last edited it. This is the basic entry from #26, not the full vault editor (#6). A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
   request: { params: projectParams },
   responses: {
     200: {
@@ -329,7 +352,9 @@ const listKnowledge = createRoute({
       content: { "application/json": { schema: KnowledgeEntriesResponse } },
     },
     400: problem("The project id is invalid"),
-    401: problem("Not signed in"),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
     404: problem("No project with this id is accessible to the caller"),
   },
 });
@@ -339,7 +364,7 @@ const createKnowledge = createRoute({
   path: "/api/projects/{projectId}/knowledge",
   summary: "Create a basic Markdown knowledge entry",
   description:
-    "Contribute or Manage. Stores the title and Markdown body as written, records the creator, and adds a creation event to the project's activity.",
+    "Contribute or Manage. Stores the title and Markdown body as written, records the creator, and adds a creation event to the project's activity. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
   request: {
     params: projectParams,
     body: {
@@ -353,7 +378,9 @@ const createKnowledge = createRoute({
       content: { "application/json": { schema: KnowledgeEntry } },
     },
     400: problem("The request is invalid"),
-    401: problem("Not signed in"),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
     403: problem("Read access cannot create knowledge"),
     404: problem("No project with this id is accessible to the caller"),
   },
@@ -363,7 +390,8 @@ const getKnowledge = createRoute({
   method: "get",
   path: "/api/knowledge/{entryId}",
   summary: "One knowledge entry the caller can access",
-  description: "The entry's title, Markdown body, and authorship.",
+  description:
+    "The entry's title, Markdown body, and authorship.A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
   request: { params: knowledgeParams },
   responses: {
     200: {
@@ -371,7 +399,9 @@ const getKnowledge = createRoute({
       content: { "application/json": { schema: KnowledgeEntry } },
     },
     400: problem("The entry id is invalid"),
-    401: problem("Not signed in"),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
     404: problem("No knowledge entry with this id is accessible to the caller"),
   },
 });
@@ -381,7 +411,7 @@ const updateKnowledge = createRoute({
   path: "/api/knowledge/{entryId}",
   summary: "Edit a basic Markdown knowledge entry",
   description:
-    "Contribute or Manage. Every field is optional. A real change records the editor and adds an edit event; a no-op returns the entry unchanged.",
+    "Contribute or Manage. Every field is optional. A real change records the editor and adds an edit event; a no-op returns the entry unchanged. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
   request: {
     params: knowledgeParams,
     body: {
@@ -395,7 +425,9 @@ const updateKnowledge = createRoute({
       content: { "application/json": { schema: KnowledgeEntry } },
     },
     400: problem("The request is invalid"),
-    401: problem("Not signed in"),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
     403: problem("Read access cannot edit knowledge"),
     404: problem("No knowledge entry with this id is accessible to the caller"),
   },
@@ -462,6 +494,15 @@ const knowledgeWriteKinds = [...knowledgeReadKinds, "insufficient_project_access
 // Thin: resolve the session, call the service, map the result to HTTP. The service
 // decides who may do what; every error is a Problem built through platform/problem.ts.
 function failure<K extends readonly ProjectsErrorKind[]>(c: Context, error: unknown, kinds: K) {
+  // A bearer key that fails to authenticate is always a 401 with the agent's stable
+  // code; there is no silent fallback to a human session on a project-work route.
+  if (isAgentError(error)) {
+    return problemResponse(c, {
+      status: 401,
+      code: error.kind,
+      title: error.message,
+    });
+  }
   if (error instanceof ProjectsError && isKind(error, kinds)) {
     return problemResponse(c, {
       status: statusFor[error.kind],
@@ -472,13 +513,26 @@ function failure<K extends readonly ProjectsErrorKind[]>(c: Context, error: unkn
   throw error;
 }
 
-export function createProjectsRest(service: ProjectsService, sessionReader: SessionReader) {
+export function createProjectsRest(
+  service: ProjectsService,
+  sessionReader: SessionReader,
+  agentAuthenticator: AgentAuthenticator,
+) {
   const app = new OpenAPIHono({ defaultHook: validationHook });
+  // One actor path for REST and MCP: a bearer key authenticates as an agent, otherwise
+  // a browser session acts as a human. An invalid key throws here and becomes a 401;
+  // it never falls back to the cookie. Project administration routes do not use this.
+  const workActor = async (c: Context): Promise<WorkActor | null> => {
+    const identity = await agentAuthenticator(c.req.raw);
+    if (identity !== null) return { kind: "agent", identity };
+    const account = await sessionReader(c);
+    return account === null ? null : { kind: "human", account };
+  };
 
   app.openapi(listProjects, async (c) => {
     try {
       const { workspaceId } = c.req.valid("param");
-      return c.json(await service.listProjects(await sessionReader(c), workspaceId), 200);
+      return c.json(await service.listProjects(await workActor(c), workspaceId), 200);
     } catch (error) {
       return failure(c, error, workspaceListKinds);
     }
@@ -499,7 +553,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
   app.openapi(getProject, async (c) => {
     try {
       const { projectId } = c.req.valid("param");
-      return c.json(await service.getProject(await sessionReader(c), projectId), 200);
+      return c.json(await service.getProject(await workActor(c), projectId), 200);
     } catch (error) {
       return failure(c, error, projectReadKinds);
     }
@@ -551,7 +605,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
   app.openapi(listIssues, async (c) => {
     try {
       const { projectId } = c.req.valid("param");
-      return c.json(await service.listIssues(await sessionReader(c), projectId), 200);
+      return c.json(await service.listIssues(await workActor(c), projectId), 200);
     } catch (error) {
       return failure(c, error, projectReadKinds);
     }
@@ -561,7 +615,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
     try {
       const { projectId } = c.req.valid("param");
       return c.json(
-        await service.createIssue(await sessionReader(c), projectId, c.req.valid("json")),
+        await service.createIssue(await workActor(c), projectId, c.req.valid("json")),
         201,
       );
     } catch (error) {
@@ -572,7 +626,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
   app.openapi(getIssue, async (c) => {
     try {
       const { issueId } = c.req.valid("param");
-      return c.json(await service.getIssue(await sessionReader(c), issueId), 200);
+      return c.json(await service.getIssue(await workActor(c), issueId), 200);
     } catch (error) {
       return failure(c, error, issueReadKinds);
     }
@@ -582,7 +636,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
     try {
       const { issueId } = c.req.valid("param");
       return c.json(
-        await service.updateIssue(await sessionReader(c), issueId, c.req.valid("json")),
+        await service.updateIssue(await workActor(c), issueId, c.req.valid("json")),
         200,
       );
     } catch (error) {
@@ -593,7 +647,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
   app.openapi(listComments, async (c) => {
     try {
       const { issueId } = c.req.valid("param");
-      return c.json(await service.listComments(await sessionReader(c), issueId), 200);
+      return c.json(await service.listComments(await workActor(c), issueId), 200);
     } catch (error) {
       return failure(c, error, issueReadKinds);
     }
@@ -603,7 +657,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
     try {
       const { issueId } = c.req.valid("param");
       return c.json(
-        await service.createComment(await sessionReader(c), issueId, c.req.valid("json")),
+        await service.createComment(await workActor(c), issueId, c.req.valid("json")),
         201,
       );
     } catch (error) {
@@ -614,7 +668,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
   app.openapi(listActivity, async (c) => {
     try {
       const { projectId } = c.req.valid("param");
-      return c.json(await service.listActivity(await sessionReader(c), projectId), 200);
+      return c.json(await service.listActivity(await workActor(c), projectId), 200);
     } catch (error) {
       return failure(c, error, projectReadKinds);
     }
@@ -623,7 +677,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
   app.openapi(listKnowledge, async (c) => {
     try {
       const { projectId } = c.req.valid("param");
-      return c.json(await service.listKnowledge(await sessionReader(c), projectId), 200);
+      return c.json(await service.listKnowledge(await workActor(c), projectId), 200);
     } catch (error) {
       return failure(c, error, projectReadKinds);
     }
@@ -633,7 +687,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
     try {
       const { projectId } = c.req.valid("param");
       return c.json(
-        await service.createKnowledge(await sessionReader(c), projectId, c.req.valid("json")),
+        await service.createKnowledge(await workActor(c), projectId, c.req.valid("json")),
         201,
       );
     } catch (error) {
@@ -644,7 +698,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
   app.openapi(getKnowledge, async (c) => {
     try {
       const { entryId } = c.req.valid("param");
-      return c.json(await service.getKnowledge(await sessionReader(c), entryId), 200);
+      return c.json(await service.getKnowledge(await workActor(c), entryId), 200);
     } catch (error) {
       return failure(c, error, knowledgeReadKinds);
     }
@@ -654,7 +708,7 @@ export function createProjectsRest(service: ProjectsService, sessionReader: Sess
     try {
       const { entryId } = c.req.valid("param");
       return c.json(
-        await service.updateKnowledge(await sessionReader(c), entryId, c.req.valid("json")),
+        await service.updateKnowledge(await workActor(c), entryId, c.req.valid("json")),
         200,
       );
     } catch (error) {

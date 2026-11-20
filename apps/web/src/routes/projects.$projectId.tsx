@@ -71,7 +71,7 @@ function ProjectPage() {
       <h1>{project.name}</h1>
       <p>
         Project · <span data-project-access-level={project.accessLevel}>{project.accessLevel}</span>{" "}
-        · created by {project.createdBy.email}
+        · created by {project.createdBy.displayName}
       </p>
 
       {canManage && <ProjectSettings key={project.name} project={project} />}
@@ -106,7 +106,7 @@ function ProjectPage() {
                 <Link to="/knowledge/$entryId" params={{ entryId: entry.id }}>
                   {entry.title}
                 </Link>{" "}
-                <span>by {entry.updatedBy.email}</span>
+                <span>by {entry.updatedBy.displayName}</span>
               </li>
             ))}
           </ul>
@@ -327,7 +327,7 @@ function Activity({ projectId }: { projectId: string }) {
         <ul>
           {activity.map((event) => (
             <li key={event.id} data-activity-type={event.type}>
-              {event.actor.email} {activityLabels[event.type]} “{event.summary}”{" "}
+              {event.actor.displayName} {activityLabels[event.type]} “{event.summary}”{" "}
               <time dateTime={event.createdAt}>{event.createdAt}</time>
             </li>
           ))}

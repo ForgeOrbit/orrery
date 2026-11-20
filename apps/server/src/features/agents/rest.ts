@@ -16,6 +16,7 @@ import {
   validationHook,
 } from "../../platform/problem.ts";
 import type { SessionReader } from "../accounts/index.ts";
+import { readBearerToken } from "./auth.ts";
 import { AgentsError, type AgentsErrorKind, type AgentsService } from "./service.ts";
 
 const createAgent = createRoute({
@@ -237,11 +238,7 @@ const identityKinds = [
 type AgentKeyReader = (c: Context) => string | null;
 
 function createAgentKeyReader(): AgentKeyReader {
-  return (c) => {
-    const header = c.req.header("Authorization");
-    if (header === undefined) return null;
-    return /^Bearer\s+(.+)$/i.exec(header)?.[1] ?? null;
-  };
+  return (c) => readBearerToken(c.req.header("Authorization") ?? null);
 }
 
 // Thin: validate, call the service, map the result. The service decides who may do what.

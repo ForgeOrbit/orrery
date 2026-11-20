@@ -38,7 +38,8 @@ function KnowledgePage() {
       </p>
       <h1>{entry.title}</h1>
       <p>
-        Knowledge · created by {entry.createdBy.email} · last edited by {entry.updatedBy.email}
+        Knowledge · created by {entry.createdBy.displayName} · last edited by{" "}
+        {entry.updatedBy.displayName}
       </p>
       {entry.body === "" ? (
         <p>No content yet.</p>

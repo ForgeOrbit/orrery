@@ -192,6 +192,7 @@ describe("projects", () => {
     const projectsFeature = createProjectsFeature({
       db: database.db,
       sessionReader: accounts.sessionReader,
+      agentAuthenticator: async () => null,
     });
     const app = createApp({
       features: [accounts, projectsFeature],
@@ -383,7 +384,7 @@ describe("projects", () => {
       "issue_reopened",
     ]);
     for (const event of activity) {
-      expect(event.actor).toEqual({ humanId: admin.id, email: EMAIL });
+      expect(event.actor).toMatchObject({ humanId: admin.id, email: EMAIL });
       expect(event.projectId).toBe(project.id);
     }
     expect(activity[0]?.summary).toBe("Personal Project");

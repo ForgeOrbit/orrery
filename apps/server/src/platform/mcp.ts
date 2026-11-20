@@ -25,7 +25,7 @@ export function createMcpApp(features: readonly Feature[], publicUrl: string) {
   app.all("/", async (c) => {
     // Stateless for now: one server and transport per request.
     const server = new McpServer({ name: "orrery", version });
-    for (const feature of features) feature.registerTools?.(server);
+    for (const feature of features) feature.registerTools?.(server, c.req.raw);
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
     });
