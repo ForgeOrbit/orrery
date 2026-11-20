@@ -7,7 +7,7 @@ import type {
   SetupAdminResponse,
   SetupStatus,
 } from "@orrery/contract";
-import { and, eq, gt, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
 import { uniqueConstraintName } from "../../platform/errors.ts";
@@ -283,12 +283,19 @@ export function createAccountsService({
     // work and answer with the same error, whatever shape the presented password has.
     async login(input: LoginRequest) {
       const [human] = await db
-        .select({ id: humans.id, passwordHash: humans.passwordHash })
+        .select({
+          id: humans.id,
+          passwordHash: humans.passwordHash,
+          deactivatedAt: humans.deactivatedAt,
+        })
         .from(humans)
         .where(eq(humans.email, input.email))
         .limit(1);
 
-      if (human === undefined) {
+      // A deactivated account answers exactly like an unknown one or a wrong password:
+      // same work and the same 401, so a suspended identity cannot sign back in by
+      // guessing its password and no login probe can distinguish it from a missing user.
+      if (human === undefined || human.deactivatedAt !== null) {
         await verifyPassword(DUMMY_HASH, input.password);
         throw new AccountsError("invalid_credentials");
       }
@@ -321,6 +328,9 @@ export function createAccountsService({
           and(
             eq(browserSessions.tokenHash, tokenHash(token)),
             gt(browserSessions.expiresAt, sql`now()`),
+            // Deactivation ends access on the next request, not at the next cookie expiry
+            // (#38): a retained cookie never resolves to a suspended account.
+            isNull(humans.deactivatedAt),
           ),
         )
         .limit(1);

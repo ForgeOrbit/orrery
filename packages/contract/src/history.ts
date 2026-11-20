@@ -18,6 +18,9 @@ export const HistoryEventKind = z
     "agent_key",
     "project_activity",
     "installation_access",
+    // #38: installation-wide account deactivation/reactivation, recorded by an
+    // administrator and shown to administrators in installation history.
+    "account_status",
   ])
   .meta({ id: "HistoryEventKind" });
 export type HistoryEventKind = z.infer<typeof HistoryEventKind>;

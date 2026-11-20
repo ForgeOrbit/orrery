@@ -1,0 +1,584 @@
+import { randomBytes, randomUUID } from "node:crypto";
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import {
+  AgentKeyValidity,
+  InvitationStatus,
+  Problem,
+  ProjectAccessLevel,
+  WorkSessionStatus,
+  WorkspaceKind,
+  AccountStatus,
+  HistoryResponse,
+  IssuesResponse,
+  WorkspacesResponse,
+} from "@orrery/contract";
+import { and, eq, sql } from "drizzle-orm";
+import type { Hono } from "hono";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  accountRecoveryEvents,
+  agentApiKeys,
+  agentKeyEvents,
+  agents,
+  browserSessions,
+  humans,
+  issues,
+  passwordResetTokens,
+  projectAccessEvents,
+  projectAccessGrants,
+  projects,
+  runs,
+  workSessions,
+  workspaceInvitations,
+  workspaceMemberships,
+  workspaces,
+} from "../../db/schema.ts";
+import { loadConfig } from "../../platform/config.ts";
+import { createDb, type Database } from "../../platform/db.ts";
+import { createApp } from "../../platform/http.ts";
+import { createLogger } from "../../platform/log.ts";
+import { migrate } from "../../platform/migrate.ts";
+import { tokenHash } from "../../platform/tokens.ts";
+import { createAccountsFeature, type AccountsFeature } from "../accounts/index.ts";
+import { createFeatures } from "../index.ts";
+
+// Issue #38 against a real Postgres. These are database and policy behaviors: suspension
+// in place, key/claim/grant revocation, the sole-owner trigger shape, the last-admin guard,
+// and the non-revival of shared authority on reactivation. The black-box
+// zz-deactivation.spec.ts repeats the public surface against the running image.
+
+const SECRET = "deactivation-test-bootstrap-secret-123456";
+const ADMIN_EMAIL = "deactivation-admin@example.com";
+const ADMIN_PASSWORD = "deactivation-admin-password";
+const PUBLIC_URL = "http://orrery.test";
+const log = createLogger("error");
+
+let pg: StartedPostgreSqlContainer;
+let database: Database;
+let app: Hono;
+let accounts: AccountsFeature;
+
+// Strict indexed access: a fixture that must exist fails loudly instead of allowing an
+// undefined row to leak into assertions.
+function one<T>(rows: readonly T[]): T {
+  const row = rows[0];
+  if (row === undefined) throw new Error("expected a row, got none");
+  return row;
+}
+
+const postJson = (path: string, body: unknown, cookie?: string) =>
+  app.request(path, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}) },
+    body: JSON.stringify(body),
+  });
+const getJson = (path: string, cookie?: string, bearer?: string) =>
+  app.request(path, {
+    headers: {
+      ...(cookie ? { cookie } : {}),
+      ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
+    },
+  });
+
+async function expectProblem(res: Response, status: number, code: string) {
+  expect(res.status).toBe(status);
+  expect(res.headers.get("content-type")).toBe("application/problem+json");
+  expect(Problem.parse(await res.json())).toMatchObject({ status, code });
+}
+
+function cookieFrom(res: Response): string {
+  const cookie = res.headers
+    .getSetCookie()
+    .find((value) => value.startsWith("orrery_session="))
+    ?.split(";")[0];
+  if (cookie === undefined) throw new Error("no session cookie was set");
+  return cookie;
+}
+
+async function login(email: string, password: string): Promise<string> {
+  const res = await postJson("/api/auth/login", { email, password });
+  if (res.status !== 200) throw new Error(`login failed with ${res.status}`);
+  return cookieFrom(res);
+}
+
+// A verified account with a real password hash and personal workspace, created through
+// accounts' one insertion seam, then signed in normally.
+async function createHuman(email: string, password: string) {
+  const humanId = await database.db.transaction(async (tx) => {
+    const created = await accounts.createInvitedHuman({ email, password }, tx);
+    await accounts.markEmailVerified(created.humanId, tx);
+    return created.humanId;
+  });
+  return { humanId, cookie: await login(email, password) };
+}
+
+async function insertSharedWorkspace(name: string, ownerHumanId: string) {
+  // The deferred owner trigger fires at commit, so the workspace and its first owner must
+  // be created in one transaction (just as the workspaces service does).
+  return database.db.transaction(async (tx) => {
+    const workspace = one(
+      await tx
+        .insert(workspaces)
+        .values({ id: randomUUID(), kind: WorkspaceKind.enum.shared, name })
+        .returning(),
+    );
+    await tx.insert(workspaceMemberships).values({
+      id: randomUUID(),
+      workspaceId: workspace.id,
+      humanId: ownerHumanId,
+      isOwner: true,
+      canCreateProjects: true,
+      canInviteMembers: true,
+    });
+    return workspace;
+  });
+}
+
+async function insertProject(workspaceId: string, createdByHumanId: string) {
+  return one(
+    await database.db
+      .insert(projects)
+      .values({ id: randomUUID(), workspaceId, name: "Work", createdByHumanId })
+      .returning(),
+  );
+}
+
+async function insertAgentWithKey(humanId: string, workspaceId: string) {
+  const agent = one(
+    await database.db
+      .insert(agents)
+      .values({ id: randomUUID(), humanId, name: `agent-${randomUUID()}` })
+      .returning(),
+  );
+  const secret = randomBytes(32).toString("base64url");
+  await database.db.insert(agentApiKeys).values({
+    id: randomUUID(),
+    agentId: agent.id,
+    workspaceId,
+    createdByHumanId: humanId,
+    validity: AgentKeyValidity.enum.never,
+    tokenHash: tokenHash(secret),
+  });
+  return { agent, secret };
+}
+
+async function insertActiveClaim(
+  agentId: string,
+  workspaceId: string,
+  projectId: string,
+  createdByHumanId: string,
+) {
+  const issue = one(
+    await database.db
+      .insert(issues)
+      .values({
+        id: randomUUID(),
+        projectId,
+        number: 1,
+        title: "A task",
+        body: "",
+        status: "open",
+        createdByHumanId,
+        updatedByHumanId: createdByHumanId,
+      })
+      .returning(),
+  );
+  const run = one(
+    await database.db.insert(runs).values({ id: randomUUID(), agentId, workspaceId }).returning(),
+  );
+  await database.db.insert(workSessions).values({
+    id: randomUUID(),
+    agentId,
+    runId: run.id,
+    workspaceId,
+    issueId: issue.id,
+    status: WorkSessionStatus.enum.active,
+    leaseExpiresAt: sql`now() + interval '5 minutes'`,
+  });
+  return issue;
+}
+
+beforeAll(async () => {
+  pg = await new PostgreSqlContainer("postgres:18").start();
+  const config = loadConfig({
+    DATABASE_URL: pg.getConnectionUri(),
+    PUBLIC_URL,
+    BOOTSTRAP_SECRET: SECRET,
+    LOG_LEVEL: "error",
+  });
+  database = createDb(config.DATABASE_URL);
+  const migrationsDir = new URL("../../../../../db/migrations", import.meta.url).pathname;
+  await migrate(database.sql, migrationsDir);
+  accounts = createAccountsFeature({
+    db: database.db,
+    setupSecret: SECRET,
+    publicUrl: PUBLIC_URL,
+  });
+  app = createApp({ features: createFeatures(database, config, log), publicUrl: PUBLIC_URL, log });
+
+  const res = await postJson("/api/setup/admin", {
+    secret: SECRET,
+    email: ADMIN_EMAIL,
+    password: ADMIN_PASSWORD,
+  });
+  if (res.status !== 201) throw new Error(`bootstrap failed with ${res.status}`);
+});
+
+afterAll(async () => {
+  await database.sql.end();
+  await pg.stop();
+});
+
+describe("account deactivation and reactivation (#38)", () => {
+  it("refuses to deactivate the last active system administrator", async () => {
+    const cookie = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
+    const admin = one(await database.db.select().from(humans).where(eq(humans.email, ADMIN_EMAIL)));
+    await expectProblem(
+      await postJson(`/api/admin/accounts/${admin.id}/deactivate`, {}, cookie),
+      409,
+      "last_admin",
+    );
+    const stillActive = one(
+      await database.db
+        .select({ at: humans.deactivatedAt })
+        .from(humans)
+        .where(eq(humans.id, admin.id)),
+    );
+    expect(stillActive.at).toBeNull();
+  });
+
+  it("requires an active administrator and a real account", async () => {
+    const member = await createHuman("deactivation-guard@example.com", "guard-password");
+    expect(member.humanId).toBeTruthy();
+    const cookie = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
+    await expectProblem(
+      await postJson(`/api/admin/accounts/${member.humanId}/deactivate`, {}, member.cookie),
+      403,
+      "not_system_administrator",
+    );
+    await expectProblem(
+      await postJson(`/api/admin/accounts/${randomUUID()}/deactivate`, {}, cookie),
+      404,
+      "account_not_found",
+    );
+  });
+
+  it("stops sessions, keys, claims and grants, suspends memberships, and keeps authorship", async () => {
+    const member = await createHuman("deactivation-member@example.com", "member-password");
+    const adminCookie = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
+    const admin = one(await database.db.select().from(humans).where(eq(humans.email, ADMIN_EMAIL)));
+
+    const shared = await insertSharedWorkspace("Shared", admin.id);
+    await database.db.insert(workspaceMemberships).values({
+      id: randomUUID(),
+      workspaceId: shared.id,
+      humanId: member.humanId,
+      isOwner: false,
+      canCreateProjects: true,
+      canInviteMembers: true,
+    });
+    const project = await insertProject(shared.id, admin.id);
+    await database.db.insert(projectAccessGrants).values({
+      id: randomUUID(),
+      projectId: project.id,
+      humanId: member.humanId,
+      level: ProjectAccessLevel.enum.manage,
+      grantedByHumanId: admin.id,
+    });
+    const { agent, secret } = await insertAgentWithKey(member.humanId, shared.id);
+    const claimed = await insertActiveClaim(agent.id, shared.id, project.id, member.humanId);
+
+    const personal = one(
+      await database.db
+        .select()
+        .from(workspaces)
+        .where(eq(workspaces.personalOwnerHumanId, member.humanId)),
+    );
+    const personalProject = await insertProject(personal.id, member.humanId);
+
+    const res = await postJson(`/api/admin/accounts/${member.humanId}/deactivate`, {}, adminCookie);
+    expect(res.status).toBe(200);
+    expect(AccountStatus.parse(await res.json())).toMatchObject({
+      humanId: member.humanId,
+      email: "deactivation-member@example.com",
+      deactivatedAt: expect.any(String),
+      isSystemAdministrator: false,
+    });
+
+    expect(
+      await database.db
+        .select()
+        .from(browserSessions)
+        .where(eq(browserSessions.humanId, member.humanId)),
+    ).toEqual([]);
+    const key = one(
+      await database.db.select().from(agentApiKeys).where(eq(agentApiKeys.agentId, agent.id)),
+    );
+    expect(key.revokedAt).not.toBeNull();
+    expect(key.revokedByHumanId).toBe(admin.id);
+    const keyEvents = await database.db
+      .select()
+      .from(agentKeyEvents)
+      .where(eq(agentKeyEvents.keyId, key.id));
+    expect(keyEvents.map((event) => event.type)).toEqual(["agent_key_revoked"]);
+    expect(JSON.stringify(keyEvents)).not.toContain(secret);
+
+    const session = one(
+      await database.db.select().from(workSessions).where(eq(workSessions.agentId, agent.id)),
+    );
+    expect(session.status).toBe(WorkSessionStatus.enum.released);
+    const issue = one(await database.db.select().from(issues).where(eq(issues.id, claimed.id)));
+    expect(issue.status).toBe("open");
+
+    // The author is still named and attributed; the display marks them deactivated instead
+    // of falling back to an "unknown" label (#38).
+    const authoredIssues = await getJson(`/api/projects/${project.id}/issues`, adminCookie);
+    expect(authoredIssues.status).toBe(200);
+    const authoredIssue = IssuesResponse.parse(await authoredIssues.json()).find(
+      (row) => row.id === claimed.id,
+    );
+    expect(authoredIssue?.createdBy.displayName).toContain("deactivated");
+    expect(authoredIssue?.createdBy.deactivated).toBe(true);
+
+    expect(
+      await database.db
+        .select()
+        .from(projectAccessGrants)
+        .where(eq(projectAccessGrants.humanId, member.humanId)),
+    ).toEqual([]);
+    const accessEvents = await database.db
+      .select()
+      .from(projectAccessEvents)
+      .where(eq(projectAccessEvents.subjectHumanId, member.humanId));
+    expect(accessEvents).toMatchObject([
+      { type: "project_access_revoked", previousLevel: ProjectAccessLevel.enum.manage },
+    ]);
+
+    const membership = one(
+      await database.db
+        .select()
+        .from(workspaceMemberships)
+        .where(
+          and(
+            eq(workspaceMemberships.workspaceId, shared.id),
+            eq(workspaceMemberships.humanId, member.humanId),
+          ),
+        ),
+    );
+    expect(membership.suspendedAt).not.toBeNull();
+    expect(membership.isFormerOwner).toBe(false);
+    expect(membership.isOwner).toBe(false);
+    expect(membership.canCreateProjects).toBe(false);
+    expect(membership.canInviteMembers).toBe(false);
+
+    const personalRow = one(
+      await database.db.select().from(projects).where(eq(projects.id, personalProject.id)),
+    );
+    expect(personalRow.createdByHumanId).toBe(member.humanId);
+    const authored = one(
+      await database.db.select().from(humans).where(eq(humans.id, member.humanId)),
+    );
+    expect(authored.email).toBe("deactivation-member@example.com");
+
+    const deactivatedEvent = one(
+      await database.db
+        .select()
+        .from(accountRecoveryEvents)
+        .where(
+          and(
+            eq(accountRecoveryEvents.humanId, member.humanId),
+            eq(accountRecoveryEvents.type, "account_deactivated"),
+          ),
+        ),
+    );
+    expect(deactivatedEvent.actorHumanId).toBe(admin.id);
+
+    await expectProblem(
+      await postJson("/api/auth/login", {
+        email: "deactivation-member@example.com",
+        password: "member-password",
+      }),
+      401,
+      "invalid_credentials",
+    );
+    await expectProblem(await getJson("/api/auth/session", member.cookie), 401, "not_signed_in");
+    await expectProblem(
+      await getJson(`/api/agents/me?workspaceId=${shared.id}`, undefined, secret),
+      401,
+      "human_deactivated",
+    );
+
+    const reactivated = await postJson(
+      `/api/admin/accounts/${member.humanId}/reactivate`,
+      {},
+      adminCookie,
+    );
+    expect(reactivated.status).toBe(200);
+    expect(AccountStatus.parse(await reactivated.json()).deactivatedAt).toBeNull();
+    const freshCookie = await login("deactivation-member@example.com", "member-password");
+    const listed = await getJson("/api/workspaces", freshCookie);
+    expect(listed.status).toBe(200);
+    const names = WorkspacesResponse.parse(await listed.json()).map((w) => w.name);
+    expect(names).toContain("Personal");
+    expect(names).not.toContain("Shared");
+    await expectProblem(
+      await getJson(`/api/workspaces/${shared.id}`, freshCookie),
+      404,
+      "workspace_not_found",
+    );
+    // The old key stays revoked even though the identity is active again.
+    await expectProblem(
+      await getJson(`/api/agents/me?workspaceId=${shared.id}`, undefined, secret),
+      401,
+      "key_revoked",
+    );
+
+    const stillSuspended = one(
+      await database.db
+        .select()
+        .from(workspaceMemberships)
+        .where(
+          and(
+            eq(workspaceMemberships.workspaceId, shared.id),
+            eq(workspaceMemberships.humanId, member.humanId),
+          ),
+        ),
+    );
+    expect(stillSuspended.suspendedAt).not.toBeNull();
+    const reactivatedEvent = one(
+      await database.db
+        .select()
+        .from(accountRecoveryEvents)
+        .where(
+          and(
+            eq(accountRecoveryEvents.humanId, member.humanId),
+            eq(accountRecoveryEvents.type, "account_reactivated"),
+          ),
+        ),
+    );
+    expect(reactivatedEvent.actorHumanId).toBe(admin.id);
+  });
+
+  it("allows deactivating a sole owner and keeps the workspace eligible for recovery", async () => {
+    const adminCookie = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
+    const sole = await createHuman("deactivation-owner@example.com", "owner-password");
+    const workspace = await insertSharedWorkspace("Sole owner workspace", sole.humanId);
+
+    const res = await postJson(`/api/admin/accounts/${sole.humanId}/deactivate`, {}, adminCookie);
+    expect(res.status).toBe(200);
+    const membership = one(
+      await database.db
+        .select()
+        .from(workspaceMemberships)
+        .where(
+          and(
+            eq(workspaceMemberships.workspaceId, workspace.id),
+            eq(workspaceMemberships.humanId, sole.humanId),
+          ),
+        ),
+    );
+    expect(membership.suspendedAt).not.toBeNull();
+    expect(membership.isFormerOwner).toBe(true);
+    expect(membership.isOwner).toBe(false);
+
+    await postJson(`/api/admin/accounts/${sole.humanId}/reactivate`, {}, adminCookie);
+    const after = one(
+      await database.db
+        .select()
+        .from(workspaceMemberships)
+        .where(eq(workspaceMemberships.id, membership.id)),
+    );
+    expect(after.isOwner).toBe(false);
+    expect(after.suspendedAt).not.toBeNull();
+    expect(after.isFormerOwner).toBe(true);
+  });
+
+  it("re-inviting a reactivated human unsuspends the membership with fresh access", async () => {
+    const admin = one(await database.db.select().from(humans).where(eq(humans.email, ADMIN_EMAIL)));
+    const adminCookie = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
+    const inviteeEmail = "deactivation-reinvite@example.com";
+    const invitee = await createHuman(inviteeEmail, "reinvite-password");
+    const workspace = await insertSharedWorkspace("Reinvite workspace", admin.id);
+    await database.db.insert(workspaceMemberships).values({
+      id: randomUUID(),
+      workspaceId: workspace.id,
+      humanId: invitee.humanId,
+      isOwner: false,
+      canInviteMembers: true,
+    });
+    await postJson(`/api/admin/accounts/${invitee.humanId}/deactivate`, {}, adminCookie);
+    await postJson(`/api/admin/accounts/${invitee.humanId}/reactivate`, {}, adminCookie);
+
+    await database.db
+      .update(humans)
+      .set({ emailVerifiedAt: sql`now()` })
+      .where(eq(humans.id, admin.id));
+    const owner = one(
+      await database.db
+        .select()
+        .from(workspaceMemberships)
+        .where(
+          and(
+            eq(workspaceMemberships.workspaceId, workspace.id),
+            eq(workspaceMemberships.humanId, admin.id),
+          ),
+        ),
+    );
+    const secret = randomBytes(32).toString("base64url");
+    await database.db.insert(workspaceInvitations).values({
+      id: randomUUID(),
+      workspaceId: workspace.id,
+      email: inviteeEmail,
+      status: InvitationStatus.enum.pending,
+      tokenHash: tokenHash(secret),
+      invitedByHumanId: owner.humanId,
+      expiresAt: sql`now() + interval '7 days'`,
+    });
+
+    const cookie = await login(inviteeEmail, "reinvite-password");
+    const res = await postJson("/api/workspace-invitations/acceptance", { token: secret }, cookie);
+    expect(res.status).toBe(200);
+    const after = one(
+      await database.db
+        .select()
+        .from(workspaceMemberships)
+        .where(
+          and(
+            eq(workspaceMemberships.workspaceId, workspace.id),
+            eq(workspaceMemberships.humanId, invitee.humanId),
+          ),
+        ),
+    );
+    expect(after.suspendedAt).toBeNull();
+    expect(after.isFormerOwner).toBe(false);
+    expect(after.isOwner).toBe(false);
+  });
+
+  it("records deactivation and reactivation in installation history for administrators", async () => {
+    const cookie = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
+    const res = await getJson("/api/installation/history", cookie);
+    expect(res.status).toBe(200);
+    const types = HistoryResponse.parse(await res.json()).map((event) => event.type);
+    expect(types).toContain("account_deactivated");
+    expect(types).toContain("account_reactivated");
+  });
+
+  it("refuses a password reset confirmation for a deactivated account", async () => {
+    const member = await createHuman("deactivation-reset@example.com", "reset-password");
+    expect(member.humanId).toBeTruthy();
+    const adminCookie = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
+    await postJson(`/api/admin/accounts/${member.humanId}/deactivate`, {}, adminCookie);
+    const token = randomBytes(32).toString("base64url");
+    await database.db.insert(passwordResetTokens).values({
+      id: randomUUID(),
+      humanId: member.humanId,
+      tokenHash: tokenHash(token),
+      expiresAt: sql`now() + interval '1 hour'`,
+    });
+    await expectProblem(
+      await postJson("/api/auth/password-reset/confirm", { token, password: "new-password" }),
+      403,
+      "account_deactivated",
+    );
+  });
+});

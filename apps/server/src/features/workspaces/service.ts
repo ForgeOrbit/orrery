@@ -15,7 +15,7 @@ import {
   type WorkspaceInvitationPreview,
   type WorkspaceMember,
 } from "@orrery/contract";
-import { and, desc, eq, gt, gte, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
 import { errorNameAndCode, uniqueConstraintName } from "../../platform/errors.ts";
@@ -230,6 +230,9 @@ async function readMembership(
       and(
         eq(workspaceMemberships.workspaceId, workspaceId),
         eq(workspaceMemberships.humanId, humanId),
+        // A suspended membership (#38) grants no authority, but the row stays for
+        // ownership history and clean re-invitation.
+        isNull(workspaceMemberships.suspendedAt),
       ),
     )
     .limit(1);
@@ -302,14 +305,13 @@ async function requireProjectManageScope(
 }
 
 // The same verified-inviter policy for creating and rotating an offer (#20): the
-// current owner must have a verified mailbox before either action. Accounts stay active
-// until #38 introduces deactivation; until then an existing account is active by
-// definition.
+// current owner must have a verified mailbox and an active account. A deactivated
+// inviter (#38) cannot offer workspace access even though their row is retained.
 async function requireVerifiedInviter(tx: DbTransaction, humanId: string) {
   const [inviter] = await tx
     .select({ emailVerifiedAt: humans.emailVerifiedAt })
     .from(humans)
-    .where(eq(humans.id, humanId))
+    .where(and(eq(humans.id, humanId), isNull(humans.deactivatedAt)))
     .limit(1);
   if (inviter?.emailVerifiedAt == null) {
     throw new WorkspacesError("inviter_unverified");
@@ -375,6 +377,7 @@ async function inviterStillAuthorized(
       and(
         eq(workspaceMemberships.workspaceId, workspaceId),
         eq(workspaceMemberships.humanId, inviterHumanId),
+        isNull(workspaceMemberships.suspendedAt),
       ),
     )
     .limit(1);
@@ -819,7 +822,15 @@ async function requireRecipientNotMember(tx: DbTransaction, workspaceId: string,
     .select({ id: workspaceMemberships.id })
     .from(workspaceMemberships)
     .innerJoin(humans, eq(humans.id, workspaceMemberships.humanId))
-    .where(and(eq(workspaceMemberships.workspaceId, workspaceId), eq(humans.email, email)))
+    .where(
+      and(
+        eq(workspaceMemberships.workspaceId, workspaceId),
+        eq(humans.email, email),
+        // A suspended membership does not block a fresh invitation: the reactivated human
+        // re-enters through the normal acceptance path, which unsuspends the row (#38).
+        isNull(workspaceMemberships.suspendedAt),
+      ),
+    )
     .limit(1);
   if (member !== undefined) throw new WorkspacesError("already_member");
 }
@@ -892,12 +903,16 @@ export function createWorkspacesService({
           and(
             eq(workspaceMemberships.workspaceId, workspaces.id),
             eq(workspaceMemberships.humanId, account.humanId),
+            isNull(workspaceMemberships.suspendedAt),
           ),
         )
         .where(
           or(
             eq(workspaces.personalOwnerHumanId, account.humanId),
-            eq(workspaceMemberships.humanId, account.humanId),
+            and(
+              eq(workspaceMemberships.humanId, account.humanId),
+              isNull(workspaceMemberships.suspendedAt),
+            ),
           ),
         )
         .orderBy(workspaces.createdAt, workspaces.id);
@@ -925,6 +940,7 @@ export function createWorkspacesService({
           and(
             eq(workspaceMemberships.workspaceId, workspaces.id),
             eq(workspaceMemberships.humanId, account.humanId),
+            isNull(workspaceMemberships.suspendedAt),
           ),
         )
         .where(
@@ -932,7 +948,10 @@ export function createWorkspacesService({
             eq(workspaces.id, workspaceId),
             or(
               eq(workspaces.personalOwnerHumanId, account.humanId),
-              eq(workspaceMemberships.humanId, account.humanId),
+              and(
+                eq(workspaceMemberships.humanId, account.humanId),
+                isNull(workspaceMemberships.suspendedAt),
+              ),
             ),
           ),
         )
@@ -975,7 +994,14 @@ export function createWorkspacesService({
             })
             .from(workspaceMemberships)
             .innerJoin(humans, eq(humans.id, workspaceMemberships.humanId))
-            .where(eq(workspaceMemberships.workspaceId, workspaceId))
+            .where(
+              and(
+                eq(workspaceMemberships.workspaceId, workspaceId),
+                // A suspended membership is kept for history, not shown in the active
+                // directory (#38); re-invitation is how a reactivated human rejoins.
+                isNull(workspaceMemberships.suspendedAt),
+              ),
+            )
             .orderBy(workspaceMemberships.createdAt, workspaceMemberships.humanId);
           return rows.map(toMember);
         },
@@ -1494,6 +1520,10 @@ export function createWorkspacesService({
         }
         if (human.emailVerifiedAt === null) throw new WorkspacesError("email_unverified");
 
+        // A previously deactivated human has a suspended membership row (#38). Accepting
+        // a fresh invitation revives that same row with fresh access and no former
+        // ownership; it never restores the old owner's authority or capabilities. An
+        // active membership still cannot be joined twice.
         const inserted = await tx
           .insert(workspaceMemberships)
           .values({
@@ -1502,7 +1532,19 @@ export function createWorkspacesService({
             humanId: actor.humanId,
             isOwner: false,
           })
-          .onConflictDoNothing()
+          .onConflictDoUpdate({
+            target: [workspaceMemberships.workspaceId, workspaceMemberships.humanId],
+            set: {
+              suspendedAt: null,
+              isFormerOwner: false,
+              isOwner: false,
+              canCreateProjects: false,
+              canInviteMembers: false,
+              canRemoveMembers: false,
+              canManageMemberPermissions: false,
+            },
+            setWhere: isNotNull(workspaceMemberships.suspendedAt),
+          })
           .returning({ id: workspaceMemberships.id });
         if (inserted.length === 0) throw new WorkspacesError("already_member");
 
@@ -1598,6 +1640,7 @@ export function createWorkspacesService({
             and(
               eq(workspaceMemberships.workspaceId, workspaceId),
               eq(workspaceMemberships.humanId, humanId),
+              isNull(workspaceMemberships.suspendedAt),
             ),
           );
         await recordEvent(tx, "owner_appointed", workspaceId, actor.humanId, humanId);
@@ -1673,6 +1716,7 @@ export function createWorkspacesService({
             and(
               eq(workspaceMemberships.workspaceId, workspaceId),
               eq(workspaceMemberships.humanId, humanId),
+              isNull(workspaceMemberships.suspendedAt),
             ),
           );
         const next: WorkspaceMembershipRow = { ...member };
@@ -1718,6 +1762,9 @@ export function createWorkspacesService({
               and(
                 eq(workspaceMemberships.workspaceId, workspaceId),
                 eq(workspaceMemberships.isOwner, true),
+                // Only active owners keep the workspace administered. A suspended former
+                // owner is retained for history, not counted as current authority.
+                isNull(workspaceMemberships.suspendedAt),
               ),
             );
           if ((owners?.count ?? 0) <= 1) throw new WorkspacesError("last_owner");
@@ -1758,6 +1805,9 @@ export function createWorkspacesService({
               and(
                 eq(workspaceMemberships.workspaceId, workspaceId),
                 eq(workspaceMemberships.isOwner, true),
+                // Only active owners keep the workspace administered. A suspended former
+                // owner is retained for history, not counted as current authority.
+                isNull(workspaceMemberships.suspendedAt),
               ),
             );
           if ((owners?.count ?? 0) <= 1) throw new WorkspacesError("last_owner");

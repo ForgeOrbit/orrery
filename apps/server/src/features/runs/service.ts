@@ -145,6 +145,7 @@ async function humanCanReadWorkspace(
       and(
         eq(workspaceMemberships.workspaceId, workspaces.id),
         eq(workspaceMemberships.humanId, humanId),
+        isNull(workspaceMemberships.suspendedAt),
       ),
     )
     .where(eq(workspaces.id, workspaceId))

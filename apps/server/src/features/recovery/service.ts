@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { accountRecoveryEvents, passwordResetTokens } from "../../db/schema.ts";
+import { accountRecoveryEvents, humans, passwordResetTokens } from "../../db/schema.ts";
 import type { DbTransaction } from "../../platform/db.ts";
 import { errorNameAndCode } from "../../platform/errors.ts";
 import type { Logger } from "../../platform/log.ts";
@@ -44,13 +44,15 @@ function resetMail(email: string, token: string, publicUrl: string): OutgoingMai
 export type RecoveryErrorKind =
   | "reset_token_invalid"
   | "account_not_found"
-  | "not_system_administrator";
+  | "not_system_administrator"
+  | "account_deactivated";
 
 const messages = {
   reset_token_invalid: "This password reset link is invalid, expired, or already used.",
   account_not_found: "No account has that email address.",
   not_system_administrator:
     "Local recovery is for system administrators only. An ordinary account recovers by email.",
+  account_deactivated: "This account is deactivated and cannot change its password.",
 } as const satisfies Record<RecoveryErrorKind, string>;
 
 export class RecoveryError extends Error {
@@ -184,6 +186,17 @@ export function createRecoveryService({
           .returning({ humanId: passwordResetTokens.humanId });
         const [row] = redeemed;
         if (row === undefined) throw new RecoveryError("reset_token_invalid");
+        // A deactivated account cannot set a new password. The check is inside the same
+        // transaction, so the token redemption rolls back and the link stays usable if an
+        // administrator reactivates the account later (#38).
+        const [account] = await tx
+          .select({ deactivatedAt: humans.deactivatedAt })
+          .from(humans)
+          .where(eq(humans.id, row.humanId))
+          .limit(1);
+        if (account === undefined || account.deactivatedAt !== null) {
+          throw new RecoveryError("account_deactivated");
+        }
         await changePasswordAndSignOut(
           tx,
           accounts,

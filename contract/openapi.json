@@ -180,6 +180,36 @@
           "emailVerified"
         ]
       },
+      "AccountStatus": {
+        "type": "object",
+        "properties": {
+          "humanId": {
+            "type": "string"
+          },
+          "email": {
+            "$ref": "#/components/schemas/Email"
+          },
+          "deactivatedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "isSystemAdministrator": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "humanId",
+          "email",
+          "deactivatedAt",
+          "isSystemAdministrator"
+        ]
+      },
+      "Timestamp": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "date-time"
+      },
       "Agent": {
         "type": "object",
         "properties": {
@@ -202,10 +232,6 @@
           "name",
           "createdAt"
         ]
-      },
-      "Timestamp": {
-        "type": "string",
-        "format": "date-time"
       },
       "CreateAgentRequest": {
         "type": "object",
@@ -274,30 +300,10 @@
             "$ref": "#/components/schemas/Timestamp"
           },
           "expiresAt": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Timestamp"
-              },
-              {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            ]
+            "$ref": "#/components/schemas/Timestamp"
           },
           "revokedAt": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Timestamp"
-              },
-              {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            ]
+            "$ref": "#/components/schemas/Timestamp"
           },
           "revokedByHumanId": {
             "type": [
@@ -1298,6 +1304,9 @@
           },
           "displayName": {
             "type": "string"
+          },
+          "deactivated": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -1417,17 +1426,7 @@
             "$ref": "#/components/schemas/Timestamp"
           },
           "closedAt": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Timestamp"
-              },
-              {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            ]
+            "$ref": "#/components/schemas/Timestamp"
           },
           "createdBy": {
             "$ref": "#/components/schemas/Actor"
@@ -1778,7 +1777,8 @@
           "project_access",
           "agent_key",
           "project_activity",
-          "installation_access"
+          "installation_access",
+          "account_status"
         ]
       },
       "HistoryScope": {
@@ -2074,30 +2074,10 @@
             "$ref": "#/components/schemas/Timestamp"
           },
           "endedAt": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Timestamp"
-              },
-              {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            ]
+            "$ref": "#/components/schemas/Timestamp"
           },
           "lastHeartbeatAt": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Timestamp"
-              },
-              {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            ]
+            "$ref": "#/components/schemas/Timestamp"
           },
           "agentName": {
             "type": "string"
@@ -2214,17 +2194,7 @@
             "$ref": "#/components/schemas/Timestamp"
           },
           "endedAt": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Timestamp"
-              },
-              {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            ]
+            "$ref": "#/components/schemas/Timestamp"
           }
         },
         "required": [
@@ -2267,17 +2237,7 @@
             "type": "string"
           },
           "progressUpdatedAt": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Timestamp"
-              },
-              {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            ]
+            "$ref": "#/components/schemas/Timestamp"
           },
           "createdAt": {
             "$ref": "#/components/schemas/Timestamp"
@@ -2286,17 +2246,7 @@
             "$ref": "#/components/schemas/Timestamp"
           },
           "endedAt": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Timestamp"
-              },
-              {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            ]
+            "$ref": "#/components/schemas/Timestamp"
           }
         },
         "required": [
@@ -2425,17 +2375,7 @@
             ]
           },
           "answeredAt": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Timestamp"
-              },
-              {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            ]
+            "$ref": "#/components/schemas/Timestamp"
           },
           "followUp": {
             "type": [
@@ -2450,30 +2390,10 @@
             ]
           },
           "followUpAt": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Timestamp"
-              },
-              {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            ]
+            "$ref": "#/components/schemas/Timestamp"
           },
           "resolvedAt": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Timestamp"
-              },
-              {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            ]
+            "$ref": "#/components/schemas/Timestamp"
           },
           "createdAt": {
             "$ref": "#/components/schemas/Timestamp"
@@ -2980,6 +2900,166 @@
           },
           "401": {
             "description": "No valid session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/accounts/{humanId}/deactivate": {
+      "post": {
+        "summary": "Deactivate a human account across the installation",
+        "description": "System administrators only. In one transaction: stop browser sessions, revoke the account's agents' keys in every workspace, release their active claims, revoke their shared project grants, suspend their shared memberships while keeping ownership history, and record a secret-free event. The last active administrator cannot be deactivated. Authorship and personal work are preserved.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "humanId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The account is deactivated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The account id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a system administrator",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No account has that id",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Already deactivated, or the last active administrator",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/accounts/{humanId}/reactivate": {
+      "post": {
+        "summary": "Reactivate a deactivated human account",
+        "description": "System administrators only. Clears the account's deactivated mark and records a secret-free event. Personal work is immediately available again; shared memberships stay suspended, old project grants and agent keys stay revoked, and ownership is never restored automatically. A fresh invitation and new keys are required for shared access.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "humanId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The account is active again",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The account id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a system administrator",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No account has that id",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The account is not deactivated",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3788,6 +3868,16 @@
           },
           "400": {
             "description": "The request is invalid, or the link is invalid, expired, or already used",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The account is deactivated",
             "content": {
               "application/problem+json": {
                 "schema": {

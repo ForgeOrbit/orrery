@@ -6,6 +6,7 @@ import type { Feature } from "../platform/feature.ts";
 import type { Logger } from "../platform/log.ts";
 import { createAccountsFeature, accountsRoutes } from "./accounts/index.ts";
 import { createAgentsFeature, agentsRoutes, revokeMemberWorkspaceKeys } from "./agents/index.ts";
+import { createDeactivationFeature, deactivationRoutes } from "./deactivation/index.ts";
 import type { AgentAuthenticator } from "./agents/index.ts";
 import type { WorkSessionGate } from "./projects/index.ts";
 import { createHistoryFeature, historyRoutes } from "./history/index.ts";
@@ -115,6 +116,9 @@ export function createFeatures(database: Database, config: Config, log: Logger):
   return [
     createSystemFeature({ ping: database.ping }),
     accounts,
+    // Deactivation borrows only accounts' session reader: the human, key, claim, grant,
+    // membership and history writes it makes are decided in its own one service.
+    createDeactivationFeature({ db: database.db, sessionReader: accounts.sessionReader }),
     settings,
     // Recovery borrows accounts' credential seams and settings' one mail sender. The
     // local command uses the same service, so its policy cannot drift from the HTTP flow.
@@ -191,6 +195,7 @@ export function createFeatures(database: Database, config: Config, log: Logger):
 export const routes = [
   ...systemRoutes,
   ...accountsRoutes,
+  ...deactivationRoutes,
   ...agentsRoutes,
   ...settingsRoutes,
   ...recoveryRoutes,

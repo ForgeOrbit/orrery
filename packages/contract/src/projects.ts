@@ -39,7 +39,9 @@ export type ProjectActivityType = z.infer<typeof ProjectActivityType>;
 // Who did something. The stable identity is either a human or an agent: an agent's work
 // is attributed to the agent itself, never misattributed to the human who owns its key.
 // `displayName` is the stable label readers see (the human's email or the agent's name),
-// so a reader never has to guess which identity an event names.
+// so a reader never has to guess which identity an event names. A deactivated human
+// keeps that same identity and label: `deactivated` marks it suspended instead of
+// dropping the author and showing "unknown" (#38).
 export const Actor = z
   .object({
     humanId: z.string().nullable().optional(),
@@ -47,6 +49,7 @@ export const Actor = z
     agentId: z.string().nullable().optional(),
     agentName: z.string().nullable().optional(),
     displayName: z.string(),
+    deactivated: z.boolean().optional(),
   })
   .meta({ id: "Actor" });
 export type Actor = z.infer<typeof Actor>;

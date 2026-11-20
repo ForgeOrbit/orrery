@@ -7,7 +7,7 @@ import type {
   TransferPreview,
 } from "@orrery/contract";
 import { InvitationStatus, ProjectAccessEventType, WorkspaceKind } from "@orrery/contract";
-import { and, eq, gt, inArray, lte, ne, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, lte, ne, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import {
   agentApiKeyProjects,
@@ -178,6 +178,7 @@ async function hasDestinationMembership(
       and(
         eq(workspaceMemberships.workspaceId, workspaceId),
         eq(workspaceMemberships.humanId, humanId),
+        isNull(workspaceMemberships.suspendedAt),
       ),
     )
     .limit(1);
@@ -209,6 +210,7 @@ async function hasCreateProjectsAuthority(
       and(
         eq(workspaceMemberships.workspaceId, workspaceId),
         eq(workspaceMemberships.humanId, humanId),
+        isNull(workspaceMemberships.suspendedAt),
       ),
     )
     .limit(1);
@@ -231,6 +233,7 @@ async function manageRecipients(
       and(
         eq(workspaceMemberships.workspaceId, destinationWorkspaceId),
         eq(workspaceMemberships.isOwner, true),
+        isNull(workspaceMemberships.suspendedAt),
       ),
     )
     .orderBy(humans.email);

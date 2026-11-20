@@ -206,6 +206,7 @@ async function humanStillHasWorkspaceAccess(
       and(
         eq(workspaceMemberships.workspaceId, workspaceId),
         eq(workspaceMemberships.humanId, humanId),
+        isNull(workspaceMemberships.suspendedAt),
       ),
     )
     .limit(1);
@@ -234,6 +235,7 @@ async function lockAgentWorkspaceAccess(tx: DbTransaction, identity: AgentIdenti
       and(
         eq(workspaceMemberships.workspaceId, identity.workspaceId),
         eq(workspaceMemberships.humanId, identity.humanId),
+        isNull(workspaceMemberships.suspendedAt),
       ),
     )
     .for("key share");

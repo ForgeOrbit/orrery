@@ -496,7 +496,13 @@ describe("password recovery", () => {
 
     const events = await database.db.select().from(accountRecoveryEvents);
     const stored = JSON.stringify(events);
-    expect(Object.keys(events[0] ?? {}).toSorted()).toEqual(["createdAt", "humanId", "id", "type"]);
+    expect(Object.keys(events[0] ?? {}).toSorted()).toEqual([
+      "actorHumanId",
+      "createdAt",
+      "humanId",
+      "id",
+      "type",
+    ]);
     expect(stored).not.toContain(token);
     expect(stored).not.toContain(NEW_PASSWORD);
   });
