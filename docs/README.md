@@ -31,6 +31,7 @@ Want to write or change a page? See [Writing the docs](./writing-docs.md).
 
 - [Identity and work sessions spec](./design/mvp-spec.md)
 - [Identity and access](./design/identity-and-access.md)
+- [Harness compatibility proof](./design/harness-compatibility-proof.md)
 - [Bootstrap and instance settings](./adr/0001-bootstrap-and-instance-settings.md)
 - [Personal and shared workspaces](./adr/0002-personal-and-shared-workspaces.md)
 
