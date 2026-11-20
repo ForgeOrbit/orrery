@@ -19,6 +19,7 @@ import {
   type IssueDetail,
   type IssueLink,
   IssueLinkKind,
+  IssuePriority,
   type KnowledgeEntry,
   type Project,
   type ProjectAccessGrant,
@@ -31,7 +32,7 @@ import {
   type UpdateKnowledgeEntryRequest,
   type UpdateProjectRequest,
 } from "@orrery/contract";
-import { and, eq, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
@@ -360,6 +361,22 @@ const projectColumns = {
   fallbackPolicy: projects.fallbackPolicy,
 };
 
+// One deterministic board/ready-work order (#88): importance, position, then creation.
+// The CASE ranks the contract enum explicitly because the text values are not in that
+// order lexicographically. Once assignees exist (#84), assigned-to-caller sorts ahead of
+// this list; until then this is the whole queue order.
+const issuePriorityRank = sql`case ${issues.priority} when 'urgent' then 0 when 'high' then 1 when 'medium' then 2 when 'low' then 3 else 4 end`;
+const issueBoardOrder = [
+  issuePriorityRank,
+  asc(issues.sortOrder),
+  asc(issues.createdAt),
+  asc(issues.number),
+];
+
+// Spacing for a newly created card. Two neighbours are always at least this far apart,
+// so their midpoint is distinct from both and a drag rewrites only the dragged row.
+const ISSUE_SORT_STEP = 65535;
+
 const issueColumns = {
   id: issues.id,
   projectId: issues.projectId,
@@ -367,6 +384,8 @@ const issueColumns = {
   title: issues.title,
   body: issues.body,
   status: issues.status,
+  priority: issues.priority,
+  sortOrder: issues.sortOrder,
   fallbackPolicyOverride: issues.fallbackPolicyOverride,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
@@ -485,6 +504,8 @@ type IssueRow = {
   title: string;
   body: string;
   status: IssueStatus;
+  priority: IssuePriority;
+  sortOrder: number;
   fallbackPolicyOverride: FallbackPolicy | null;
   // The project's policy, joined by requireIssue so a single DTO carries the resolved one.
   projectFallbackPolicy: FallbackPolicy;
@@ -618,6 +639,8 @@ function toIssue(row: IssueRow): Issue {
     title: row.title,
     body: row.body,
     status: row.status,
+    priority: row.priority,
+    sortOrder: row.sortOrder,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     closedAt: row.closedAt?.toISOString() ?? null,
@@ -1335,7 +1358,7 @@ export function createProjectsService({
           .leftJoin(issueEditor, eq(issueEditor.id, issues.updatedByHumanId))
           .leftJoin(issueAgentEditor, eq(issueAgentEditor.id, issues.updatedByAgentId))
           .where(eq(issues.projectId, projectId))
-          .orderBy(issues.number);
+          .orderBy(...issueBoardOrder);
         return rows.map(toIssue);
       },
       { accessMode: "read only" },
@@ -1891,6 +1914,8 @@ export function createProjectsService({
             title: input.title,
             body: input.body ?? "",
             status: IssueStatus.enum.open,
+            priority: input.priority ?? IssuePriority.enum.none,
+            sortOrder: input.sortOrder ?? counter.number * ISSUE_SORT_STEP,
             createdByHumanId: humanIdOf(actor),
             createdByAgentId: agentIdOf(actor),
             updatedByHumanId: humanIdOf(actor),
@@ -1905,6 +1930,8 @@ export function createProjectsService({
             title: issues.title,
             body: issues.body,
             status: issues.status,
+            priority: issues.priority,
+            sortOrder: issues.sortOrder,
             createdAt: issues.createdAt,
             updatedAt: issues.updatedAt,
             closedAt: issues.closedAt,
@@ -1925,6 +1952,8 @@ export function createProjectsService({
           title: created.title,
           body: created.body,
           status: IssueStatus.parse(created.status),
+          priority: created.priority,
+          sortOrder: created.sortOrder,
           createdAt: created.createdAt.toISOString(),
           updatedAt: created.updatedAt.toISOString(),
           closedAt: created.closedAt === null ? null : created.closedAt.toISOString(),
@@ -1959,10 +1988,16 @@ export function createProjectsService({
         const title = input.title ?? current.title;
         const body = input.body ?? current.body;
         const status = input.status ?? current.status;
+        const priority = input.priority ?? current.priority;
+        const sortOrder = input.sortOrder ?? current.sortOrder;
         const titleChanged = title !== current.title;
         const bodyChanged = body !== current.body;
         const statusChanged = status !== current.status;
-        if (!titleChanged && !bodyChanged && !statusChanged) return toIssue(current);
+        const priorityChanged = priority !== current.priority;
+        const orderChanged = sortOrder !== current.sortOrder;
+        if (!titleChanged && !bodyChanged && !statusChanged && !priorityChanged && !orderChanged) {
+          return toIssue(current);
+        }
 
         const closedAt =
           status === IssueStatus.enum.closed
@@ -1976,6 +2011,8 @@ export function createProjectsService({
             title,
             body,
             status,
+            priority,
+            sortOrder,
             updatedByHumanId: humanIdOf(actor),
             updatedByAgentId: agentIdOf(actor),
             updatedAt: sql`statement_timestamp()`,
@@ -1988,7 +2025,10 @@ export function createProjectsService({
           });
         if (updated === undefined) throw new ProjectsError("issue_not_found");
 
-        if (titleChanged || bodyChanged) {
+        // A priority change is a real edit and is recorded. A reorder is not: dragging a
+        // card writes only its midpoint, and an activity event per drag would drown the
+        // feed, so sortOrder updates stay invisible there (the issue's updatedAt still moves).
+        if (titleChanged || bodyChanged || priorityChanged) {
           await recordActivity(tx, {
             projectId: current.projectId,
             type: "issue_edited",
@@ -2013,6 +2053,8 @@ export function createProjectsService({
           title,
           body,
           status: IssueStatus.parse(status),
+          priority,
+          sortOrder,
           createdAt: current.createdAt.toISOString(),
           updatedAt: updated.updatedAt.toISOString(),
           closedAt: updated.closedAt === null ? null : updated.closedAt.toISOString(),

@@ -178,6 +178,7 @@ async function insertActiveClaim(
         title: "A task",
         body: "",
         status: "open",
+        sortOrder: 65535,
         createdByHumanId,
         updatedByHumanId: createdByHumanId,
       })

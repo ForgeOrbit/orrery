@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import { IssueLinkKind, projectTools } from "@orrery/contract";
+import { IssueLinkKind, IssuePriority, projectTools } from "@orrery/contract";
 import { isAgentError, type AgentAuthenticator } from "../agents/index.ts";
 import { ProjectsError, type ProjectsService, type WorkActor } from "./service.ts";
 
@@ -14,6 +14,17 @@ type Strategy = (actor: WorkActor, args: Args) => Promise<Args>;
 // A typed accessor: the contract schema has already parsed and validated the argument.
 const str = (value: unknown, field: string): string => {
   if (typeof value !== "string") throw new Error(`missing ${field}`);
+  return value;
+};
+
+// The shared tool contract has already validated these optional fields. Parsing priority
+// with the contract enum and checking the number's type keeps the service boundary typed
+// without inventing a second set of values here.
+const priority = (value: unknown): IssuePriority | undefined =>
+  value === undefined ? undefined : IssuePriority.parse(value);
+const sortOrder = (value: unknown): number | undefined => {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number") throw new Error("invalid sortOrder");
   return value;
 };
 
@@ -35,6 +46,8 @@ export function createProjectsMcp(service: ProjectsService, authenticate: AgentA
       issue: await service.createIssue(actor, str(args.projectId, "projectId"), {
         title: str(args.title, "title"),
         body: args.body === undefined ? undefined : str(args.body, "body"),
+        priority: priority(args.priority),
+        sortOrder: sortOrder(args.sortOrder),
       }),
     }),
     update_issue: async (actor, args) => ({
@@ -42,6 +55,8 @@ export function createProjectsMcp(service: ProjectsService, authenticate: AgentA
         title: args.title === undefined ? undefined : str(args.title, "title"),
         body: args.body === undefined ? undefined : str(args.body, "body"),
         status: args.status === "open" || args.status === "closed" ? args.status : undefined,
+        priority: priority(args.priority),
+        sortOrder: sortOrder(args.sortOrder),
       }),
     }),
     add_blocked_by: async (actor, args) => ({

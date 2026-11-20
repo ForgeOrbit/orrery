@@ -1206,6 +1206,10 @@ export function createSessionsService({
                 and(eq(issueDependencies.issueId, issues.id), ne(blockerIssue.status, "closed")),
               ),
           );
+          // This query only produces the eligible id set. The returned order comes from
+          // the projects listing below, which orders by priority, then sortOrder, then
+          // createdAt (#88), so REST and MCP ready work share the board's deterministic
+          // order. Assignee-first sorts on top of it once assignees exist (#84).
           const rows = await tx
             .select({ id: issues.id })
             .from(issues)

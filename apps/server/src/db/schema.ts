@@ -5,6 +5,7 @@ import {
   InvitationDelivery,
   InvitationStatus,
   IssueLinkKind,
+  IssuePriority,
   IssueStatus,
   ProjectAccessEventType,
   ProjectAccessLevel,
@@ -21,6 +22,7 @@ import {
   type AnyPgColumn,
   boolean,
   check,
+  doublePrecision,
   index,
   integer,
   pgTable,
@@ -839,6 +841,13 @@ export const issues = pgTable(
     title: text("title").notNull(),
     body: text("body").notNull().default(""),
     status: text("status").$type<IssueStatus>().notNull(),
+    // Board importance (#88), defaulting to the neutral `none`. The database repeats the
+    // contract's enum so a writer that bypasses the service cannot invent a level.
+    priority: text("priority").$type<IssuePriority>().notNull().default("none"),
+    // Board position (#88). A float, so moving a card only writes that row's new midpoint
+    // between its neighbours. Created issues get number * 65535; an index keeps the ready
+    // work ordering (priority, then position, then creation) backed by the database.
+    sortOrder: doublePrecision("sort_order").notNull(),
     // Authorship is one identity, never two: a human or an agent, recorded in its own
     // column. An agent's work is attributed to the agent, not to its human owner.
     createdByHumanId: text("created_by_human_id").references(() => humans.id),
@@ -867,9 +876,13 @@ export const issues = pgTable(
     // Issue numbers never repeat inside a project, and two concurrent creations cannot
     // both take the same one.
     uniqueIndex("one_issue_number_per_project").on(t.projectId, t.number),
+    // Ready work and the board read a project's cards in position order; the priority
+    // ranking is applied in the query, so this index serves the sortOrder/createdAt tail.
+    index("issues_project_sort_order").on(t.projectId, t.sortOrder, t.createdAt),
     check("issues_number_positive", sql`${t.number} > 0`),
     // DDL cannot bind parameters; the values come from the IssueStatus contract enum.
     check("issues_status", sql`${t.status} in (${sql.raw(sqlLiteralList(IssueStatus))})`),
+    check("issues_priority", sql`${t.priority} in (${sql.raw(sqlLiteralList(IssuePriority))})`),
     check(
       "issues_fallback_policy_override",
       sql`(${t.fallbackPolicyOverride} is null or ${t.fallbackPolicyOverride} in (${sql.raw(

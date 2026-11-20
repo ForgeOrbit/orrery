@@ -1441,6 +1441,12 @@
           "status": {
             "$ref": "#/components/schemas/IssueStatus"
           },
+          "priority": {
+            "$ref": "#/components/schemas/IssuePriority"
+          },
+          "sortOrder": {
+            "$ref": "#/components/schemas/IssueSortOrder"
+          },
           "createdAt": {
             "$ref": "#/components/schemas/Timestamp"
           },
@@ -1470,6 +1476,8 @@
           "title",
           "body",
           "status",
+          "priority",
+          "sortOrder",
           "createdAt",
           "updatedAt",
           "closedAt",
@@ -1485,6 +1493,19 @@
           "open",
           "closed"
         ]
+      },
+      "IssuePriority": {
+        "type": "string",
+        "enum": [
+          "urgent",
+          "high",
+          "medium",
+          "low",
+          "none"
+        ]
+      },
+      "IssueSortOrder": {
+        "type": "number"
       },
       "FallbackPolicyOverride": {
         "type": [
@@ -1507,6 +1528,12 @@
           },
           "body": {
             "$ref": "#/components/schemas/IssueBody"
+          },
+          "priority": {
+            "$ref": "#/components/schemas/IssuePriority"
+          },
+          "sortOrder": {
+            "$ref": "#/components/schemas/IssueSortOrder"
           }
         },
         "required": [
@@ -1538,6 +1565,12 @@
           },
           "status": {
             "$ref": "#/components/schemas/IssueStatus"
+          },
+          "priority": {
+            "$ref": "#/components/schemas/IssuePriority"
+          },
+          "sortOrder": {
+            "$ref": "#/components/schemas/IssueSortOrder"
           },
           "createdAt": {
             "$ref": "#/components/schemas/Timestamp"
@@ -1574,6 +1607,8 @@
           "title",
           "body",
           "status",
+          "priority",
+          "sortOrder",
           "createdAt",
           "updatedAt",
           "closedAt",
@@ -1646,6 +1681,12 @@
           },
           "status": {
             "$ref": "#/components/schemas/IssueStatus"
+          },
+          "priority": {
+            "$ref": "#/components/schemas/IssuePriority"
+          },
+          "sortOrder": {
+            "$ref": "#/components/schemas/IssueSortOrder"
           }
         }
       },

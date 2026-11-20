@@ -8,6 +8,7 @@ import {
   IssueDetail,
   IssueLink,
   IssuesResponse,
+  type CreateIssueRequest,
   KnowledgeEntriesResponse,
   KnowledgeEntry,
   Problem,
@@ -154,7 +155,7 @@ async function createIssue(
   app: Hono,
   cookie: string,
   projectId: string,
-  input: { title: string; body?: string } = { title: "First issue" },
+  input: CreateIssueRequest = { title: "First issue" },
 ) {
   const res = await postJson(app, `/api/projects/${projectId}/issues`, input, cookie);
   expect(res.status).toBe(201);
@@ -468,6 +469,86 @@ describe("projects", () => {
       .from(issues)
       .where(eq(issues.projectId, project.id));
     expect(rows.map((row) => row.number).toSorted((a, b) => a - b)).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it("creates and updates priority and sortOrder, and lists issues in board order", async () => {
+    const { app, adminCookie, workspaceId } = await readyApp();
+    const project = await createProject(app, adminCookie, workspaceId);
+
+    // Defaults: priority is neutral and the first card is spaced by 65535 from zero.
+    const plain = await createIssue(app, adminCookie, project.id, { title: "Plain" });
+    expect(plain).toMatchObject({ priority: "none", sortOrder: 65535 });
+
+    const urgent = await createIssue(app, adminCookie, project.id, {
+      title: "Urgent",
+      priority: "urgent",
+      sortOrder: 42,
+    });
+    expect(urgent).toMatchObject({ priority: "urgent", sortOrder: 42 });
+    const low = await createIssue(app, adminCookie, project.id, {
+      title: "Low",
+      priority: "low",
+      sortOrder: 10,
+    });
+
+    // Priority dominates position: urgent (42) precedes low (10), which precedes the
+    // unprioritized card even though its sortOrder is larger.
+    const listed = await getJson(app, `/api/projects/${project.id}/issues`, adminCookie);
+    expect(listed.status).toBe(200);
+    expect(IssuesResponse.parse(await listed.json()).map((issue) => issue.id)).toEqual([
+      urgent.id,
+      low.id,
+      plain.id,
+    ]);
+
+    // A human may reprioritize and reorder freely; a priority edit is activity, a pure
+    // reorder is not (otherwise dragging a card would drown the feed).
+    const updated = await patchJson(
+      app,
+      `/api/issues/${plain.id}`,
+      { priority: "high", sortOrder: 20 },
+      adminCookie,
+    );
+    expect(updated.status).toBe(200);
+    const updatedIssue = Issue.parse(await updated.json());
+    expect(updatedIssue).toMatchObject({
+      priority: "high",
+      sortOrder: 20,
+      updatedBy: { humanId: await adminId() },
+    });
+    const afterReorder = await getJson(app, `/api/projects/${project.id}/issues`, adminCookie);
+    expect(IssuesResponse.parse(await afterReorder.json()).map((issue) => issue.id)).toEqual([
+      urgent.id,
+      plain.id,
+      low.id,
+    ]);
+
+    // A no-op request writes neither a new timestamp nor a new activity event.
+    const before = await activityFor(app, adminCookie, project.id);
+    const noop = await patchJson(
+      app,
+      `/api/issues/${plain.id}`,
+      { priority: "high", sortOrder: 20 },
+      adminCookie,
+    );
+    expect(noop.status).toBe(200);
+    expect(Issue.parse(await noop.json()).updatedAt).toBe(updatedIssue.updatedAt);
+    expect((await activityFor(app, adminCookie, project.id)).length).toBe(before.length);
+
+    // The database repeats the enum: a bypassing writer cannot store an unknown priority.
+    // Raw SQL here is deliberate — the typed insert would reject the value before it ever
+    // reached the constraint this test is checking.
+    const writerId = await adminId();
+    expect(
+      await rejection(
+        database.db.execute(sql`
+          insert into issues
+            (id, project_id, number, title, status, priority, sort_order, created_by_human_id, updated_by_human_id)
+          values
+            (${randomUUID()}, ${project.id}, 99, 'Bypass', 'open', 'critical', 1, ${writerId}, ${writerId})
+        `),
+      ),
+    ).toContain("issues_priority");
   });
 
   it("creates and edits a basic Markdown knowledge entry with authorship and activity", async () => {

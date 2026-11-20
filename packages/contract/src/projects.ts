@@ -16,6 +16,19 @@ export type ProjectAccessLevel = z.infer<typeof ProjectAccessLevel>;
 export const IssueStatus = z.enum(["open", "closed"]).meta({ id: "IssueStatus" });
 export type IssueStatus = z.infer<typeof IssueStatus>;
 
+// Human-set importance (#88). `none` is the default so an unordered board stays neutral.
+// The order here is also the ready-work order: urgent first, none last.
+export const IssuePriority = z.enum(["urgent", "high", "medium", "low", "none"]).meta({
+  id: "IssuePriority",
+});
+export type IssuePriority = z.infer<typeof IssuePriority>;
+
+// A card's position in its project's board order. It is a float so a client can move one
+// card between two neighbours by storing their midpoint, rewriting only that one row.
+// New issues are spaced in increments of 65535 by project-local issue number.
+export const IssueSortOrder = z.number().finite().meta({ id: "IssueSortOrder" });
+export type IssueSortOrder = z.infer<typeof IssueSortOrder>;
+
 // Fallback policy (#42). A project defaults to `require_human`: at the one-hour deadline
 // the question pauses and the claim is released. `fallback_allowed` authorizes returning
 // the agent's proposed fallback to the harness instead. An issue may tighten the project
@@ -173,6 +186,8 @@ export const Issue = z
     title: z.string(),
     body: z.string(),
     status: IssueStatus,
+    priority: IssuePriority,
+    sortOrder: IssueSortOrder,
     createdAt: Timestamp,
     updatedAt: Timestamp,
     closedAt: Timestamp.nullable(),
@@ -247,6 +262,8 @@ export const CreateIssueRequest = z
   .object({
     title: z.string().trim().min(1, "Give the issue a title.").max(200),
     body: IssueBody.optional(),
+    priority: IssuePriority.optional(),
+    sortOrder: IssueSortOrder.optional(),
   })
   .meta({ id: "CreateIssueRequest" });
 export type CreateIssueRequest = z.infer<typeof CreateIssueRequest>;
@@ -259,6 +276,8 @@ export const UpdateIssueRequest = z
     title: z.string().trim().min(1, "Give the issue a title.").max(200).optional(),
     body: IssueBody.optional(),
     status: IssueStatus.optional(),
+    priority: IssuePriority.optional(),
+    sortOrder: IssueSortOrder.optional(),
   })
   .meta({ id: "UpdateIssueRequest" });
 export type UpdateIssueRequest = z.infer<typeof UpdateIssueRequest>;
