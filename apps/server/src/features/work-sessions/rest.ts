@@ -8,6 +8,7 @@ import {
   LogSessionActivityInput,
   ReacquireWorkSessionInput,
   RenewWorkSessionInput,
+  ReadyWorkInput,
   ReportProgressInput,
   RequestStopWorkSessionInput,
   ResumeWorkSessionInput,
@@ -43,13 +44,14 @@ const stopRequestBody = RequestStopWorkSessionInput.omit({ issueId: true });
 const resumeBody = ResumeWorkSessionInput.omit({ issueId: true });
 const reacquireBody = ReacquireWorkSessionInput.omit({ issueId: true });
 const logActivityBody = LogSessionActivityInput.omit({ issueId: true });
+const readyWorkQuery = ReadyWorkInput.omit({ projectId: true });
 
 const claim = createRoute({
   method: "post",
   path: "/api/issues/{issueId}/work-sessions",
   summary: "Claim an issue for an agent and run",
   description:
-    "Start a work session. The session belongs to the authenticated agent, the named run, the key's workspace and the issue — not to the key itself. At most one active session can hold an issue; helpers passing the same (agent, run, issue) join it. The claim is a five-minute lease evaluated in database time.",
+    "Start a work session. The session belongs to the authenticated agent, the named run, the key's workspace and the issue — not to the key itself. An agent may claim only work that is unassigned or assigned to that same agent. At most one active session can hold an issue; helpers passing the same (agent, run, issue) join it. The claim is a five-minute lease evaluated in database time.",
   request: {
     params: issueParams,
     body: { required: true, content: { "application/json": { schema: claimBody } } },
@@ -63,7 +65,7 @@ const claim = createRoute({
     401: problem("An agent key is required, or the key is invalid or revoked"),
     403: problem("Contribute access is required to claim this issue"),
     404: problem("No such issue or run is in scope for this agent"),
-    409: problem("Another worker holds the active session for this issue"),
+    409: problem("The issue is reserved for a human or another agent, or another worker holds it"),
   },
 });
 
@@ -308,8 +310,8 @@ const readyWork = createRoute({
   path: "/api/projects/{projectId}/ready-work",
   summary: "Minimal ready-work listing for a project",
   description:
-    "Open issues that are not Needs input, have no live active session, and have no blocker whose status is not closed, evaluated in database time. Needs no claim; a full board is out of scope.",
-  request: { params: projectParams },
+    "Open issues that are not Needs input, have no live active session, and have no blocker whose status is not closed, evaluated in database time. `filter` selects all claimable work (the default), only work assigned to the caller, or only unassigned work; an agent never sees work reserved for a human or another agent. Owned work sorts first, then priority, sortOrder and createdAt. Needs no claim; a full board is out of scope.",
+  request: { params: projectParams, query: readyWorkQuery },
   responses: {
     200: {
       description: "The ready issues",
@@ -352,6 +354,8 @@ const statusFor = {
   agents_cannot_request_stop: 403,
   session_not_active: 409,
   session_not_found: 404,
+  issue_assigned_to_human: 409,
+  issue_assigned_to_other_agent: 409,
 } as const satisfies Record<SessionsErrorKind, number>;
 
 function isKind<K extends readonly SessionsErrorKind[]>(
@@ -384,6 +388,8 @@ const claimKinds = [
   "insufficient_access",
   "issue_claimed",
   "issue_needs_input",
+  "issue_assigned_to_human",
+  "issue_assigned_to_other_agent",
 ] as const;
 const writeKinds = [
   "not_signed_in",
@@ -412,6 +418,8 @@ const reacquireKinds = [
   "issue_claimed",
   "issue_blocked",
   "session_required",
+  "issue_assigned_to_human",
+  "issue_assigned_to_other_agent",
 ] as const;
 const currentKinds = writeKinds;
 const listActivitiesKinds = ["not_signed_in", "issue_not_found", "session_not_found"] as const;
@@ -606,7 +614,11 @@ export function createSessionsRest(
   app.openapi(readyWork, async (c) => {
     try {
       return c.json(
-        await service.readyWork(await workActor(c), c.req.valid("param").projectId),
+        await service.readyWork(
+          await workActor(c),
+          c.req.valid("param").projectId,
+          c.req.valid("query").filter,
+        ),
         200,
       );
     } catch (error) {

@@ -369,6 +369,12 @@
             "sortOrder": {
               "$ref": "#/$defs/IssueSortOrder"
             },
+            "needsInput": {
+              "type": "boolean"
+            },
+            "assignee": {
+              "$ref": "#/$defs/IssueAssignee"
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -407,6 +413,8 @@
             "status",
             "priority",
             "sortOrder",
+            "needsInput",
+            "assignee",
             "createdAt",
             "updatedAt",
             "closedAt",
@@ -437,10 +445,15 @@
         "IssueSortOrder": {
           "type": "number"
         },
-        "Timestamp": {
-          "type": "string",
-          "format": "date-time",
-          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        "IssueAssignee": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "Actor": {
           "type": "object",
@@ -489,6 +502,11 @@
           "type": "string",
           "format": "email",
           "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
         },
         "FallbackPolicyOverride": {
           "anyOf": [
@@ -570,6 +588,12 @@
             "sortOrder": {
               "$ref": "#/$defs/IssueSortOrder"
             },
+            "needsInput": {
+              "type": "boolean"
+            },
+            "assignee": {
+              "$ref": "#/$defs/IssueAssignee"
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -614,6 +638,8 @@
             "status",
             "priority",
             "sortOrder",
+            "needsInput",
+            "assignee",
             "createdAt",
             "updatedAt",
             "closedAt",
@@ -645,10 +671,15 @@
         "IssueSortOrder": {
           "type": "number"
         },
-        "Timestamp": {
-          "type": "string",
-          "format": "date-time",
-          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        "IssueAssignee": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "Actor": {
           "type": "object",
@@ -697,6 +728,11 @@
           "type": "string",
           "format": "email",
           "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
         },
         "FallbackPolicyOverride": {
           "anyOf": [
@@ -862,6 +898,12 @@
             "sortOrder": {
               "$ref": "#/$defs/IssueSortOrder"
             },
+            "needsInput": {
+              "type": "boolean"
+            },
+            "assignee": {
+              "$ref": "#/$defs/IssueAssignee"
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -900,6 +942,8 @@
             "status",
             "priority",
             "sortOrder",
+            "needsInput",
+            "assignee",
             "createdAt",
             "updatedAt",
             "closedAt",
@@ -930,10 +974,15 @@
         "IssueSortOrder": {
           "type": "number"
         },
-        "Timestamp": {
-          "type": "string",
-          "format": "date-time",
-          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        "IssueAssignee": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "Actor": {
           "type": "object",
@@ -983,6 +1032,11 @@
           "format": "email",
           "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
         },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        },
         "FallbackPolicyOverride": {
           "anyOf": [
             {
@@ -1005,7 +1059,7 @@
   },
   {
     "name": "update_issue",
-    "description": "Edit an issue's title or body, close/reopen it, or change its priority or sortOrder (a float; the midpoint of two neighbours moves one card without rewriting them). Requires Contribute access and, for an agent, a live work session on the issue. The actor recorded is the agent, not its human owner.",
+    "description": "Edit an issue's title or body, close/reopen it, change its priority or sortOrder (a float; the midpoint of two neighbours moves one card without rewriting them), or set/clear its assignee (`{\"type\":\"human\"|\"agent\",\"id\":\"...\"}`, or null to clear). An assignee must be an active member or a registered agent in the workspace. Requires Contribute access and, for an agent, a live work session on the issue. The actor recorded is the agent, not its human owner.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
@@ -1026,6 +1080,16 @@
         },
         "sortOrder": {
           "$ref": "#/$defs/IssueSortOrder"
+        },
+        "assignee": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Assignee"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "issueId": {
           "type": "string",
@@ -1061,6 +1125,31 @@
         },
         "IssueSortOrder": {
           "type": "number"
+        },
+        "Assignee": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "$ref": "#/$defs/AssigneeType"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        "AssigneeType": {
+          "type": "string",
+          "enum": [
+            "human",
+            "agent"
+          ]
         }
       }
     },
@@ -1106,6 +1195,12 @@
             "sortOrder": {
               "$ref": "#/$defs/IssueSortOrder"
             },
+            "needsInput": {
+              "type": "boolean"
+            },
+            "assignee": {
+              "$ref": "#/$defs/IssueAssignee"
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -1144,6 +1239,8 @@
             "status",
             "priority",
             "sortOrder",
+            "needsInput",
+            "assignee",
             "createdAt",
             "updatedAt",
             "closedAt",
@@ -1174,10 +1271,15 @@
         "IssueSortOrder": {
           "type": "number"
         },
-        "Timestamp": {
-          "type": "string",
-          "format": "date-time",
-          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        "IssueAssignee": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "Actor": {
           "type": "object",
@@ -1226,6 +1328,11 @@
           "type": "string",
           "format": "email",
           "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
         },
         "FallbackPolicyOverride": {
           "anyOf": [
@@ -1469,6 +1576,12 @@
             "sortOrder": {
               "$ref": "#/$defs/IssueSortOrder"
             },
+            "needsInput": {
+              "type": "boolean"
+            },
+            "assignee": {
+              "$ref": "#/$defs/IssueAssignee"
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -1507,6 +1620,8 @@
             "status",
             "priority",
             "sortOrder",
+            "needsInput",
+            "assignee",
             "createdAt",
             "updatedAt",
             "closedAt",
@@ -1537,10 +1652,15 @@
         "IssueSortOrder": {
           "type": "number"
         },
-        "Timestamp": {
-          "type": "string",
-          "format": "date-time",
-          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        "IssueAssignee": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "Actor": {
           "type": "object",
@@ -1589,6 +1709,11 @@
           "type": "string",
           "format": "email",
           "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
         },
         "FallbackPolicyOverride": {
           "anyOf": [
@@ -1676,6 +1801,12 @@
             "sortOrder": {
               "$ref": "#/$defs/IssueSortOrder"
             },
+            "needsInput": {
+              "type": "boolean"
+            },
+            "assignee": {
+              "$ref": "#/$defs/IssueAssignee"
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -1714,6 +1845,8 @@
             "status",
             "priority",
             "sortOrder",
+            "needsInput",
+            "assignee",
             "createdAt",
             "updatedAt",
             "closedAt",
@@ -1744,10 +1877,15 @@
         "IssueSortOrder": {
           "type": "number"
         },
-        "Timestamp": {
-          "type": "string",
-          "format": "date-time",
-          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        "IssueAssignee": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "Actor": {
           "type": "object",
@@ -1796,6 +1934,11 @@
           "type": "string",
           "format": "email",
           "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
         },
         "FallbackPolicyOverride": {
           "anyOf": [
@@ -3257,7 +3400,7 @@
   },
   {
     "name": "claim_issue",
-    "description": "Claim an issue this agent needs to work on, for this agent and run. The issue may already be closed: a worker reopening it must claim it first, because a fenced update_issue needs a live session. One active session per issue: a second worker is refused. Helpers on the same issue pass the same runId and join the existing session. The claim is a five-minute lease in database time; renew it while working.",
+    "description": "Claim an issue this agent needs to work on, for this agent and run. An agent may claim only work that is unassigned or assigned to that same agent; issues assigned to a human or another agent are refused. The issue may already be closed: a worker reopening it must claim it first, because a fenced update_issue needs a live session. One active session per issue: a second worker is refused. Helpers on the same issue pass the same runId and join the existing session. The claim is a five-minute lease in database time; renew it while working.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "$ref": "#/$defs/ClaimWorkSessionInput",
@@ -4384,7 +4527,7 @@
   },
   {
     "name": "ready_work",
-    "description": "List minimal ready work in a project: open issues that are not Needs input, have no live active session, and have no blocker whose status is not closed, evaluated in database time. The queue is deterministic: priority urgent > high > medium > low > none, then sortOrder ascending, then creation time ascending. Needs no claim.",
+    "description": "List minimal ready work in a project: open issues that are not Needs input, have no live active session, and have no blocker whose status is not closed, evaluated in database time. Optional `filter` is all (default), assignedToMe or unassigned; an agent never sees issues assigned to a human or another agent. Work assigned to the caller sorts first, then priority urgent > high > medium > low > none, then sortOrder ascending, then creation time ascending. Needs no claim.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "$ref": "#/$defs/ReadyWorkInput",
@@ -4396,12 +4539,23 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 200
+            },
+            "filter": {
+              "$ref": "#/$defs/ReadyWorkFilter"
             }
           },
           "required": [
             "projectId"
           ],
           "additionalProperties": false
+        },
+        "ReadyWorkFilter": {
+          "type": "string",
+          "enum": [
+            "all",
+            "assignedToMe",
+            "unassigned"
+          ]
         }
       }
     },
@@ -4453,6 +4607,12 @@
             "sortOrder": {
               "$ref": "#/$defs/IssueSortOrder"
             },
+            "needsInput": {
+              "type": "boolean"
+            },
+            "assignee": {
+              "$ref": "#/$defs/IssueAssignee"
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -4491,6 +4651,8 @@
             "status",
             "priority",
             "sortOrder",
+            "needsInput",
+            "assignee",
             "createdAt",
             "updatedAt",
             "closedAt",
@@ -4521,10 +4683,15 @@
         "IssueSortOrder": {
           "type": "number"
         },
-        "Timestamp": {
-          "type": "string",
-          "format": "date-time",
-          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        "IssueAssignee": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "Actor": {
           "type": "object",
@@ -4573,6 +4740,11 @@
           "type": "string",
           "format": "email",
           "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
         },
         "FallbackPolicyOverride": {
           "anyOf": [

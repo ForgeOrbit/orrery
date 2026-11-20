@@ -9,6 +9,8 @@ import {
   type Actor,
   type AgentIdentity,
   type AddBlockedByRequest,
+  type Assignee,
+  type AssigneeType,
   type CreateIssueCommentRequest,
   type CreateIssueLinkRequest,
   type CreateIssueRequest,
@@ -33,12 +35,13 @@ import {
   type UpdateKnowledgeEntryRequest,
   type UpdateProjectRequest,
 } from "@orrery/contract";
-import { and, asc, eq, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
 import { uniqueConstraintName } from "../../platform/errors.ts";
 import {
+  agentApiKeys,
   agents,
   humans,
   issueComments,
@@ -79,7 +82,8 @@ export type ProjectsErrorKind =
   | "session_required"
   | "self_dependency"
   | "cross_project_dependency"
-  | "dependency_cycle";
+  | "dependency_cycle"
+  | "assignee_not_found";
 
 const messages = {
   not_signed_in: "Not signed in.",
@@ -98,6 +102,7 @@ const messages = {
   self_dependency: "An issue cannot block itself.",
   cross_project_dependency: "Dependencies can only link issues in the same project.",
   dependency_cycle: "That dependency would create a cycle.",
+  assignee_not_found: "No active member or registered agent in this workspace has that id.",
 } as const satisfies Record<ProjectsErrorKind, string>;
 
 const ACCESS_RANK: Record<ProjectAccessLevel, number> = {
@@ -327,6 +332,31 @@ function actorFromRow(
   return { displayName: "Unknown author" };
 }
 
+// The assignee's display identity. The database CHECK guarantees the type and id agree;
+// a missing joined row means the identity was removed after assignment, so the badge
+// disappears rather than inventing a name. A deactivated assignee keeps its label.
+function assigneeFromRow(row: {
+  assigneeType: AssigneeType | null;
+  assigneeId: string | null;
+  assigneeHumanEmail: string | null;
+  assigneeHumanDeactivatedAt: Date | null;
+  assigneeAgentName: string | null;
+}): Actor | null {
+  if (row.assigneeType === "human" && row.assigneeId !== null && row.assigneeHumanEmail !== null) {
+    return actorFromRow(
+      row.assigneeId,
+      row.assigneeHumanEmail,
+      null,
+      null,
+      row.assigneeHumanDeactivatedAt,
+    );
+  }
+  if (row.assigneeType === "agent" && row.assigneeId !== null && row.assigneeAgentName !== null) {
+    return actorFromRow(null, null, row.assigneeId, row.assigneeAgentName);
+  }
+  return null;
+}
+
 // Aliases let one query join humans several times: a creator and a last editor, or an
 // issue's author and a comment's author. Each alias is a separate SQL name.
 const projectCreator = alias(humans, "project_creator");
@@ -342,6 +372,10 @@ const accessGrantor = alias(humans, "access_grantor");
 // carries the identity. Left joins keep agent-authored rows in the same query.
 const issueAgentCreator = alias(agents, "issue_agent_creator");
 const issueAgentEditor = alias(agents, "issue_agent_editor");
+// #84: assignment is displayed with the same Actor shape as authorship, so the row's
+// assignee_type decides which of these two aliases carries display information.
+const assigneeHuman = alias(humans, "assignee_human");
+const assigneeAgent = alias(agents, "assignee_agent");
 const commentAgentAuthor = alias(agents, "comment_agent_author");
 const linkAgentCreator = alias(agents, "link_agent_creator");
 const knowledgeAgentCreator = alias(agents, "knowledge_agent_creator");
@@ -383,6 +417,12 @@ const issueColumns = {
   status: issues.status,
   priority: issues.priority,
   sortOrder: issues.sortOrder,
+  needsInput: issues.needsInput,
+  assigneeType: issues.assigneeType,
+  assigneeId: issues.assigneeId,
+  assigneeHumanEmail: assigneeHuman.email,
+  assigneeHumanDeactivatedAt: assigneeHuman.deactivatedAt,
+  assigneeAgentName: assigneeAgent.name,
   fallbackPolicyOverride: issues.fallbackPolicyOverride,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
@@ -503,6 +543,12 @@ type IssueRow = {
   status: IssueStatus;
   priority: IssuePriority;
   sortOrder: number;
+  needsInput: boolean;
+  assigneeType: AssigneeType | null;
+  assigneeId: string | null;
+  assigneeHumanEmail: string | null;
+  assigneeHumanDeactivatedAt: Date | null;
+  assigneeAgentName: string | null;
   fallbackPolicyOverride: FallbackPolicy | null;
   // The project's policy, joined by requireIssue so a single DTO carries the resolved one.
   projectFallbackPolicy: FallbackPolicy;
@@ -638,6 +684,8 @@ function toIssue(row: IssueRow): Issue {
     status: row.status,
     priority: row.priority,
     sortOrder: row.sortOrder,
+    needsInput: row.needsInput,
+    assignee: assigneeFromRow(row),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     closedAt: row.closedAt?.toISOString() ?? null,
@@ -896,6 +944,14 @@ async function requireIssue(
     .leftJoin(issueEditor, eq(issueEditor.id, issues.updatedByHumanId))
     .leftJoin(issueAgentEditor, eq(issueAgentEditor.id, issues.updatedByAgentId))
     .leftJoin(
+      assigneeHuman,
+      and(eq(assigneeHuman.id, issues.assigneeId), eq(issues.assigneeType, "human")),
+    )
+    .leftJoin(
+      assigneeAgent,
+      and(eq(assigneeAgent.id, issues.assigneeId), eq(issues.assigneeType, "agent")),
+    )
+    .leftJoin(
       workspaceMemberships,
       and(eq(workspaceMemberships.workspaceId, projects.workspaceId), membershipMatch),
     )
@@ -905,6 +961,91 @@ async function requireIssue(
 
   if (row === undefined) throw new ProjectsError("issue_not_found");
   return { ...row, accessLevel: requireLevel(row, actor, required, "issue_not_found") };
+}
+
+// #84: resolve and validate an assignee in the caller's transaction. The locks are taken
+// in Orrery's shared M22 order — account (KEY SHARE), membership (KEY SHARE) — BEFORE the
+// caller locks the issue, so a deactivation or member removal that commits first is seen
+// here and one in flight waits rather than deadlocking. Human and agent callers both use
+// this one decision; a missing, deactivated, suspended or unregistered identity answers
+// the same 404 instead of revealing which check failed.
+async function validateAssignee(
+  tx: DbTransaction,
+  workspaceId: string,
+  assignee: Assignee,
+): Promise<Actor> {
+  const [workspace] = await tx
+    .select({ personalOwnerHumanId: workspaces.personalOwnerHumanId })
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId))
+    .limit(1);
+  if (workspace === undefined) throw new ProjectsError("assignee_not_found");
+
+  let targetHumanId: string;
+  let resolved: Actor;
+  if (assignee.type === "human") {
+    const [human] = await tx
+      .select({ id: humans.id, email: humans.email })
+      .from(humans)
+      .where(and(eq(humans.id, assignee.id), isNull(humans.deactivatedAt)))
+      .limit(1)
+      .for("key share");
+    if (human === undefined) throw new ProjectsError("assignee_not_found");
+    targetHumanId = human.id;
+    resolved = { humanId: human.id, email: human.email, displayName: human.email };
+  } else {
+    const [agent] = await tx
+      .select({ id: agents.id, humanId: agents.humanId, name: agents.name })
+      .from(agents)
+      .where(eq(agents.id, assignee.id))
+      .limit(1);
+    if (agent === undefined) throw new ProjectsError("assignee_not_found");
+    // An agent is registered in this workspace while a live key scoped to it exists.
+    const [key] = await tx
+      .select({ id: agentApiKeys.id })
+      .from(agentApiKeys)
+      .where(
+        and(
+          eq(agentApiKeys.agentId, agent.id),
+          eq(agentApiKeys.workspaceId, workspaceId),
+          isNull(agentApiKeys.revokedAt),
+          or(
+            isNull(agentApiKeys.expiresAt),
+            gt(agentApiKeys.expiresAt, sql`statement_timestamp()`),
+          ),
+        ),
+      )
+      .limit(1);
+    if (key === undefined) throw new ProjectsError("assignee_not_found");
+    const [owner] = await tx
+      .select({ id: humans.id })
+      .from(humans)
+      .where(and(eq(humans.id, agent.humanId), isNull(humans.deactivatedAt)))
+      .limit(1)
+      .for("key share");
+    if (owner === undefined) throw new ProjectsError("assignee_not_found");
+    targetHumanId = agent.humanId;
+    resolved = { agentId: agent.id, agentName: agent.name, displayName: agent.name };
+  }
+
+  // A personal workspace's owner needs no membership; a shared workspace needs a live
+  // membership for the target human, whichever kind of identity is being assigned.
+  if (workspace.personalOwnerHumanId !== targetHumanId) {
+    const [membership] = await tx
+      .select({ id: workspaceMemberships.id })
+      .from(workspaceMemberships)
+      .where(
+        and(
+          eq(workspaceMemberships.workspaceId, workspaceId),
+          eq(workspaceMemberships.humanId, targetHumanId),
+          isNull(workspaceMemberships.suspendedAt),
+        ),
+      )
+      .limit(1)
+      .for("key share");
+    if (membership === undefined) throw new ProjectsError("assignee_not_found");
+  }
+  return resolved;
 }
 
 async function requireKnowledge(
@@ -1354,6 +1495,14 @@ export function createProjectsService({
           .leftJoin(issueAgentCreator, eq(issueAgentCreator.id, issues.createdByAgentId))
           .leftJoin(issueEditor, eq(issueEditor.id, issues.updatedByHumanId))
           .leftJoin(issueAgentEditor, eq(issueAgentEditor.id, issues.updatedByAgentId))
+          .leftJoin(
+            assigneeHuman,
+            and(eq(assigneeHuman.id, issues.assigneeId), eq(issues.assigneeType, "human")),
+          )
+          .leftJoin(
+            assigneeAgent,
+            and(eq(assigneeAgent.id, issues.assigneeId), eq(issues.assigneeType, "agent")),
+          )
           .where(eq(issues.projectId, projectId))
           .orderBy(...issueBoardOrder);
         return rows.map(toIssue);
@@ -1951,6 +2100,8 @@ export function createProjectsService({
           status: IssueStatus.parse(created.status),
           priority: created.priority,
           sortOrder: created.sortOrder,
+          needsInput: false,
+          assignee: null,
           createdAt: created.createdAt.toISOString(),
           updatedAt: created.updatedAt.toISOString(),
           closedAt: created.closedAt === null ? null : created.closedAt.toISOString(),
@@ -1967,7 +2118,22 @@ export function createProjectsService({
     // was, so a repeated close cannot invent a second event.
     async updateIssue(actorArg, issueId, input) {
       const actor = requireActor(actorArg);
+      // Authorize and resolve the workspace in a read first, so an inaccessible issue
+      // answers 404 before any assignee probe and no lock is held during that lookup.
+      const target = await db.transaction(
+        async (tx) => {
+          const issue = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
+          return { workspaceId: issue.workspaceId };
+        },
+        { accessMode: "read only" },
+      );
       return db.transaction(async (tx) => {
+        // #84: account/membership KEY SHARE locks for assignment validation come BEFORE
+        // the issue lock below, matching claim and deactivation's M22 lock order.
+        const resolvedAssignee =
+          input.assignee === undefined || input.assignee === null
+            ? null
+            : await validateAssignee(tx, target.workspaceId, input.assignee);
         // Serialize concurrent updates to the same issue so two PATCHes cannot lose
         // each other's changes or diverge the activity feed from the issue's status.
         await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issueId)).for("update");
@@ -1987,12 +2153,26 @@ export function createProjectsService({
         const status = input.status ?? current.status;
         const priority = input.priority ?? current.priority;
         const sortOrder = input.sortOrder ?? current.sortOrder;
+        // An omitted assignee leaves it unchanged; an explicit null clears the pair.
+        const assigneeType =
+          input.assignee === undefined ? current.assigneeType : (input.assignee?.type ?? null);
+        const assigneeId =
+          input.assignee === undefined ? current.assigneeId : (input.assignee?.id ?? null);
         const titleChanged = title !== current.title;
         const bodyChanged = body !== current.body;
         const statusChanged = status !== current.status;
         const priorityChanged = priority !== current.priority;
         const orderChanged = sortOrder !== current.sortOrder;
-        if (!titleChanged && !bodyChanged && !statusChanged && !priorityChanged && !orderChanged) {
+        const assigneeChanged =
+          assigneeType !== current.assigneeType || assigneeId !== current.assigneeId;
+        if (
+          !titleChanged &&
+          !bodyChanged &&
+          !statusChanged &&
+          !priorityChanged &&
+          !orderChanged &&
+          !assigneeChanged
+        ) {
           return toIssue(current);
         }
 
@@ -2010,6 +2190,8 @@ export function createProjectsService({
             status,
             priority,
             sortOrder,
+            assigneeType,
+            assigneeId,
             updatedByHumanId: humanIdOf(actor),
             updatedByAgentId: agentIdOf(actor),
             updatedAt: sql`statement_timestamp()`,
@@ -2025,7 +2207,7 @@ export function createProjectsService({
         // A priority change is a real edit and is recorded. A reorder is not: dragging a
         // card writes only its midpoint, and an activity event per drag would drown the
         // feed, so sortOrder updates stay invisible there (the issue's updatedAt still moves).
-        if (titleChanged || bodyChanged || priorityChanged) {
+        if (titleChanged || bodyChanged || priorityChanged || assigneeChanged) {
           await recordActivity(tx, {
             projectId: current.projectId,
             type: "issue_edited",
@@ -2052,6 +2234,12 @@ export function createProjectsService({
           status: IssueStatus.parse(status),
           priority,
           sortOrder,
+          needsInput: current.needsInput,
+          assignee: assigneeChanged
+            ? input.assignee === null
+              ? null
+              : resolvedAssignee
+            : assigneeFromRow(current),
           createdAt: current.createdAt.toISOString(),
           updatedAt: updated.updatedAt.toISOString(),
           closedAt: updated.closedAt === null ? null : updated.closedAt.toISOString(),

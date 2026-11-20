@@ -185,8 +185,20 @@ export type ResumeWorkSessionResponse = z.infer<typeof ResumeWorkSessionResponse
 export const ReadyWorkResponse = z.array(Issue).meta({ id: "ReadyWorkResponse" });
 export type ReadyWorkResponse = z.infer<typeof ReadyWorkResponse>;
 
+// Which part of the ready queue a caller wants (#84). `all` keeps the original minimal
+// queue and, for an agent, adds issues assigned to that agent; `assignedToMe` and
+// `unassigned` narrow it further. Humans see every ready issue under `all` because they
+// cannot hold a claim; agents never see issues assigned to a human or a sibling agent.
+export const ReadyWorkFilter = z
+  .enum(["all", "assignedToMe", "unassigned"])
+  .meta({ id: "ReadyWorkFilter" });
+export type ReadyWorkFilter = z.infer<typeof ReadyWorkFilter>;
+
 export const ReadyWorkInput = z
-  .object({ projectId: z.string().trim().min(1).max(200) })
+  .object({
+    projectId: z.string().trim().min(1).max(200),
+    filter: ReadyWorkFilter.optional(),
+  })
   .meta({ id: "ReadyWorkInput" });
 export type ReadyWorkInput = z.infer<typeof ReadyWorkInput>;
 

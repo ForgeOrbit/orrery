@@ -29,6 +29,21 @@ export type IssuePriority = z.infer<typeof IssuePriority>;
 export const IssueSortOrder = z.number().finite().meta({ id: "IssueSortOrder" });
 export type IssueSortOrder = z.infer<typeof IssueSortOrder>;
 
+// Board assignment (#84). An issue may be assigned to a human or to a registered agent in
+// the workspace. Assignment is a pull-queue hint, not a launch trigger: it never replaces
+// a claim. The pair is stored as two columns in the database with a CHECK that keeps both
+// null or both present, and the service validates the identity against current membership.
+export const AssigneeType = z.enum(["human", "agent"]).meta({ id: "AssigneeType" });
+export type AssigneeType = z.infer<typeof AssigneeType>;
+
+export const Assignee = z
+  .object({
+    type: AssigneeType,
+    id: z.string().trim().min(1).max(200),
+  })
+  .meta({ id: "Assignee" });
+export type Assignee = z.infer<typeof Assignee>;
+
 // The spacing between newly created cards, shared by the server's initializer and the UI's
 // midpoint reorder so both agree on how far apart neighbours start.
 export const ISSUE_SORT_STEP = 65535;
@@ -95,6 +110,11 @@ export const Actor = z
   })
   .meta({ id: "Actor" });
 export type Actor = z.infer<typeof Actor>;
+
+// The assignee is surfaced with the same identity shape as authorship so a card can show
+// one badge for either kind. Null means unassigned; a deactivated assignee keeps its label.
+export const IssueAssignee = Actor.nullable().meta({ id: "IssueAssignee" });
+export type IssueAssignee = z.infer<typeof IssueAssignee>;
 
 export const Project = z
   .object({
@@ -192,6 +212,12 @@ export const Issue = z
     status: IssueStatus,
     priority: IssuePriority,
     sortOrder: IssueSortOrder,
+    // The board renders a Needs input column from this flag; it is a human-input pause,
+    // not a work-session status (#37/#41).
+    needsInput: z.boolean(),
+    // Board assignment (#84): null means unassigned, otherwise the human or agent who
+    // owns the pull queue for this issue.
+    assignee: IssueAssignee,
     createdAt: Timestamp,
     updatedAt: Timestamp,
     closedAt: Timestamp.nullable(),
@@ -282,6 +308,9 @@ export const UpdateIssueRequest = z
     status: IssueStatus.optional(),
     priority: IssuePriority.optional(),
     sortOrder: IssueSortOrder.optional(),
+    // Set or clear assignment (#84). Omitting the field leaves it unchanged; an explicit
+    // null clears it. Only Contribute and Manage may change it, just like other issue edits.
+    assignee: Assignee.nullable().optional(),
   })
   .meta({ id: "UpdateIssueRequest" });
 export type UpdateIssueRequest = z.infer<typeof UpdateIssueRequest>;

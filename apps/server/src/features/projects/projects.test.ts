@@ -20,6 +20,8 @@ import { eq, sql } from "drizzle-orm";
 import type { Hono } from "hono";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  agentApiKeys,
+  agents,
   humans,
   issueComments,
   issueDependencies,
@@ -62,6 +64,9 @@ const patchJson = async (app: Hono, path: string, body: unknown, cookie?: string
     headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}) },
     body: JSON.stringify(body),
   });
+
+const patchIssue = (app: Hono, issueId: string, body: unknown, cookie: string) =>
+  patchJson(app, `/api/issues/${issueId}`, body, cookie);
 
 const getJson = async (app: Hono, path: string, cookie?: string) =>
   app.request(path, cookie ? { headers: { cookie } } : undefined);
@@ -188,6 +193,8 @@ describe("projects", () => {
   afterEach(async () => {
     await database.db.transaction(async (tx) => {
       await tx.execute(sql`delete from project_activity`);
+      await tx.execute(sql`delete from agent_api_keys`);
+      await tx.execute(sql`delete from agents`);
       await tx.execute(sql`delete from issue_dependencies`);
       await tx.execute(sql`delete from issue_links`);
       await tx.execute(sql`delete from issue_comments`);
@@ -1053,5 +1060,154 @@ describe("projects", () => {
 
     const afterRemoval = await activityFor(app, adminCookie, project.id);
     expect(afterRemoval.filter((entry) => entry.type === "issue_link_removed")).toHaveLength(1);
+  });
+
+  // #84: board assignment is a pull-queue hint stored as one identity. The tests exercise
+  // the real workspace key/membership rows the service validates against.
+  async function seedAgent(workspaceId: string, humanId: string, name: string) {
+    const agentId = randomUUID();
+    await database.db.insert(agents).values({
+      id: agentId,
+      humanId,
+      name,
+      createdAt: sql`statement_timestamp()`,
+    });
+    const keyId = randomUUID();
+    await database.db.insert(agentApiKeys).values({
+      id: keyId,
+      agentId,
+      workspaceId,
+      createdByHumanId: humanId,
+      validity: "never",
+      tokenHash: randomUUID(),
+      createdAt: sql`statement_timestamp()`,
+    });
+    return { agentId, keyId };
+  }
+
+  it("sets, changes and clears an assignee, and validates it against the workspace", async () => {
+    const { app, admin, adminCookie, workspaceId } = await readyApp();
+    const project = await createProject(app, adminCookie, workspaceId, "Assigned");
+    const issue = await createIssue(app, adminCookie, project.id, { title: "Assign me" });
+    expect(issue.assignee).toBeNull();
+    expect(issue.needsInput).toBe(false);
+    const { agentId } = await seedAgent(workspaceId, admin.id, "Builder");
+
+    const toHuman = await patchIssue(
+      app,
+      issue.id,
+      { assignee: { type: "human", id: admin.id } },
+      adminCookie,
+    );
+    expect(toHuman.status).toBe(200);
+    expect(Issue.parse(await toHuman.json()).assignee).toMatchObject({
+      humanId: admin.id,
+      email: EMAIL,
+      displayName: EMAIL,
+    });
+
+    const toAgent = await patchIssue(
+      app,
+      issue.id,
+      { assignee: { type: "agent", id: agentId } },
+      adminCookie,
+    );
+    expect(toAgent.status).toBe(200);
+    expect(Issue.parse(await toAgent.json()).assignee).toMatchObject({
+      agentId,
+      agentName: "Builder",
+      displayName: "Builder",
+    });
+    const [row] = await database.db
+      .select({ type: issues.assigneeType, id: issues.assigneeId })
+      .from(issues)
+      .where(eq(issues.id, issue.id));
+    expect(row).toEqual({ type: "agent", id: agentId });
+
+    const cleared = await patchIssue(app, issue.id, { assignee: null }, adminCookie);
+    expect(cleared.status).toBe(200);
+    expect(Issue.parse(await cleared.json()).assignee).toBeNull();
+    const [afterClear] = await database.db
+      .select({ type: issues.assigneeType, id: issues.assigneeId })
+      .from(issues)
+      .where(eq(issues.id, issue.id));
+    expect(afterClear).toEqual({ type: null, id: null });
+
+    // An unrelated edit must not resurrect a cleared assignment.
+    const kept = await patchIssue(app, issue.id, { title: "Still unassigned" }, adminCookie);
+    expect(Issue.parse(await kept.json()).assignee).toBeNull();
+  });
+
+  it("refuses unknown, unregistered and deactivated assignees with one 404", async () => {
+    const { app, admin, adminCookie, workspaceId } = await readyApp();
+    const project = await createProject(app, adminCookie, workspaceId, "Bad assignees");
+    const issue = await createIssue(app, adminCookie, project.id, { title: "Guarded" });
+
+    await expectProblem(
+      await patchIssue(
+        app,
+        issue.id,
+        { assignee: { type: "human", id: randomUUID() } },
+        adminCookie,
+      ),
+      404,
+      "assignee_not_found",
+    );
+    const { agentId } = await seedAgent(workspaceId, admin.id, "No key here");
+    await database.db.delete(agentApiKeys).where(eq(agentApiKeys.agentId, agentId));
+    await expectProblem(
+      await patchIssue(app, issue.id, { assignee: { type: "agent", id: agentId } }, adminCookie),
+      404,
+      "assignee_not_found",
+    );
+
+    const { agentId: revokedId, keyId } = await seedAgent(workspaceId, admin.id, "Revoked");
+    await database.db
+      .update(agentApiKeys)
+      .set({ revokedAt: sql`statement_timestamp()` })
+      .where(eq(agentApiKeys.id, keyId));
+    await expectProblem(
+      await patchIssue(app, issue.id, { assignee: { type: "agent", id: revokedId } }, adminCookie),
+      404,
+      "assignee_not_found",
+    );
+    // None of the refusals wrote a partial assignee.
+    const [row] = await database.db
+      .select({ type: issues.assigneeType, id: issues.assigneeId })
+      .from(issues)
+      .where(eq(issues.id, issue.id));
+    expect(row).toEqual({ type: null, id: null });
+  });
+
+  it("keeps the assignee pair integral in the database and records only real changes", async () => {
+    const { app, admin, adminCookie, workspaceId } = await readyApp();
+    const project = await createProject(app, adminCookie, workspaceId, "Integral");
+    const issue = await createIssue(app, adminCookie, project.id, { title: "Integrity" });
+
+    expect(
+      await rejection(
+        database.db.execute(sql`update issues set assignee_type = 'human' where id = ${issue.id}`),
+      ),
+    ).toContain("issues_assignee_pair");
+    expect(
+      await rejection(
+        database.db.execute(
+          sql`update issues set assignee_type = 'robot', assignee_id = ${randomUUID()} where id = ${issue.id}`,
+        ),
+      ),
+    ).toContain("issues_assignee_type");
+
+    await patchIssue(app, issue.id, { assignee: { type: "human", id: admin.id } }, adminCookie);
+    const before = await activityFor(app, adminCookie, project.id);
+    const repeat = await patchIssue(
+      app,
+      issue.id,
+      { assignee: { type: "human", id: admin.id } },
+      adminCookie,
+    );
+    expect(repeat.status).toBe(200);
+    const after = await activityFor(app, adminCookie, project.id);
+    expect(after.length).toBe(before.length);
+    expect(after.filter((entry) => entry.type === "issue_edited")).toHaveLength(1);
   });
 });

@@ -89,6 +89,10 @@ function ProjectPage() {
         ·{" "}
         <Link to="/history/project/$projectId" params={{ projectId: project.id }}>
           View history
+        </Link>{" "}
+        ·{" "}
+        <Link to="/board/$projectId" params={{ projectId: project.id }} data-board-link>
+          Board
         </Link>
       </p>
       <h1>{project.name}</h1>

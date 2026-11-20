@@ -1447,6 +1447,12 @@
           "sortOrder": {
             "$ref": "#/components/schemas/IssueSortOrder"
           },
+          "needsInput": {
+            "type": "boolean"
+          },
+          "assignee": {
+            "$ref": "#/components/schemas/IssueAssignee"
+          },
           "createdAt": {
             "$ref": "#/components/schemas/Timestamp"
           },
@@ -1478,6 +1484,8 @@
           "status",
           "priority",
           "sortOrder",
+          "needsInput",
+          "assignee",
           "createdAt",
           "updatedAt",
           "closedAt",
@@ -1506,6 +1514,54 @@
       },
       "IssueSortOrder": {
         "type": "number"
+      },
+      "IssueAssignee": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "humanId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Email"
+              },
+              {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            ]
+          },
+          "agentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "agentName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "deactivated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "displayName"
+        ]
       },
       "FallbackPolicyOverride": {
         "type": [
@@ -1572,6 +1628,12 @@
           "sortOrder": {
             "$ref": "#/components/schemas/IssueSortOrder"
           },
+          "needsInput": {
+            "type": "boolean"
+          },
+          "assignee": {
+            "$ref": "#/components/schemas/IssueAssignee"
+          },
           "createdAt": {
             "$ref": "#/components/schemas/Timestamp"
           },
@@ -1609,6 +1671,8 @@
           "status",
           "priority",
           "sortOrder",
+          "needsInput",
+          "assignee",
           "createdAt",
           "updatedAt",
           "closedAt",
@@ -1687,8 +1751,38 @@
           },
           "sortOrder": {
             "$ref": "#/components/schemas/IssueSortOrder"
+          },
+          "assignee": {
+            "$ref": "#/components/schemas/Assignee"
           }
         }
+      },
+      "Assignee": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/AssigneeType"
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "type",
+          "id"
+        ]
+      },
+      "AssigneeType": {
+        "type": "string",
+        "enum": [
+          "human",
+          "agent"
+        ]
       },
       "SetIssueFallbackPolicyRequest": {
         "type": "object",
@@ -2753,6 +2847,14 @@
           "updatedAt",
           "endedAt",
           "projectId"
+        ]
+      },
+      "ReadyWorkFilter": {
+        "type": "string",
+        "enum": [
+          "all",
+          "assignedToMe",
+          "unassigned"
         ]
       },
       "Question": {
@@ -6583,7 +6685,7 @@
       },
       "patch": {
         "summary": "Edit, close, or reopen an issue",
-        "description": "Contribute or Manage. Every field is optional. A title or body change records an edit; a status change records a close or a reopen. A request that changes nothing returns the issue unchanged and records no event. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
+        "description": "Contribute or Manage. Every field is optional. A title, body, assignee or priority change records an edit; a status change records a close or a reopen. Set `assignee` to `{\"type\":\"human\"|\"agent\",\"id\":\"...\"}` or null to clear it; the identity must be an active member or a registered agent in the workspace. A request that changes nothing returns the issue unchanged and records no event. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
         "parameters": [
           {
             "schema": {
@@ -7957,7 +8059,7 @@
     "/api/issues/{issueId}/work-sessions": {
       "post": {
         "summary": "Claim an issue for an agent and run",
-        "description": "Start a work session. The session belongs to the authenticated agent, the named run, the key's workspace and the issue — not to the key itself. At most one active session can hold an issue; helpers passing the same (agent, run, issue) join it. The claim is a five-minute lease evaluated in database time.",
+        "description": "Start a work session. The session belongs to the authenticated agent, the named run, the key's workspace and the issue — not to the key itself. An agent may claim only work that is unassigned or assigned to that same agent. At most one active session can hold an issue; helpers passing the same (agent, run, issue) join it. The claim is a five-minute lease evaluated in database time.",
         "parameters": [
           {
             "schema": {
@@ -8042,7 +8144,7 @@
             }
           },
           "409": {
-            "description": "Another worker holds the active session for this issue",
+            "description": "The issue is reserved for a human or another agent, or another worker holds it",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -9025,7 +9127,7 @@
     "/api/projects/{projectId}/ready-work": {
       "get": {
         "summary": "Minimal ready-work listing for a project",
-        "description": "Open issues that are not Needs input, have no live active session, and have no blocker whose status is not closed, evaluated in database time. Needs no claim; a full board is out of scope.",
+        "description": "Open issues that are not Needs input, have no live active session, and have no blocker whose status is not closed, evaluated in database time. `filter` selects all claimable work (the default), only work assigned to the caller, or only unassigned work; an agent never sees work reserved for a human or another agent. Owned work sorts first, then priority, sortOrder and createdAt. Needs no claim; a full board is out of scope.",
         "parameters": [
           {
             "schema": {
@@ -9036,6 +9138,14 @@
             "required": true,
             "name": "projectId",
             "in": "path"
+          },
+          {
+            "schema": {
+              "$ref": "#/components/schemas/ReadyWorkFilter"
+            },
+            "required": false,
+            "name": "filter",
+            "in": "query"
           }
         ],
         "responses": {

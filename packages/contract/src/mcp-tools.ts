@@ -98,7 +98,7 @@ const createIssue = {
 const updateIssue = {
   name: "update_issue",
   description:
-    "Edit an issue's title or body, close/reopen it, or change its priority or sortOrder (a float; the midpoint of two neighbours moves one card without rewriting them). Requires Contribute access and, for an agent, a live work session on the issue. The actor recorded is the agent, not its human owner.",
+    "Edit an issue's title or body, close/reopen it, change its priority or sortOrder (a float; the midpoint of two neighbours moves one card without rewriting them), or set/clear its assignee (`{\"type\":\"human\"|\"agent\",\"id\":\"...\"}`, or null to clear). An assignee must be an active member or a registered agent in the workspace. Requires Contribute access and, for an agent, a live work session on the issue. The actor recorded is the agent, not its human owner.",
   input: UpdateIssueRequest.extend({ issueId: id("The issue id") }),
   output: z.object({ issue: Issue }),
 };
@@ -230,7 +230,7 @@ const runCheckin = {
 const claimIssue = {
   name: "claim_issue",
   description:
-    "Claim an issue this agent needs to work on, for this agent and run. The issue may already be closed: a worker reopening it must claim it first, because a fenced update_issue needs a live session. One active session per issue: a second worker is refused. Helpers on the same issue pass the same runId and join the existing session. The claim is a five-minute lease in database time; renew it while working.",
+    "Claim an issue this agent needs to work on, for this agent and run. An agent may claim only work that is unassigned or assigned to that same agent; issues assigned to a human or another agent are refused. The issue may already be closed: a worker reopening it must claim it first, because a fenced update_issue needs a live session. One active session per issue: a second worker is refused. Helpers on the same issue pass the same runId and join the existing session. The claim is a five-minute lease in database time; renew it while working.",
   input: ClaimWorkSessionInput,
   output: WorkSessionResponse,
 };
@@ -291,7 +291,7 @@ const reacquireWorkSession = {
 const readyWork = {
   name: "ready_work",
   description:
-    "List minimal ready work in a project: open issues that are not Needs input, have no live active session, and have no blocker whose status is not closed, evaluated in database time. The queue is deterministic: priority urgent > high > medium > low > none, then sortOrder ascending, then creation time ascending. Needs no claim.",
+    "List minimal ready work in a project: open issues that are not Needs input, have no live active session, and have no blocker whose status is not closed, evaluated in database time. Optional `filter` is all (default), assignedToMe or unassigned; an agent never sees issues assigned to a human or another agent. Work assigned to the caller sorts first, then priority urgent > high > medium > low > none, then sortOrder ascending, then creation time ascending. Needs no claim.",
   input: ReadyWorkInput,
   output: z.object({ issues: ReadyWorkResponse }),
 };

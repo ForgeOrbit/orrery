@@ -8,6 +8,8 @@ import {
   ProjectAccessGrantsResponse,
   ProjectActivityResponse,
   ProjectsResponse,
+  ReadyWorkResponse,
+  type ReadyWorkFilter,
 } from "@orrery/contract";
 import { queryOptions } from "@tanstack/react-query";
 import { getJson } from "../../lib/api.ts";
@@ -47,6 +49,18 @@ export const issuesQuery = (projectId: string) =>
     queryFn: () =>
       getJson(`/api/projects/${encodeURIComponent(projectId)}/issues`, (value) =>
         IssuesResponse.parse(value),
+      ),
+  });
+
+// The ready queue (optional #84 filter), used by the board to show what an agent could
+// claim next. The server decides assignee visibility and ordering; this is a plain read.
+export const readyWorkQuery = (projectId: string, filter?: ReadyWorkFilter) =>
+  queryOptions({
+    queryKey: ["projects", projectId, "ready-work", filter ?? "all"],
+    queryFn: () =>
+      getJson(
+        `/api/projects/${encodeURIComponent(projectId)}/ready-work?filter=${filter ?? "all"}`,
+        (value) => ReadyWorkResponse.parse(value),
       ),
   });
 

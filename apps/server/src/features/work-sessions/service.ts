@@ -5,7 +5,9 @@ import {
   WorkSessionStatus,
   type ActiveWorkSession,
   type AgentIdentity,
+  type AssigneeType,
   type Issue,
+  type ReadyWorkFilter,
   type ReacquireWorkSessionInput,
   type ResumeDisposition,
   type ResumeWorkSessionInput,
@@ -15,7 +17,7 @@ import {
   type WorkSession,
   type WorkSessionOutcome,
 } from "@orrery/contract";
-import { and, desc, eq, gt, inArray, isNull, lte, ne, notExists, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, lte, ne, notExists, or, sql } from "drizzle-orm";
 import { alias, type PgInsertValue } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
@@ -53,7 +55,9 @@ export type SessionsErrorKind =
   | "human_sign_in_required"
   | "agents_cannot_request_stop"
   | "session_not_active"
-  | "session_not_found";
+  | "session_not_found"
+  | "issue_assigned_to_human"
+  | "issue_assigned_to_other_agent";
 
 const messages: Record<SessionsErrorKind, string> = {
   not_signed_in: "An agent key is required.",
@@ -69,6 +73,8 @@ const messages: Record<SessionsErrorKind, string> = {
   agents_cannot_request_stop: "Only a human with Contribute or Manage access may request a stop.",
   session_not_active: "The work session is no longer active.",
   session_not_found: "No such work session is in scope for the caller.",
+  issue_assigned_to_human: "This issue is assigned to a human and cannot be claimed by an agent.",
+  issue_assigned_to_other_agent: "This issue is assigned to another agent and cannot be claimed.",
 };
 
 export class SessionsError extends Error {
@@ -162,7 +168,9 @@ export interface SessionsService {
     issueId: string,
     sessionId: string,
   ): Promise<SessionActivity[]>;
-  readyWork(actor: WorkActor | null, projectId: string): Promise<Issue[]>;
+  // #84: the optional filter narrows the ready queue; the result is always ordered
+  // assigned-to-caller first, then priority, position and creation (#88).
+  readyWork(actor: WorkActor | null, projectId: string, filter?: ReadyWorkFilter): Promise<Issue[]>;
   // The narrow seam projects borrows to fence agent issue edits, closure and reopen. It
   // lazily expires a stale lease inside the caller's already issue-locked transaction and
   // answers whether this agent holds a live session. It never creates one.
@@ -251,6 +259,32 @@ function toActivity(row: ActivityRow): SessionActivity {
 function requireAgent(actor: AgentActor | null) {
   if (actor === null) throw new SessionsError("not_signed_in");
   return actor.identity;
+}
+
+// #84: the strict claim policy. Assignment is only a pull-queue hint, but an agent may
+// claim (or reacquire) an issue only while it is unassigned or assigned to that same
+// agent. A human assignee or a sibling agent keeps the claim reserved even when nobody
+// holds a lease. Called on the issue's locked row, so a concurrent reassignment cannot
+// slip between this decision and the session insert.
+function assertClaimAssignee(
+  assigneeType: AssigneeType | null,
+  assigneeId: string | null,
+  agentId: string,
+): void {
+  if (assigneeType === "human") throw new SessionsError("issue_assigned_to_human");
+  if (assigneeType === "agent" && assigneeId !== agentId) {
+    throw new SessionsError("issue_assigned_to_other_agent");
+  }
+}
+
+// The ready queue's stable first sort key: work reserved for the caller goes ahead of
+// everything else. Humans have no claim, but seeing their own assigned work first is the
+// same board hint; agents get the strict claimable queue.
+function assignedToActor(issue: Issue, actor: WorkActor): boolean {
+  if (issue.assignee === null) return false;
+  return actor.kind === "agent"
+    ? issue.assignee.agentId === actor.identity.agentId
+    : issue.assignee.humanId === actor.account.humanId;
 }
 
 // A claim is only as live as its agent's human's access to the workspace. Key
@@ -410,6 +444,8 @@ async function lockIssue(tx: DbTransaction, issueId: string) {
       projectId: issues.projectId,
       status: issues.status,
       needsInput: issues.needsInput,
+      assigneeType: issues.assigneeType,
+      assigneeId: issues.assigneeId,
     })
     .from(issues)
     .where(eq(issues.id, issueId))
@@ -842,6 +878,8 @@ export function createSessionsService({
         // A session follows the agent and run, not the key. An explicit run id must be a
         // run of this agent in this workspace; helpers on one issue pass the same id.
         await requireRun(tx, identity, input.runId);
+        // #84: a reserved issue is not claimable, even by its previous run reconnecting.
+        assertClaimAssignee(issue.assigneeType, issue.assigneeId, identity.agentId);
 
         const existing = await findActive(tx, issue.id);
         if (existing !== undefined) {
@@ -1185,6 +1223,8 @@ export function createSessionsService({
           "issue_not_found",
         );
         await requireRun(tx, identity, input.runId);
+        // #84: reacquisition obeys the same strict policy as a fresh claim.
+        assertClaimAssignee(issue.assigneeType, issue.assigneeId, identity.agentId);
 
         // An idempotent retry after reconnect: the same run re-acquiring an issue it
         // already holds live returns that one session instead of registering a second.
@@ -1329,8 +1369,24 @@ export function createSessionsService({
       );
     },
 
-    async readyWork(actorArg, projectId) {
+    async readyWork(actorArg, projectId, filter = "all") {
       const actor = requireActor(actorArg);
+      // #84: an agent's `all` queue is exactly the claimable set — unassigned issues plus
+      // its own. Issues assigned to a human or a sibling agent are never offered, because
+      // the strict claim policy would refuse them anyway. Narrow filters are explicit.
+      const ownType = actor.kind === "agent" ? "agent" : "human";
+      const ownId = actor.kind === "agent" ? actor.identity.agentId : actor.account.humanId;
+      const assigneeFilter =
+        filter === "unassigned"
+          ? isNull(issues.assigneeId)
+          : filter === "assignedToMe"
+            ? and(eq(issues.assigneeType, ownType), eq(issues.assigneeId, ownId))
+            : actor.kind === "agent"
+              ? or(
+                  isNull(issues.assigneeId),
+                  and(eq(issues.assigneeType, "agent"), eq(issues.assigneeId, ownId)),
+                )
+              : undefined;
       // One read-only transaction decides which issues are ready, then the projects
       // feature's public listing supplies the same Issue shape as every other listing.
       // The two transactions are sequential, never nested on the connection pool.
@@ -1359,22 +1415,22 @@ export function createSessionsService({
               ),
           );
           // This query only produces the eligible id set. The returned order comes from
-          // the projects listing below, which orders by priority, then sortOrder, then
-          // createdAt (#88), so REST and MCP ready work share the board's deterministic
-          // order. Assignee-first sorts on top of it once assignees exist (#84).
+          // the projects listing below, which already orders by priority, then sortOrder,
+          // then createdAt (#88). The caller's own assignments are sorted to the front of
+          // that list, so REST and MCP ready work share one deterministic order (#84).
+          const conditions = [
+            eq(issues.projectId, projectId),
+            eq(issues.status, "open"),
+            eq(issues.needsInput, false),
+            isNull(workSessions.id),
+            noOpenBlocker,
+          ];
+          if (assigneeFilter !== undefined) conditions.push(assigneeFilter);
           const rows = await tx
             .select({ id: issues.id })
             .from(issues)
             .leftJoin(workSessions, live)
-            .where(
-              and(
-                eq(issues.projectId, projectId),
-                eq(issues.status, "open"),
-                eq(issues.needsInput, false),
-                isNull(workSessions.id),
-                noOpenBlocker,
-              ),
-            )
+            .where(and(...conditions))
             .orderBy(issues.number);
           return rows.map((row) => row.id);
         },
@@ -1382,7 +1438,11 @@ export function createSessionsService({
       );
       if (eligible.length === 0) return [];
       const ready = new Set(eligible);
-      return (await listIssues(actor, projectId)).filter((issue) => ready.has(issue.id));
+      const ordered = (await listIssues(actor, projectId)).filter((issue) => ready.has(issue.id));
+      // Array.prototype.sort is stable: within each assignee group the board order from
+      // listIssues (priority, sortOrder, createdAt, number) is preserved exactly.
+      ordered.sort((a, b) => Number(assignedToActor(b, actor)) - Number(assignedToActor(a, actor)));
+      return ordered;
     },
 
     async agentHoldsSession(tx, agentId, workspaceId, issueId) {

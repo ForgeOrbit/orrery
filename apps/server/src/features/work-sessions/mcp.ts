@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import { SessionActivityKind, type AgentIdentity } from "@orrery/contract";
+import { ReadyWorkFilter, SessionActivityKind, type AgentIdentity } from "@orrery/contract";
 import { sessionTools } from "@orrery/contract";
 import { isAgentError, type AgentAuthenticator } from "../agents/index.ts";
 import { SessionsError, type SessionsService } from "./service.ts";
@@ -103,6 +103,7 @@ export function createSessionsMcp(service: SessionsService, authenticate: AgentA
       issues: await service.readyWork(
         { kind: "agent", identity },
         str(args.projectId, "projectId"),
+        args.filter === undefined ? undefined : ReadyWorkFilter.parse(args.filter),
       ),
     }),
   };

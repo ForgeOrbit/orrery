@@ -15,6 +15,7 @@ export {
   updateKnowledgeEntry,
   updateProject,
 } from "./commands.ts";
+export { AssigneeControl, type AssigneeCandidate } from "./AssigneeControl.tsx";
 export { IssuePriorityControls, PriorityBadge } from "./IssuePriority.tsx";
 export { ResourceLoadError } from "./LoadError.tsx";
 export { TitleBodyForm } from "./TitleBodyForm.tsx";
@@ -29,5 +30,6 @@ export {
   projectAccessQuery,
   projectActivityQuery,
   projectQuery,
+  readyWorkQuery,
   projectsQuery,
 } from "./queries.ts";

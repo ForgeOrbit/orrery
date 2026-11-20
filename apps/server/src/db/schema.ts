@@ -1,6 +1,7 @@
 import {
   AgentKeyEventType,
   AgentKeyValidity,
+  AssigneeType,
   FallbackPolicy,
   InvitationDelivery,
   InvitationStatus,
@@ -864,6 +865,12 @@ export const issues = pgTable(
     // project's fallback policy; null means "use the project's policy".
     needsInput: boolean("needs_input").notNull().default(false),
     fallbackPolicyOverride: text("fallback_policy_override").$type<FallbackPolicy>(),
+    // Board assignment (#84). The type decides which identity table the id names; there
+    // is deliberately no single FK because the target is one of two tables. The service
+    // validates the pair against current membership/keys inside the writing transaction,
+    // and the CHECK below keeps a bypassing writer from storing a half or unknown assignee.
+    assigneeType: text("assignee_type").$type<AssigneeType>(),
+    assigneeId: text("assignee_id"),
   },
   (t) => [
     // Exactly one author/editor identity: a human or an agent.
@@ -881,10 +888,20 @@ export const issues = pgTable(
     // Ready work and the board read a project's cards in position order; the priority
     // ranking is applied in the query, so this index serves the sortOrder/createdAt tail.
     index("issues_project_sort_order").on(t.projectId, t.sortOrder, t.createdAt),
+    // Assignment-driven queue lookups (board badges, ready-work filtering).
+    index("issues_assignee").on(t.assigneeType, t.assigneeId),
     check("issues_number_positive", sql`${t.number} > 0`),
     // DDL cannot bind parameters; the values come from the IssueStatus contract enum.
     check("issues_status", sql`${t.status} in (${sql.raw(sqlLiteralList(IssueStatus))})`),
     check("issues_priority", sql`${t.priority} in (${sql.raw(sqlLiteralList(IssuePriority))})`),
+    // Both columns are null, or both are present. A present type must be a contract value.
+    check("issues_assignee_pair", sql`(${t.assigneeType} is null) = (${t.assigneeId} is null)`),
+    check(
+      "issues_assignee_type",
+      sql`(${t.assigneeType} is null or ${t.assigneeType} in (${sql.raw(
+        sqlLiteralList(AssigneeType),
+      )}))`,
+    ),
     // Postgres sorts NaN above Infinity, so bounding the value on both sides rejects NaN
     // as well as ±Infinity. Midpoint arithmetic can otherwise produce a non-finite position
     // that no client can reorder past, and the CHECK holds even for a bypassing writer.

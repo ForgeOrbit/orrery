@@ -1,4 +1,4 @@
-import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { type Issue, type IssueDetail, IssueLinkKind } from "@orrery/contract";
 import type { FormEvent } from "react";
@@ -6,6 +6,8 @@ import { useState } from "react";
 import {
   addBlockedBy,
   addIssueLink,
+  AssigneeControl,
+  type AssigneeCandidate,
   createIssueComment,
   issueBlockedByQuery,
   issueBlockingQuery,
@@ -23,16 +25,29 @@ import {
   updateIssue,
 } from "../features/projects/index.ts";
 import { SessionInspector, SessionStatus } from "../features/work-sessions/index.ts";
+import { workspaceMembersQuery, workspaceQuery } from "../features/workspaces/index.ts";
+import { agentKeysQuery, workspaceAgentKeysQuery } from "../features/agents/index.ts";
 
 // One issue's page: read it, edit its Markdown body, close or reopen it, and comment.
 // The project's effective level decides whether those controls appear; Read sees the
 // issue and its comments only. Every action refreshes the activity so history stays in step.
 export const Route = createFileRoute("/issues/$issueId")({
+  // A sidecar link from the board or agents panel opens the inspector and preselects the
+  // session. Plain function validation keeps the search shape typed without an adapter.
+  validateSearch: (search: Record<string, unknown>) => {
+    const parsed: { inspector?: true; session?: string } = {};
+    if (search.inspector === true || search.inspector === "true") parsed.inspector = true;
+    if (typeof search.session === "string") parsed.session = search.session;
+    return parsed;
+  },
   loader: async ({ context, params }) => {
     const issue = await context.queryClient.ensureQueryData(issueQuery(params.issueId));
+    const project = await context.queryClient.ensureQueryData(projectQuery(issue.projectId));
     await Promise.all([
       context.queryClient.ensureQueryData(issueCommentsQuery(params.issueId)),
-      context.queryClient.ensureQueryData(projectQuery(issue.projectId)),
+      context.queryClient.ensureQueryData(workspaceQuery(project.workspaceId)),
+      context.queryClient.ensureQueryData(workspaceMembersQuery(project.workspaceId)),
+      context.queryClient.ensureQueryData(agentKeysQuery(project.workspaceId)),
       context.queryClient.ensureQueryData(issueBlockedByQuery(params.issueId)),
       context.queryClient.ensureQueryData(issueBlockingQuery(params.issueId)),
       context.queryClient.ensureQueryData(issuesQuery(issue.projectId)),
@@ -44,9 +59,32 @@ export const Route = createFileRoute("/issues/$issueId")({
 
 function IssuePage() {
   const { issueId } = Route.useParams();
+  const { inspector, session: inspectorSession } = Route.useSearch();
   const { data: issue } = useSuspenseQuery(issueQuery(issueId));
   const { data: comments } = useSuspenseQuery(issueCommentsQuery(issueId));
   const { data: project } = useSuspenseQuery(projectQuery(issue.projectId));
+  const { data: workspace } = useSuspenseQuery(workspaceQuery(project.workspaceId));
+  const { data: members } = useSuspenseQuery(workspaceMembersQuery(project.workspaceId));
+  const { data: myKeys } = useSuspenseQuery(agentKeysQuery(project.workspaceId));
+  const workspaceKeys = useQuery({
+    ...workspaceAgentKeysQuery(project.workspaceId),
+    enabled: workspace.isOwner,
+  });
+  const candidates: AssigneeCandidate[] = members.map((member) => ({
+    value: `human:${member.humanId}`,
+    label: `Human · ${member.email}`,
+    assignee: { type: "human" as const, id: member.humanId },
+  }));
+  const seen = new Set<string>();
+  for (const key of [...myKeys, ...(workspaceKeys.data ?? [])]) {
+    if (key.revokedAt !== null || seen.has(key.agentId)) continue;
+    seen.add(key.agentId);
+    candidates.push({
+      value: `agent:${key.agentId}`,
+      label: `Agent · ${key.agentName}`,
+      assignee: { type: "agent" as const, id: key.agentId },
+    });
+  }
   const { data: blockedBy } = useSuspenseQuery(issueBlockedByQuery(issueId));
   const { data: blocking } = useSuspenseQuery(issueBlockingQuery(issueId));
   const { data: projectIssues } = useSuspenseQuery(issuesQuery(issue.projectId));
@@ -65,7 +103,14 @@ function IssuePage() {
         created by {issue.createdBy.displayName} · last edited by {issue.updatedBy.displayName}
       </p>
       <SessionStatus issueId={issue.id} projectId={issue.projectId} canContribute={canContribute} />
-      <SessionInspector issueId={issue.id} />
+      <SessionInspector
+        issueId={issue.id}
+        initialOpen={inspector}
+        initialSessionId={inspectorSession}
+      />
+      {canContribute && (
+        <AssigneeControl issue={issue} candidates={candidates} canContribute={canContribute} />
+      )}
       {canContribute && (
         <section>
           <h2>Priority and order</h2>

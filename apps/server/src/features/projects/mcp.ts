@@ -1,5 +1,12 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import { IssueLinkKind, IssuePriority, IssueSortOrder, projectTools } from "@orrery/contract";
+import {
+  Assignee,
+  type Assignee as AssigneeShape,
+  IssueLinkKind,
+  IssuePriority,
+  IssueSortOrder,
+  projectTools,
+} from "@orrery/contract";
 import { isAgentError, type AgentAuthenticator } from "../agents/index.ts";
 import { ProjectsError, type ProjectsService, type WorkActor } from "./service.ts";
 
@@ -24,6 +31,9 @@ const priority = (value: unknown): IssuePriority | undefined =>
   value === undefined ? undefined : IssuePriority.parse(value);
 const sortOrder = (value: unknown): number | undefined =>
   value === undefined ? undefined : IssueSortOrder.parse(value);
+// A missing field leaves assignment untouched; an explicit null clears it.
+const assignee = (value: unknown): AssigneeShape | null | undefined =>
+  value === undefined ? undefined : value === null ? null : Assignee.parse(value);
 
 export function createProjectsMcp(service: ProjectsService, authenticate: AgentAuthenticator) {
   const strategies: Record<string, Strategy> = {
@@ -54,6 +64,7 @@ export function createProjectsMcp(service: ProjectsService, authenticate: AgentA
         status: args.status === "open" || args.status === "closed" ? args.status : undefined,
         priority: priority(args.priority),
         sortOrder: sortOrder(args.sortOrder),
+        assignee: assignee(args.assignee),
       }),
     }),
     add_blocked_by: async (actor, args) => ({

@@ -17,6 +17,7 @@ import { Route as ResetPasswordRouteImport } from './routes/reset-password'
 import { Route as SetupRouteImport } from './routes/setup'
 import { Route as SigninRouteImport } from './routes/signin'
 import { Route as WorkspaceInvitationRouteImport } from './routes/workspace-invitation'
+import { Route as BoardProjectIdRouteImport } from './routes/board.$projectId'
 import { Route as HistoryInstallationRouteImport } from './routes/history.installation'
 import { Route as IssuesIssueIdRouteImport } from './routes/issues.$issueId'
 import { Route as KnowledgeEntryIdRouteImport } from './routes/knowledge.$entryId'
@@ -65,6 +66,11 @@ const WorkspaceInvitationRoute = WorkspaceInvitationRouteImport.update({
   path: '/workspace-invitation',
   getParentRoute: () => rootRouteImport,
 } as any)
+const BoardProjectIdRoute = BoardProjectIdRouteImport.update({
+  id: '/board/$projectId',
+  path: '/board/$projectId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const HistoryInstallationRoute = HistoryInstallationRouteImport.update({
   id: '/history/installation',
   path: '/history/installation',
@@ -111,6 +117,7 @@ export interface FileRoutesByFullPath {
   '/setup': typeof SetupRoute
   '/signin': typeof SigninRoute
   '/workspace-invitation': typeof WorkspaceInvitationRoute
+  '/board/$projectId': typeof BoardProjectIdRoute
   '/history/installation': typeof HistoryInstallationRoute
   '/issues/$issueId': typeof IssuesIssueIdRoute
   '/knowledge/$entryId': typeof KnowledgeEntryIdRoute
@@ -128,6 +135,7 @@ export interface FileRoutesByTo {
   '/setup': typeof SetupRoute
   '/signin': typeof SigninRoute
   '/workspace-invitation': typeof WorkspaceInvitationRoute
+  '/board/$projectId': typeof BoardProjectIdRoute
   '/history/installation': typeof HistoryInstallationRoute
   '/issues/$issueId': typeof IssuesIssueIdRoute
   '/knowledge/$entryId': typeof KnowledgeEntryIdRoute
@@ -146,6 +154,7 @@ export interface FileRoutesById {
   '/setup': typeof SetupRoute
   '/signin': typeof SigninRoute
   '/workspace-invitation': typeof WorkspaceInvitationRoute
+  '/board/$projectId': typeof BoardProjectIdRoute
   '/history/installation': typeof HistoryInstallationRoute
   '/issues/$issueId': typeof IssuesIssueIdRoute
   '/knowledge/$entryId': typeof KnowledgeEntryIdRoute
@@ -165,6 +174,7 @@ export interface FileRouteTypes {
     | '/setup'
     | '/signin'
     | '/workspace-invitation'
+    | '/board/$projectId'
     | '/history/installation'
     | '/issues/$issueId'
     | '/knowledge/$entryId'
@@ -182,6 +192,7 @@ export interface FileRouteTypes {
     | '/setup'
     | '/signin'
     | '/workspace-invitation'
+    | '/board/$projectId'
     | '/history/installation'
     | '/issues/$issueId'
     | '/knowledge/$entryId'
@@ -199,6 +210,7 @@ export interface FileRouteTypes {
     | '/setup'
     | '/signin'
     | '/workspace-invitation'
+    | '/board/$projectId'
     | '/history/installation'
     | '/issues/$issueId'
     | '/knowledge/$entryId'
@@ -217,6 +229,7 @@ export interface RootRouteChildren {
   SetupRoute: typeof SetupRoute
   SigninRoute: typeof SigninRoute
   WorkspaceInvitationRoute: typeof WorkspaceInvitationRoute
+  BoardProjectIdRoute: typeof BoardProjectIdRoute
   HistoryInstallationRoute: typeof HistoryInstallationRoute
   IssuesIssueIdRoute: typeof IssuesIssueIdRoute
   KnowledgeEntryIdRoute: typeof KnowledgeEntryIdRoute
@@ -284,6 +297,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WorkspaceInvitationRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/board/$projectId': {
+      id: '/board/$projectId'
+      path: '/board/$projectId'
+      fullPath: '/board/$projectId'
+      preLoaderRoute: typeof BoardProjectIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/history/installation': {
       id: '/history/installation'
       path: '/history/installation'
@@ -345,6 +365,7 @@ const rootRouteChildren: RootRouteChildren = {
   SetupRoute: SetupRoute,
   SigninRoute: SigninRoute,
   WorkspaceInvitationRoute: WorkspaceInvitationRoute,
+  BoardProjectIdRoute: BoardProjectIdRoute,
   HistoryInstallationRoute: HistoryInstallationRoute,
   IssuesIssueIdRoute: IssuesIssueIdRoute,
   KnowledgeEntryIdRoute: KnowledgeEntryIdRoute,

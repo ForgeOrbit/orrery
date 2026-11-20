@@ -289,7 +289,7 @@ const updateIssue = createRoute({
   path: "/api/issues/{issueId}",
   summary: "Edit, close, or reopen an issue",
   description:
-    "Contribute or Manage. Every field is optional. A title or body change records an edit; a status change records a close or a reopen. A request that changes nothing returns the issue unchanged and records no event. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
+    'Contribute or Manage. Every field is optional. A title, body, assignee or priority change records an edit; a status change records a close or a reopen. Set `assignee` to `{"type":"human"|"agent","id":"..."}` or null to clear it; the identity must be an active member or a registered agent in the workspace. A request that changes nothing returns the issue unchanged and records no event. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key\'s effective project access.',
   request: {
     params: issueParams,
     body: { required: true, content: { "application/json": { schema: UpdateIssueRequest } } },
@@ -674,6 +674,7 @@ const statusFor = {
   self_dependency: 400,
   cross_project_dependency: 400,
   dependency_cycle: 409,
+  assignee_not_found: 404,
 } as const satisfies Record<ProjectsErrorKind, number>;
 
 function isKind<K extends readonly ProjectsErrorKind[]>(
@@ -698,6 +699,7 @@ const issueWriteKinds = [
   ...issueReadKinds,
   "insufficient_project_access",
   "session_required",
+  "assignee_not_found",
 ] as const;
 // Comments, creation and knowledge stay unfenced (#20), so their failure set has no
 // session_required and their routes need no 409 response.

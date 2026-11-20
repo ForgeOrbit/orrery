@@ -952,7 +952,9 @@ def extract_code_facts() -> dict[str, Any]:
         "const withLiveSession = async (",
     )
     live_fn = slice_between(sess_src, live_start, "return {")
-    ready_fn = slice_between(sess_src, "async readyWork(actorArg, projectId)", "async agentHoldsSession(")
+    # #84 widened readyWork with an optional filter; match the shared prefix so the
+    # extraction keeps working for both the old two-argument and the new three-argument form.
+    ready_fn = slice_between(sess_src, "async readyWork(actorArg, projectId", "async agentHoldsSession(")
     gate_fn = slice_between(sess_src, "async agentHoldsSession(", "};\n}")
     update_issue_fn = slice_between(proj_src, "async updateIssue(actorArg, issueId, input)", "async listComments(")
     work_sessions_table = slice_between(schema_src, "export const workSessions = pgTable(", "// A basic Markdown knowledge entry")
@@ -2066,7 +2068,60 @@ def extract_code_facts() -> dict[str, Any]:
     m27_detail_bound = "64_000" in sessions_contract_src and "JSON.stringify" in sessions_contract_src
     m27_schema_check = "work_session_activities_kind" in schema_src
 
-
+    # --- M28 (#84): board assignment and the strict claim policy ---
+    validate_assignee_fn = slice_between(
+        proj_src, "async function validateAssignee(", "async function requireKnowledge("
+    )
+    mig_0033 = read_text("db/migrations/0033_easy_supernaut.sql")
+    m28_db_check = (
+        "issues_assignee_pair" in schema_src
+        and "issues_assignee_type" in schema_src
+        and "issues_assignee_pair" in mig_0033
+        and "issues_assignee_type" in mig_0033
+    )
+    m28_assignee_validation = (
+        "assignee_not_found" in proj_src
+        and 'throw new ProjectsError("assignee_not_found")' in validate_assignee_fn
+        and "isNull(humans.deactivatedAt)" in validate_assignee_fn
+        and "isNull(workspaceMemberships.suspendedAt)" in validate_assignee_fn
+        and "agentApiKeys" in validate_assignee_fn
+    )
+    # The assignee locks precede the caller's issue lock (M22), and the account lock
+    # precedes the membership lock, inside validateAssignee itself.
+    m28_lock_order = (
+        ordered(
+            validate_assignee_fn,
+            ".from(humans)",
+            '.for("key share")',
+            ".from(workspaceMemberships)",
+            '.for("key share")',
+        )
+        and update_issue_fn.find("validateAssignee(") < update_issue_fn.find('.for("update")')
+    )
+    m28_strict_claim = (
+        "assertClaimAssignee(issue.assigneeType, issue.assigneeId, identity.agentId)" in claim_fn
+        and "assertClaimAssignee(issue.assigneeType, issue.assigneeId, identity.agentId)"
+        in reacquire_fn
+        and 'throw new SessionsError("issue_assigned_to_human")' in sess_src
+        and 'throw new SessionsError("issue_assigned_to_other_agent")' in sess_src
+        and "issue_assigned_to_human: 409" in sess_rest_src
+        and "issue_assigned_to_other_agent: 409" in sess_rest_src
+    )
+    m28_ready_filter = (
+        'filter === "unassigned"' in ready_fn
+        and 'filter === "assignedToMe"' in ready_fn
+        and "assigneeFilter" in ready_fn
+        and "assignedToActor" in ready_fn
+        and "ReadyWorkFilter" in sessions_contract_src
+        and 'c.req.valid("query").filter' in sess_rest_src
+        and "ReadyWorkFilter.parse" in sess_mcp_src
+    )
+    m28_contract_surface = (
+        "assignee: IssueAssignee" in pj_contract
+        and "assignee: Assignee.nullable().optional()" in pj_contract
+        and "needsInput: z.boolean()" in pj_contract
+        and "assignee_type" in schema_src
+    )
 
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
@@ -2398,6 +2453,12 @@ def extract_code_facts() -> dict[str, Any]:
         "m27_read_non_enum": m27_read_non_enum,
         "m27_detail_bound": m27_detail_bound,
         "m27_schema_check": m27_schema_check,
+        "m28_db_check": m28_db_check,
+        "m28_assignee_validation": m28_assignee_validation,
+        "m28_lock_order": m28_lock_order,
+        "m28_strict_claim": m28_strict_claim,
+        "m28_ready_filter": m28_ready_filter,
+        "m28_contract_surface": m28_contract_surface,
     }
 
 
@@ -6115,6 +6176,118 @@ def check_m27(facts: dict[str, Any]) -> CheckResult:
     )
 
 
+def check_m28(facts: dict[str, Any]) -> CheckResult:
+    """#84: assignment is a pull-queue hint; the claim stays authoritative.
+    State: (assignee, claim_holder, violations). Assignee is one of none, human, A, B,
+    invalid; a claim holder is None, A or B.
+    """
+    g = {k: facts[k] for k in facts if k.startswith("m28_")}
+
+    def bad(v, reason: str):
+        return v | {reason}
+
+    def assign(target: str):
+        def step(state):
+            assignee, holder, v = state
+            if not (g["m28_db_check"] and g["m28_contract_surface"]):
+                v = bad(v, "assignee_not_representable")
+            if target == "invalid":
+                if g["m28_assignee_validation"]:
+                    # The validated service refuses the write, so no state changes.
+                    return state
+                v = bad(v, "invalid_assignee_committed")
+            return (target, holder, v)
+
+        return step
+
+    def reserved(assignee: str, agent: str) -> bool:
+        return assignee == "human" or (assignee in ("A", "B") and assignee != agent)
+
+    def claim(agent: str):
+        def step(state):
+            assignee, holder, v = state
+            if reserved(assignee, agent):
+                if not g["m28_strict_claim"]:
+                    return (assignee, agent, bad(v, "reserved_issue_claimed"))
+                return state
+            # The one-active-session-per-issue index and idempotent same-run retry are
+            # M17's property; here the only new decision is the assignee reservation.
+            return (assignee, agent, v)
+
+        return step
+
+    def reacquire(agent: str):
+        def step(state):
+            assignee, holder, v = state
+            if reserved(assignee, agent) and not g["m28_strict_claim"]:
+                v = bad(v, "reserved_issue_reacquired")
+            return (assignee, holder, v)
+
+        return step
+
+    def ready(agent: str):
+        def step(state):
+            assignee, holder, v = state
+            if not g["m28_ready_filter"] and reserved(assignee, agent):
+                # Without the filter the listing would offer work reserved for a human
+                # or a sibling agent, which the strict claim policy would only refuse.
+                v = bad(v, "reserved_work_offered")
+            return (assignee, holder, v)
+
+        return step
+
+    def assign_after_deactivation(target: str):
+        def step(state):
+            assignee, holder, v = state
+            if not (g["m28_lock_order"] and g["m28_assignee_validation"]):
+                # Without the M22 lock order a racing write can commit an assignment
+                # against an identity that deactivation has just suspended.
+                return (target, holder, bad(v, "stale_assignee_after_deactivation"))
+            return state
+
+        return step
+
+    actions = [
+        ("assign to a human", assign("human")),
+        ("assign to agent A", assign("A")),
+        ("assign to agent B", assign("B")),
+        ("clear the assignee", assign("none")),
+        ("assign an unregistered identity", assign("invalid")),
+        ("agent A claims", claim("A")),
+        ("agent B claims", claim("B")),
+        ("agent A reacquires after expiry", reacquire("A")),
+        ("agent B reacquires after expiry", reacquire("B")),
+        ("agent A lists ready work", ready("A")),
+        ("agent B lists ready work", ready("B")),
+        ("assign racing deactivation", assign_after_deactivation("A")),
+    ]
+    init = ("none", None, frozenset())
+
+    def inv(state):
+        _, _, v = state
+        if v:
+            return False, f"assignment invariant broken: {sorted(v)[0]}"
+        return True, ""
+
+    return bfs_check(
+        "M28",
+        "Board Assignment & Strict Claims (#84)",
+        "Assignment is a validated pull-queue hint: agents claim only unassigned or self-assigned work, ready work hides work reserved for others, and the assignee pair stays integral under deactivation races",
+        "safety",
+        init,
+        lambda s: [(lbl, fn(s)) for lbl, fn in actions],
+        inv,
+        [
+            "apps/server/src/features/projects/service.ts",
+            "apps/server/src/features/work-sessions/service.ts",
+            "apps/server/src/db/schema.ts",
+            "db/migrations/0033_easy_supernaut.sql",
+            "packages/contract/src/projects.ts",
+            "packages/contract/src/sessions.ts",
+        ],
+    )
+
+
 def main() -> None:
     facts = extract_code_facts()
     results = [
@@ -6146,6 +6319,7 @@ def main() -> None:
         check_m25(facts),
         check_m26(facts),
         check_m27(facts),
+        check_m28(facts),
     ]
 
     if "--json" in sys.argv:

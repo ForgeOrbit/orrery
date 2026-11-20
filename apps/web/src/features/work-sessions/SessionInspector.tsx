@@ -7,9 +7,17 @@ import { sessionActivitiesQuery, sessionsQuery } from "./queries.ts";
 // human select a past one. Both queries poll every 4s only while the drawer is open and
 // the selected session is live (design doc: 3-5s MVP polling). There is no effect: the
 // selection is derived during render, and the drawer is a single piece of local state.
-export function SessionInspector({ issueId }: { issueId: string }) {
-  const [open, setOpen] = useState(false);
-  const [pickedId, setPickedId] = useState<string | null>(null);
+export function SessionInspector({
+  issueId,
+  initialOpen = false,
+  initialSessionId,
+}: {
+  issueId: string;
+  initialOpen?: boolean | undefined;
+  initialSessionId?: string | undefined;
+}) {
+  const [open, setOpen] = useState(initialOpen);
+  const [pickedId, setPickedId] = useState<string | null>(initialSessionId ?? null);
 
   const { data: sessions } = useQuery({
     ...sessionsQuery(issueId, open),

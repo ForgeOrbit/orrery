@@ -602,3 +602,156 @@ test("ready work is ordered by priority over REST and MCP", async () => {
     await client.close();
   }
 });
+
+// #84: assignment is a pull-queue hint, and the claim stays authoritative. A second key
+// on a different registered agent proves the strict refusal over MCP and REST.
+test("assignment reserves work for one agent across REST and MCP", async () => {
+  const workspaceId = await personalWorkspaceOf(api);
+  const projectId = await project(api, workspaceId);
+  const nameA = `assignee-a-${randomUUID()}`;
+  const nameB = `assignee-b-${randomUUID()}`;
+  const agentA = await createAgent(api, nameA);
+  const agentB = await createAgent(api, nameB);
+  const secretA = await issueKey(api, agentA, workspaceId, projectId);
+  const secretB = await issueKey(api, agentB, workspaceId, projectId);
+  const clientA = await connect(secretA);
+  const clientB = await connect(secretB);
+  try {
+    const created = await call(clientA, "create_issue", { projectId, title: "Reserved work" });
+    const issueId = requiredText(field(created.data.issue, "id"), "the issue id");
+    const plain = await call(clientA, "create_issue", { projectId, title: "Free work" });
+    const plainId = requiredText(field(plain.data.issue, "id"), "the free issue id");
+    const assigned = await api.patch(`/api/issues/${issueId}`, {
+      data: { assignee: { type: "agent", id: agentA } },
+    });
+    expect(assigned.status()).toBe(200);
+    expect(field(await assigned.json(), "assignee")).toMatchObject({ agentId: agentA });
+
+    // Agent A sees its own issue first and Agent B never sees it in any filter.
+    expect(ids((await call(clientA, "ready_work", { projectId })).data)).toEqual([
+      issueId,
+      plainId,
+    ]);
+    expect(
+      ids((await call(clientA, "ready_work", { projectId, filter: "assignedToMe" })).data),
+    ).toEqual([issueId]);
+    expect(
+      ids((await call(clientA, "ready_work", { projectId, filter: "unassigned" })).data),
+    ).toEqual([plainId]);
+    expect(ids((await call(clientB, "ready_work", { projectId })).data)).toEqual([plainId]);
+
+    const rejected = await call(clientB, "claim_issue", { issueId, runId: await newRun(clientB) });
+    expect(rejected.isError).toBe(true);
+    expect(rejected.data.code).toBe("issue_assigned_to_other_agent");
+    const restRejected = await bearer(secretB).post(`/api/issues/${issueId}/work-sessions`, {
+      runId: await newRun(clientB),
+    });
+    expect(restRejected.status).toBe(409);
+    expect(asRecord(await restRejected.json())).toMatchObject({
+      code: "issue_assigned_to_other_agent",
+    });
+
+    // The assignee can claim it, and the claim is still one-per-issue.
+    expect(
+      (await call(clientA, "claim_issue", { issueId, runId: await newRun(clientA) })).isError,
+    ).toBe(false);
+    const race = await call(clientB, "claim_issue", { issueId, runId: await newRun(clientB) });
+    expect(race.isError).toBe(true);
+    expect(["issue_claimed", "issue_assigned_to_other_agent"]).toContain(race.data.code);
+  } finally {
+    await clientA.close();
+    await clientB.close();
+  }
+});
+
+test("assigning to a human refuses an agent claim with a Problem", async () => {
+  const workspaceId = await personalWorkspaceOf(api);
+  const projectId = await project(api, workspaceId);
+  const agentId = await createAgent(api, `human-assignee-${randomUUID()}`);
+  const secret = await issueKey(api, agentId, workspaceId, projectId);
+  const client = await connect(secret);
+  try {
+    const created = await call(client, "create_issue", { projectId, title: "Human owned" });
+    const issueId = requiredText(field(created.data.issue, "id"), "the issue id");
+    const members = await api.get(`/api/workspaces/${workspaceId}/members`);
+    expect(members.status()).toBe(200);
+    const humanId = requiredText(
+      field(asArray(await members.json())[0], "humanId"),
+      "the human id",
+    );
+    const assigned = await api.patch(`/api/issues/${issueId}`, {
+      data: { assignee: { type: "human", id: humanId } },
+    });
+    expect(assigned.status()).toBe(200);
+    const rejected = await call(client, "claim_issue", { issueId, runId: await newRun(client) });
+    expect(rejected.isError).toBe(true);
+    expect(rejected.data.code).toBe("issue_assigned_to_human");
+    const restRejected = await bearer(secret).post(`/api/issues/${issueId}/work-sessions`, {
+      runId: await newRun(client),
+    });
+    expect(restRejected.status).toBe(409);
+    expect(asRecord(await restRejected.json())).toMatchObject({ code: "issue_assigned_to_human" });
+  } finally {
+    await client.close();
+  }
+});
+
+test("the board and agents panel show assignment, live session state and the sidecar", async ({
+  browser,
+}) => {
+  const workspaceId = await personalWorkspaceOf(api);
+  const projectId = await project(api, workspaceId);
+  const agentName = `board-agent-${randomUUID()}`;
+  const agentId = await createAgent(api, agentName);
+  const secret = await issueKey(api, agentId, workspaceId, projectId);
+  const client = await connect(secret);
+  let context;
+  try {
+    const created = await call(client, "create_issue", { projectId, title: "Board card" });
+    const issueId = requiredText(field(created.data.issue, "id"), "the issue id");
+    expect(
+      (await call(client, "claim_issue", { issueId, runId: await newRun(client) })).isError,
+    ).toBe(false);
+
+    context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto("/signin");
+    await page.getByLabel("Email").fill(ADMIN_EMAIL);
+    await page.getByLabel("Password").fill(ADMIN_PASSWORD);
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page.getByText(`Signed in as ${ADMIN_EMAIL}.`)).toBeVisible();
+
+    // Assign from the issue view; the selector is the workspace's registered agents.
+    await page.goto(`/issues/${issueId}`);
+    await page.getByLabel("Assignee").selectOption({ label: `Agent · ${agentName}` });
+    await page.getByRole("button", { name: "Save assignee" }).click();
+    await expect
+      .poll(async () => {
+        const res = await api.get(`/api/issues/${issueId}`);
+        return field(await res.json(), "assignee");
+      })
+      .toMatchObject({ agentId });
+
+    await page.goto(`/board/${projectId}`);
+    const card = page.locator(`[data-board-issue-id="${issueId}"]`);
+    await expect(card).toHaveAttribute("data-assignee-type", "agent");
+    await expect(card.locator("[data-session-state]")).toHaveText("active");
+    await expect(card).toContainText(agentName);
+
+    await page.goto(`/workspaces/${workspaceId}`);
+    const sessionRow = page.locator(`[data-agent-session-id][data-issue-id="${issueId}"]`);
+    await expect(sessionRow).toHaveAttribute("data-session-harness", "codex");
+    await expect(sessionRow.locator("[data-sidecar-link]")).toBeVisible();
+    await sessionRow.locator("[data-sidecar-link]").click();
+    await expect(page.locator("[data-session-inspector]")).toBeVisible();
+    await expect(page.locator("[data-session-inspector] button")).toHaveText(
+      "Hide session inspector",
+    );
+  } finally {
+    if (context !== undefined) {
+      for (const cookie of await context.cookies()) await recordSecret(cookie.value);
+      await context.close();
+    }
+    await client.close();
+  }
+});
