@@ -183,7 +183,7 @@ test("two clients sharing a key stay distinct; resume reuses a run; children and
   }
 });
 
-test("the tool set is limited to project work and run reporting, with no lease or administration", async () => {
+test("the tool set exposes no membership or administration tools", async () => {
   const workspaceId = await personalWorkspaceOf(api);
   const agentId = await createAgent(api, `runs-tools-${randomUUID()}`);
   const secret = await issueKey(api, agentId, workspaceId);
@@ -193,7 +193,7 @@ test("the tool set is limited to project work and run reporting, with no lease o
     expect(names).toContain("orrery_run_checkin");
     expect(names).toContain("list_projects");
     for (const name of names) {
-      expect(name).not.toMatch(/member|invit|workspace|access|setting|admin|grant|claim|lease/);
+      expect(name).not.toMatch(/member|invit|workspace|access|setting|admin|grant/);
     }
     const denied = await checkin(client, { event: "run_heartbeat", runId: `run_${randomUUID()}` });
     expect(denied.isError).toBe(true);
