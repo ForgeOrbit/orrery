@@ -3539,6 +3539,42 @@
                 "null"
               ]
             },
+            "inputTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "outputTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "costUsdMicros": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -3569,6 +3605,9 @@
             "stopRequested",
             "stopRequestedAt",
             "stopReason",
+            "inputTokens",
+            "outputTokens",
+            "costUsdMicros",
             "createdAt",
             "updatedAt",
             "endedAt"
@@ -3594,7 +3633,7 @@
   },
   {
     "name": "renew_claim",
-    "description": "Check in on an issue this agent currently holds and refresh its five-minute lease in database time. Requires a live session; an expired or released session is never renewed or silently reacquired. Pass sessionId to fence a delayed call from an interrupted session: it is refused if that session is no longer the live one, even after reacquisition. The returned session carries stopRequested, stopRequestedAt and stopReason: when stopRequested is true a human has asked you to stop, so flush a brief handoff and call stop_session promptly. The five-minute lease remains the hard backstop.",
+    "description": "Check in on an issue this agent currently holds and refresh its five-minute lease in database time. Requires a live session; an expired or released session is never renewed or silently reacquired. Pass sessionId to fence a delayed call from an interrupted session: it is refused if that session is no longer the live one, even after reacquisition. Optionally report cumulative inputTokens, outputTokens and costUsdMicros: each provided value overwrites the session's total, an omitted one is preserved, and unreported ones stay null. The returned session carries stopRequested, stopRequestedAt and stopReason: when stopRequested is true a human has asked you to stop, so flush a brief handoff and call stop_session promptly. The five-minute lease remains the hard backstop.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "$ref": "#/$defs/RenewWorkSessionInput",
@@ -3602,6 +3641,21 @@
         "RenewWorkSessionInput": {
           "type": "object",
           "properties": {
+            "inputTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "outputTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "costUsdMicros": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
             "issueId": {
               "type": "string",
               "minLength": 1,
@@ -3692,6 +3746,42 @@
                 "null"
               ]
             },
+            "inputTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "outputTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "costUsdMicros": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -3722,6 +3812,9 @@
             "stopRequested",
             "stopRequestedAt",
             "stopReason",
+            "inputTokens",
+            "outputTokens",
+            "costUsdMicros",
             "createdAt",
             "updatedAt",
             "endedAt"
@@ -3747,7 +3840,7 @@
   },
   {
     "name": "report_progress",
-    "description": "Record progress on the live session this agent holds for an issue. Progress is stored independently of the lease, so an interruption never erases it. Requires a live session; pass sessionId to refuse a delayed report from an expired session instead of writing to a newer one. The returned session carries stopRequested, stopRequestedAt and stopReason: check them on every report and stop promptly if a human has asked you to stop.",
+    "description": "Record progress on the live session this agent holds for an issue. Progress is stored independently of the lease, so an interruption never erases it. Requires a live session; pass sessionId to refuse a delayed report from an expired session instead of writing to a newer one. Optionally report cumulative inputTokens, outputTokens and costUsdMicros: each provided value overwrites the session's total, an omitted one is preserved, and unreported ones stay null. The returned session carries stopRequested, stopRequestedAt and stopReason: check them on every report and stop promptly if a human has asked you to stop.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "$ref": "#/$defs/ReportProgressInput",
@@ -3755,6 +3848,21 @@
         "ReportProgressInput": {
           "type": "object",
           "properties": {
+            "inputTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "outputTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "costUsdMicros": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
             "issueId": {
               "type": "string",
               "minLength": 1,
@@ -3851,6 +3959,42 @@
                 "null"
               ]
             },
+            "inputTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "outputTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "costUsdMicros": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -3881,6 +4025,9 @@
             "stopRequested",
             "stopRequestedAt",
             "stopReason",
+            "inputTokens",
+            "outputTokens",
+            "costUsdMicros",
             "createdAt",
             "updatedAt",
             "endedAt"
@@ -3906,7 +4053,7 @@
   },
   {
     "name": "stop_session",
-    "description": "Complete or release the live session this agent holds for an issue. Requires a live session; stopping is distinct from closing the issue. Pass sessionId to fence a delayed completion from an interrupted session: it is refused rather than completing a newer session.",
+    "description": "Complete or release the live session this agent holds for an issue. Requires a live session; stopping is distinct from closing the issue. Pass sessionId to fence a delayed completion from an interrupted session: it is refused rather than completing a newer session. Optionally report final cumulative inputTokens, outputTokens and costUsdMicros; each provided value overwrites the session's total and an omitted one is preserved.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "$ref": "#/$defs/StopWorkSessionInput",
@@ -3914,6 +4061,21 @@
         "StopWorkSessionInput": {
           "type": "object",
           "properties": {
+            "inputTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "outputTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "costUsdMicros": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
             "issueId": {
               "type": "string",
               "minLength": 1,
@@ -4016,6 +4178,42 @@
                 "null"
               ]
             },
+            "inputTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "outputTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "costUsdMicros": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -4046,6 +4244,9 @@
             "stopRequested",
             "stopRequestedAt",
             "stopReason",
+            "inputTokens",
+            "outputTokens",
+            "costUsdMicros",
             "createdAt",
             "updatedAt",
             "endedAt"
@@ -4164,6 +4365,42 @@
                 "null"
               ]
             },
+            "inputTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "outputTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "costUsdMicros": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -4194,6 +4431,9 @@
             "stopRequested",
             "stopRequestedAt",
             "stopReason",
+            "inputTokens",
+            "outputTokens",
+            "costUsdMicros",
             "createdAt",
             "updatedAt",
             "endedAt"
@@ -4358,6 +4598,42 @@
                 "null"
               ]
             },
+            "inputTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "outputTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "costUsdMicros": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -4388,6 +4664,9 @@
             "stopRequested",
             "stopRequestedAt",
             "stopReason",
+            "inputTokens",
+            "outputTokens",
+            "costUsdMicros",
             "createdAt",
             "updatedAt",
             "endedAt"
@@ -4512,6 +4791,42 @@
                 "null"
               ]
             },
+            "inputTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "outputTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "costUsdMicros": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -4542,6 +4857,9 @@
             "stopRequested",
             "stopRequestedAt",
             "stopReason",
+            "inputTokens",
+            "outputTokens",
+            "costUsdMicros",
             "createdAt",
             "updatedAt",
             "endedAt"
@@ -4908,6 +5226,42 @@
                 "null"
               ]
             },
+            "inputTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "outputTokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "costUsdMicros": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "createdAt": {
               "$ref": "#/$defs/Timestamp"
             },
@@ -4938,6 +5292,9 @@
             "stopRequested",
             "stopRequestedAt",
             "stopReason",
+            "inputTokens",
+            "outputTokens",
+            "costUsdMicros",
             "createdAt",
             "updatedAt",
             "endedAt"
@@ -4963,7 +5320,7 @@
   },
   {
     "name": "log_session_activity",
-    "description": "Append an ephemeral thought, action or status entry to the live work session this agent holds on an issue. Optional detail is an extensible JSON object for structured blocks. Entries are kept independently of the claim lease, so an interrupted or completed session keeps its whole trail, and are never posted as issue comments. Requires a live session; pass sessionId to refuse a delayed write from an expired session instead of writing to a newer one.",
+    "description": "Append an ephemeral thought, action or status entry to the live work session this agent holds on an issue. Optional detail is an extensible JSON object; when it carries a `block`, that block must be a validated v1 key_value, table, checklist or test_results block, while detail without a block accepts arbitrary JSON. Entries are kept independently of the claim lease, so an interrupted or completed session keeps its whole trail, and are never posted as issue comments. Requires a live session; pass sessionId to refuse a delayed write from an expired session instead of writing to a newer one.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "$ref": "#/$defs/LogSessionActivityInput",
@@ -5010,10 +5367,189 @@
         },
         "SessionActivityDetail": {
           "type": "object",
-          "propertyNames": {
-            "type": "string"
+          "properties": {
+            "block": {
+              "$ref": "#/$defs/ActivityDetailBlockV1"
+            }
           },
           "additionalProperties": {}
+        },
+        "ActivityDetailBlockV1": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "number",
+                  "const": 1
+                },
+                "type": {
+                  "type": "string",
+                  "const": "key_value"
+                },
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "key": {
+                        "type": "string"
+                      },
+                      "value": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "value"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "type",
+                "items"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "number",
+                  "const": 1
+                },
+                "type": {
+                  "type": "string",
+                  "const": "table"
+                },
+                "columns": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "rows": {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "type",
+                "columns",
+                "rows"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "number",
+                  "const": 1
+                },
+                "type": {
+                  "type": "string",
+                  "const": "checklist"
+                },
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "label": {
+                        "type": "string"
+                      },
+                      "checked": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "label",
+                      "checked"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "type",
+                "items"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "number",
+                  "const": 1
+                },
+                "type": {
+                  "type": "string",
+                  "const": "test_results"
+                },
+                "passed": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "failed": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "skipped": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "cases": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "passed",
+                          "failed",
+                          "skipped"
+                        ]
+                      },
+                      "message": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "status"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "type",
+                "passed",
+                "failed"
+              ],
+              "additionalProperties": false
+            }
+          ]
         }
       }
     },
@@ -5086,10 +5622,189 @@
         },
         "SessionActivityDetail": {
           "type": "object",
-          "propertyNames": {
-            "type": "string"
+          "properties": {
+            "block": {
+              "$ref": "#/$defs/ActivityDetailBlockV1"
+            }
           },
           "additionalProperties": {}
+        },
+        "ActivityDetailBlockV1": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "number",
+                  "const": 1
+                },
+                "type": {
+                  "type": "string",
+                  "const": "key_value"
+                },
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "key": {
+                        "type": "string"
+                      },
+                      "value": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "value"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "type",
+                "items"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "number",
+                  "const": 1
+                },
+                "type": {
+                  "type": "string",
+                  "const": "table"
+                },
+                "columns": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "rows": {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "type",
+                "columns",
+                "rows"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "number",
+                  "const": 1
+                },
+                "type": {
+                  "type": "string",
+                  "const": "checklist"
+                },
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "label": {
+                        "type": "string"
+                      },
+                      "checked": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "label",
+                      "checked"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "type",
+                "items"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "number",
+                  "const": 1
+                },
+                "type": {
+                  "type": "string",
+                  "const": "test_results"
+                },
+                "passed": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "failed": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "skipped": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "cases": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "passed",
+                          "failed",
+                          "skipped"
+                        ]
+                      },
+                      "message": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "status"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "type",
+                "passed",
+                "failed"
+              ],
+              "additionalProperties": false
+            }
+          ]
         },
         "Timestamp": {
           "type": "string",
@@ -5203,10 +5918,189 @@
         },
         "SessionActivityDetail": {
           "type": "object",
-          "propertyNames": {
-            "type": "string"
+          "properties": {
+            "block": {
+              "$ref": "#/$defs/ActivityDetailBlockV1"
+            }
           },
           "additionalProperties": {}
+        },
+        "ActivityDetailBlockV1": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "number",
+                  "const": 1
+                },
+                "type": {
+                  "type": "string",
+                  "const": "key_value"
+                },
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "key": {
+                        "type": "string"
+                      },
+                      "value": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "value"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "type",
+                "items"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "number",
+                  "const": 1
+                },
+                "type": {
+                  "type": "string",
+                  "const": "table"
+                },
+                "columns": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "rows": {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "type",
+                "columns",
+                "rows"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "number",
+                  "const": 1
+                },
+                "type": {
+                  "type": "string",
+                  "const": "checklist"
+                },
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "label": {
+                        "type": "string"
+                      },
+                      "checked": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "label",
+                      "checked"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "type",
+                "items"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "number",
+                  "const": 1
+                },
+                "type": {
+                  "type": "string",
+                  "const": "test_results"
+                },
+                "passed": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "failed": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "skipped": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "cases": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "passed",
+                          "failed",
+                          "skipped"
+                        ]
+                      },
+                      "message": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "status"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "type",
+                "passed",
+                "failed"
+              ],
+              "additionalProperties": false
+            }
+          ]
         },
         "Timestamp": {
           "type": "string",

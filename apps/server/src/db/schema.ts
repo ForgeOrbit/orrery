@@ -1058,6 +1058,11 @@ export const workSessions = pgTable(
     stopRequestedAt: timestamp("stop_requested_at", { withTimezone: true }),
     stopRequestedByHumanId: text("stop_requested_by_human_id").references(() => humans.id),
     stopReason: text("stop_reason"),
+    // Cumulative session telemetry (#96), reported by the harness on renew/progress/complete.
+    // Null until first reported; a reported total is never negative, in the contract or here.
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    costUsdMicros: integer("cost_usd_micros"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     endedAt: timestamp("ended_at", { withTimezone: true }),
@@ -1075,6 +1080,19 @@ export const workSessions = pgTable(
         (${t.stopRequestedAt} is null and ${t.stopRequestedByHumanId} is null and ${t.stopReason} is null)
         or (${t.stopRequestedAt} is not null and ${t.stopRequestedByHumanId} is not null)
       )`,
+    ),
+    // A reported total is non-negative; a null is "never reported" and stays null (#96).
+    check(
+      "work_sessions_input_tokens_nonnegative",
+      sql`${t.inputTokens} is null or ${t.inputTokens} >= 0`,
+    ),
+    check(
+      "work_sessions_output_tokens_nonnegative",
+      sql`${t.outputTokens} is null or ${t.outputTokens} >= 0`,
+    ),
+    check(
+      "work_sessions_cost_usd_micros_nonnegative",
+      sql`${t.costUsdMicros} is null or ${t.costUsdMicros} >= 0`,
     ),
     // At most one active session per issue, enforced by Postgres under a concurrent race.
     uniqueIndex("one_active_work_session_per_issue")

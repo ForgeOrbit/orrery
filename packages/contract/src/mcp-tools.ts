@@ -238,7 +238,7 @@ const claimIssue = {
 const renewClaim = {
   name: "renew_claim",
   description:
-    "Check in on an issue this agent currently holds and refresh its five-minute lease in database time. Requires a live session; an expired or released session is never renewed or silently reacquired. Pass sessionId to fence a delayed call from an interrupted session: it is refused if that session is no longer the live one, even after reacquisition. The returned session carries stopRequested, stopRequestedAt and stopReason: when stopRequested is true a human has asked you to stop, so flush a brief handoff and call stop_session promptly. The five-minute lease remains the hard backstop.",
+    "Check in on an issue this agent currently holds and refresh its five-minute lease in database time. Requires a live session; an expired or released session is never renewed or silently reacquired. Pass sessionId to fence a delayed call from an interrupted session: it is refused if that session is no longer the live one, even after reacquisition. Optionally report cumulative inputTokens, outputTokens and costUsdMicros: each provided value overwrites the session's total, an omitted one is preserved, and unreported ones stay null. The returned session carries stopRequested, stopRequestedAt and stopReason: when stopRequested is true a human has asked you to stop, so flush a brief handoff and call stop_session promptly. The five-minute lease remains the hard backstop.",
   input: RenewWorkSessionInput,
   output: WorkSessionResponse,
 };
@@ -246,7 +246,7 @@ const renewClaim = {
 const reportProgress = {
   name: "report_progress",
   description:
-    "Record progress on the live session this agent holds for an issue. Progress is stored independently of the lease, so an interruption never erases it. Requires a live session; pass sessionId to refuse a delayed report from an expired session instead of writing to a newer one. The returned session carries stopRequested, stopRequestedAt and stopReason: check them on every report and stop promptly if a human has asked you to stop.",
+    "Record progress on the live session this agent holds for an issue. Progress is stored independently of the lease, so an interruption never erases it. Requires a live session; pass sessionId to refuse a delayed report from an expired session instead of writing to a newer one. Optionally report cumulative inputTokens, outputTokens and costUsdMicros: each provided value overwrites the session's total, an omitted one is preserved, and unreported ones stay null. The returned session carries stopRequested, stopRequestedAt and stopReason: check them on every report and stop promptly if a human has asked you to stop.",
   input: ReportProgressInput,
   output: WorkSessionResponse,
 };
@@ -254,7 +254,7 @@ const reportProgress = {
 const stopSession = {
   name: "stop_session",
   description:
-    "Complete or release the live session this agent holds for an issue. Requires a live session; stopping is distinct from closing the issue. Pass sessionId to fence a delayed completion from an interrupted session: it is refused rather than completing a newer session.",
+    "Complete or release the live session this agent holds for an issue. Requires a live session; stopping is distinct from closing the issue. Pass sessionId to fence a delayed completion from an interrupted session: it is refused rather than completing a newer session. Optionally report final cumulative inputTokens, outputTokens and costUsdMicros; each provided value overwrites the session's total and an omitted one is preserved.",
   input: StopWorkSessionInput,
   output: WorkSessionResponse,
 };
@@ -310,7 +310,7 @@ const allSessionsForIssue = {
 const logSessionActivity = {
   name: "log_session_activity",
   description:
-    "Append an ephemeral thought, action or status entry to the live work session this agent holds on an issue. Optional detail is an extensible JSON object for structured blocks. Entries are kept independently of the claim lease, so an interrupted or completed session keeps its whole trail, and are never posted as issue comments. Requires a live session; pass sessionId to refuse a delayed write from an expired session instead of writing to a newer one.",
+    "Append an ephemeral thought, action or status entry to the live work session this agent holds on an issue. Optional detail is an extensible JSON object; when it carries a `block`, that block must be a validated v1 key_value, table, checklist or test_results block, while detail without a block accepts arbitrary JSON. Entries are kept independently of the claim lease, so an interrupted or completed session keeps its whole trail, and are never posted as issue comments. Requires a live session; pass sessionId to refuse a delayed write from an expired session instead of writing to a newer one.",
   input: LogSessionActivityInput,
   output: LogSessionActivityResponse,
 };

@@ -14,6 +14,7 @@ import {
   type ResumeWorkSessionResult,
   type LogSessionActivityInput,
   type SessionActivity,
+  type SessionTelemetry,
   type WorkSession,
   type WorkSessionOutcome,
 } from "@orrery/contract";
@@ -131,18 +132,26 @@ export interface SessionsService {
   claim(actor: AgentActor | null, input: { issueId: string; runId: string }): Promise<WorkSession>;
   // The optional sessionId is a fence: a delayed call from a session that has since
   // expired is refused even if the same agent now holds a newer live session on the issue.
-  renew(actor: AgentActor | null, issueId: string, sessionId?: string): Promise<WorkSession>;
+  // Telemetry fields are cumulative totals: only the ones present overwrite the stored row.
+  renew(
+    actor: AgentActor | null,
+    issueId: string,
+    sessionId?: string,
+    telemetry?: SessionTelemetry,
+  ): Promise<WorkSession>;
   progress(
     actor: AgentActor | null,
     issueId: string,
     summary: string,
     sessionId?: string,
+    telemetry?: SessionTelemetry,
   ): Promise<WorkSession>;
   stop(
     actor: AgentActor | null,
     issueId: string,
     outcome: WorkSessionOutcome,
     sessionId?: string,
+    telemetry?: SessionTelemetry,
   ): Promise<WorkSession>;
   // #82: a human-only stop request on an active session. It records the actor, time and
   // optional reason and surfaces stopRequested on the agent's next check-in; it never
@@ -201,10 +210,27 @@ const sessionColumns = {
   stopRequestedAt: workSessions.stopRequestedAt,
   stopRequestedByHumanId: workSessions.stopRequestedByHumanId,
   stopReason: workSessions.stopReason,
+  inputTokens: workSessions.inputTokens,
+  outputTokens: workSessions.outputTokens,
+  costUsdMicros: workSessions.costUsdMicros,
   createdAt: workSessions.createdAt,
   updatedAt: workSessions.updatedAt,
   endedAt: workSessions.endedAt,
 };
+
+// #96: a reported telemetry value is a cumulative session total, not a delta. Only the
+// fields actually present are written, so a retry of the same total is idempotent and a
+// check-in that omits a field preserves the last reported one. A never-reported field is
+// left null; the contract and the database both reject negative values.
+function telemetryUpdate(
+  telemetry: SessionTelemetry | undefined,
+): Partial<typeof workSessions.$inferInsert> {
+  const update: Partial<typeof workSessions.$inferInsert> = {};
+  if (telemetry?.inputTokens !== undefined) update.inputTokens = telemetry.inputTokens;
+  if (telemetry?.outputTokens !== undefined) update.outputTokens = telemetry.outputTokens;
+  if (telemetry?.costUsdMicros !== undefined) update.costUsdMicros = telemetry.costUsdMicros;
+  return update;
+}
 
 const iso = (value: Date | null) => value?.toISOString() ?? null;
 
@@ -224,6 +250,9 @@ function toSession(row: SessionView): WorkSession {
     stopRequested: row.stopRequestedAt !== null,
     stopRequestedAt: iso(row.stopRequestedAt),
     stopReason: row.stopReason,
+    inputTokens: row.inputTokens,
+    outputTokens: row.outputTokens,
+    costUsdMicros: row.costUsdMicros,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     endedAt: iso(row.endedAt),
@@ -908,7 +937,7 @@ export function createSessionsService({
       });
     },
 
-    async renew(actor, issueId, sessionId) {
+    async renew(actor, issueId, sessionId, telemetry) {
       return withLiveSession(actor, issueId, sessionId, async (tx, session, issue) => {
         // While a question is open, checking in keeps the claim but never past the one-hour
         // deadline. After the deadline the question has been paused by the evaluation above,
@@ -920,27 +949,10 @@ export function createSessionsService({
             : sql`least(statement_timestamp() + interval '5 minutes', ${deadline.toISOString()}::timestamptz)`;
         const [updated] = await tx
           .update(workSessions)
-          .set({ leaseExpiresAt: lease, updatedAt: sql`statement_timestamp()` })
-          .where(
-            and(
-              eq(workSessions.id, session.id),
-              eq(workSessions.status, WorkSessionStatus.enum.active),
-              liveLease,
-            ),
-          )
-          .returning(sessionColumns);
-        return updated === undefined ? undefined : toSession(updated);
-      });
-    },
-
-    async progress(actor, issueId, summary, sessionId) {
-      return withLiveSession(actor, issueId, sessionId, async (tx, session) => {
-        const [updated] = await tx
-          .update(workSessions)
           .set({
-            progress: summary,
-            progressUpdatedAt: sql`statement_timestamp()`,
+            leaseExpiresAt: lease,
             updatedAt: sql`statement_timestamp()`,
+            ...telemetryUpdate(telemetry),
           })
           .where(
             and(
@@ -954,7 +966,29 @@ export function createSessionsService({
       });
     },
 
-    async stop(actor, issueId, outcome, sessionId) {
+    async progress(actor, issueId, summary, sessionId, telemetry) {
+      return withLiveSession(actor, issueId, sessionId, async (tx, session) => {
+        const [updated] = await tx
+          .update(workSessions)
+          .set({
+            progress: summary,
+            progressUpdatedAt: sql`statement_timestamp()`,
+            updatedAt: sql`statement_timestamp()`,
+            ...telemetryUpdate(telemetry),
+          })
+          .where(
+            and(
+              eq(workSessions.id, session.id),
+              eq(workSessions.status, WorkSessionStatus.enum.active),
+              liveLease,
+            ),
+          )
+          .returning(sessionColumns);
+        return updated === undefined ? undefined : toSession(updated);
+      });
+    },
+
+    async stop(actor, issueId, outcome, sessionId, telemetry) {
       const nextStatus = workSessionMachine.assertTransition("active", outcome);
       return withLiveSession(actor, issueId, sessionId, async (tx, session) => {
         const [updated] = await tx
@@ -963,6 +997,7 @@ export function createSessionsService({
             status: nextStatus,
             endedAt: sql`statement_timestamp()`,
             updatedAt: sql`statement_timestamp()`,
+            ...telemetryUpdate(telemetry),
           })
           .where(
             and(
@@ -1271,6 +1306,9 @@ export function createSessionsService({
           leaseExpiresAt: fiveMinutes,
           progress: prior.progress,
           progressUpdatedAt: prior.progressUpdatedAt,
+          // Cumulative telemetry belongs to the session row that reported it (#96). A
+          // reacquire inserts a new row while the expired one keeps its totals, so copying
+          // them here would synthesize unreported data and double-count cost in listings.
           createdAt: sql`statement_timestamp()`,
           updatedAt: sql`statement_timestamp()`,
         });
