@@ -1103,7 +1103,7 @@ def extract_code_facts() -> dict[str, Any]:
         and "sessionId: SessionFence.optional()" in sess_contract
         and "sessionFence(args)" in sess_mcp_src
     )
-    m18_closed_refused = 'fresh?.status !== "open"' in reacquire_fn
+    m18_closed_refused = 'fresh?.status !== "todo"' in reacquire_fn
     m18_update_db_time = all(
         "liveLease," in fn for fn in (renew_only_fn, progress_only_fn, stop_only_fn)
     )
@@ -1317,7 +1317,7 @@ def extract_code_facts() -> dict[str, Any]:
     )
     m20_ask_scope = (
         "eq(workSessions.runId, input.runId)" in q_ask_fn
-        and 'issue.status !== "open"' in q_ask_fn
+        and 'issue.status !== "in_progress"' in q_ask_fn
     )
     m20_boundary_guard = (
         "gt(questions.responseDeadlineAt, sql`statement_timestamp()`)" in q_answer_fn
@@ -2042,7 +2042,10 @@ def extract_code_facts() -> dict[str, Any]:
     m27_ready_excludes = (
         "notExists(" in ready_work_fn
         and "issueDependencies" in ready_work_fn
-        and 'ne(blockerIssue.status, "closed")' in ready_work_fn
+        and (
+            'notInArray(blockerIssue.status, ["done", "cancelled"])' in ready_work_fn
+            or "notInArray(blockerIssue.status, TERMINAL_ISSUE_STATUSES)" in ready_work_fn
+        )
     )
 
     # --- M28 (#83): Ephemeral session activities & deactivation-safe reads ---
@@ -2127,6 +2130,37 @@ def extract_code_facts() -> dict[str, Any]:
     m29_workspace_recheck = (
         "current.workspaceId !== target.workspaceId" in update_issue_fn
         and 'throw new ProjectsError("issue_not_found")' in update_issue_fn
+    )
+
+    # --- M30 (#94): Six-state issue workflow & session-driven transitions ---
+    m30_six_states = (
+        '"backlog"' in pj_contract
+        and '"todo"' in pj_contract
+        and '"in_progress"' in pj_contract
+        and '"review"' in pj_contract
+        and '"done"' in pj_contract
+        and '"cancelled"' in pj_contract
+        and "issues_closed_at_matches_status" in schema_src
+    )
+    m30_claim_to_in_progress = (
+        'status: "in_progress"' in claim_fn
+        and 'status: "in_progress"' in reacquire_fn
+        and 'fresh?.status !== "todo"' in claim_fn
+        and '"issue_blocked"' in sess_rest_src
+    )
+    m30_revert_on_end = (
+        "if (expired.length > 0) await revertIssueToTodo(tx, issueId)" in expire_fn
+        and "await revertIssueToTodo(tx, issue.id)" in stop_only_fn
+        and "await expireCommittedForProject(projectId)" in ready_work_fn
+        and 'eq(issues.status, "todo")' in ready_work_fn
+    )
+    m30_pause_and_lapsed_answer_revert = (
+        '.set({ status: "todo", updatedAt: sql`statement_timestamp()` })' in q_eval_fn
+        and '.set({ status: "todo", updatedAt: sql`statement_timestamp()` })' in q_answer_fn
+    )
+    m30_completion_outcomes = (
+        "ProjectActivityType.enum.issue_review_handoff" in stop_only_fn
+        and "ProjectActivityType.enum.issue_closed" in stop_only_fn
     )
 
     # M25 (#43): ownership recovery. Every guard comes from the new feature's one service,
@@ -2569,6 +2603,11 @@ def extract_code_facts() -> dict[str, Any]:
         "m29_ready_filter": m29_ready_filter,
         "m29_contract_surface": m29_contract_surface,
         "m29_workspace_recheck": m29_workspace_recheck,
+        "m30_six_states": m30_six_states,
+        "m30_claim_to_in_progress": m30_claim_to_in_progress,
+        "m30_revert_on_end": m30_revert_on_end,
+        "m30_pause_and_lapsed_answer_revert": m30_pause_and_lapsed_answer_revert,
+        "m30_completion_outcomes": m30_completion_outcomes,
     }
 
 
@@ -6619,6 +6658,141 @@ def check_m29(facts: dict[str, Any]) -> CheckResult:
     )
 
 
+def check_m30(facts: dict[str, bool]) -> CheckResult:
+    g = {
+        "m30_six_states": facts["m30_six_states"],
+        "m30_claim_to_in_progress": facts["m30_claim_to_in_progress"],
+        "m30_revert_on_end": facts["m30_revert_on_end"],
+        "m30_pause_and_lapsed_answer_revert": facts["m30_pause_and_lapsed_answer_revert"],
+        "m30_completion_outcomes": facts["m30_completion_outcomes"],
+    }
+
+    def bad(v: frozenset[str], name: str) -> frozenset[str]:
+        return v | {name}
+
+    # State: (status, session_state, needs_input, closed_at, violations)
+    # session_state: "none" | "active" | "lapsed"
+    init = ("backlog", "none", False, False, frozenset())
+
+    def queue_todo(state):
+        status, sess, ni, closed, v = state
+        if status == "backlog" and sess == "none" and not ni:
+            return ("todo", sess, ni, False, v)
+        return state
+
+    def claim(state):
+        status, sess, ni, closed, v = state
+        if status != "todo":
+            if not g["m30_claim_to_in_progress"]:
+                return ("in_progress", "active", ni, closed, bad(v, "non_todo_claimed"))
+            return state
+        if sess == "none" and not ni:
+            next_status = "in_progress" if g["m30_claim_to_in_progress"] else "todo"
+            return (next_status, "active", ni, False, v)
+        return state
+
+    def lease_lapses(state):
+        status, sess, ni, closed, v = state
+        if sess == "active":
+            return (status, "lapsed", ni, closed, v)
+        return state
+
+    def release_or_poll_ready(state):
+        status, sess, ni, closed, v = state
+        if sess in ("active", "lapsed"):
+            next_status = "todo" if (status == "in_progress" and g["m30_revert_on_end"]) else status
+            return (next_status, "none", ni, closed, v)
+        return state
+
+    def ask_question(state):
+        status, sess, ni, closed, v = state
+        if sess == "active" and status == "in_progress" and not ni:
+            return (status, sess, True, closed, v)
+        return state
+
+    def pause_at_1h_deadline(state):
+        status, sess, ni, closed, v = state
+        if ni and sess in ("active", "lapsed"):
+            next_status = (
+                "todo"
+                if (status == "in_progress" and g["m30_pause_and_lapsed_answer_revert"])
+                else status
+            )
+            return (next_status, "none", True, closed, v)
+        return state
+
+    def human_answers(state):
+        status, sess, ni, closed, v = state
+        if ni:
+            if sess in ("none", "lapsed"):
+                next_status = (
+                    "todo"
+                    if (status == "in_progress" and g["m30_pause_and_lapsed_answer_revert"])
+                    else status
+                )
+                return (next_status, "none", False, closed, v)
+            return (status, "active", False, closed, v)
+        return state
+
+    def complete_review(state):
+        status, sess, ni, closed, v = state
+        if sess == "active" and status == "in_progress" and not ni:
+            if not g["m30_completion_outcomes"]:
+                return ("done", "none", False, True, bad(v, "handoff_skipped_review"))
+            return ("review", "none", False, False, v)
+        return state
+
+    def complete_done(state):
+        status, sess, ni, closed, v = state
+        if sess == "active" and status == "in_progress" and not ni:
+            next_closed = True if g["m30_six_states"] else False
+            return ("done", "none", False, next_closed, v)
+        return state
+
+    actions = [
+        ("human moves backlog to todo", queue_todo),
+        ("agent claims issue", claim),
+        ("five-minute lease lapses in DB time", lease_lapses),
+        ("release or poll readyWork materializes expiry", release_or_poll_ready),
+        ("agent asks question", ask_question),
+        ("one-hour require_human deadline pauses question", pause_at_1h_deadline),
+        ("human answers question", human_answers),
+        ("agent completes with default review handoff", complete_review),
+        ("agent completes directly to done", complete_done),
+    ]
+
+    def inv(state):
+        status, sess, ni, closed, v = state
+        if v:
+            return False, f"workflow invariant broken: {sorted(v)[0]}"
+        if (status in ("done", "cancelled")) != closed:
+            return False, "workflow invariant broken: closed_at_mismatch"
+        if status == "in_progress" and sess == "none" and not ni:
+            return False, "workflow invariant broken: stranded_in_progress"
+        if sess == "active" and status != "in_progress":
+            return False, "workflow invariant broken: active_session_not_in_progress"
+        return True, ""
+
+    return bfs_check(
+        "M30",
+        "Six-State Issue Workflow & Session Transitions (#94)",
+        "Issues follow the six-state workflow with derived needs_input, claim/release/expiry/pause/answer keep todo<->in_progress synchronized with no stranded in_progress state, and closed_at matches terminal states",
+        "safety",
+        init,
+        lambda s: [(lbl, fn(s)) for lbl, fn in actions],
+        inv,
+        [
+            "apps/server/src/features/projects/service.ts",
+            "apps/server/src/features/work-sessions/service.ts",
+            "apps/server/src/features/inbox/service.ts",
+            "apps/server/src/db/schema.ts",
+            "db/migrations/0032_heavy_leo.sql",
+            "packages/contract/src/projects.ts",
+            "packages/contract/src/sessions.ts",
+        ],
+    )
+
+
 def main() -> None:
     facts = extract_code_facts()
     results = [
@@ -6652,6 +6826,7 @@ def main() -> None:
         check_m27(facts),
         check_m28(facts),
         check_m29(facts),
+        check_m30(facts),
     ]
 
     if "--json" in sys.argv:
