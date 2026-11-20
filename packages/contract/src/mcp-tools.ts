@@ -5,6 +5,7 @@ import {
   CreateKnowledgeEntryRequest,
   Issue,
   IssueComment,
+  IssueDependency,
   IssuesResponse,
   IssueCommentsResponse,
   KnowledgeEntriesResponse,
@@ -92,6 +93,47 @@ const updateIssue = {
     "Edit an issue's title or body, or close/reopen it. Requires Contribute access. The actor recorded is the agent, not its human owner.",
   input: UpdateIssueRequest.extend({ issueId: id("The issue id") }),
   output: z.object({ issue: Issue }),
+};
+
+// Directed blocked_by dependencies (#86). An issue with any open blocker is omitted from
+// ready work, so agents cannot claim downstream work before its prerequisites are closed.
+// Modifying an edge needs Contribute; reading either direction needs only Read.
+const addBlockedBy = {
+  name: "add_blocked_by",
+  description:
+    "Record that an issue is blocked by another issue in the same project. A self-link, a cross-project link, and any edge that would form a cycle are refused. Requires Contribute access.",
+  input: z.object({
+    issueId: id("The issue that is being blocked"),
+    blockedByIssueId: id("The issue in the same project that blocks it"),
+  }),
+  output: z.object({ dependency: IssueDependency }),
+};
+
+const removeBlockedBy = {
+  name: "remove_blocked_by",
+  description:
+    "Remove a blocked_by relation between two issues in the same project. Requires Contribute access; removing a relation that is not there is a no-op.",
+  input: z.object({
+    issueId: id("The issue that is being unblocked"),
+    blockedByIssueId: id("The issue that no longer blocks it"),
+  }),
+  output: z.object({ removed: z.literal(true) }),
+};
+
+const listBlockedBy = {
+  name: "list_blocked_by",
+  description:
+    "List the issues that block an issue (its prerequisites, open or closed). Read access is enough.",
+  input: z.object({ issueId: id("The issue id") }),
+  output: z.object({ issues: IssuesResponse }),
+};
+
+const listBlocking = {
+  name: "list_blocking",
+  description:
+    "List the issues that an issue blocks (its dependants, open or closed). Read access is enough.",
+  input: z.object({ issueId: id("The issue id") }),
+  output: z.object({ issues: IssuesResponse }),
 };
 
 const listComments = {
@@ -223,7 +265,7 @@ const reacquireWorkSession = {
 const readyWork = {
   name: "ready_work",
   description:
-    "List minimal ready work in a project: open issues that are not Needs input and have no live active session, evaluated in database time. Needs no claim.",
+    "List minimal ready work in a project: open issues that are not Needs input, have no live active session, and have no blocker whose status is not closed, evaluated in database time. Needs no claim.",
   input: ReadyWorkInput,
   output: z.object({ issues: ReadyWorkResponse }),
 };
@@ -267,6 +309,10 @@ export const projectTools: readonly ToolContract[] = [
   getIssue,
   createIssue,
   updateIssue,
+  addBlockedBy,
+  removeBlockedBy,
+  listBlockedBy,
+  listBlocking,
   listComments,
   createComment,
   listActivity,

@@ -1,6 +1,7 @@
 import {
   Issue,
   IssueComment,
+  IssueDependency,
   KnowledgeEntry,
   Project,
   ProjectAccessGrant,
@@ -60,6 +61,22 @@ export function createIssue(projectId: string, input: CreateIssueRequest): Promi
 export function updateIssue(issueId: string, input: UpdateIssueRequest): Promise<Issue> {
   return patchJson(`/api/issues/${encodeURIComponent(issueId)}`, input, (value) =>
     Issue.parse(value),
+  );
+}
+
+// Depended-on issue ids are never invented here: the server resolves both issues,
+// enforces same-project scope and acyclicity, and turns a bad edge into a Problem.
+export function addBlockedBy(issueId: string, blockedByIssueId: string): Promise<IssueDependency> {
+  return postJson(
+    `/api/issues/${encodeURIComponent(issueId)}/blocked-by`,
+    { blockedByIssueId },
+    (value) => IssueDependency.parse(value),
+  );
+}
+
+export function removeBlockedBy(issueId: string, blockedByIssueId: string): Promise<void> {
+  return deleteRequest(
+    `/api/issues/${encodeURIComponent(issueId)}/blocked-by/${encodeURIComponent(blockedByIssueId)}`,
   );
 }
 

@@ -7,12 +7,14 @@ import {
   WorkspaceKind,
   type Actor,
   type AgentIdentity,
+  type AddBlockedByRequest,
   type CreateIssueCommentRequest,
   type CreateIssueRequest,
   type CreateKnowledgeEntryRequest,
   type CreateProjectRequest,
   type Issue,
   type IssueComment,
+  type IssueDependency,
   type KnowledgeEntry,
   type Project,
   type ProjectAccessGrant,
@@ -33,6 +35,7 @@ import {
   agents,
   humans,
   issueComments,
+  issueDependencies,
   issues,
   knowledgeEntries,
   projectAccessEvents,
@@ -63,7 +66,10 @@ export type ProjectsErrorKind =
   | "member_not_found"
   | "personal_project_access"
   | "workspace_owner_access"
-  | "session_required";
+  | "session_required"
+  | "self_dependency"
+  | "cross_project_dependency"
+  | "dependency_cycle";
 
 const messages = {
   not_signed_in: "Not signed in.",
@@ -77,6 +83,9 @@ const messages = {
   personal_project_access: "Personal projects have no direct collaborators.",
   workspace_owner_access: "Workspace owners already have Manage access to every project.",
   session_required: "This agent holds no live work session for this issue.",
+  self_dependency: "An issue cannot block itself.",
+  cross_project_dependency: "Dependencies can only link issues in the same project.",
+  dependency_cycle: "That dependency would create a cycle.",
 } as const satisfies Record<ProjectsErrorKind, string>;
 
 const ACCESS_RANK: Record<ProjectAccessLevel, number> = {
@@ -324,6 +333,9 @@ const commentAgentAuthor = alias(agents, "comment_agent_author");
 const knowledgeAgentCreator = alias(agents, "knowledge_agent_creator");
 const knowledgeAgentEditor = alias(agents, "knowledge_agent_editor");
 const activityAgentActor = alias(agents, "activity_agent_actor");
+// A dependency edge keeps who added it; both aliases are needed to render that actor.
+const dependencyHumanCreator = alias(humans, "dependency_human_creator");
+const dependencyAgentCreator = alias(agents, "dependency_agent_creator");
 
 const projectColumns = {
   id: projects.id,
@@ -390,6 +402,17 @@ const knowledgeColumns = {
   updatedByAgentName: knowledgeAgentEditor.name,
 };
 
+const dependencyColumns = {
+  issueId: issueDependencies.issueId,
+  blockedByIssueId: issueDependencies.blockedByIssueId,
+  createdAt: issueDependencies.createdAt,
+  createdByHumanId: issueDependencies.createdByHumanId,
+  createdByEmail: dependencyHumanCreator.email,
+  createdByDeactivatedAt: dependencyHumanCreator.deactivatedAt,
+  createdByAgentId: issueDependencies.createdByAgentId,
+  createdByAgentName: dependencyAgentCreator.name,
+};
+
 const activityColumns = {
   id: projectActivity.id,
   projectId: projectActivity.projectId,
@@ -452,6 +475,17 @@ type IssueRow = {
   updatedByDeactivatedAt: Date | null;
   updatedByAgentId: string | null;
   updatedByAgentName: string | null;
+};
+
+type IssueDependencyRow = {
+  issueId: string;
+  blockedByIssueId: string;
+  createdAt: Date;
+  createdByHumanId: string | null;
+  createdByEmail: string | null;
+  createdByDeactivatedAt: Date | null;
+  createdByAgentId: string | null;
+  createdByAgentName: string | null;
 };
 
 type CommentRow = {
@@ -562,6 +596,21 @@ function toIssue(row: IssueRow): Issue {
       row.updatedByAgentId,
       row.updatedByAgentName,
       row.updatedByDeactivatedAt,
+    ),
+  };
+}
+
+function toIssueDependency(row: IssueDependencyRow): IssueDependency {
+  return {
+    issueId: row.issueId,
+    blockedByIssueId: row.blockedByIssueId,
+    createdAt: row.createdAt.toISOString(),
+    createdBy: actorFromRow(
+      row.createdByHumanId,
+      row.createdByEmail,
+      row.createdByAgentId,
+      row.createdByAgentName,
+      row.createdByDeactivatedAt,
     ),
   };
 }
@@ -821,7 +870,9 @@ type RecordActivityInput =
         | "issue_commented"
         | "issue_closed"
         | "issue_reopened"
-        | "issue_fallback_policy_override_changed";
+        | "issue_fallback_policy_override_changed"
+        | "issue_dependency_added"
+        | "issue_dependency_removed";
       actor: WorkActor;
       summary: string;
       issueId: string;
@@ -1149,6 +1200,20 @@ export interface ProjectsService {
     input: CreateIssueRequest,
   ): Promise<Issue>;
   updateIssue(actor: WorkActor | null, issueId: string, input: UpdateIssueRequest): Promise<Issue>;
+  // Directed blocked_by edges (#86). Modifying an edge needs Contribute; either direction
+  // can be listed with Read. Both issues must be in the same project.
+  addBlockedBy(
+    actor: WorkActor | null,
+    issueId: string,
+    input: AddBlockedByRequest,
+  ): Promise<IssueDependency>;
+  removeBlockedBy(
+    actor: WorkActor | null,
+    issueId: string,
+    blockedByIssueId: string,
+  ): Promise<void>;
+  listBlockedBy(actor: WorkActor | null, issueId: string): Promise<Issue[]>;
+  listBlocking(actor: WorkActor | null, issueId: string): Promise<Issue[]>;
   listComments(actor: WorkActor | null, issueId: string): Promise<IssueComment[]>;
   createComment(
     actor: WorkActor | null,
@@ -1175,6 +1240,28 @@ export function createProjectsService({
   sessionGate,
   evaluateQuestionDeadline,
 }: ProjectsDeps): ProjectsService {
+  // The one issue listing, borrowed by the blocked_by readers so a relation resolves to the
+  // same Issue shape every other listing returns. Dependency edges live in one project, so
+  // listing by that project and selecting the related ids keeps both reads in one place.
+  async function readIssues(actor: WorkActor, projectId: string): Promise<Issue[]> {
+    return db.transaction(
+      async (tx) => {
+        await requireProject(tx, projectId, actor, ProjectAccessLevel.enum.read);
+        const rows = await tx
+          .select({ ...issueColumns, projectFallbackPolicy: projects.fallbackPolicy })
+          .from(issues)
+          .innerJoin(projects, eq(projects.id, issues.projectId))
+          .leftJoin(issueCreator, eq(issueCreator.id, issues.createdByHumanId))
+          .leftJoin(issueAgentCreator, eq(issueAgentCreator.id, issues.createdByAgentId))
+          .leftJoin(issueEditor, eq(issueEditor.id, issues.updatedByHumanId))
+          .leftJoin(issueAgentEditor, eq(issueAgentEditor.id, issues.updatedByAgentId))
+          .where(eq(issues.projectId, projectId))
+          .orderBy(issues.number);
+        return rows.map(toIssue);
+      },
+      { accessMode: "read only" },
+    );
+  }
   return {
     // The listing is the caller's accessible projects in the workspace: all of a personal
     // workspace's own projects, all of a shared workspace's projects for an owner, and
@@ -1683,24 +1770,7 @@ export function createProjectsService({
     },
 
     async listIssues(actorArg, projectId) {
-      const actor = requireActor(actorArg);
-      return db.transaction(
-        async (tx) => {
-          await requireProject(tx, projectId, actor, ProjectAccessLevel.enum.read);
-          const rows = await tx
-            .select({ ...issueColumns, projectFallbackPolicy: projects.fallbackPolicy })
-            .from(issues)
-            .innerJoin(projects, eq(projects.id, issues.projectId))
-            .leftJoin(issueCreator, eq(issueCreator.id, issues.createdByHumanId))
-            .leftJoin(issueAgentCreator, eq(issueAgentCreator.id, issues.createdByAgentId))
-            .leftJoin(issueEditor, eq(issueEditor.id, issues.updatedByHumanId))
-            .leftJoin(issueAgentEditor, eq(issueAgentEditor.id, issues.updatedByAgentId))
-            .where(eq(issues.projectId, projectId))
-            .orderBy(issues.number);
-          return rows.map(toIssue);
-        },
-        { accessMode: "read only" },
-      );
+      return readIssues(requireActor(actorArg), projectId);
     },
 
     async getIssue(actorArg, issueId) {
@@ -1875,6 +1945,181 @@ export function createProjectsService({
           effectiveFallbackPolicy: current.fallbackPolicyOverride ?? current.projectFallbackPolicy,
         };
       });
+    },
+
+    // An edge is added under a lock on both issue rows so two writers cannot race past
+    // the acyclicity check (A blocked by B while B is blocked by A). Locking in id order
+    // keeps concurrent writers from deadlocking on the pair.
+    async addBlockedBy(actorArg, issueId, input) {
+      const actor = requireActor(actorArg);
+      const blockedByIssueId = input.blockedByIssueId;
+      return db.transaction(async (tx) => {
+        await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(inArray(issues.id, [issueId, blockedByIssueId].toSorted()))
+          .orderBy(issues.id)
+          .for("update");
+
+        const current = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
+        if (issueId === blockedByIssueId) throw new ProjectsError("self_dependency");
+        const blocker = await requireIssue(
+          tx,
+          blockedByIssueId,
+          actor,
+          ProjectAccessLevel.enum.read,
+        );
+        if (blocker.projectId !== current.projectId) {
+          throw new ProjectsError("cross_project_dependency");
+        }
+
+        // One project-level lock serializes every dependency write in this project. The
+        // two endpoint locks alone are not enough: concurrent adds on disjoint pairs
+        // (A->B alongside C->D, then B->C alongside D->A) could each pass BFS under
+        // Read Committed and together close a cycle. Taking the project row here, after
+        // its id is resolved and under the same transaction, closes that race.
+        await tx
+          .select({ id: projects.id })
+          .from(projects)
+          .where(eq(projects.id, current.projectId))
+          .for("update");
+
+        // Re-adding an edge is a no-op: the unique constraint stays the database's final
+        // word, and a repeated agent call must not invent a second activity event.
+        const [existing] = await tx
+          .select(dependencyColumns)
+          .from(issueDependencies)
+          .leftJoin(
+            dependencyHumanCreator,
+            eq(dependencyHumanCreator.id, issueDependencies.createdByHumanId),
+          )
+          .leftJoin(
+            dependencyAgentCreator,
+            eq(dependencyAgentCreator.id, issueDependencies.createdByAgentId),
+          )
+          .where(
+            and(
+              eq(issueDependencies.issueId, issueId),
+              eq(issueDependencies.blockedByIssueId, blockedByIssueId),
+            ),
+          )
+          .limit(1);
+        if (existing !== undefined) return toIssueDependency(existing);
+
+        // Walk forward from the new blocker. Reaching the issue being blocked means the
+        // new edge would close a cycle. Bounded by the project's graph; the project row is
+        // locked for the whole check-and-insert, so no concurrent add can race past it.
+        const visited = new Set<string>([blockedByIssueId]);
+        let frontier: string[] = [blockedByIssueId];
+        while (frontier.length > 0) {
+          const rows = await tx
+            .select({ next: issueDependencies.blockedByIssueId })
+            .from(issueDependencies)
+            .where(inArray(issueDependencies.issueId, frontier));
+          const next: string[] = [];
+          for (const row of rows) {
+            if (row.next === issueId) throw new ProjectsError("dependency_cycle");
+            if (!visited.has(row.next)) {
+              visited.add(row.next);
+              next.push(row.next);
+            }
+          }
+          frontier = next;
+        }
+
+        const [inserted] = await tx
+          .insert(issueDependencies)
+          .values({
+            id: randomUUID(),
+            issueId,
+            blockedByIssueId,
+            createdByHumanId: humanIdOf(actor),
+            createdByAgentId: agentIdOf(actor),
+            createdAt: sql`statement_timestamp()`,
+          })
+          .returning({ createdAt: issueDependencies.createdAt });
+        if (inserted === undefined) throw new Error("the dependency was not created");
+        await recordActivity(tx, {
+          projectId: current.projectId,
+          type: "issue_dependency_added",
+          actor,
+          issueId,
+          summary: `${current.title} blocked by ${blocker.title}`,
+        });
+        return {
+          issueId,
+          blockedByIssueId,
+          createdAt: inserted.createdAt.toISOString(),
+          createdBy: actorForWrite(actor),
+        };
+      });
+    },
+
+    // Removing a relation that is not there is a no-op, so a repeated UI click or agent
+    // retry cannot fail or write a spurious activity event.
+    async removeBlockedBy(actorArg, issueId, blockedByIssueId) {
+      const actor = requireActor(actorArg);
+      return db.transaction(async (tx) => {
+        const current = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
+        const [blocker] = await tx
+          .select({ title: issues.title })
+          .from(issues)
+          .where(eq(issues.id, blockedByIssueId))
+          .limit(1);
+        const deleted = await tx
+          .delete(issueDependencies)
+          .where(
+            and(
+              eq(issueDependencies.issueId, issueId),
+              eq(issueDependencies.blockedByIssueId, blockedByIssueId),
+            ),
+          )
+          .returning({ issueId: issueDependencies.issueId });
+        if (deleted.length === 0) return;
+        await recordActivity(tx, {
+          projectId: current.projectId,
+          type: "issue_dependency_removed",
+          actor,
+          issueId,
+          summary: `${current.title} no longer blocked by ${blocker?.title ?? blockedByIssueId}`,
+        });
+      });
+    },
+
+    async listBlockedBy(actorArg, issueId) {
+      const actor = requireActor(actorArg);
+      const found = await db.transaction(
+        async (tx) => {
+          const current = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.read);
+          const rows = await tx
+            .select({ id: issueDependencies.blockedByIssueId })
+            .from(issueDependencies)
+            .where(eq(issueDependencies.issueId, issueId));
+          return { projectId: current.projectId, ids: rows.map((row) => row.id) };
+        },
+        { accessMode: "read only" },
+      );
+      if (found.ids.length === 0) return [];
+      const blockers = new Set(found.ids);
+      return (await readIssues(actor, found.projectId)).filter((issue) => blockers.has(issue.id));
+    },
+
+    async listBlocking(actorArg, issueId) {
+      const actor = requireActor(actorArg);
+      const found = await db.transaction(
+        async (tx) => {
+          const current = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.read);
+          const rows = await tx
+            .select({ id: issueDependencies.issueId })
+            .from(issueDependencies)
+            .where(eq(issueDependencies.blockedByIssueId, issueId));
+          return { projectId: current.projectId, ids: rows.map((row) => row.id) };
+        },
+        { accessMode: "read only" },
+      );
+      if (found.ids.length === 0) return [];
+      const dependants = new Set(found.ids);
+      return (await readIssues(actor, found.projectId)).filter((issue) => dependants.has(issue.id));
     },
 
     async listComments(actorArg, issueId) {

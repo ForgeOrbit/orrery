@@ -44,6 +44,25 @@ export function createProjectsMcp(service: ProjectsService, authenticate: AgentA
         status: args.status === "open" || args.status === "closed" ? args.status : undefined,
       }),
     }),
+    add_blocked_by: async (actor, args) => ({
+      dependency: await service.addBlockedBy(actor, str(args.issueId, "issueId"), {
+        blockedByIssueId: str(args.blockedByIssueId, "blockedByIssueId"),
+      }),
+    }),
+    remove_blocked_by: async (actor, args) => {
+      await service.removeBlockedBy(
+        actor,
+        str(args.issueId, "issueId"),
+        str(args.blockedByIssueId, "blockedByIssueId"),
+      );
+      return { removed: true as const };
+    },
+    list_blocked_by: async (actor, args) => ({
+      issues: await service.listBlockedBy(actor, str(args.issueId, "issueId")),
+    }),
+    list_blocking: async (actor, args) => ({
+      issues: await service.listBlocking(actor, str(args.issueId, "issueId")),
+    }),
     list_comments: async (actor, args) => ({
       comments: await service.listComments(actor, str(args.issueId, "issueId")),
     }),

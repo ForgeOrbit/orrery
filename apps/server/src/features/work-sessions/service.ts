@@ -13,13 +13,14 @@ import {
   type WorkSession,
   type WorkSessionOutcome,
 } from "@orrery/contract";
-import { and, desc, eq, gt, inArray, isNull, lte, sql } from "drizzle-orm";
-import type { PgInsertValue } from "drizzle-orm/pg-core";
+import { and, desc, eq, gt, inArray, isNull, lte, ne, notExists, sql } from "drizzle-orm";
+import { alias, type PgInsertValue } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
 import {
   agents,
   humans,
+  issueDependencies,
   issues,
   projectActivity,
   projects,
@@ -74,6 +75,10 @@ export class SessionsError extends Error {
     this.kind = kind;
   }
 }
+
+// The other side of a blocked_by edge in ready work: a distinct SQL name so the same
+// issues table can be the candidate row and the row that blocks it in one query.
+const blockerIssue = alias(issues, "blocker_issue");
 
 // The projects feature's one project-level resolver, borrowed through the registry so an
 // agent's effective level is capped by its human owner's *current* access on every claim,
@@ -1188,6 +1193,19 @@ export function createSessionsService({
             eq(workSessions.status, WorkSessionStatus.enum.active),
             gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
           );
+          // #86: an issue is not ready while any of its blockers is still open. A closed
+          // blocker stops matching immediately, so the issue becomes ready without any
+          // dependency row being rewritten. The correlated NOT EXISTS keeps one row per
+          // candidate issue even when several blockers are open.
+          const noOpenBlocker = notExists(
+            tx
+              .select({ id: issueDependencies.id })
+              .from(issueDependencies)
+              .innerJoin(blockerIssue, eq(issueDependencies.blockedByIssueId, blockerIssue.id))
+              .where(
+                and(eq(issueDependencies.issueId, issues.id), ne(blockerIssue.status, "closed")),
+              ),
+          );
           const rows = await tx
             .select({ id: issues.id })
             .from(issues)
@@ -1198,6 +1216,7 @@ export function createSessionsService({
                 eq(issues.status, "open"),
                 eq(issues.needsInput, false),
                 isNull(workSessions.id),
+                noOpenBlocker,
               ),
             )
             .orderBy(issues.number);

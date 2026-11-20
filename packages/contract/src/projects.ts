@@ -44,6 +44,8 @@ export const ProjectActivityType = z
     "issue_commented",
     "issue_closed",
     "issue_reopened",
+    "issue_dependency_added",
+    "issue_dependency_removed",
     "issue_question_asked",
     "issue_question_answered",
     "issue_question_paused",
@@ -218,6 +220,28 @@ export const SetIssueFallbackPolicyRequest = z
   .object({ override: FallbackPolicyOverride })
   .meta({ id: "SetIssueFallbackPolicyRequest" });
 export type SetIssueFallbackPolicyRequest = z.infer<typeof SetIssueFallbackPolicyRequest>;
+
+// A directed dependency: `issueId` is blocked by `blockedByIssueId`. Both issues live in
+// one project, neither may be the other, and the graph is acyclic. The edge keeps the
+// identity that created it so the project's activity can name who changed the plan.
+export const IssueDependency = z
+  .object({
+    issueId: z.string(),
+    blockedByIssueId: z.string(),
+    createdAt: Timestamp,
+    createdBy: Actor,
+  })
+  .meta({ id: "IssueDependency" });
+export type IssueDependency = z.infer<typeof IssueDependency>;
+
+// Adding a blocker names the other issue in the same project. The service resolves both
+// ids before writing, so no database id is taken from anything else.
+export const AddBlockedByRequest = z
+  .object({
+    blockedByIssueId: z.string().trim().min(1, "Choose the blocking issue.").max(200),
+  })
+  .meta({ id: "AddBlockedByRequest" });
+export type AddBlockedByRequest = z.infer<typeof AddBlockedByRequest>;
 
 export const IssueComment = z
   .object({

@@ -882,6 +882,38 @@ export const issues = pgTable(
   ],
 );
 
+// A directed blocked_by edge (#86): `issue_id` cannot be ready work until
+// `blocked_by_issue_id` is closed. Both issues belong to one project; the service checks
+// project scope and acyclicity before writing, and these constraints make the data rule
+// hold even for a writer that bypasses it. The unique index stops duplicate edges, and the
+// reverse index keeps "what does this issue block" lookups indexed.
+export const issueDependencies = pgTable(
+  "issue_dependencies",
+  {
+    id: text("id").primaryKey(),
+    issueId: text("issue_id")
+      .notNull()
+      .references(() => issues.id),
+    blockedByIssueId: text("blocked_by_issue_id")
+      .notNull()
+      .references(() => issues.id),
+    // Authorship is one identity, never two: a human or an agent, recorded in its own
+    // column. An agent's work is attributed to the agent, not to its human owner.
+    createdByHumanId: text("created_by_human_id").references(() => humans.id),
+    createdByAgentId: text("created_by_agent_id").references(() => agents.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check("issue_dependencies_no_self_link", sql`${t.issueId} <> ${t.blockedByIssueId}`),
+    check(
+      "issue_dependencies_created_by_actor",
+      sql`(${t.createdByHumanId} is not null) <> (${t.createdByAgentId} is not null)`,
+    ),
+    uniqueIndex("one_blocked_by_per_issue").on(t.issueId, t.blockedByIssueId),
+    index("issue_dependencies_blocked_by").on(t.blockedByIssueId),
+  ],
+);
+
 // A comment on an issue. Comments are ordinary discussion: they need no work session
 // (#20), and they keep the author who wrote them.
 export const issueComments = pgTable(

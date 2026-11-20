@@ -4,6 +4,7 @@ import {
   Issue,
   IssueComment,
   IssueCommentsResponse,
+  IssueDependency,
   IssuesResponse,
   KnowledgeEntriesResponse,
   KnowledgeEntry,
@@ -18,6 +19,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   humans,
   issueComments,
+  issueDependencies,
   issues,
   knowledgeEntries,
   projectActivity,
@@ -60,6 +62,16 @@ const patchJson = async (app: Hono, path: string, body: unknown, cookie?: string
 
 const getJson = async (app: Hono, path: string, cookie?: string) =>
   app.request(path, cookie ? { headers: { cookie } } : undefined);
+
+const deleteJson = async (app: Hono, path: string, cookie?: string) =>
+  app.request(path, { method: "DELETE", ...(cookie ? { headers: { cookie } } : {}) });
+
+const addDependency = async (
+  app: Hono,
+  cookie: string,
+  issueId: string,
+  blockedByIssueId: string,
+) => postJson(app, `/api/issues/${issueId}/blocked-by`, { blockedByIssueId }, cookie);
 
 const problemBody = async (res: Response) => Problem.parse(await res.json());
 
@@ -164,6 +176,7 @@ describe("projects", () => {
   afterEach(async () => {
     await database.db.transaction(async (tx) => {
       await tx.execute(sql`delete from project_activity`);
+      await tx.execute(sql`delete from issue_dependencies`);
       await tx.execute(sql`delete from issue_comments`);
       await tx.execute(sql`delete from knowledge_entries`);
       await tx.execute(sql`delete from issues`);
@@ -728,5 +741,124 @@ describe("projects", () => {
     const activity = await activityFor(app, adminCookie, project.id);
     expect(activity.filter((entry) => entry.type === "issue_closed")).toHaveLength(1);
     expect(activity.filter((entry) => entry.type === "issue_edited")).toHaveLength(1);
+  });
+
+  it("records blocked_by relations in both directions and in activity", async () => {
+    const { app, admin, adminCookie, workspaceId } = await readyApp();
+    const project = await createProject(app, adminCookie, workspaceId);
+    const blocker = await createIssue(app, adminCookie, project.id, { title: "Prerequisite" });
+    const downstream = await createIssue(app, adminCookie, project.id, { title: "Downstream" });
+
+    const added = await addDependency(app, adminCookie, downstream.id, blocker.id);
+    expect(added.status).toBe(201);
+    expect(IssueDependency.parse(await added.json())).toMatchObject({
+      issueId: downstream.id,
+      blockedByIssueId: blocker.id,
+      createdBy: { humanId: admin.id, email: EMAIL },
+    });
+
+    // Re-adding is a no-op: one edge, one activity event.
+    expect((await addDependency(app, adminCookie, downstream.id, blocker.id)).status).toBe(201);
+    const rows = await database.db
+      .select()
+      .from(issueDependencies)
+      .where(eq(issueDependencies.issueId, downstream.id));
+    expect(rows).toHaveLength(1);
+
+    const blockedBy = await getJson(app, `/api/issues/${downstream.id}/blocked-by`, adminCookie);
+    expect(blockedBy.status).toBe(200);
+    expect(IssuesResponse.parse(await blockedBy.json()).map((issue) => issue.id)).toEqual([
+      blocker.id,
+    ]);
+    const blocking = await getJson(app, `/api/issues/${blocker.id}/blocking`, adminCookie);
+    expect(blocking.status).toBe(200);
+    expect(IssuesResponse.parse(await blocking.json()).map((issue) => issue.id)).toEqual([
+      downstream.id,
+    ]);
+
+    const activity = await activityFor(app, adminCookie, project.id);
+    expect(activity.filter((entry) => entry.type === "issue_dependency_added")).toHaveLength(1);
+
+    expect(
+      (await deleteJson(app, `/api/issues/${downstream.id}/blocked-by/${blocker.id}`, adminCookie))
+        .status,
+    ).toBe(204);
+    // A repeated removal is a no-op, so a retry cannot write a second event.
+    expect(
+      (await deleteJson(app, `/api/issues/${downstream.id}/blocked-by/${blocker.id}`, adminCookie))
+        .status,
+    ).toBe(204);
+    const afterRemoval = await getJson(app, `/api/issues/${downstream.id}/blocked-by`, adminCookie);
+    expect(IssuesResponse.parse(await afterRemoval.json())).toEqual([]);
+    const afterActivity = await activityFor(app, adminCookie, project.id);
+    expect(afterActivity.filter((entry) => entry.type === "issue_dependency_removed")).toHaveLength(
+      1,
+    );
+  });
+
+  it("refuses self-links, cross-project links and cycles as Problems", async () => {
+    const { app, admin, adminCookie, workspaceId } = await readyApp();
+    const project = await createProject(app, adminCookie, workspaceId, "Deps");
+    const other = await createProject(app, adminCookie, workspaceId, "Other");
+    const a = await createIssue(app, adminCookie, project.id, { title: "A" });
+    const b = await createIssue(app, adminCookie, project.id, { title: "B" });
+    const c = await createIssue(app, adminCookie, project.id, { title: "C" });
+    const foreign = await createIssue(app, adminCookie, other.id, { title: "Foreign" });
+
+    const self = await addDependency(app, adminCookie, a.id, a.id);
+    expect(self.status).toBe(400);
+    expect(await problemBody(self)).toMatchObject({ status: 400, code: "self_dependency" });
+
+    const cross = await addDependency(app, adminCookie, a.id, foreign.id);
+    expect(cross.status).toBe(400);
+    expect(await problemBody(cross)).toMatchObject({
+      status: 400,
+      code: "cross_project_dependency",
+    });
+
+    expect((await addDependency(app, adminCookie, a.id, b.id)).status).toBe(201);
+    expect((await addDependency(app, adminCookie, b.id, c.id)).status).toBe(201);
+    const cycle = await addDependency(app, adminCookie, c.id, a.id);
+    expect(cycle.status).toBe(409);
+    expect(await problemBody(cycle)).toMatchObject({ status: 409, code: "dependency_cycle" });
+
+    // The database constraint is the final word, even for a writer that skips the service.
+    const constraint = await rejection(
+      database.db.insert(issueDependencies).values({
+        id: randomUUID(),
+        issueId: a.id,
+        blockedByIssueId: a.id,
+        createdByHumanId: admin.id,
+        createdAt: new Date(),
+      }),
+    );
+    expect(constraint).toContain("issue_dependencies_no_self_link");
+  });
+
+  it("serializes concurrent adds so two disjoint pairs cannot close a longer cycle", async () => {
+    const { app, adminCookie, workspaceId } = await readyApp();
+    const project = await createProject(app, adminCookie, workspaceId, "Concurrent deps");
+    const a = await createIssue(app, adminCookie, project.id, { title: "A" });
+    const b = await createIssue(app, adminCookie, project.id, { title: "B" });
+    const c = await createIssue(app, adminCookie, project.id, { title: "C" });
+    const d = await createIssue(app, adminCookie, project.id, { title: "D" });
+
+    // A -> B and C -> D on their own are acyclic. Racing B -> C and D -> A closes the
+    // four-node cycle; the project-level lock must serialize the two checks so the
+    // second writer sees the first edge and refuses it.
+    expect((await addDependency(app, adminCookie, a.id, b.id)).status).toBe(201);
+    expect((await addDependency(app, adminCookie, c.id, d.id)).status).toBe(201);
+    const raced = await Promise.all([
+      addDependency(app, adminCookie, b.id, c.id),
+      addDependency(app, adminCookie, d.id, a.id),
+    ]);
+    const accepted = raced.filter((res) => res.status === 201);
+    const refused = raced.filter((res) => res.status === 409);
+    expect(accepted).toHaveLength(1);
+    expect(refused).toHaveLength(1);
+    expect(await problemBody(refused[0]!)).toMatchObject({
+      status: 409,
+      code: "dependency_cycle",
+    });
   });
 });

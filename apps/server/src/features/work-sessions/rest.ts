@@ -262,7 +262,7 @@ const readyWork = createRoute({
   path: "/api/projects/{projectId}/ready-work",
   summary: "Minimal ready-work listing for a project",
   description:
-    "Open issues that are not Needs input and have no live active session, evaluated in database time. Needs no claim; a full board is out of scope.",
+    "Open issues that are not Needs input, have no live active session, and have no blocker whose status is not closed, evaluated in database time. Needs no claim; a full board is out of scope.",
   request: { params: projectParams },
   responses: {
     200: {

@@ -57,6 +57,26 @@ export const issueQuery = (issueId: string) =>
       getJson(`/api/issues/${encodeURIComponent(issueId)}`, (value) => Issue.parse(value)),
   });
 
+// A relation resolves to the related issues, so the page can show each blocker's current
+// status without a second shape. Read access is enough for both directions.
+export const issueBlockedByQuery = (issueId: string) =>
+  queryOptions({
+    queryKey: ["issues", issueId, "blocked-by"],
+    queryFn: () =>
+      getJson(`/api/issues/${encodeURIComponent(issueId)}/blocked-by`, (value) =>
+        IssuesResponse.parse(value),
+      ),
+  });
+
+export const issueBlockingQuery = (issueId: string) =>
+  queryOptions({
+    queryKey: ["issues", issueId, "blocking"],
+    queryFn: () =>
+      getJson(`/api/issues/${encodeURIComponent(issueId)}/blocking`, (value) =>
+        IssuesResponse.parse(value),
+      ),
+  });
+
 export const issueCommentsQuery = (issueId: string) =>
   queryOptions({
     queryKey: ["issues", issueId, "comments"],
