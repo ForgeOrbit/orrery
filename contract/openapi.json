@@ -2558,6 +2558,230 @@
         "required": [
           "answer"
         ]
+      },
+      "TransferPreview": {
+        "type": "object",
+        "properties": {
+          "projectId": {
+            "type": "string"
+          },
+          "projectName": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/TransferParty"
+          },
+          "destination": {
+            "$ref": "#/components/schemas/TransferParty"
+          },
+          "visibilityChange": {
+            "type": "string",
+            "enum": [
+              "personal_to_shared"
+            ]
+          },
+          "accessChanges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TransferAccessChange"
+            }
+          },
+          "revokedSourceGrants": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "activeWork": {
+            "$ref": "#/components/schemas/TransferActiveWork"
+          },
+          "ready": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "projectId",
+          "projectName",
+          "source",
+          "destination",
+          "visibilityChange",
+          "accessChanges",
+          "revokedSourceGrants",
+          "activeWork",
+          "ready"
+        ]
+      },
+      "TransferParty": {
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/WorkspaceKind"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "name",
+          "kind"
+        ]
+      },
+      "TransferAccessChange": {
+        "type": "object",
+        "properties": {
+          "humanId": {
+            "type": "string"
+          },
+          "email": {
+            "$ref": "#/components/schemas/Email"
+          },
+          "level": {
+            "$ref": "#/components/schemas/ProjectAccessLevel"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "destination_owner",
+              "receiver"
+            ]
+          }
+        },
+        "required": [
+          "humanId",
+          "email",
+          "level",
+          "reason"
+        ]
+      },
+      "TransferActiveWork": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "issues": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "issueId": {
+                  "type": "string"
+                },
+                "number": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "issueId",
+                "number",
+                "title"
+              ]
+            }
+          }
+        },
+        "required": [
+          "count",
+          "issues"
+        ]
+      },
+      "AuthorizeTransferRequest": {
+        "type": "object",
+        "properties": {
+          "destinationWorkspaceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "destinationWorkspaceId"
+        ]
+      },
+      "TransferAuthorization": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string"
+          },
+          "authorizationId": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "sourceWorkspaceId": {
+            "type": "string"
+          },
+          "destinationWorkspaceId": {
+            "type": "string"
+          },
+          "authorizedByHumanId": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TransferAuthorizationStatus"
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "expiresAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "preview": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TransferPreview"
+              },
+              {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              }
+            ]
+          }
+        },
+        "required": [
+          "token",
+          "authorizationId",
+          "projectId",
+          "sourceWorkspaceId",
+          "destinationWorkspaceId",
+          "authorizedByHumanId",
+          "status",
+          "createdAt",
+          "expiresAt",
+          "preview"
+        ]
+      },
+      "TransferAuthorizationStatus": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "accepted",
+          "revoked",
+          "expired"
+        ]
+      },
+      "AcceptTransferRequest": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": [
+          "token"
+        ]
       }
     },
     "parameters": {}
@@ -7687,6 +7911,382 @@
           },
           "404": {
             "description": "No such issue is in scope for the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{projectId}/transfer/preview": {
+      "post": {
+        "summary": "Preview a personal-to-shared transfer",
+        "description": "The personal owner sees where the project would go, the visibility and access changes, and any live work that must finish first. Nothing is written.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthorizeTransferRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The access changes and active work a transfer would produce",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferPreview"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No personal project or shared workspace with these ids is accessible",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{projectId}/transfer": {
+      "post": {
+        "summary": "Authorize a personal-to-shared transfer",
+        "description": "The personal workspace owner authorizes moving the project into a shared workspace and receives a one-time token. A destination owner or a member with Create projects then accepts. The authorization is recorded in the source workspace's history.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthorizeTransferRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The authorization and its one-time token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferAuthorization"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No personal project or shared workspace with these ids is accessible",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/transfers/preview": {
+      "post": {
+        "summary": "Preview an authorized transfer before accepting it",
+        "description": "A destination owner or a member with Create projects redeems the one-time token to see the destination, visibility and access changes, and any live work before confirming acceptance. A stranger, a non-member or a used token answers exactly like a missing authorization.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcceptTransferRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The access changes and active work the receiver would accept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferPreview"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The receiver lacks Create projects in the destination",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No pending transfer authorization is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{projectId}/transfer/complete": {
+      "post": {
+        "summary": "Transfer a personal project directly",
+        "description": "One person who owns the personal project and also holds Create projects in the shared destination completes both authorization and acceptance in a single transaction.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthorizeTransferRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The project in its destination workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Project"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller lacks Create projects in the destination",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No personal project or shared workspace with these ids is accessible",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Active work remains, or the project changed since authorization",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/transfers/accept": {
+      "post": {
+        "summary": "Accept an authorized personal-to-shared transfer",
+        "description": "A destination owner or a member with Create projects accepts a pending authorization. Every authority, the project's current ownership and the absence of live work are rechecked in one transaction before access is rebuilt under the destination.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcceptTransferRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The project in its destination workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Project"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller lacks Create projects in the destination",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No accessible project, destination, or pending authorization",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The project changed since authorization, or active work remains",
             "content": {
               "application/problem+json": {
                 "schema": {

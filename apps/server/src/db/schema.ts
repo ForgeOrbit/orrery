@@ -9,6 +9,7 @@ import {
   ProjectActivityType,
   QuestionStatus,
   RunStatus,
+  TransferAuthorizationStatus,
   WorkSessionStatus,
   WorkspaceKind,
   SmtpSecurity,
@@ -201,6 +202,11 @@ export const workspaceEventTypes = [
   "remove_members_revoked",
   "manage_member_permissions_granted",
   "manage_member_permissions_revoked",
+  // Personal-to-shared transfer (#39): the source records authorization and completion,
+  // the destination its receipt. Workspace-scoped so each side keeps only its own audit.
+  "project_transfer_authorized",
+  "project_transfer_received",
+  "project_transferred_out",
 ] as const;
 export type WorkspaceEventType = (typeof workspaceEventTypes)[number];
 
@@ -418,6 +424,46 @@ export const projects = pgTable(
   (t) => [
     check("projects_next_issue_number_positive", sql`${t.nextIssueNumber} > 0`),
     index("projects_workspace_created").on(t.workspaceId, t.createdAt),
+  ],
+);
+
+// A source owner's authorization to move a personal project into a shared workspace
+// (#39). The token is shown once and only its hash is stored, like an invitation. A
+// receiver accepts while the authorization is pending and before its database-time
+// expiry; acceptance rechecks every authority in one transaction and consumes the row.
+export const projectTransferAuthorizations = pgTable(
+  "project_transfer_authorizations",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    sourceWorkspaceId: text("source_workspace_id")
+      .notNull()
+      .references(() => workspaces.id),
+    destinationWorkspaceId: text("destination_workspace_id")
+      .notNull()
+      .references(() => workspaces.id),
+    authorizedByHumanId: text("authorized_by_human_id")
+      .notNull()
+      .references(() => humans.id),
+    tokenHash: text("token_hash").notNull().unique(),
+    status: text("status").$type<TransferAuthorizationStatus>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (t) => [
+    check(
+      "project_transfer_authorizations_status",
+      sql`${t.status} in (${sql.raw(sqlLiteralList(TransferAuthorizationStatus))})`,
+    ),
+    check(
+      "project_transfer_authorizations_sides_differ",
+      sql`${t.sourceWorkspaceId} <> ${t.destinationWorkspaceId}`,
+    ),
+    index("project_transfer_authorizations_project").on(t.projectId),
   ],
 );
 

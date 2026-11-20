@@ -16,6 +16,7 @@ import { createRecoveryFeature, recoveryRoutes } from "./recovery/index.ts";
 import { createRunsFeature, runsRoutes } from "./runs/index.ts";
 import { createSettingsFeature, settingsRoutes } from "./settings/index.ts";
 import { createSystemFeature, systemRoutes } from "./system/index.ts";
+import { createTransfersFeature, transfersRoutes } from "./transfers/index.ts";
 import { createSessionsFeature, sessionsRoutes } from "./work-sessions/index.ts";
 import { createWorkspacesFeature, workspacesRoutes } from "./workspaces/index.ts";
 
@@ -177,6 +178,12 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     }),
     sessions,
     inbox,
+    // Transfer rechecks source and destination authority in one transaction. It borrows
+    // only the human session reader; no agent key or MCP tool performs an ownership move.
+    createTransfersFeature({
+      db: database.db,
+      sessionReader: accounts.sessionReader,
+    }),
   ];
 }
 
@@ -194,4 +201,5 @@ export const routes = [
   ...runsRoutes,
   ...sessionsRoutes,
   ...inboxRoutes,
+  ...transfersRoutes,
 ];

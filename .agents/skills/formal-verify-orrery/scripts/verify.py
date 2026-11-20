@@ -1317,6 +1317,147 @@ def extract_code_facts() -> dict[str, Any]:
         and "inbox.service." not in index_src
     )
 
+
+    # M18: personal-to-shared transfer (#39). Every guard below is read from the live
+    # transfer service, adapter, contract and generated migration, so deleting a lock,
+    # a recheck, a cleanup write or the preview flips the model to its buggy branch.
+    tr_src = read_text("apps/server/src/features/transfers/service.ts")
+    tr_rest = read_text("apps/server/src/features/transfers/rest.ts")
+    tr_contract = read_text("packages/contract/src/transfers.ts")
+    mig_0023 = read_text("db/migrations/0025_thick_valeria_richards.sql")
+    accept_fn = slice_between(
+        tr_src, "async function acceptInTransaction(", "\nexport function createTransfersService"
+    )
+    preview_impl = tr_src.split("async preview(", 1)[1].split("async authorize(", 1)[0]
+    authorize_impl = tr_src.split("async authorize(", 1)[1].split("async receiverPreview(", 1)[0]
+    receiver_preview_impl = tr_src.split("async receiverPreview(", 1)[1].split("async accept(", 1)[0]
+    accept_impl = tr_src.split("async accept(", 1)[1].split("async complete(", 1)[0]
+    complete_impl = tr_src.split("async complete(", 1)[1]
+
+    m21_source_owner = (
+        "eq(workspaces.kind, WorkspaceKind.enum.personal)" in tr_src
+        and "eq(workspaces.personalOwnerHumanId, humanId)" in tr_src
+    )
+    # Authorization needs only source ownership: a destination authority is not *required*
+    # at authorize time, which is what makes the two-party flow possible. It may be read
+    # to decide whether the authorizer is also the receiver, but it must not gate authorize.
+    m21_two_party = (
+        'throw new TransfersError("destination_authority_required")' not in authorize_impl
+    )
+    m21_dest_authority = "membership.isOwner || membership.canCreateProjects" in tr_src
+    m21_recheck_source = (
+        'throw new TransfersError("source_authority_lost")' in accept_fn
+        and "source.personalOwnerHumanId !== auth.authorizedByHumanId" in accept_fn
+    )
+    m21_recheck_authority = (
+        "hasCreateProjectsAuthority(tx, destination.id, acceptorHumanId)" in accept_fn
+    )
+    m21_recheck_workspace = (
+        'throw new TransfersError("transfer_stale")' in accept_fn
+        and "project.workspaceId !== auth.sourceWorkspaceId" in accept_fn
+    )
+    m21_active_work = (
+        'eq(workSessions.status, "active")' in accept_fn
+        and "workSessions.leaseExpiresAt" in accept_fn
+    )
+    m21_db_time_live = "gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`)" in accept_fn
+    m21_db_time_expiry = (
+        "gt(projectTransferAuthorizations.expiresAt, sql`statement_timestamp()`)" in accept_fn
+    )
+    m21_single_tx = tr_src.count("db.transaction(") >= 4 and "db.transaction(" not in accept_fn
+    m21_lock_first = all(
+        ordered(fn, "db.transaction(async (tx) => {", "await lockOwnershipWrites(tx);")
+        for fn in (authorize_impl, accept_impl, complete_impl)
+    )
+    m21_guard_order = "ids.toSorted()" in tr_src and ordered(
+        accept_fn,
+        "await bumpGuards(tx, [source.id, destination.id]);",
+        '.for("update")',
+    )
+    m21_issue_lock = ordered(
+        accept_fn, "from(issues)", '.for("update")', "workSessions.leaseExpiresAt"
+    )
+    m21_key_cleanup = "tx.delete(agentApiKeyProjects)" in accept_fn
+    m21_grant_cleanup = "tx.delete(projectAccessGrants)" in accept_fn
+    m21_offer_cleanup = ".delete(workspaceInvitationGrants)" in accept_fn
+    m21_grant_rebuild = (
+        "tx.insert(projectAccessGrants).values" in accept_fn
+        and 'level: "manage"' in accept_fn
+        and "async function manageRecipients(" in tr_src
+    )
+    m21_grant_events = (
+        "tx.insert(projectAccessEvents).values" in accept_fn
+        and "ProjectAccessEventType.enum.project_access_granted" in accept_fn
+    )
+    m21_receipt_events = (
+        all(
+            event_type in tr_src
+            for event_type in (
+                "project_transfer_authorized",
+                "project_transfer_received",
+                "project_transferred_out",
+            )
+        )
+        and '"project_transfer_received"' in accept_fn
+        and '"project_transferred_out"' in accept_fn
+    )
+    m21_source_events_scoped = (
+        ordered(accept_fn, "workspaceEvent(", "source.id,", '"project_transferred_out"')
+        and '"project_transferred_out"' in accept_fn
+    )
+    m21_preserve_identity = (
+        "set({ workspaceId: destination.id })" in accept_fn
+        and ".set({ createdBy" not in accept_fn
+        and "createdByHumanId:" not in accept_fn
+    )
+    m21_preview = (
+        "TransferPreview" in tr_contract
+        and "activeWork" in tr_contract
+        and "accessChanges" in tr_contract
+        and "/transfer/preview" in tr_rest
+    )
+    m21_http_problems = tr_rest.count("400: problem(") >= 4
+    m21_human_only = "sessionReader" in tr_rest and "agentAuthenticator" not in tr_rest
+    m21_authorization_persisted = (
+        'CREATE TABLE "project_transfer_authorizations"' in mig_0023
+        and "token_hash" in mig_0023
+    )
+    # Destination non-enumeration and the receiver's own pre-confirmation view.
+    m21_dest_membership_preview = (
+        "requireDestinationMember(tx, destinationWorkspaceId, account.humanId)" in preview_impl
+    )
+    m21_dest_membership_complete = (
+        "requireDestinationMember(tx, destinationWorkspaceId, account.humanId)" in complete_impl
+    )
+    m21_authorize_redaction = (
+        "canSeeDestination ? fullPreview : null" in authorize_impl
+        and "hasDestinationMembership(" in authorize_impl
+    )
+    m21_receiver_preview = (
+        "/api/transfers/preview" in tr_rest
+        and "receiverPreviewTransfer" in tr_rest
+        and "async receiverPreview(" in tr_src
+    )
+    m21_receiver_authority = (
+        "hasDestinationMembership(" in receiver_preview_impl
+        and "hasCreateProjectsAuthority(" in receiver_preview_impl
+        and 'throw new TransfersError("destination_authority_required")' in receiver_preview_impl
+    )
+    m21_accept_membership = (
+        "hasDestinationMembership(tx, auth.destinationWorkspaceId, acceptorHumanId)" in accept_fn
+    )
+    m21_receiver_recipient = (
+        "const receiver = (await hasCreateProjectsAuthority" in preview_impl
+        and "const receiver = (await hasCreateProjectsAuthority" in authorize_impl
+    )
+    # Acceptance cleanup that keeps no stale leases, settled offers or rival tokens.
+    m21_expire_lapsed = 'status: "expired"' in accept_fn and "lte(workSessions.leaseExpiresAt" in accept_fn
+    m21_pending_offers_only = "eq(workspaceInvitations.status, InvitationStatus.enum.pending)" in accept_fn
+    m21_revoke_siblings = (
+        'status: "revoked"' in accept_fn and "ne(projectTransferAuthorizations.id, auth.id)" in accept_fn
+    )
+
+
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
         "m2a_supersedes_failed": m2a_supersedes_failed,
@@ -1514,6 +1655,41 @@ def extract_code_facts() -> dict[str, Any]:
         "m20_boundary_guard": m20_boundary_guard,
         "m20_read_tool": m20_read_tool,
         "m20_feature_seams": m20_feature_seams,
+        "m21_source_owner": m21_source_owner,
+        "m21_two_party": m21_two_party,
+        "m21_dest_authority": m21_dest_authority,
+        "m21_recheck_source": m21_recheck_source,
+        "m21_recheck_authority": m21_recheck_authority,
+        "m21_recheck_workspace": m21_recheck_workspace,
+        "m21_active_work": m21_active_work,
+        "m21_db_time_live": m21_db_time_live,
+        "m21_db_time_expiry": m21_db_time_expiry,
+        "m21_single_tx": m21_single_tx,
+        "m21_lock_first": m21_lock_first,
+        "m21_guard_order": m21_guard_order,
+        "m21_issue_lock": m21_issue_lock,
+        "m21_key_cleanup": m21_key_cleanup,
+        "m21_grant_cleanup": m21_grant_cleanup,
+        "m21_offer_cleanup": m21_offer_cleanup,
+        "m21_grant_rebuild": m21_grant_rebuild,
+        "m21_grant_events": m21_grant_events,
+        "m21_receipt_events": m21_receipt_events,
+        "m21_source_events_scoped": m21_source_events_scoped,
+        "m21_preserve_identity": m21_preserve_identity,
+        "m21_preview": m21_preview,
+        "m21_http_problems": m21_http_problems,
+        "m21_human_only": m21_human_only,
+        "m21_authorization_persisted": m21_authorization_persisted,
+        "m21_dest_membership_preview": m21_dest_membership_preview,
+        "m21_dest_membership_complete": m21_dest_membership_complete,
+        "m21_authorize_redaction": m21_authorize_redaction,
+        "m21_receiver_preview": m21_receiver_preview,
+        "m21_receiver_authority": m21_receiver_authority,
+        "m21_receiver_recipient": m21_receiver_recipient,
+        "m21_expire_lapsed": m21_expire_lapsed,
+        "m21_pending_offers_only": m21_pending_offers_only,
+        "m21_revoke_siblings": m21_revoke_siblings,
+        "m21_accept_membership": m21_accept_membership,
     }
 
 
@@ -3787,6 +3963,295 @@ def check_m20(facts: dict[str, Any]) -> CheckResult:
         files,
     )
 
+
+def check_m21(facts: dict[str, Any]) -> CheckResult:
+    """#39: a personal-to-shared transfer is atomic, rechecks both authorities and the
+    project's current ownership, blocks live work in database time, and leaves no source
+    key, source grant or pending offer behind. Destination membership gates every reveal
+    of a destination's name and owners: the source owner's authorization carries no PII
+    for a stranger, and a separate Create-projects receiver can preview the pending token
+    before accepting. Each transition consults a source-extracted guard; flipping one
+    produces a shortest counterexample naming the exact broken operation."""
+    g = facts
+
+    def bad(violations: frozenset[str], reason: str) -> frozenset[str]:
+        return violations | {reason}
+
+    def apply_transfer(state, violations):
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        v = violations
+
+        # One transaction, ownership lock first, workspace guards before the project row
+        # and issues, all on the same transaction.
+        if not g["m21_single_tx"]:
+            v = bad(v, "accept_split_across_transactions")
+        if not g["m21_lock_first"]:
+            v = bad(v, "ownership_lock_not_first")
+        if not g["m21_guard_order"]:
+            v = bad(v, "workspace_guards_not_ordered_before_project")
+        if not g["m21_issue_lock"]:
+            v = bad(v, "issues_not_locked_before_active_work_check")
+        if not g["m21_preserve_identity"]:
+            v = bad(v, "authorship_rewritten_on_move")
+
+        # Cleanup: source grants, source keys' project scope and only still-pending offers.
+        if not g["m21_grant_cleanup"]:
+            v = bad(v, "source_grant_survived")
+        else:
+            grants = grants - {"old"}
+        if not g["m21_key_cleanup"]:
+            v = bad(v, "source_key_followed_project")
+        else:
+            keys = False
+        if not g["m21_offer_cleanup"] or not g["m21_pending_offers_only"]:
+            v = bad(v, "pending_offer_not_invalidated")
+        else:
+            offers = False
+        if not g["m21_expire_lapsed"]:
+            v = bad(v, "stale_active_session_moved")
+        if not g["m21_revoke_siblings"]:
+            v = bad(v, "sibling_authorization_left_pending")
+
+        # Rebuild access and the destination's own audit trail; source events stay source.
+        if not g["m21_grant_rebuild"]:
+            v = bad(v, "destination_manage_grants_missing")
+        else:
+            grants = grants | {"dest"}
+        if not g["m21_grant_events"]:
+            v = bad(v, "destination_grant_events_missing")
+        if not g["m21_receipt_events"]:
+            v = bad(v, "destination_receipt_missing")
+        if not g["m21_source_events_scoped"]:
+            v = bad(v, "source_access_history_leaked_to_destination")
+        events = events | {"dest_grants", "receipt", "source_out"}
+
+        return ("transferred", "accepted", dest_ok, dest_member, source_ok, "dest",
+                "none", keys, grants, events, offers, auth_live, v)
+
+    def preview(state):
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        if not g["m21_preview"]:
+            v = bad(v, "no_preview_before_confirmation")
+        if not g["m21_http_problems"]:
+            v = bad(v, "validated_route_without_400_problem")
+        if not g["m21_human_only"]:
+            v = bad(v, "agent_key_can_authorize_transfer")
+        if not dest_member and not g["m21_dest_membership_preview"]:
+            v = bad(v, "destination_enumerated_by_preview")
+        return (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys,
+                grants, events, offers, auth_live, v)
+
+    def lose_source(state):
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        return (phase, auth, dest_ok, dest_member, False, pws, claim, keys,
+                grants, events, offers, auth_live, v)
+
+    def join_dest(state):
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        return (phase, auth, False, True, source_ok, pws, claim, keys,
+                grants, events, offers, auth_live, v)
+
+    def leave_dest(state):
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        return (phase, auth, False, False, source_ok, pws, claim, keys,
+                grants, events, offers, auth_live, v)
+
+    def gain_dest(state):
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        return (phase, auth, True, True, source_ok, pws, claim, keys,
+                grants, events, offers, auth_live, v)
+
+    def lose_dest(state):
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        return (phase, auth, False, dest_member, source_ok, pws, claim, keys,
+                grants, events, offers, auth_live, v)
+
+    def authorize(state):
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        if phase != "start":
+            return state
+        if not source_ok:
+            if not g["m21_source_owner"]:
+                v = bad(v, "authorized_without_source_ownership")
+            else:
+                return state  # correctly refused
+        if not dest_ok and not g["m21_two_party"]:
+            v = bad(v, "two_party_authorization_required_destination_authority")
+        if not g["m21_authorization_persisted"]:
+            v = bad(v, "authorization_not_persisted")
+        if not dest_member and not g["m21_authorize_redaction"]:
+            v = bad(v, "destination_owner_pii_leaked")
+        return ("authorized", "pending", dest_ok, dest_member, source_ok, pws,
+                claim, keys, grants, events, offers, True, v)
+
+    def receiver_preview(state):
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        if phase != "authorized" or auth != "pending":
+            return state
+        if not g["m21_receiver_preview"]:
+            v = bad(v, "no_receiver_preview")
+        if not dest_member or not dest_ok:
+            if not g["m21_receiver_authority"]:
+                v = bad(v, "unauthorized_receiver_saw_preview")
+        elif not g["m21_receiver_recipient"]:
+            v = bad(v, "receiver_not_listed_for_acceptor")
+        return (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys,
+                grants, events, offers, auth_live, v)
+
+    def claim(state):
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        return (phase, auth, dest_ok, dest_member, source_ok, pws, "live", keys,
+                grants, events, offers, auth_live, v)
+
+    def expire_claim(state):
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        return (phase, auth, dest_ok, dest_member, source_ok, pws, "expired", keys,
+                grants, events, offers, auth_live, v)
+
+    def expire_auth(state):
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        return (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys,
+                grants, events, offers, False, v)
+
+    def move_project(state):
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        return (phase, auth, dest_ok, dest_member, source_ok, "elsewhere", claim,
+                keys, grants, events, offers, auth_live, v)
+
+    def accept(state):
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        if phase != "authorized" or auth != "pending":
+            return state
+        if not g["m21_authorization_persisted"]:
+            v = bad(v, "accept_without_persisted_authorization")
+        if not auth_live:
+            if not g["m21_db_time_expiry"]:
+                return apply_transfer(state, bad(v, "expired_authorization_accepted"))
+            return state
+        if not dest_member:
+            if not g["m21_accept_membership"]:
+                return apply_transfer(state, bad(v, "non_member_accepted_transfer"))
+            return state
+        if not source_ok:
+            if not g["m21_recheck_source"]:
+                return apply_transfer(state, bad(v, "accepted_after_source_lost"))
+            return state
+        if not dest_ok:
+            if not g["m21_recheck_authority"]:
+                return apply_transfer(state, bad(v, "accepted_after_destination_authority_lost"))
+            return state
+        if dest_ok and not g["m21_dest_authority"]:
+            v = bad(v, "valid_destination_authority_refused")
+        if pws != "source":
+            if not g["m21_recheck_workspace"]:
+                return apply_transfer(state, bad(v, "accepted_after_workspace_changed"))
+            return state
+        if claim == "live":
+            if not (g["m21_active_work"] and g["m21_db_time_live"]):
+                return apply_transfer(state, bad(v, "transferred_with_live_work"))
+            return state
+        if claim == "expired" and not g["m21_db_time_live"]:
+            v = bad(v, "expired_claim_blocked_transfer")
+        return apply_transfer(state, v)
+
+    def complete(state):
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, v) = state
+        if phase != "start" or not source_ok:
+            return state
+        if not dest_member:
+            if not g["m21_dest_membership_complete"]:
+                v = bad(v, "complete_enumerated_destination")
+            return (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys,
+                    grants, events, offers, auth_live, v)
+        if not dest_ok:
+            return state
+        if not g["m21_dest_authority"]:
+            v = bad(v, "direct_flow_denied_valid_authority")
+        if pws != "source":
+            return state
+        if claim == "live" and not (g["m21_active_work"] and g["m21_db_time_live"]):
+            return apply_transfer(state, bad(v, "transferred_with_live_work"))
+        if claim == "live":
+            return state
+        return apply_transfer(state, v)
+
+    actions = [
+        ("the personal owner previews the destination, access changes and live work", preview),
+        ("a stranger or non-authority member previews the pending token", receiver_preview),
+        ("the authorizing owner loses the source workspace", lose_source),
+        ("the receiver joins the destination without Create projects", join_dest),
+        ("a member leaves the destination", leave_dest),
+        ("the destination grants Create projects to the receiver", gain_dest),
+        ("destination Create projects authority is withdrawn", lose_dest),
+        ("the source owner authorizes without destination authority", authorize),
+        ("a worker claims an issue on the project", claim),
+        ("the claim's lease lapses in database time", expire_claim),
+        ("the authorization expires in database time", expire_auth),
+        ("the project moves to another workspace before acceptance", move_project),
+        ("the destination owner or Create projects member accepts", accept),
+        ("one person with both authorities completes directly", complete),
+    ]
+
+    init = ("start", "none", False, False, True, "source", "none", True,
+            frozenset({"old"}), frozenset(), True, True, frozenset())
+
+    def next_states(state):
+        return [(label, action(state)) for label, action in actions]
+
+    def inv(state):
+        v = state[-1]
+        if v:
+            return False, f"project-transfer invariant broken: {sorted(v)[0]}"
+        (phase, auth, dest_ok, dest_member, source_ok, pws, claim, keys, grants,
+         events, offers, auth_live, _) = state
+        if phase == "transferred":
+            if keys:
+                return False, "a source key still names the moved project"
+            if "old" in grants:
+                return False, "a source grant survived the move"
+            if "dest" not in grants:
+                return False, "destination Manage grants were not rebuilt"
+            if "receipt" not in events or "dest_grants" not in events:
+                return False, "destination recorded no receipt and grant events"
+            if offers:
+                return False, "a pending offer still names the moved project"
+        if phase == "authorized" and auth != "pending":
+            return False, "an authorization left pending is not pending"
+        return True, ""
+
+    return bfs_check(
+        "M21",
+        "Personal-to-Shared Project Transfer (#39)",
+        "Destination membership gates every reveal of its name and owners, including a redacted source-owner authorization and a receiver-only preview; acceptance is one transaction that rechecks both authorities, current ownership and no live DB-time work, expires lapsed leases, keeps settled offers, revokes rival tokens, rebuilds destination Manage and receipts, and removes source keys, grants and pending offers",
+        "safety",
+        init,
+        next_states,
+        inv,
+        [
+            "apps/server/src/features/transfers/service.ts",
+            "apps/server/src/features/transfers/rest.ts",
+            "apps/server/src/features/transfers/index.ts",
+            "packages/contract/src/transfers.ts",
+            "apps/server/src/db/schema.ts",
+            "db/migrations/0025_thick_valeria_richards.sql",
+        ],
+    )
+
 def main() -> None:
     facts = extract_code_facts()
     results = [
@@ -3811,6 +4276,7 @@ def main() -> None:
         check_m18(facts),
         check_m19(facts),
         check_m20(facts),
+        check_m21(facts),
     ]
 
     if "--json" in sys.argv:
