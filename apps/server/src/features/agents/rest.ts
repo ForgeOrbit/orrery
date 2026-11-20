@@ -9,6 +9,7 @@ import {
   CreateAgentKeyRequest,
   CreateAgentKeyResponse,
   CreateAgentRequest,
+  RotateAgentKeyRequest,
 } from "@orrery/contract";
 import {
   problemContent as problem,
@@ -72,6 +73,33 @@ const issueKey = createRoute({
   },
 });
 
+const keyParams = z.object({ keyId: z.string().min(1).max(200) });
+
+const rotateKey = createRoute({
+  method: "post",
+  path: "/api/agents/keys/{keyId}/rotate",
+  summary: "Replace one of the human's own keys with an overlapping replacement",
+  description:
+    "Creates a second key for the same agent and workspace. Both keys work during the overlap, and each has its own expiry: revoking or letting either one expire never affects the other. Omitted validity and project grants are preserved from the source key; the replacement's grants are re-capped by the human owner's current access. Only the replacement's secret is returned, once. A revoked, expired, foreign, or inaccessible source key is refused.",
+  request: {
+    params: keyParams,
+    body: {
+      required: true,
+      content: { "application/json": { schema: RotateAgentKeyRequest } },
+    },
+  },
+  responses: {
+    201: {
+      description: "The replacement key and its secret, shown once",
+      content: { "application/json": { schema: CreateAgentKeyResponse } },
+    },
+    400: problem("The request is invalid, or a grant is above your current access"),
+    401: problem("Not signed in"),
+    404: problem("No such key belongs to you, or its workspace is no longer accessible"),
+    409: problem("The key is already revoked or expired and cannot be rotated"),
+  },
+});
+
 const listKeys = createRoute({
   method: "get",
   path: "/api/agents/keys",
@@ -88,8 +116,6 @@ const listKeys = createRoute({
     401: problem("Not signed in"),
   },
 });
-
-const keyParams = z.object({ keyId: z.string().min(1).max(200) });
 
 const revokeKey = createRoute({
   method: "delete",
@@ -169,6 +195,7 @@ export const routes = [
   createAgent,
   listAgents,
   issueKey,
+  rotateKey,
   listKeys,
   revokeKey,
   workspaceKeys,
@@ -190,6 +217,8 @@ const statusFor = {
   key_workspace_inaccessible: 401,
   key_out_of_scope: 403,
   insufficient_agent_access: 403,
+  source_key_revoked: 409,
+  source_key_expired: 409,
 } as const satisfies Record<AgentsErrorKind, number>;
 
 function isKind<K extends readonly AgentsErrorKind[]>(
@@ -221,6 +250,14 @@ const issueKinds = [
   "invalid_key_grant",
 ] as const;
 const keyKinds = ["not_signed_in", "key_not_found"] as const;
+const rotateKinds = [
+  "not_signed_in",
+  "key_not_found",
+  "workspace_not_found",
+  "invalid_key_grant",
+  "source_key_revoked",
+  "source_key_expired",
+] as const;
 const ownerKinds = ["not_signed_in", "not_workspace_owner"] as const;
 const ownerRevokeKinds = ["not_signed_in", "not_workspace_owner", "key_not_found"] as const;
 const identityKinds = [
@@ -267,6 +304,18 @@ export function createAgentsRest(service: AgentsService, sessionReader: SessionR
       return c.json(await service.issueKey(await sessionReader(c), c.req.valid("json")), 201);
     } catch (error) {
       return failure(c, error, issueKinds);
+    }
+  });
+
+  app.openapi(rotateKey, async (c) => {
+    try {
+      const { keyId } = c.req.valid("param");
+      return c.json(
+        await service.rotateKey(await sessionReader(c), keyId, c.req.valid("json")),
+        201,
+      );
+    } catch (error) {
+      return failure(c, error, rotateKinds);
     }
   });
 

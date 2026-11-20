@@ -22,6 +22,7 @@ const labels: Record<string, string> = {
   project_access_revoked: "revoked project access",
   agent_key_created: "created a credential for",
   agent_key_revoked: "revoked a credential for",
+  agent_key_rotated: "rotated a credential for",
   project_created: "created the project",
   project_renamed: "renamed the project",
   issue_created: "opened issue",

@@ -6,10 +6,12 @@ import {
   type Agent,
   type AgentIdentity,
   type AgentKey,
+  type AgentKeyGrant,
   type AgentKeyProject,
   type CreateAgentKeyRequest,
   type CreateAgentKeyResponse,
   type CreateAgentRequest,
+  type RotateAgentKeyRequest,
 } from "@orrery/contract";
 import { and, eq, gt, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
@@ -46,6 +48,15 @@ const VALIDITY_DAYS: Record<Exclude<AgentKeyValidity, "never">, number> = {
 // stored (platform/tokens.ts); the raw secret is returned once, when the key is issued.
 const newSecret = () => `orr_ak_${randomBytes(32).toString("base64url")}`;
 
+// Each key computes its own expiry when it is created, in database time. Rotation uses
+// the same helper as issuance, so a replacement's deadline is independent of the source
+// key's deadline and of the source key's later revocation (#35).
+function expiryFor(validity: AgentKeyValidity) {
+  return validity === AgentKeyValidity.enum.never
+    ? null
+    : sql`now() + make_interval(days => ${VALIDITY_DAYS[validity]})`;
+}
+
 export type AgentsErrorKind =
   | "not_signed_in"
   | "agent_name_taken"
@@ -59,7 +70,9 @@ export type AgentsErrorKind =
   | "key_expired"
   | "key_workspace_inaccessible"
   | "key_out_of_scope"
-  | "insufficient_agent_access";
+  | "insufficient_agent_access"
+  | "source_key_revoked"
+  | "source_key_expired";
 
 const messages: Record<AgentsErrorKind, string> = {
   not_signed_in: "Not signed in.",
@@ -75,6 +88,8 @@ const messages: Record<AgentsErrorKind, string> = {
   key_workspace_inaccessible: "The human who owns this key can no longer use its workspace.",
   key_out_of_scope: "The API key is not scoped to this workspace.",
   insufficient_agent_access: "The agent has no access to this project.",
+  source_key_revoked: "A revoked key cannot be rotated.",
+  source_key_expired: "An expired key cannot be rotated.",
 };
 
 export class AgentsError extends Error {
@@ -140,6 +155,13 @@ export interface AgentsService {
   issueKey(
     account: SessionAccount | null,
     input: CreateAgentKeyRequest,
+  ): Promise<CreateAgentKeyResponse>;
+  // Rotation creates an overlapping replacement for one of the human's own keys. The
+  // secret is returned once here; the source key's secret is never read or exposed.
+  rotateKey(
+    account: SessionAccount | null,
+    keyId: string,
+    input: RotateAgentKeyRequest,
   ): Promise<CreateAgentKeyResponse>;
   listKeys(account: SessionAccount | null, workspaceId?: string): Promise<AgentKey[]>;
   revokeKey(account: SessionAccount | null, keyId: string): Promise<AgentKey>;
@@ -236,6 +258,7 @@ type KeyRow = {
   expiresAt: Date | null;
   revokedAt: Date | null;
   revokedByHumanId: string | null;
+  replacesKeyId: string | null;
 };
 
 function keyRowColumns() {
@@ -249,6 +272,7 @@ function keyRowColumns() {
     expiresAt: agentApiKeys.expiresAt,
     revokedAt: agentApiKeys.revokedAt,
     revokedByHumanId: agentApiKeys.revokedByHumanId,
+    replacesKeyId: agentApiKeys.replacesKeyId,
   };
 }
 
@@ -264,6 +288,7 @@ function toKey(row: KeyRow, grants: AgentKeyProject[]): AgentKey {
     expiresAt: row.expiresAt?.toISOString() ?? null,
     revokedAt: row.revokedAt?.toISOString() ?? null,
     revokedByHumanId: row.revokedByHumanId,
+    replacesKeyId: row.replacesKeyId,
     projects: grants,
   };
 }
@@ -569,10 +594,7 @@ export function createAgentsService({
             createdByHumanId: actor.humanId,
             validity,
             tokenHash: tokenHash(secret),
-            expiresAt:
-              validity === AgentKeyValidity.enum.never
-                ? null
-                : sql`now() + make_interval(days => ${VALIDITY_DAYS[validity]})`,
+            expiresAt: expiryFor(validity),
           })
           .returning(keyRowColumns());
         if (inserted === undefined) throw new AgentsError("invalid_key_grant");
@@ -592,6 +614,121 @@ export function createAgentsService({
           tx,
           AgentKeyEventType.enum.agent_key_created,
           { id, agentId: agent.id, workspaceId: input.workspaceId },
+          actor.humanId,
+        );
+        const stored = await loadKeyProjects(tx, [id]);
+        return { key: toKey(row, stored.get(id) ?? []), secret };
+      });
+    },
+
+    async rotateKey(account, keyId, input) {
+      const actor = requireAccount(account);
+      return db.transaction(async (tx) => {
+        // Rotation writes a new key and reads the human's current grants, so it takes
+        // the same installation-wide ownership lock as issuance and takes it first. A
+        // member removal cannot slip its revocation between this transaction's reads
+        // and the replacement's INSERT (#35, matching issueKey).
+        await lockWorkspaceOwnershipWrites(tx);
+
+        // The source must be one of the human's own keys. Joining through the agent
+        // makes another human's key indistinguishable from a missing one: an id alone
+        // is not authority to mint a replacement.
+        const [source] = await tx
+          .select({ key: keyRowColumns(), agentName: agents.name })
+          .from(agentApiKeys)
+          .innerJoin(agents, eq(agents.id, agentApiKeys.agentId))
+          .where(and(eq(agentApiKeys.id, keyId), eq(agents.humanId, actor.humanId)))
+          .limit(1);
+        if (source === undefined) throw new AgentsError("key_not_found");
+
+        // Both keys must be live at the moment of rotation, otherwise "overlap" would
+        // be a lie. A revoked key is refused outright; an expired one is checked in
+        // database time even if no sweeper has stamped it. The check is about the
+        // source's own state, independent of the requested replacement validity.
+        if (source.key.revokedAt !== null) throw new AgentsError("source_key_revoked");
+        if (AgentKeyValidity.parse(source.key.validity) !== AgentKeyValidity.enum.never) {
+          const [live] = await tx
+            .select({ id: agentApiKeys.id })
+            .from(agentApiKeys)
+            .where(and(eq(agentApiKeys.id, keyId), gt(agentApiKeys.expiresAt, sql`now()`)))
+            .limit(1);
+          if (live === undefined) throw new AgentsError("source_key_expired");
+        }
+
+        // A key whose human owner can no longer use its workspace cannot be the source
+        // of a fresh credential for that workspace.
+        if (!(await humanCanUseWorkspace(tx, source.key.workspaceId, actor.humanId))) {
+          throw new AgentsError("workspace_not_found");
+        }
+
+        // Grants: an explicit list is validated exactly like issuance (a project above
+        // the human's current access is refused). Omitted grants are preserved from
+        // the source but re-capped by the human's *current* access: a level that was
+        // lowered is clamped, and a grant whose project is no longer reachable is
+        // dropped. Removed authority can never be carried into the replacement.
+        const preserved = (await loadKeyProjects(tx, [keyId])).get(keyId) ?? [];
+        const requested: AgentKeyGrant[] =
+          input.projects ??
+          preserved.map((grant) => ({ projectId: grant.projectId, level: grant.level }));
+        const explicit = input.projects !== undefined;
+        const ceiling = await projectAccessCeiling(
+          tx,
+          source.key.workspaceId,
+          actor.humanId,
+          requested.map((grant) => grant.projectId),
+        );
+        const grants: AgentKeyGrant[] = [];
+        for (const grant of requested) {
+          const humanLevel = ceiling.get(grant.projectId);
+          if (humanLevel === undefined || humanLevel === null) {
+            if (explicit) throw new AgentsError("invalid_key_grant");
+            continue;
+          }
+          if (!projectAccessAtLeast(humanLevel, grant.level)) {
+            if (explicit) throw new AgentsError("invalid_key_grant");
+            grants.push({ projectId: grant.projectId, level: humanLevel });
+          } else {
+            grants.push(grant);
+          }
+        }
+
+        // A new secret, a new id, and a new expiry computed from now(). The source
+        // key's hash is never selected, so its secret cannot be repeated here.
+        const validity = input.validity ?? AgentKeyValidity.parse(source.key.validity);
+        const secret = newSecret();
+        const id = randomUUID();
+        const [inserted] = await tx
+          .insert(agentApiKeys)
+          .values({
+            id,
+            agentId: source.key.agentId,
+            workspaceId: source.key.workspaceId,
+            createdByHumanId: actor.humanId,
+            validity,
+            tokenHash: tokenHash(secret),
+            expiresAt: expiryFor(validity),
+            replacesKeyId: keyId,
+          })
+          .returning(keyRowColumns());
+        if (inserted === undefined) throw new AgentsError("invalid_key_grant");
+        const row = { ...inserted, agentName: source.agentName };
+
+        if (grants.length > 0) {
+          await tx.insert(agentApiKeyProjects).values(
+            grants.map((grant) => ({
+              id: randomUUID(),
+              keyId: id,
+              projectId: grant.projectId,
+              level: grant.level,
+            })),
+          );
+        }
+        // One secret-free rotation event on the replacement key. Its replacesKeyId
+        // column names the source; no secret or hash is read, stored, or returned here.
+        await recordEvent(
+          tx,
+          AgentKeyEventType.enum.agent_key_rotated,
+          { id, agentId: source.key.agentId, workspaceId: source.key.workspaceId },
           actor.humanId,
         );
         const stored = await loadKeyProjects(tx, [id]);
