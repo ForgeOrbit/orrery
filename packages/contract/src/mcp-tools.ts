@@ -15,6 +15,7 @@ import {
   UpdateIssueRequest,
   UpdateKnowledgeEntryRequest,
 } from "./projects.ts";
+import { AskForInputInput, InboxResponse, IssueQuestionParams, QuestionResponse } from "./questions.ts";
 import { RunReportInput, RunReportResponse } from "./runs.ts";
 import {
   ClaimWorkSessionInput,
@@ -235,6 +236,26 @@ const allSessionsForIssue = {
   output: z.object({ sessions: WorkSessionsResponse }),
 };
 
+// Human input (issue #41). An agent asks through this tool; answering is a human-only
+// REST operation so no agent key — including a sibling run — can ever answer a question.
+const askForInput = {
+  name: "ask_for_input",
+  description:
+    "Ask the team a blocking question about an issue this agent currently holds. Include a concrete proposed fallback; the agent cannot authorize it. The question opens for one hour in database time, keeps the claim while the agent checks in, sets the issue to Needs input and emails the agent's owner. A human with Contribute or Manage answers through the inbox; at the deadline with no authorized fallback the question is paused, the claim released, and the issue stays Needs input until a human answers.",
+  input: AskForInputInput,
+  output: QuestionResponse,
+};
+
+// Agents read the human's answer back with a separate tool, matching the issue history
+// REST route. There is still no MCP answer tool: only the human REST inbox may answer.
+const listIssueQuestions = {
+  name: "list_issue_questions",
+  description:
+    "List every question asked about an in-scope issue and its resolution, newest first. A pending question may be reported as paused in database time once its one-hour deadline has passed. Needs no claim; answering remains a human-only REST operation.",
+  input: IssueQuestionParams,
+  output: z.object({ questions: InboxResponse }),
+};
+
 // Each feature registers only its own tools; `tools` is the complete list used by
 // `pnpm gen` to write contract/mcp-tools.json.
 export const projectTools: readonly ToolContract[] = [
@@ -267,4 +288,11 @@ export const sessionTools: readonly ToolContract[] = [
   allSessionsForIssue,
 ];
 
-export const tools: readonly ToolContract[] = [...projectTools, ...runTools, ...sessionTools];
+export const questionTools: readonly ToolContract[] = [askForInput, listIssueQuestions];
+
+export const tools: readonly ToolContract[] = [
+  ...projectTools,
+  ...runTools,
+  ...sessionTools,
+  ...questionTools,
+];

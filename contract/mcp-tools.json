@@ -1257,6 +1257,9 @@
             "issue_commented",
             "issue_closed",
             "issue_reopened",
+            "issue_question_asked",
+            "issue_question_answered",
+            "issue_question_paused",
             "knowledge_created",
             "knowledge_edited"
           ]
@@ -3383,6 +3386,365 @@
             "completed",
             "released",
             "expired"
+          ]
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        }
+      }
+    }
+  },
+  {
+    "name": "ask_for_input",
+    "description": "Ask the team a blocking question about an issue this agent currently holds. Include a concrete proposed fallback; the agent cannot authorize it. The question opens for one hour in database time, keeps the claim while the agent checks in, sets the issue to Needs input and emails the agent's owner. A human with Contribute or Manage answers through the inbox; at the deadline with no authorized fallback the question is paused, the claim released, and the issue stays Needs input until a human answers.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$ref": "#/$defs/AskForInputInput",
+      "$defs": {
+        "AskForInputInput": {
+          "type": "object",
+          "properties": {
+            "issueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "runId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "question": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 20000
+            },
+            "proposedFallback": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 20000
+            }
+          },
+          "required": [
+            "issueId",
+            "runId",
+            "question",
+            "proposedFallback"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$ref": "#/$defs/QuestionResponse",
+      "$defs": {
+        "QuestionResponse": {
+          "type": "object",
+          "properties": {
+            "question": {
+              "$ref": "#/$defs/Question"
+            }
+          },
+          "required": [
+            "question"
+          ],
+          "additionalProperties": false
+        },
+        "Question": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "issueId": {
+              "type": "string"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "workspaceId": {
+              "type": "string"
+            },
+            "agentId": {
+              "type": "string"
+            },
+            "runId": {
+              "type": "string"
+            },
+            "question": {
+              "type": "string"
+            },
+            "proposedFallback": {
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/$defs/QuestionStatus"
+            },
+            "responseDeadlineAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "answer": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "answeredByHumanId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "answeredAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "followUp": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "followUpByHumanId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "followUpAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "resolvedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            }
+          },
+          "required": [
+            "id",
+            "issueId",
+            "projectId",
+            "workspaceId",
+            "agentId",
+            "runId",
+            "question",
+            "proposedFallback",
+            "status",
+            "responseDeadlineAt",
+            "answer",
+            "answeredByHumanId",
+            "answeredAt",
+            "followUp",
+            "followUpByHumanId",
+            "followUpAt",
+            "resolvedAt",
+            "createdAt"
+          ],
+          "additionalProperties": false
+        },
+        "QuestionStatus": {
+          "type": "string",
+          "enum": [
+            "open",
+            "answered",
+            "paused",
+            "fallback_used"
+          ]
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        }
+      }
+    }
+  },
+  {
+    "name": "list_issue_questions",
+    "description": "List every question asked about an in-scope issue and its resolution, newest first. A pending question may be reported as paused in database time once its one-hour deadline has passed. Needs no claim; answering remains a human-only REST operation.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$ref": "#/$defs/IssueQuestionParams",
+      "$defs": {
+        "IssueQuestionParams": {
+          "type": "object",
+          "properties": {
+            "issueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
+          "required": [
+            "issueId"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "questions": {
+          "$ref": "#/$defs/InboxResponse"
+        }
+      },
+      "required": [
+        "questions"
+      ],
+      "additionalProperties": false,
+      "$defs": {
+        "InboxResponse": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Question"
+          }
+        },
+        "Question": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "issueId": {
+              "type": "string"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "workspaceId": {
+              "type": "string"
+            },
+            "agentId": {
+              "type": "string"
+            },
+            "runId": {
+              "type": "string"
+            },
+            "question": {
+              "type": "string"
+            },
+            "proposedFallback": {
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/$defs/QuestionStatus"
+            },
+            "responseDeadlineAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "answer": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "answeredByHumanId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "answeredAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "followUp": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "followUpByHumanId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "followUpAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "resolvedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            }
+          },
+          "required": [
+            "id",
+            "issueId",
+            "projectId",
+            "workspaceId",
+            "agentId",
+            "runId",
+            "question",
+            "proposedFallback",
+            "status",
+            "responseDeadlineAt",
+            "answer",
+            "answeredByHumanId",
+            "answeredAt",
+            "followUp",
+            "followUpByHumanId",
+            "followUpAt",
+            "resolvedAt",
+            "createdAt"
+          ],
+          "additionalProperties": false
+        },
+        "QuestionStatus": {
+          "type": "string",
+          "enum": [
+            "open",
+            "answered",
+            "paused",
+            "fallback_used"
           ]
         },
         "Timestamp": {

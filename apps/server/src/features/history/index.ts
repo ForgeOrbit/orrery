@@ -5,7 +5,7 @@ import { type HistoryDeps, createHistoryService } from "./service.ts";
 import { createHistoryRest, routes } from "./rest.ts";
 
 export { routes as historyRoutes };
-export { HistoryError } from "./service.ts";
+export { HistoryError, createHistoryService } from "./service.ts";
 export type { HistoryErrorKind, HistoryService } from "./service.ts";
 
 export type HistoryDepsWithAccounts = HistoryDeps & { sessionReader: SessionReader };

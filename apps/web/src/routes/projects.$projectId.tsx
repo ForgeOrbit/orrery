@@ -49,6 +49,9 @@ const activityLabels: Record<ProjectActivityType, string> = {
   issue_commented: "commented on issue",
   issue_closed: "closed issue",
   issue_reopened: "reopened issue",
+  issue_question_asked: "asked for input on issue",
+  issue_question_answered: "answered a question on issue",
+  issue_question_paused: "paused a question on issue",
   knowledge_created: "created knowledge",
   knowledge_edited: "edited knowledge",
 };

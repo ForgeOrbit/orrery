@@ -27,6 +27,9 @@ export const ProjectActivityType = z
     "issue_commented",
     "issue_closed",
     "issue_reopened",
+    "issue_question_asked",
+    "issue_question_answered",
+    "issue_question_paused",
     "knowledge_created",
     "knowledge_edited",
   ])

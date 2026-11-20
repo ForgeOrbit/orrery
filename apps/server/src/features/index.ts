@@ -1,6 +1,6 @@
 // The feature registry: the one place that lists every feature. main.ts and the contract
 // generator use it. Add a new feature here.
-import type { Database } from "../platform/db.ts";
+import type { Database, DbTransaction } from "../platform/db.ts";
 import type { Config } from "../platform/config.ts";
 import type { Feature } from "../platform/feature.ts";
 import type { Logger } from "../platform/log.ts";
@@ -9,6 +9,7 @@ import { createAgentsFeature, agentsRoutes, revokeMemberWorkspaceKeys } from "./
 import type { AgentAuthenticator } from "./agents/index.ts";
 import type { WorkSessionGate } from "./projects/index.ts";
 import { createHistoryFeature, historyRoutes } from "./history/index.ts";
+import { createInboxFeature, inboxRoutes } from "./inbox/index.ts";
 import { createInvitationsFeature, invitationsRoutes } from "./invitations/index.ts";
 import { createProjectsFeature, projectAccessAtLeast, projectsRoutes } from "./projects/index.ts";
 import { createRecoveryFeature, recoveryRoutes } from "./recovery/index.ts";
@@ -52,6 +53,21 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     if (sessionGate === undefined) throw new Error("work session gate is not wired");
     return sessionGate(tx, agentId, workspaceId, issueId);
   };
+  // Work sessions borrow the question deadline and the atomic deadline evaluation from
+  // the inbox feature on its already issue-locked transaction, so a check-in cannot renew a
+  // claim past the one-hour deadline. Both seams are filled once the inbox is built.
+  let questionLeaseDeadline:
+    | ((tx: DbTransaction, issueId: string) => Promise<Date | null>)
+    | undefined;
+  let questionEvaluateDeadline: ((tx: DbTransaction, issueId: string) => Promise<void>) | undefined;
+  const leaseDeadline = (tx: DbTransaction, issueId: string): Promise<Date | null> => {
+    if (questionLeaseDeadline === undefined) throw new Error("question deadline is not wired");
+    return questionLeaseDeadline(tx, issueId);
+  };
+  const evaluateDeadline = (tx: DbTransaction, issueId: string): Promise<void> => {
+    if (questionEvaluateDeadline === undefined) throw new Error("question deadline is not wired");
+    return questionEvaluateDeadline(tx, issueId);
+  };
   const projects = createProjectsFeature({
     db: database.db,
     sessionReader: accounts.sessionReader,
@@ -76,9 +92,25 @@ export function createFeatures(database: Database, config: Config, log: Logger):
       projects.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
     projectAccessAtLeast,
     listIssues: (actor, projectId) => projects.service.listIssues(actor, projectId),
+    questionLeaseDeadline: leaseDeadline,
+    evaluateQuestionDeadline: evaluateDeadline,
   });
   sessionGate = (tx, agentId, workspaceId, issueId) =>
     sessions.agentHoldsSession(tx, agentId, workspaceId, issueId);
+  // The inbox is built after work sessions (it reuses the same agent session gate) and
+  // fills the two deadline seams the sessions service calls on its locked transaction.
+  const inbox = createInboxFeature({
+    db: database.db,
+    sessionReader: accounts.sessionReader,
+    authenticate: agentAuthenticator,
+    projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
+      projects.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
+    projectAccessAtLeast,
+    deliver: settings.deliver,
+    log,
+  });
+  questionLeaseDeadline = (tx, issueId) => inbox.questionDeadline(tx, issueId);
+  questionEvaluateDeadline = (tx, issueId) => inbox.evaluateDeadline(tx, issueId);
   return [
     createSystemFeature({ ping: database.ping }),
     accounts,
@@ -144,6 +176,7 @@ export function createFeatures(database: Database, config: Config, log: Logger):
       authenticate: agentAuthenticator,
     }),
     sessions,
+    inbox,
   ];
 }
 
@@ -160,4 +193,5 @@ export const routes = [
   ...historyRoutes,
   ...runsRoutes,
   ...sessionsRoutes,
+  ...inboxRoutes,
 ];

@@ -1,0 +1,554 @@
+import { randomBytes, randomUUID } from "node:crypto";
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import { AgentIdentity, ProjectAccessLevel } from "@orrery/contract";
+import { and, eq, sql } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  agentApiKeyProjects,
+  agentApiKeys,
+  agents,
+  humans,
+  issues,
+  projectActivity,
+  projects,
+  questions as questionRows,
+  runs as runRows,
+  workSessions,
+  workspaces,
+} from "../../db/schema.ts";
+import { createDb, type Database } from "../../platform/db.ts";
+import { createLogger, type Logger } from "../../platform/log.ts";
+import { migrate } from "../../platform/migrate.ts";
+import { tokenHash } from "../../platform/tokens.ts";
+import { createAccountsFeature } from "../accounts/index.ts";
+import { createAgentsFeature, type AgentAuthenticator } from "../agents/index.ts";
+import { createHistoryService } from "../history/index.ts";
+import { createProjectsFeature, projectAccessAtLeast } from "../projects/index.ts";
+import { createSessionsFeature, type SessionsService } from "../work-sessions/index.ts";
+import type { OutgoingMail } from "../settings/index.ts";
+import { createInboxService, InboxError, type InboxService } from "./service.ts";
+
+// Real Postgres: the question lifecycle is a database-time state machine. Every boundary
+// and race below is driven by statement_timestamp() against a real transaction, never by a
+// mocked clock or a sleeping test.
+
+const SECRET = "correct horse battery staple inbox";
+const ADMIN_EMAIL = "inbox-admin@example.com";
+const PUBLIC_URL = "http://orrery.test";
+const silentLogger: Logger = createLogger("error");
+
+let pg: StartedPostgreSqlContainer;
+let database: Database;
+let inbox: InboxService;
+let sessions: SessionsService;
+let projectsService: ReturnType<typeof createProjectsFeature>["service"];
+let history: ReturnType<typeof createHistoryService>;
+let delivered: OutgoingMail[];
+let liveAuth: AgentAuthenticator | undefined;
+
+const lateAuth: AgentAuthenticator = (request) => {
+  if (liveAuth === undefined) throw new Error("authenticator not wired");
+  return liveAuth(request);
+};
+
+beforeAll(async () => {
+  pg = await new PostgreSqlContainer("postgres:18").start();
+  database = createDb(pg.getConnectionUri());
+  const migrationsDir = new URL("../../../../../db/migrations", import.meta.url).pathname;
+  await migrate(database.sql, migrationsDir);
+  delivered = [];
+
+  const accounts = createAccountsFeature({
+    db: database.db,
+    setupSecret: SECRET,
+    publicUrl: PUBLIC_URL,
+  });
+  let gate: Parameters<typeof createProjectsFeature>[0]["sessionGate"] | undefined;
+  const projectsFeature = createProjectsFeature({
+    db: database.db,
+    sessionReader: accounts.sessionReader,
+    agentAuthenticator: async () => null,
+    sessionGate: (tx, agentId, workspaceId, issueId) => {
+      if (gate === undefined) throw new Error("gate not wired");
+      return gate(tx, agentId, workspaceId, issueId);
+    },
+  });
+  const agentsFeature = createAgentsFeature({
+    db: database.db,
+    sessionReader: accounts.sessionReader,
+    projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
+      projectsFeature.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
+    projectAccessAtLeast,
+  });
+  liveAuth = agentsFeature.authenticator;
+  const sessionsFeature = createSessionsFeature({
+    db: database.db,
+    sessionReader: accounts.sessionReader,
+    authenticate: lateAuth,
+    projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
+      projectsFeature.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
+    projectAccessAtLeast,
+    listIssues: (actor, projectId) => projectsFeature.service.listIssues(actor, projectId),
+    questionLeaseDeadline: (tx, issueId) => inbox.questionDeadline(tx, issueId),
+    evaluateQuestionDeadline: (tx, issueId) => inbox.evaluateDeadline(tx, issueId),
+  });
+  gate = (tx, agentId, workspaceId, issueId) =>
+    sessionsFeature.agentHoldsSession(tx, agentId, workspaceId, issueId);
+  inbox = createInboxService({
+    db: database.db,
+    projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
+      projectsFeature.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
+    projectAccessAtLeast,
+    deliver: async (mail) => {
+      delivered.push(mail);
+    },
+    log: silentLogger,
+  });
+  projectsService = projectsFeature.service;
+  sessions = sessionsFeature.service;
+  history = createHistoryService({
+    db: database.db,
+    projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
+      projectsFeature.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
+  });
+}, 120_000);
+
+afterAll(async () => {
+  await database?.sql.end();
+  await pg?.stop();
+});
+
+afterEach(async () => {
+  delivered = [];
+  await database.db.transaction(async (tx) => {
+    await tx.execute(sql`delete from project_activity`);
+    await tx.execute(sql`delete from questions`);
+    await tx.execute(sql`delete from work_sessions`);
+    await tx.execute(sql`delete from agent_key_events`);
+    await tx.execute(sql`delete from agent_api_key_projects`);
+    await tx.execute(sql`delete from agent_api_keys`);
+    await tx.execute(sql`delete from project_access_events`);
+    await tx.execute(sql`delete from project_access_grants`);
+    await tx.execute(sql`delete from issue_comments`);
+    await tx.execute(sql`delete from issues`);
+    await tx.execute(sql`delete from run_children`);
+    await tx.execute(sql`delete from run_model_changes`);
+    await tx.execute(sql`delete from runs`);
+    await tx.execute(sql`delete from agents`);
+    await tx.execute(sql`delete from workspace_events`);
+    await tx.execute(sql`delete from workspace_invitation_grants`);
+    await tx.execute(sql`delete from workspace_invitations`);
+    await tx.execute(sql`delete from projects`);
+    await tx.execute(sql`delete from workspace_memberships`);
+    await tx.execute(sql`delete from workspaces`);
+    await tx.execute(sql`delete from browser_sessions`);
+    await tx.execute(sql`delete from instance_setup`);
+    await tx.execute(sql`delete from instance_settings`);
+    await tx.execute(sql`delete from email_verification_tokens`);
+    await tx.execute(sql`delete from humans`);
+  });
+});
+
+type Fixture = {
+  humanId: string;
+  email: string;
+  workspaceId: string;
+  projectId: string;
+  agentId: string;
+  identity: AgentIdentity;
+};
+
+async function bootstrap(email = ADMIN_EMAIL): Promise<Fixture> {
+  const [human] = await database.db
+    .insert(humans)
+    .values({
+      id: randomUUID(),
+      email,
+      passwordHash: tokenHash(randomBytes(32).toString("hex")),
+      emailVerifiedAt: new Date(),
+    })
+    .returning();
+  if (human === undefined) throw new Error("human not created");
+  const [workspace] = await database.db
+    .insert(workspaces)
+    .values({
+      id: randomUUID(),
+      kind: "personal",
+      name: "Inbox personal",
+      personalOwnerHumanId: human.id,
+    })
+    .returning();
+  if (workspace === undefined) throw new Error("workspace not created");
+  const [project] = await database.db
+    .insert(projects)
+    .values({
+      id: randomUUID(),
+      workspaceId: workspace.id,
+      name: "Inbox project",
+      createdByHumanId: human.id,
+    })
+    .returning();
+  if (project === undefined) throw new Error("project not created");
+  const [agent] = await database.db
+    .insert(agents)
+    .values({ id: randomUUID(), humanId: human.id, name: `inbox-agent-${randomUUID()}` })
+    .returning();
+  if (agent === undefined) throw new Error("agent not created");
+  const secret = `key-${randomBytes(24).toString("hex")}`;
+  const [key] = await database.db
+    .insert(agentApiKeys)
+    .values({
+      id: randomUUID(),
+      agentId: agent.id,
+      workspaceId: workspace.id,
+      createdByHumanId: human.id,
+      validity: "90",
+      tokenHash: tokenHash(secret),
+      createdAt: new Date(),
+    })
+    .returning();
+  await database.db.insert(agentApiKeyProjects).values({
+    id: randomUUID(),
+    keyId: key!.id,
+    projectId: project.id,
+    level: "contribute",
+  });
+  const identity = AgentIdentity.parse({
+    agentId: agent.id,
+    name: agent.name,
+    humanId: human.id,
+    keyId: key!.id,
+    workspaceId: workspace.id,
+    validity: "90",
+    projects: [{ projectId: project.id, projectName: project.name, level: "contribute" }],
+  });
+  return {
+    humanId: human.id,
+    email: human.email,
+    workspaceId: workspace.id,
+    projectId: project.id,
+    agentId: agent.id,
+    identity,
+  };
+}
+
+async function humanActor(f: Fixture) {
+  return {
+    kind: "human" as const,
+    account: {
+      humanId: f.humanId,
+      email: f.email,
+      isSystemAdministrator: false,
+      emailVerifiedAt: new Date(),
+    },
+  };
+}
+
+async function newIssue(f: Fixture, title = "Blocked issue") {
+  return projectsService.createIssue(await humanActor(f), f.projectId, { title });
+}
+
+async function newRun(f: Fixture) {
+  const [run] = await database.db
+    .insert(runRows)
+    .values({
+      id: randomUUID(),
+      agentId: f.agentId,
+      workspaceId: f.workspaceId,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .returning({ id: runRows.id });
+  if (run === undefined) throw new Error("run not created");
+  return run.id;
+}
+
+async function claim(f: Fixture, issueId: string, runId: string) {
+  return sessions.claim({ kind: "agent", identity: f.identity }, { issueId, runId });
+}
+
+async function ask(f: Fixture, issueId: string, runId: string) {
+  return inbox.ask(
+    { kind: "agent", identity: f.identity },
+    { issueId, runId, question: "Which API should we use?", proposedFallback: "Use v1" },
+  );
+}
+
+async function setDeadline(questionId: string, expression: string) {
+  await database.db.execute(
+    sql`update questions set response_deadline_at = ${sql.raw(expression)}, created_at = statement_timestamp() - interval '2 hours' where id = ${questionId}`,
+  );
+}
+
+async function isNeedsInput(issueId: string): Promise<boolean> {
+  const [row] = await database.db
+    .select({ needsInput: issues.needsInput })
+    .from(issues)
+    .where(eq(issues.id, issueId))
+    .limit(1);
+  return row?.needsInput ?? false;
+}
+
+async function activeSessions(issueId: string): Promise<number> {
+  const rows = await database.db
+    .select({ id: workSessions.id })
+    .from(workSessions)
+    .where(and(eq(workSessions.issueId, issueId), eq(workSessions.status, "active")));
+  return rows.length;
+}
+
+function kindOf(error: unknown): string {
+  return error instanceof InboxError ? error.kind : "unexpected_error";
+}
+
+function refused(promise: Promise<unknown>): Promise<unknown> {
+  return promise.then(
+    () => Promise.reject(new Error("expected the operation to be refused")),
+    (error: unknown) => error,
+  );
+}
+
+describe("questions against real Postgres", () => {
+  it("opens a question with Needs input, emails the agent owner and refuses agent answerers", async () => {
+    const f = await bootstrap();
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const question = await ask(f, issue.id, runId);
+
+    expect(question.status).toBe("open");
+    expect(question.proposedFallback).toBe("Use v1");
+    expect(await isNeedsInput(issue.id)).toBe(true);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]?.to).toBe(f.email);
+    expect(delivered[0]?.text).toContain(question.question);
+
+    const agentAnswer = await refused(
+      inbox.answer({ kind: "agent", identity: f.identity }, question.id, "v2"),
+    );
+    expect(kindOf(agentAnswer)).toBe("agents_cannot_answer");
+    expect((await database.db.select().from(questionRows))[0]?.status).toBe("open");
+  });
+
+  it("resolves exactly once when two humans answer concurrently", async () => {
+    const f = await bootstrap();
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const question = await ask(f, issue.id, runId);
+    const human = await humanActor(f);
+
+    const results = await Promise.allSettled([
+      inbox.answer(human, question.id, "first"),
+      inbox.answer(human, question.id, "second"),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(kindOf(rejected?.status === "rejected" ? rejected.reason : undefined)).toBe(
+      "question_resolved",
+    );
+    const [stored] = await database.db.select().from(questionRows);
+    expect(stored?.status).toBe("answered");
+    expect(["first", "second"]).toContain(stored?.answer);
+    expect(await isNeedsInput(issue.id)).toBe(false);
+  });
+
+  it("accepts an answer just before the deadline in database time", async () => {
+    const f = await bootstrap();
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const question = await ask(f, issue.id, runId);
+    await setDeadline(question.id, "statement_timestamp() + interval '10 seconds'");
+
+    const answered = await inbox.answer(await humanActor(f), question.id, "use v2");
+    expect(answered.status).toBe("answered");
+    expect(await isNeedsInput(issue.id)).toBe(false);
+    expect(await activeSessions(issue.id)).toBe(1);
+  });
+
+  it("at the deadline pauses, releases the claim and keeps Needs input until a human answers", async () => {
+    const f = await bootstrap();
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const question = await ask(f, issue.id, runId);
+    await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
+
+    await refused(claim(f, issue.id, runId));
+    const [paused] = await database.db.select().from(questionRows);
+    expect(paused?.status).toBe("paused");
+    expect(await isNeedsInput(issue.id)).toBe(true);
+    expect(await activeSessions(issue.id)).toBe(0);
+
+    const answered = await inbox.answer(await humanActor(f), question.id, "here is the answer");
+    expect(answered.status).toBe("answered");
+    expect(await isNeedsInput(issue.id)).toBe(false);
+    expect(await activeSessions(issue.id)).toBe(0);
+    expect((await database.db.select().from(questionRows))[0]?.answer).toBe("here is the answer");
+  });
+
+  it("keeps the question and Needs input when the claim lapses, then unblocks on answer", async () => {
+    const f = await bootstrap();
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    await ask(f, issue.id, runId);
+    await database.db.execute(
+      sql`update work_sessions set lease_expires_at = statement_timestamp() - interval '1 second' where issue_id = ${issue.id}`,
+    );
+    const [open] = await database.db.select().from(questionRows);
+    expect(open?.status).toBe("open");
+    expect(await isNeedsInput(issue.id)).toBe(true);
+
+    const answered = await inbox.answer(await humanActor(f), open!.id, "reacquire first");
+    expect(answered.status).toBe("answered");
+    expect(await isNeedsInput(issue.id)).toBe(false);
+  });
+
+  it("renews a claim while waiting but never past the question deadline", async () => {
+    const f = await bootstrap();
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const question = await ask(f, issue.id, runId);
+    await setDeadline(question.id, "statement_timestamp() + interval '30 seconds'");
+    const dbDeadline = await database.db.transaction((tx) => inbox.questionDeadline(tx, issue.id));
+    expect(dbDeadline, "question deadline seam must find the open question").not.toBeNull();
+    await sessions.renew({ kind: "agent", identity: f.identity }, issue.id);
+    const [row] = await database.db
+      .select({ lease: workSessions.leaseExpiresAt, deadline: questionRows.responseDeadlineAt })
+      .from(workSessions)
+      .innerJoin(questionRows, eq(questionRows.sessionId, workSessions.id))
+      .where(eq(workSessions.issueId, issue.id))
+      .limit(1);
+    expect(row?.lease.getTime()).toBeLessThanOrEqual(row!.deadline.getTime());
+    expect(await activeSessions(issue.id)).toBe(1);
+  });
+
+  it("refuses readers, unrelated members and sibling agent keys", async () => {
+    const f = await bootstrap();
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const question = await ask(f, issue.id, runId);
+
+    const [agent] = await database.db
+      .insert(agents)
+      .values({ id: randomUUID(), humanId: f.humanId, name: `sibling-${randomUUID()}` })
+      .returning();
+    const [key] = await database.db
+      .insert(agentApiKeys)
+      .values({
+        id: randomUUID(),
+        agentId: agent!.id,
+        workspaceId: f.workspaceId,
+        createdByHumanId: f.humanId,
+        validity: "90",
+        tokenHash: tokenHash(randomBytes(24).toString("hex")),
+        createdAt: new Date(),
+      })
+      .returning();
+    await database.db.insert(agentApiKeyProjects).values({
+      id: randomUUID(),
+      keyId: key!.id,
+      projectId: f.projectId,
+      level: "contribute",
+    });
+    const siblingIdentity = AgentIdentity.parse({
+      agentId: agent!.id,
+      name: agent!.name,
+      humanId: f.humanId,
+      keyId: key!.id,
+      workspaceId: f.workspaceId,
+      validity: "90",
+      projects: [{ projectId: f.projectId, projectName: "Inbox project", level: "contribute" }],
+    });
+    const sibling = await refused(
+      inbox.answer({ kind: "agent", identity: siblingIdentity }, question.id, "sibling answer"),
+    );
+    expect(kindOf(sibling)).toBe("agents_cannot_answer");
+
+    // The access ceiling is the one policy resolver; feed the service the Read and null
+    // outcomes it would receive for a reader and an unrelated member.
+    const readOnly = createInboxService({
+      db: database.db,
+      projectAccessCeiling: async () => new Map([[f.projectId, ProjectAccessLevel.enum.read]]),
+      projectAccessAtLeast,
+      deliver: async () => {},
+      log: silentLogger,
+    });
+    expect(kindOf(await refused(readOnly.answer(await humanActor(f), question.id, "reader")))).toBe(
+      "insufficient_access",
+    );
+    const unrelated = createInboxService({
+      db: database.db,
+      projectAccessCeiling: async () => new Map([[f.projectId, null]]),
+      projectAccessAtLeast,
+      deliver: async () => {},
+      log: silentLogger,
+    });
+    // No access at all is a 404: an unrelated caller must not learn that the question or
+    // its issue exists (non-enumeration), while a Reader gets a 403 on the answer.
+    expect(
+      kindOf(await refused(unrelated.answer(await humanActor(f), question.id, "outsider"))),
+    ).toBe("question_not_found");
+    expect(kindOf(await refused(unrelated.issueHistory(await humanActor(f), issue.id)))).toBe(
+      "issue_not_found",
+    );
+  });
+
+  it("scopes the inbox to the human's workspaces and reports DB-time status on reads", async () => {
+    const f = await bootstrap();
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const mine = await ask(f, issue.id, runId);
+
+    // A question in another human's personal workspace must not appear in this inbox, even
+    // though it is the newest question in the database.
+    const other = await bootstrap(`inbox-other-${randomUUID()}@example.com`);
+    const otherIssue = await newIssue(other);
+    const otherRun = await newRun(other);
+    await claim(other, otherIssue.id, otherRun);
+    const theirs = await ask(other, otherIssue.id, otherRun);
+    const ids = (await inbox.list(await humanActor(f))).map((row) => row.id);
+    expect(ids).toContain(mine.id);
+    expect(ids).not.toContain(theirs.id);
+    expect(ids.length).toBeLessThanOrEqual(200);
+
+    // After the deadline, a read must show the question as paused in database time even if
+    // no write has evaluated the deadline yet.
+    await setDeadline(mine.id, "statement_timestamp() - interval '1 second'");
+    const fromList = (await inbox.list(await humanActor(f))).find((row) => row.id === mine.id);
+    expect(fromList?.status).toBe("paused");
+    const fromHistory = await inbox.issueHistory(await humanActor(f), issue.id);
+    expect(fromHistory[0]?.status).toBe("paused");
+  });
+
+  it("records the question and its resolution in project history", async () => {
+    const f = await bootstrap();
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const question = await ask(f, issue.id, runId);
+    await inbox.answer(await humanActor(f), question.id, "recorded answer");
+
+    const events = await history.projectHistory(
+      {
+        humanId: f.humanId,
+        email: f.email,
+        isSystemAdministrator: false,
+        emailVerifiedAt: new Date(),
+      },
+      f.projectId,
+    );
+    const types = events.map((event) => event.type);
+    expect(types).toContain("issue_question_asked");
+    expect(types).toContain("issue_question_answered");
+    const rows = await database.db.select().from(projectActivity);
+    expect(rows.map((row) => row.issueId)).toContain(issue.id);
+  });
+});
