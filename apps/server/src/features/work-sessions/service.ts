@@ -834,6 +834,38 @@ export function createSessionsService({
     });
   };
 
+  // A crashed worker's five-minute lease can lapse with no further write on its issue,
+  // leaving the row stuck at in_progress even though nobody is working. Ready work filters
+  // on status = todo, so materialize those lapses in a committed transaction before the
+  // read-only queue query. Issues are locked in id order first, matching every other
+  // claim/release writer, so a concurrent renewal cannot revert a freshly claimed issue.
+  const expireCommittedForProject = async (projectId: string) => {
+    await db.transaction(async (tx) => {
+      const stale = await tx
+        .select({ issueId: workSessions.issueId })
+        .from(workSessions)
+        .innerJoin(issues, eq(workSessions.issueId, issues.id))
+        .where(
+          and(
+            eq(issues.projectId, projectId),
+            eq(workSessions.status, WorkSessionStatus.enum.active),
+            lte(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
+          ),
+        );
+      const issueIds = [...new Set(stale.map((row) => row.issueId))].toSorted();
+      if (issueIds.length === 0) return;
+      await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(inArray(issues.id, issueIds))
+        .orderBy(issues.id)
+        .for("update");
+      // expireStale only reverts an issue whose active session actually lapsed, so a
+      // renewal that committed after the read above keeps its issue in in_progress.
+      for (const issueId of issueIds) await expireStale(tx, issueId);
+    });
+  };
+
   // Renew, progress, stop and activity logging share one live-session decision: lock the
   // issue, expire a stale lease, re-check the agent's current project level, find the live
   // session the agent holds, then apply the one write. Only that write differs. The session
@@ -1471,6 +1503,9 @@ export function createSessionsService({
 
     async readyWork(actorArg, projectId, filter = "all") {
       const actor = requireActor(actorArg);
+      // #94: a lapsed lease ends the work even when nobody checked in. Materialize those
+      // expiries before the read-only query so a crashed worker's issue is really todo.
+      await expireCommittedForProject(projectId);
       // #84: an agent's `all` queue is exactly the claimable set — unassigned issues plus
       // its own. Issues assigned to a human or a sibling agent are never offered, because
       // the strict claim policy would refuse them anyway. Narrow filters are explicit.
@@ -1494,8 +1529,8 @@ export function createSessionsService({
         async (tx) => {
           const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
           await requireAccess(actor, projectId, ProjectAccessLevel.enum.read, "project_not_found");
-          // A session with a lease already past database time is not a live claim; the
-          // join predicate treats it exactly like a released one without mutating it.
+          // The expiry pass above materialized lapsed leases; the DB-time predicate here
+          // still guards against a lease lapsing between that pass and this read.
           const live = and(
             eq(workSessions.issueId, issues.id),
             eq(workSessions.status, WorkSessionStatus.enum.active),

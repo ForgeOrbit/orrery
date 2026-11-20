@@ -767,11 +767,11 @@ describe("work sessions against real Postgres", () => {
     const ready = await sessionsService.readyWork({ kind: "agent", identity }, f.projectId);
     expect(ready.map((item) => item.id)).toEqual([plain.id]);
     await setLease(claimed.id, "statement_timestamp() - interval '1 second'");
-    // #94: a lapsed lease returns the issue to todo when expiry is materialized; a
-    // check-in refuses the stale session but commits that expiry first.
-    await rejection(sessionsService.renew({ kind: "agent", identity }, claimed.id));
-    expect((await issueStatus(claimed.id)).status).toBe("todo");
+    // #94: a lapsed lease ends the work even with no check-in. Ready work materializes
+    // the expiry itself, so the crashed worker's issue is immediately claimable again.
+    expect((await issueStatus(claimed.id)).status).toBe("in_progress");
     const afterExpiry = await sessionsService.readyWork({ kind: "agent", identity }, f.projectId);
+    expect((await issueStatus(claimed.id)).status).toBe("todo");
     expect(afterExpiry.map((item) => item.id)).toEqual([plain.id, claimed.id]);
   });
 
@@ -804,6 +804,30 @@ describe("work sessions against real Postgres", () => {
     await projectsService.removeBlockedBy(human, downstream.id, blocker.id);
     const afterRemoval = await sessionsService.readyWork({ kind: "agent", identity }, f.projectId);
     expect(afterRemoval.map((item) => item.id)).toContain(downstream.id);
+  });
+
+  it("unblocks a dependent when its blocker is cancelled, but not when it is in review", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const agent = { kind: "agent" as const, identity };
+    const blocker = await humanIssue(f, "Cancelled prerequisite");
+    const downstream = await humanIssue(f, "Downstream of cancelled");
+    await projectsService.addBlockedBy(humanActor(f), downstream.id, {
+      blockedByIssueId: blocker.id,
+    });
+
+    // Review is a non-terminal handoff and still blocks.
+    await projectsService.updateIssue(humanActor(f), blocker.id, { status: "review" });
+    expect((await sessionsService.readyWork(agent, f.projectId)).map((i) => i.id)).not.toContain(
+      downstream.id,
+    );
+
+    // Cancelling is terminal: it sets closed_at and frees the dependent immediately.
+    await projectsService.updateIssue(humanActor(f), blocker.id, { status: "cancelled" });
+    expect((await issueStatus(blocker.id)).closedAt).not.toBeNull();
+    expect((await sessionsService.readyWork(agent, f.projectId)).map((i) => i.id)).toContain(
+      downstream.id,
+    );
   });
 
   it("orders ready work by priority, then sortOrder, then createdAt", async () => {
@@ -2254,6 +2278,31 @@ describe("agent assignment and the ready queue (#84)", () => {
     expect((await sessionsService.readyWork(agent, f.projectId)).map((i) => i.id)).toContain(
       blocked.id,
     );
+  });
+
+  it("answers a REST claim on a non-todo issue with 409 issue_blocked", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const runId = await newRun(identity);
+    const backlog = await humanIssue(f, "Triage queue");
+    await projectsService.updateIssue(humanActor(f), backlog.id, { status: "backlog" });
+    const review = await humanIssue(f, "Handoff");
+    await projectsService.updateIssue(humanActor(f), review.id, { status: "review" });
+
+    for (const issue of [backlog, review]) {
+      const res = await postJson(
+        `/api/issues/${issue.id}/work-sessions`,
+        { runId },
+        undefined,
+        f.secret,
+      );
+      expect(res.status).toBe(409);
+      expect(res.headers.get("content-type")).toBe("application/problem+json");
+      expect(Problem.parse(await res.json())).toMatchObject({
+        status: 409,
+        code: "issue_blocked",
+      });
+    }
   });
 
   it("offers only todo issues, and reacquisition returns an expired issue to in_progress", async () => {

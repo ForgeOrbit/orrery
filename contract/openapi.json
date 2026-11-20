@@ -8396,7 +8396,7 @@
             }
           },
           "409": {
-            "description": "The issue is assigned to a human or another agent, or another worker holds it",
+            "description": "The issue is not ready work (todo), is assigned to another worker, or another worker holds it",
             "content": {
               "application/problem+json": {
                 "schema": {

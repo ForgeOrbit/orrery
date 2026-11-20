@@ -671,6 +671,41 @@ export function createInboxService(deps: InboxDeps): InboxService {
           .update(issues)
           .set({ needsInput: false, updatedAt: sql`statement_timestamp()` })
           .where(eq(issues.id, issue.id));
+        // #94: the one-hour deadline is not the only way a claim can end. A five-minute
+        // lease can lapse while the question is still open (so evaluateDeadline was a
+        // no-op). Answering must not leave a live issue stranded in in_progress with no
+        // worker: expire the lapsed claim and return it to todo under this issue lock.
+        const [liveClaim] = await tx
+          .select({ id: workSessions.id })
+          .from(workSessions)
+          .where(
+            and(
+              eq(workSessions.issueId, issue.id),
+              eq(workSessions.status, "active"),
+              gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
+            ),
+          )
+          .limit(1);
+        if (liveClaim === undefined) {
+          await tx
+            .update(workSessions)
+            .set({
+              status: "expired",
+              endedAt: sql`statement_timestamp()`,
+              updatedAt: sql`statement_timestamp()`,
+            })
+            .where(
+              and(
+                eq(workSessions.issueId, issue.id),
+                eq(workSessions.status, "active"),
+                lte(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
+              ),
+            );
+          await tx
+            .update(issues)
+            .set({ status: "todo", updatedAt: sql`statement_timestamp()` })
+            .where(and(eq(issues.id, issue.id), eq(issues.status, "in_progress")));
+        }
         await recordActivity(tx, {
           projectId: issue.projectId,
           issueId: issue.id,

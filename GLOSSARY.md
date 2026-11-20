@@ -75,23 +75,3 @@ _Avoid_: Run, agent
 **Claim**:
 The temporary reservation of an issue by its active work session.
 _Avoid_: Assignment, ownership
-
-**Project key**:
-A short, workspace-unique prefix that gives a project's issues readable identifiers such as `ORR-42`.
-_Avoid_: Slug, repository name, code
-
-**Subtask**:
-An issue nested one level beneath a parent issue in the same project, independently claimable and tracked on the board.
-_Avoid_: Checklist item, child epic
-
-**Label**:
-A project-scoped tag attached to issues for categorization and filtering.
-_Avoid_: Tag, type, category
-
-**Handoff**:
-Completing a work session by moving its issue to Review for human inspection rather than closing it directly.
-_Avoid_: Close, release
-
-**Trash**:
-The 30-day recovery period for soft-deleted items before their content is scrubbed while preserving activity history and identifiers.
-_Avoid_: Hard delete, archive

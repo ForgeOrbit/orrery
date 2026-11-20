@@ -1753,15 +1753,18 @@ export function createProjectsService({
       const workActor: WorkActor = { kind: "human", account: actor };
       return db.transaction(async (tx) => {
         await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issueId)).for("update");
+        // The issue row is already locked: resolve a due question before its policy can
+        // change, so the recorded outcome cannot be reinterpreted by the override write.
+        await evaluateQuestionDeadline?.(tx, issueId);
+        // #94: that evaluation can pause a require_human question and revert the issue
+        // from in_progress to todo. Re-read under the same lock so the no-op decision and
+        // the returned Issue carry the new status instead of a stale one.
         const current = await requireIssue(
           tx,
           issueId,
           workActor,
           ProjectAccessLevel.enum.contribute,
         );
-        // The issue row is already locked: resolve a due question before its policy can
-        // change, so the recorded outcome cannot be reinterpreted by the override write.
-        await evaluateQuestionDeadline?.(tx, issueId);
         const override = input.override;
         const currentEffective = current.fallbackPolicyOverride ?? current.projectFallbackPolicy;
         const nextEffective = override ?? current.projectFallbackPolicy;
