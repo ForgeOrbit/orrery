@@ -30,16 +30,19 @@ export const sessionQuery = (issueId: string) =>
   });
 
 // #83: every session recorded for an issue, so the inspector can pick a past one as well
-// as follow the active session. Polling is on only while the inspector is open on a live
-// session; a closed or completed timeline is a stable read.
-export const sessionsQuery = (issueId: string, active = false) =>
+// as follow the active session. Poll only while the inspector is open *and* one of the
+// sessions is actually live; reviewing past/completed sessions is a stable read.
+export const sessionsQuery = (issueId: string, open = false) =>
   queryOptions({
     queryKey: ["issues", issueId, "work-sessions"],
     queryFn: () =>
       getJson(`/api/issues/${encodeURIComponent(issueId)}/work-sessions/all`, (value) =>
         WorkSessionsResponse.parse(value),
       ),
-    refetchInterval: active ? 4000 : false,
+    refetchInterval: open
+      ? (query) =>
+          query.state.data?.some((session) => session.status === "active") ? 4_000 : false
+      : false,
   });
 
 // A session's ephemeral timeline. A missing issue/session is an expected empty state for

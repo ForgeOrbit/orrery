@@ -1808,6 +1808,36 @@ describe("ephemeral session activities (#83)", () => {
     await expectProblem(anonymous, 401, "not_signed_in");
   });
 
+  it("denies activity reads to a deactivated human and to an agent whose owner is deactivated", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "Deactivated reader issue");
+    const session = await sessionsService.claim(
+      { kind: "agent", identity },
+      { issueId: issue.id, runId: await newRun(identity) },
+    );
+    await sessionsService.logActivity(
+      { kind: "agent", identity },
+      { issueId: issue.id, kind: "thought", summary: "Before deactivation" },
+    );
+    // The owner reads the trail before deactivation.
+    expect(await sessionsService.listActivities(humanActor(f), issue.id, session.id)).toHaveLength(
+      1,
+    );
+
+    // A deactivation that committed first is re-read inside the activity read's transaction:
+    // neither the human nor its agent can use a stale identity to inspect the timeline.
+    await database.db
+      .update(humans)
+      .set({ deactivatedAt: sql`statement_timestamp()` })
+      .where(eq(humans.id, f.humanId));
+    for (const actor of [humanActor(f), { kind: "agent" as const, identity }]) {
+      expect(
+        errorKind(await rejection(sessionsService.listActivities(actor, issue.id, session.id))),
+      ).toBe("issue_not_found");
+    }
+  });
+
   it("appends over REST without adding an issue comment", async () => {
     const f = await bootstrap();
     const identity = await identityFor(f.secret);
@@ -1829,6 +1859,14 @@ describe("ephemeral session activities (#83)", () => {
       summary: "REST update",
       detail: { tool: "edit" },
     });
+    // An oversized structured payload is a validation Problem, never a huge JSONB row.
+    const oversized = await postJson(
+      `/api/issues/${issue.id}/work-sessions/activities`,
+      { kind: "thought", summary: "Too large", detail: { blob: "x".repeat(64_001) } },
+      undefined,
+      f.secret,
+    );
+    await expectProblem(oversized, 400, "validation_failed");
     const comments = await database.db
       .select({ id: issueComments.id })
       .from(issueComments)

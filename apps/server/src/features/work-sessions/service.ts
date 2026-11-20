@@ -10,8 +10,8 @@ import {
   type ResumeDisposition,
   type ResumeWorkSessionInput,
   type ResumeWorkSessionResult,
+  type LogSessionActivityInput,
   type SessionActivity,
-  type SessionActivityKind,
   type WorkSession,
   type WorkSessionOutcome,
 } from "@orrery/contract";
@@ -156,16 +156,7 @@ export interface SessionsService {
   // calling agent holds (with the same optional sessionId fence as the other writes);
   // reading a session's timeline needs only Read access on the issue's project. Activities
   // live in their own table, so expiry and completion never erase them.
-  logActivity(
-    actor: AgentActor | null,
-    input: {
-      issueId: string;
-      kind: SessionActivityKind;
-      summary: string;
-      detail?: Record<string, unknown> | undefined;
-      sessionId?: string | undefined;
-    },
-  ): Promise<SessionActivity>;
+  logActivity(actor: AgentActor | null, input: LogSessionActivityInput): Promise<SessionActivity>;
   listActivities(
     actor: WorkActor | null,
     issueId: string,
@@ -694,6 +685,15 @@ async function requireActivityReadAccess(
     throw new SessionsError("issue_not_found");
   }
   const humanId = actor.kind === "human" ? actor.account.humanId : actor.identity.humanId;
+  // #22/M22: a deactivated caller — human or an agent's human owner — gets the same 404
+  // as an unrelated one. Re-read this inside the caller's transaction so a deactivation
+  // that committed first cannot leave an activity read alive through a stale identity.
+  const [caller] = await tx
+    .select({ id: humans.id })
+    .from(humans)
+    .where(and(eq(humans.id, humanId), isNull(humans.deactivatedAt)))
+    .limit(1);
+  if (caller === undefined) throw new SessionsError("issue_not_found");
   if (!(await humanStillHasWorkspaceAccess(tx, project.workspaceId, humanId))) {
     throw new SessionsError("issue_not_found");
   }

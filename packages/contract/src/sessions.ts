@@ -206,8 +206,13 @@ export type SessionActivityKind = z.infer<typeof SessionActivityKind>;
 
 // A flat JSON object. z.json() is deliberately avoided: its recursive schema makes the
 // OpenAPI generator recurse forever; an unknown-valued record is still fully extensible.
+// The bound keeps a single telemetry entry from becoming an unbounded JSONB payload; an
+// oversized detail is a 400 validation_failed, not a silently truncated value.
 export const SessionActivityDetail = z
   .record(z.string(), z.unknown())
+  .refine((value) => JSON.stringify(value).length <= 64_000, {
+    message: "Activity detail must be at most 64000 characters when serialized.",
+  })
   .meta({ id: "SessionActivityDetail" });
 export type SessionActivityDetail = z.infer<typeof SessionActivityDetail>;
 
