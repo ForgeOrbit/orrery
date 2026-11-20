@@ -44,6 +44,7 @@ export const Route = createFileRoute("/projects/$projectId")({
 const activityLabels: Record<ProjectActivityType, string> = {
   project_created: "created the project",
   project_renamed: "renamed the project",
+  project_fallback_policy_changed: "changed the project fallback policy",
   issue_created: "opened issue",
   issue_edited: "edited issue",
   issue_commented: "commented on issue",
@@ -52,6 +53,9 @@ const activityLabels: Record<ProjectActivityType, string> = {
   issue_question_asked: "asked for input on issue",
   issue_question_answered: "answered a question on issue",
   issue_question_paused: "paused a question on issue",
+  issue_question_fallback_used: "used an authorized fallback on issue",
+  issue_question_follow_up: "added a follow-up to an authorized fallback on issue",
+  issue_fallback_policy_override_changed: "changed the fallback policy override on issue",
   knowledge_created: "created knowledge",
   knowledge_edited: "edited knowledge",
 };

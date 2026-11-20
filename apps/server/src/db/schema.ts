@@ -1,6 +1,7 @@
 import {
   AgentKeyEventType,
   AgentKeyValidity,
+  FallbackPolicy,
   InvitationDelivery,
   InvitationStatus,
   IssueStatus,
@@ -440,9 +441,19 @@ export const projects = pgTable(
       .references(() => humans.id),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     nextIssueNumber: integer("next_issue_number").notNull().default(1),
+    // Fallback policy (#42): require_human is the default, so no project silently
+    // authorizes an agent's proposed fallback. Only project Manage may change it.
+    fallbackPolicy: text("fallback_policy")
+      .$type<FallbackPolicy>()
+      .notNull()
+      .default("require_human"),
   },
   (t) => [
     check("projects_next_issue_number_positive", sql`${t.nextIssueNumber} > 0`),
+    check(
+      "projects_fallback_policy",
+      sql`${t.fallbackPolicy} in (${sql.raw(sqlLiteralList(FallbackPolicy))})`,
+    ),
     index("projects_workspace_created").on(t.workspaceId, t.createdAt),
   ],
 );
@@ -826,9 +837,11 @@ export const issues = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     closedAt: timestamp("closed_at", { withTimezone: true }),
-    // Needs input is an issue state owned by the later human-input slice (#37). The flag
-    // exists now so ready-work can exclude paused issues; no other writer sets it yet.
+    // Needs input is owned by the human-input slice (#37/#41); deadline resolution keeps
+    // it in sync. The issue override (#42) tightens or, with project Manage, loosens the
+    // project's fallback policy; null means "use the project's policy".
     needsInput: boolean("needs_input").notNull().default(false),
+    fallbackPolicyOverride: text("fallback_policy_override").$type<FallbackPolicy>(),
   },
   (t) => [
     // Exactly one author/editor identity: a human or an agent.
@@ -846,6 +859,12 @@ export const issues = pgTable(
     check("issues_number_positive", sql`${t.number} > 0`),
     // DDL cannot bind parameters; the values come from the IssueStatus contract enum.
     check("issues_status", sql`${t.status} in (${sql.raw(sqlLiteralList(IssueStatus))})`),
+    check(
+      "issues_fallback_policy_override",
+      sql`(${t.fallbackPolicyOverride} is null or ${t.fallbackPolicyOverride} in (${sql.raw(
+        sqlLiteralList(FallbackPolicy),
+      )}))`,
+    ),
     check(
       "issues_closed_at_matches_status",
       sql`(${t.status} = 'closed') = (${t.closedAt} is not null)`,
@@ -1035,7 +1054,8 @@ export const knowledgeEntries = pgTable(
 // literals come from the ProjectActivityType enum, never from input; DDL cannot bind
 // parameters, so they are raw SQL text.
 const projectActivityTypesSql = sql.raw(
-  [ProjectActivityType.enum.project_created, ProjectActivityType.enum.project_renamed]
+  ProjectActivityType.options
+    .filter((type) => type.startsWith("project_"))
     .map((type) => `'${type}'`)
     .join(", "),
 );

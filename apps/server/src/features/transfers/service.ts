@@ -333,6 +333,7 @@ function toProject(
     creatorId: string;
     creatorEmail: string;
     kind: Project["workspaceKind"];
+    fallbackPolicy: Project["fallbackPolicy"];
   },
   accessLevel: ProjectAccessLevel,
 ): Project {
@@ -348,6 +349,7 @@ function toProject(
     },
     workspaceKind: row.kind,
     accessLevel,
+    fallbackPolicy: row.fallbackPolicy,
   };
 }
 
@@ -365,6 +367,7 @@ async function readProjectView(
       creatorId: humans.id,
       creatorEmail: humans.email,
       kind: workspaces.kind,
+      fallbackPolicy: projects.fallbackPolicy,
     })
     .from(projects)
     .innerJoin(humans, eq(projects.createdByHumanId, humans.id))

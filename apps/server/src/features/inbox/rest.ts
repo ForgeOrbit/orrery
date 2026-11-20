@@ -18,8 +18,9 @@ import { isAgentError, type AgentAuthenticator } from "../agents/index.ts";
 import type { WorkActor } from "../projects/index.ts";
 import { InboxError, type InboxErrorKind, type InboxService } from "./service.ts";
 
-// Thin REST adapter for human input (#41). Every policy decision is in service.ts. Success
-// responses are the bare resource (ADR-0003): object wrappers belong only in MCP.
+// Thin REST adapter for human input (#41, fallback policy and late answers in #42). Every
+// policy decision is in service.ts. Success responses are the bare resource (ADR-0003):
+// object wrappers belong only in MCP.
 
 const askBody = AskForInputInput;
 const answerBody = AnswerQuestionInput;
@@ -31,7 +32,7 @@ const ask = createRoute({
   path: "/api/questions",
   summary: "Ask the team a blocking question",
   description:
-    "An agent with a live claim asks a question, proposes a fallback and sets its issue to Needs input. The agent's owner is emailed after the question commits. No fallback is authorized in this slice: at the one-hour deadline the question pauses and releases the claim.",
+    "An agent with a live claim asks a question, proposes a fallback and sets its issue to Needs input. The agent's owner is emailed after the question commits. The agent cannot authorize its own fallback: at the one-hour deadline a require_human question pauses and releases the claim, while a fallback_allowed question resolves to fallback_used, clears Needs input and keeps a checking-in worker's claim.",
   request: {
     body: { required: true, content: { "application/json": { schema: askBody } } },
   },
@@ -70,7 +71,7 @@ const answer = createRoute({
   path: "/api/questions/{questionId}/answer",
   summary: "Answer a question in the inbox",
   description:
-    "A human with Contribute or Manage answers a question. Answering before the one-hour deadline, or after a paused question, resolves it exactly once and clears Needs input. Agents and sibling runs are refused, as are Readers and unrelated members.",
+    "A human with Contribute or Manage answers a question. Answering before the one-hour deadline, or after a paused question, resolves it exactly once and clears Needs input. An answer on or after the deadline to a fallback_allowed question is stored as a follow-up: it never reverses the authorized fallback, reopens the issue, or restores Needs input. Agents and sibling runs are refused, as are Readers and unrelated members.",
   request: {
     params: questionParams,
     body: { required: true, content: { "application/json": { schema: answerBody } } },

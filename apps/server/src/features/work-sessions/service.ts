@@ -790,8 +790,11 @@ export function createSessionsService({
 
     async reacquire(actor, input) {
       const identity = requireAgent(actor);
-      // As with claim, materialize any lapsed lease in a committed transaction first so a
-      // refused reacquisition still releases it. The locked check below is the decision.
+      // As with claim, materialize a lapsed lease and a due one-hour question in committed
+      // transactions first, so a refused reacquisition still releases them. Under
+      // fallback_allowed the deadline may clear Needs input and keep a live claim here;
+      // the locked check below is the availability decision.
+      await deadlineCommitted(input.issueId);
       await expireCommitted(input.issueId);
       return db.transaction(async (tx) => {
         // Membership first, issue second: serialize with member removal just like claim.
@@ -799,6 +802,14 @@ export function createSessionsService({
         const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
         const issue = await lockIssue(tx, input.issueId);
         await expireStale(tx, issue.id);
+        await checkDeadline(tx, issue.id);
+        // Re-read the availability flags after the locked evaluation: the deadline may
+        // have just paused the issue (Needs input kept) or authorized a fallback (cleared).
+        const [fresh] = await tx
+          .select({ status: issues.status, needsInput: issues.needsInput })
+          .from(issues)
+          .where(eq(issues.id, issue.id))
+          .limit(1);
         await requireAccess(
           { kind: "agent", identity },
           issue.projectId,
@@ -819,7 +830,11 @@ export function createSessionsService({
         // claimed, or one whose session already ended, has nothing to reacquire; it must
         // use claim instead. A stale write can never become this fresh claim.
         const prior = await findLatestForRun(tx, issue.id, identity, input.runId);
-        const decision = decideReacquire(prior?.status, issue.status, issue.needsInput);
+        const decision = decideReacquire(
+          prior?.status,
+          fresh?.status ?? issue.status,
+          fresh?.needsInput ?? issue.needsInput,
+        );
         if (
           prior === undefined ||
           prior.status !== WorkSessionStatus.enum.expired ||
@@ -827,8 +842,12 @@ export function createSessionsService({
         ) {
           throw new SessionsError("session_required");
         }
-        // A closed or paused issue is not available, even with no competing claimant.
-        if (issue.status !== "open" || issue.needsInput || decision === "issue_blocked") {
+        // A closed or Needs-input issue is not available, even with no competing claimant.
+        if (
+          fresh?.status !== "open" ||
+          (fresh?.needsInput ?? false) ||
+          decision === "issue_blocked"
+        ) {
           throw new SessionsError("issue_blocked");
         }
 

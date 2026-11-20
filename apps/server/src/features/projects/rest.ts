@@ -16,7 +16,9 @@ import {
   ProjectAccessGrantsResponse,
   ProjectActivityResponse,
   ProjectsResponse,
+  SetIssueFallbackPolicyRequest,
   SetProjectAccessRequest,
+  SetProjectFallbackPolicyRequest,
   UpdateIssueRequest,
   UpdateKnowledgeEntryRequest,
   UpdateProjectRequest,
@@ -97,6 +99,31 @@ const updateProject = createRoute({
     400: problem("The request is invalid"),
     401: problem("Not signed in"),
     403: problem("Read or Contribute access cannot configure the project"),
+    404: problem("No project with this id is accessible to the caller"),
+  },
+});
+
+const setProjectFallbackPolicy = createRoute({
+  method: "patch",
+  path: "/api/projects/{projectId}/fallback-policy",
+  summary: "Set a project's fallback policy",
+  description:
+    "Human, Manage only. `require_human` (the default) pauses a question at its one-hour deadline; `fallback_allowed` authorizes returning the agent's proposed fallback and lets work continue. No agent key is accepted: an agent cannot authorize its own fallback. A real change is recorded in the project's activity.",
+  request: {
+    params: projectParams,
+    body: {
+      required: true,
+      content: { "application/json": { schema: SetProjectFallbackPolicyRequest } },
+    },
+  },
+  responses: {
+    200: {
+      description: "The project with its new fallback policy",
+      content: { "application/json": { schema: Project } },
+    },
+    400: problem("The request is invalid"),
+    401: problem("Not signed in as a human"),
+    403: problem("Manage access is required to set the project fallback policy"),
     404: problem("No project with this id is accessible to the caller"),
   },
 });
@@ -273,6 +300,31 @@ const updateIssue = createRoute({
   },
 });
 
+const setIssueFallbackPolicyOverride = createRoute({
+  method: "patch",
+  path: "/api/issues/{issueId}/fallback-policy",
+  summary: "Set or clear an issue's fallback policy override",
+  description:
+    "Human, Contribute or Manage. `require_human` tightens an issue below a fallback_allowed project and needs only Contribute. Loosening — an explicit `fallback_allowed` override, or clearing a `require_human` override under a fallback_allowed project — needs Manage. `null` clears the override so the issue uses its project's policy. No agent key is accepted, and the fallback never grants project access: fenced writes still check the current access ceiling.",
+  request: {
+    params: issueParams,
+    body: {
+      required: true,
+      content: { "application/json": { schema: SetIssueFallbackPolicyRequest } },
+    },
+  },
+  responses: {
+    200: {
+      description: "The issue with its override and effective fallback policy",
+      content: { "application/json": { schema: Issue } },
+    },
+    400: problem("The request is invalid"),
+    401: problem("Not signed in as a human"),
+    403: problem("Contribute access, or Manage to loosen, is required"),
+    404: problem("No issue with this id is accessible to the caller"),
+  },
+});
+
 const listComments = createRoute({
   method: "get",
   path: "/api/issues/{issueId}/comments",
@@ -440,6 +492,7 @@ export const routes = [
   createProject,
   getProject,
   updateProject,
+  setProjectFallbackPolicy,
   listProjectAccess,
   setProjectAccess,
   removeProjectAccess,
@@ -447,6 +500,7 @@ export const routes = [
   createIssue,
   getIssue,
   updateIssue,
+  setIssueFallbackPolicyOverride,
   listComments,
   createComment,
   listActivity,
@@ -580,6 +634,24 @@ export function createProjectsRest(
     }
   });
 
+  // Both policy routes use only the human session reader: an agent bearer key is never
+  // resolved here, so no key can change the policy that authorizes its own fallback.
+  app.openapi(setProjectFallbackPolicy, async (c) => {
+    try {
+      const { projectId } = c.req.valid("param");
+      return c.json(
+        await service.setProjectFallbackPolicy(
+          await sessionReader(c),
+          projectId,
+          c.req.valid("json"),
+        ),
+        200,
+      );
+    } catch (error) {
+      return failure(c, error, projectWriteKinds);
+    }
+  });
+
   app.openapi(listProjectAccess, async (c) => {
     try {
       const { projectId } = c.req.valid("param");
@@ -650,6 +722,22 @@ export function createProjectsRest(
       );
     } catch (error) {
       return failure(c, error, issueWriteKinds);
+    }
+  });
+
+  app.openapi(setIssueFallbackPolicyOverride, async (c) => {
+    try {
+      const { issueId } = c.req.valid("param");
+      return c.json(
+        await service.setIssueFallbackPolicyOverride(
+          await sessionReader(c),
+          issueId,
+          c.req.valid("json"),
+        ),
+        200,
+      );
+    } catch (error) {
+      return failure(c, error, commentWriteKinds);
     }
   });
 

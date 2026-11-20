@@ -1052,7 +1052,7 @@ def extract_code_facts() -> dict[str, Any]:
     )
     m18_reacquire_available = (
         "const active = await findActive(tx, issue.id)" in reacquire_fn
-        and "issue.needsInput" in reacquire_fn
+        and "fresh?.needsInput" in reacquire_fn
         and 'throw new SessionsError("issue_claimed")' in reacquire_fn
         and 'throw new SessionsError("issue_blocked")' in reacquire_fn
     )
@@ -1090,7 +1090,7 @@ def extract_code_facts() -> dict[str, Any]:
         and "sessionId: SessionFence.optional()" in sess_contract
         and "sessionFence(args)" in sess_mcp_src
     )
-    m18_closed_refused = 'issue.status !== "open"' in reacquire_fn
+    m18_closed_refused = 'fresh?.status !== "open"' in reacquire_fn
     m18_update_db_time = all(
         "liveLease," in fn for fn in (renew_only_fn, progress_only_fn, stop_only_fn)
     )
@@ -1308,7 +1308,9 @@ def extract_code_facts() -> dict[str, Any]:
     )
     m20_boundary_guard = (
         "gt(questions.responseDeadlineAt, sql`statement_timestamp()`)" in q_answer_fn
-        and "isNull(questions.followUp)" in q_answer_fn
+        # #42 moved the follow-up's isNull guard into storeFollowUp(); the invariant is
+        # still that one follow-up is stored, so read it from the whole inbox service.
+        and "isNull(questions.followUp)" in q_src
     )
     m20_read_tool = "list_issue_questions" in tools_src and "list_issue_questions" in q_mcp_src
     m20_feature_seams = (
@@ -1567,6 +1569,292 @@ def extract_code_facts() -> dict[str, Any]:
     )
     m22_ownerless_refusal = 'throw new WorkspacesError("ownerless_workspace")' in accept_fn_m22
 
+
+    # M23 (#42): fallback policy matrix and the 1h branching. Every guard is read from
+    # the two policy service methods and their human-only REST routes, the deadline
+    # evaluation, the contract/schema/migration and the follow-up path. Flipping any of
+    # them makes the bounded model reach a named counterexample.
+    pj_rest = read_text("apps/server/src/features/projects/rest.ts")
+    pj_contract = read_text("packages/contract/src/projects.ts")
+    schema_src = read_text("apps/server/src/db/schema.ts")
+    mig_0026 = read_text("db/migrations/0028_fast_puck.sql")
+    m23_project_fn = slice_between(
+        proj_src, "async setProjectFallbackPolicy(", "// An issue override may only tighten"
+    )
+    m23_issue_fn = slice_between(
+        proj_src,
+        "async setIssueFallbackPolicyOverride(",
+        "// The explicit grants a project manager sees",
+    )
+    m23_proj_route_fn = slice_between(
+        pj_rest, "app.openapi(setProjectFallbackPolicy,", "app.openapi(listProjectAccess,"
+    )
+    m23_issue_route_fn = slice_between(
+        pj_rest, "app.openapi(setIssueFallbackPolicyOverride,", "app.openapi(listComments,"
+    )
+    m23_eval_fn = slice_between(q_src, "const evaluateDeadline", "const questionDeadline")
+    m23_deadline_fn = slice_between(
+        q_src, "const questionDeadline", "export function createInboxService"
+    )
+    m23_policy_fn = slice_between(
+        q_src, "async function effectiveFallbackPolicy(", "// Record the question"
+    )
+    m23_fallback_branch = slice_between(
+        m23_eval_fn, "if (effectivePolicy === FallbackPolicy.enum.fallback_allowed) {", "const [paused]"
+    )
+    m23_pause_branch = slice_between(m23_eval_fn, "const [paused]", "\n};")
+    m23_follow_fn = slice_between(
+        q_src, "// A late answer to an authorized fallback", "function humanIdOf"
+    )
+    m23_to_question_fn = slice_between(q_src, "function toQuestion", "// Lock the issue first")
+    m23_answer_fn = slice_between(q_src, "async answer(actorArg", "async list(actorArg")
+    m23_columns_fn = slice_between(q_src, "const questionColumns = {", "const iso")
+    m23_sess_renew_fn = slice_between(
+        sess_src, "async renew(actor, issueId", "async progress(actor, issueId"
+    )
+    m23_reacquire_fn = slice_between(sess_src, "async reacquire(actor, input)", "async getSession(")
+    m23_tool_names = re.findall(r'name: "([^"]+)"', tools_src)
+
+    m23_contract = (
+        '"require_human", "fallback_allowed"' in pj_contract
+        and "FallbackPolicyOverride" in pj_contract
+        and '"open", "answered", "paused", "fallback_used"' in q_contract
+        and "authorizedFallback" in q_contract
+    )
+    m23_schema = (
+        "projects_fallback_policy" in mig_0026
+        and "issues_fallback_policy_override" in mig_0026
+        and "fallback_policy_override" in schema_src
+        and "fallbackPolicy" in schema_src
+    )
+    m23_project_manage = (
+        "ProjectAccessLevel.enum.manage" in m23_project_fn
+        and "lockProjectForMutation" in m23_project_fn
+        and 'path: "/api/projects/{projectId}/fallback-policy"' in pj_rest
+    )
+    m23_issue_contribute = (
+        "ProjectAccessLevel.enum.contribute" in m23_issue_fn
+        and 'path: "/api/issues/{issueId}/fallback-policy"' in pj_rest
+        and "recordActivity" in m23_issue_fn
+    )
+    m23_tighten_only = all(
+        marker in m23_issue_fn
+        for marker in (
+            "override === FallbackPolicy.enum.fallback_allowed",
+            "nextEffective === FallbackPolicy.enum.fallback_allowed",
+            "currentEffective === FallbackPolicy.enum.require_human",
+            "ProjectAccessLevel.enum.manage",
+        )
+    )
+    m23_no_agent = (
+        "sessionReader(c)" in m23_proj_route_fn
+        and "sessionReader(c)" in m23_issue_route_fn
+        and "agentAuthenticator" not in m23_proj_route_fn
+        and "agentAuthenticator" not in m23_issue_route_fn
+        and not any("policy" in name for name in m23_tool_names)
+        and 'throw new InboxError("agents_cannot_answer")' in m23_answer_fn
+    )
+    m23_effective = (
+        "policy?.override ?? policy?.projectPolicy" in m23_policy_fn
+        and "effectiveFallbackPolicy(tx, issueId)" in m23_eval_fn
+        and "row.fallbackPolicyOverride ?? row.projectFallbackPolicy" in proj_src
+        and "coalesce(" in m23_columns_fn
+        and "fallbackPolicyOverride" in m23_columns_fn
+    )
+    # The three edge-case guards added in review: a checking-in worker keeps a full lease
+    # under fallback_allowed, reacquisition evaluates a due deadline, and a policy change
+    # freezes already-due questions instead of re-projecting their outcome.
+    m23_lease_unclipped = (
+        "effectiveFallbackPolicy(tx, issueId)" in m23_deadline_fn
+        and "FallbackPolicy.enum.require_human" in m23_deadline_fn
+    )
+    m23_reacquire_deadline = (
+        "deadlineCommitted(input.issueId)" in m23_reacquire_fn
+        and "checkDeadline(tx, issue.id)" in m23_reacquire_fn
+        and "fresh?.needsInput" in m23_reacquire_fn
+    )
+    m23_freeze = (
+        "freezeDueQuestions" in proj_src
+        and "lte(questions.responseDeadlineAt, sql`statement_timestamp()`)" in m23_project_fn
+        and "evaluateQuestionDeadline?.(tx, issueId)" in m23_issue_fn
+        and "evaluateQuestionDeadline: evaluateDeadline" in index_src
+    )
+    m23_branch = (
+        'status: "fallback_used"' in m23_fallback_branch
+        and "needsInput: false" in m23_fallback_branch
+        and "update(workSessions" not in m23_fallback_branch
+        and 'status: "released"' in m23_pause_branch
+        and "needsInput: true" in m23_pause_branch
+    )
+    m23_db_time = (
+        "lte(questions.responseDeadlineAt, sql`statement_timestamp()`)" in m23_eval_fn
+        and '.for("update")' in q_lock_fn
+    )
+    m23_authorized_only = (
+        "authorizedFallback: status === QuestionStatus.enum.fallback_used" in m23_to_question_fn
+    )
+    m23_follow_up = (
+        'eq(questions.status, "fallback_used")' in m23_follow_fn
+        and "isNull(questions.followUp)" in m23_follow_fn
+        and "issue_question_follow_up" in m23_follow_fn
+        and "update(issues)" not in m23_follow_fn
+        and "await followUp()" in m23_answer_fn
+    )
+    m23_no_enlarge = (
+        "sessionGate(tx" in proj_src
+        and "projectAccessCeiling" in sess_src
+        and "projectAccessAtLeast" in sess_src
+        and "withLiveSession" in m23_sess_renew_fn
+    )
+    m23_activity = (
+        "issue_question_fallback_used" in q_src
+        and "issue_question_follow_up" in q_src
+        and "project_fallback_policy_changed" in proj_src
+        and "issue_fallback_policy_override_changed" in proj_src
+    )
+    m23_problems = pj_rest.count("400: problem(") >= 6
+
+    # M18: personal-to-shared transfer (#39). Every guard below is read from the live
+    # transfer service, adapter, contract and generated migration, so deleting a lock,
+    # a recheck, a cleanup write or the preview flips the model to its buggy branch.
+    tr_src = read_text("apps/server/src/features/transfers/service.ts")
+    tr_rest = read_text("apps/server/src/features/transfers/rest.ts")
+    tr_contract = read_text("packages/contract/src/transfers.ts")
+    mig_0023 = read_text("db/migrations/0025_thick_valeria_richards.sql")
+    accept_fn = slice_between(
+        tr_src, "async function acceptInTransaction(", "\nexport function createTransfersService"
+    )
+    preview_impl = tr_src.split("async preview(", 1)[1].split("async authorize(", 1)[0]
+    authorize_impl = tr_src.split("async authorize(", 1)[1].split("async receiverPreview(", 1)[0]
+    receiver_preview_impl = tr_src.split("async receiverPreview(", 1)[1].split("async accept(", 1)[0]
+    accept_impl = tr_src.split("async accept(", 1)[1].split("async complete(", 1)[0]
+    complete_impl = tr_src.split("async complete(", 1)[1]
+
+    m21_source_owner = (
+        "eq(workspaces.kind, WorkspaceKind.enum.personal)" in tr_src
+        and "eq(workspaces.personalOwnerHumanId, humanId)" in tr_src
+    )
+    # Authorization needs only source ownership: a destination authority is not *required*
+    # at authorize time, which is what makes the two-party flow possible. It may be read
+    # to decide whether the authorizer is also the receiver, but it must not gate authorize.
+    m21_two_party = (
+        'throw new TransfersError("destination_authority_required")' not in authorize_impl
+    )
+    m21_dest_authority = "membership.isOwner || membership.canCreateProjects" in tr_src
+    m21_recheck_source = (
+        'throw new TransfersError("source_authority_lost")' in accept_fn
+        and "source.personalOwnerHumanId !== auth.authorizedByHumanId" in accept_fn
+    )
+    m21_recheck_authority = (
+        "hasCreateProjectsAuthority(tx, destination.id, acceptorHumanId)" in accept_fn
+    )
+    m21_recheck_workspace = (
+        'throw new TransfersError("transfer_stale")' in accept_fn
+        and "project.workspaceId !== auth.sourceWorkspaceId" in accept_fn
+    )
+    m21_active_work = (
+        'eq(workSessions.status, "active")' in accept_fn
+        and "workSessions.leaseExpiresAt" in accept_fn
+    )
+    m21_db_time_live = "gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`)" in accept_fn
+    m21_db_time_expiry = (
+        "gt(projectTransferAuthorizations.expiresAt, sql`statement_timestamp()`)" in accept_fn
+    )
+    m21_single_tx = tr_src.count("db.transaction(") >= 4 and "db.transaction(" not in accept_fn
+    m21_lock_first = all(
+        ordered(fn, "db.transaction(async (tx) => {", "await lockOwnershipWrites(tx);")
+        for fn in (authorize_impl, accept_impl, complete_impl)
+    )
+    m21_guard_order = "ids.toSorted()" in tr_src and ordered(
+        accept_fn,
+        "await bumpGuards(tx, [source.id, destination.id]);",
+        '.for("update")',
+    )
+    m21_issue_lock = ordered(
+        accept_fn, "from(issues)", '.for("update")', "workSessions.leaseExpiresAt"
+    )
+    m21_key_cleanup = "tx.delete(agentApiKeyProjects)" in accept_fn
+    m21_grant_cleanup = "tx.delete(projectAccessGrants)" in accept_fn
+    m21_offer_cleanup = ".delete(workspaceInvitationGrants)" in accept_fn
+    m21_grant_rebuild = (
+        "tx.insert(projectAccessGrants).values" in accept_fn
+        and 'level: "manage"' in accept_fn
+        and "async function manageRecipients(" in tr_src
+    )
+    m21_grant_events = (
+        "tx.insert(projectAccessEvents).values" in accept_fn
+        and "ProjectAccessEventType.enum.project_access_granted" in accept_fn
+    )
+    m21_receipt_events = (
+        all(
+            event_type in tr_src
+            for event_type in (
+                "project_transfer_authorized",
+                "project_transfer_received",
+                "project_transferred_out",
+            )
+        )
+        and '"project_transfer_received"' in accept_fn
+        and '"project_transferred_out"' in accept_fn
+    )
+    m21_source_events_scoped = (
+        ordered(accept_fn, "workspaceEvent(", "source.id,", '"project_transferred_out"')
+        and '"project_transferred_out"' in accept_fn
+    )
+    m21_preserve_identity = (
+        "set({ workspaceId: destination.id })" in accept_fn
+        and ".set({ createdBy" not in accept_fn
+        and "createdByHumanId:" not in accept_fn
+    )
+    m21_preview = (
+        "TransferPreview" in tr_contract
+        and "activeWork" in tr_contract
+        and "accessChanges" in tr_contract
+        and "/transfer/preview" in tr_rest
+    )
+    m21_http_problems = tr_rest.count("400: problem(") >= 4
+    m21_human_only = "sessionReader" in tr_rest and "agentAuthenticator" not in tr_rest
+    m21_authorization_persisted = (
+        'CREATE TABLE "project_transfer_authorizations"' in mig_0023
+        and "token_hash" in mig_0023
+    )
+    # Destination non-enumeration and the receiver's own pre-confirmation view.
+    m21_dest_membership_preview = (
+        "requireDestinationMember(tx, destinationWorkspaceId, account.humanId)" in preview_impl
+    )
+    m21_dest_membership_complete = (
+        "requireDestinationMember(tx, destinationWorkspaceId, account.humanId)" in complete_impl
+    )
+    m21_authorize_redaction = (
+        "canSeeDestination ? fullPreview : null" in authorize_impl
+        and "hasDestinationMembership(" in authorize_impl
+    )
+    m21_receiver_preview = (
+        "/api/transfers/preview" in tr_rest
+        and "receiverPreviewTransfer" in tr_rest
+        and "async receiverPreview(" in tr_src
+    )
+    m21_receiver_authority = (
+        "hasDestinationMembership(" in receiver_preview_impl
+        and "hasCreateProjectsAuthority(" in receiver_preview_impl
+        and 'throw new TransfersError("destination_authority_required")' in receiver_preview_impl
+    )
+    m21_accept_membership = (
+        "hasDestinationMembership(tx, auth.destinationWorkspaceId, acceptorHumanId)" in accept_fn
+    )
+    m21_receiver_recipient = (
+        "const receiver = (await hasCreateProjectsAuthority" in preview_impl
+        and "const receiver = (await hasCreateProjectsAuthority" in authorize_impl
+    )
+    # Acceptance cleanup that keeps no stale leases, settled offers or rival tokens.
+    m21_expire_lapsed = 'status: "expired"' in accept_fn and "lte(workSessions.leaseExpiresAt" in accept_fn
+    m21_pending_offers_only = "eq(workspaceInvitations.status, InvitationStatus.enum.pending)" in accept_fn
+    m21_revoke_siblings = (
+        'status: "revoked"' in accept_fn and "ne(projectTransferAuthorizations.id, auth.id)" in accept_fn
+    )
+
+
+
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
         "m2a_supersedes_failed": m2a_supersedes_failed,
@@ -1824,6 +2112,23 @@ def extract_code_facts() -> dict[str, Any]:
         "m22_reset_guard": m22_reset_guard,
         "m22_invitation_recheck": m22_invitation_recheck,
         "m22_ownerless_refusal": m22_ownerless_refusal,
+        "m23_contract": m23_contract,
+        "m23_schema": m23_schema,
+        "m23_project_manage": m23_project_manage,
+        "m23_issue_contribute": m23_issue_contribute,
+        "m23_tighten_only": m23_tighten_only,
+        "m23_no_agent": m23_no_agent,
+        "m23_effective": m23_effective,
+        "m23_lease_unclipped": m23_lease_unclipped,
+        "m23_reacquire_deadline": m23_reacquire_deadline,
+        "m23_freeze": m23_freeze,
+        "m23_branch": m23_branch,
+        "m23_db_time": m23_db_time,
+        "m23_authorized_only": m23_authorized_only,
+        "m23_follow_up": m23_follow_up,
+        "m23_no_enlarge": m23_no_enlarge,
+        "m23_activity": m23_activity,
+        "m23_problems": m23_problems,
     }
 
 
@@ -4629,6 +4934,332 @@ def check_m22(facts: dict[str, Any]) -> CheckResult:
     return model_bfs()
 
 
+
+def check_m23(facts: dict[str, Any]) -> CheckResult:
+    """#42: the fallback policy matrix and the one-hour deadline branching.
+
+    State: (project policy, issue override, DB clock, question status, needs_input,
+    claim, follow-up, violations). The fixed model proves that only Manage can set a
+    project policy or loosen an issue, that Contribute can tighten, that no agent key can
+    authorize its own fallback or write policy, that the deadline branches to
+    fallback_used (authorized fallback, Needs input cleared, claim kept while checking in)
+    or paused (claim released, Needs input kept), that authorization is disclosed only on
+    fallback_used, that a late answer is a follow-up, and that fallback never enlarges
+    an agent's current access. Every extracted source guard is proven sensitive: flipping
+    one makes the same explorer reach a named counterexample.
+    """
+    guards = {
+        "contract": facts["m23_contract"],
+        "schema": facts["m23_schema"],
+        "project_manage": facts["m23_project_manage"],
+        "issue_contribute": facts["m23_issue_contribute"],
+        "tighten_only": facts["m23_tighten_only"],
+        "no_agent": facts["m23_no_agent"],
+        "effective": facts["m23_effective"],
+        "lease_unclipped": facts["m23_lease_unclipped"],
+        "reacquire_deadline": facts["m23_reacquire_deadline"],
+        "freeze": facts["m23_freeze"],
+        "branch": facts["m23_branch"],
+        "db_time": facts["m23_db_time"],
+        "authorized_only": facts["m23_authorized_only"],
+        "follow_up": facts["m23_follow_up"],
+        "no_enlarge": facts["m23_no_enlarge"],
+        "activity": facts["m23_activity"],
+        "problems": facts["m23_problems"],
+    }
+    init = ("require_human", None, "before", "open", True, "held", False, frozenset())
+    files = [
+        "apps/server/src/features/projects/service.ts",
+        "apps/server/src/features/projects/rest.ts",
+        "apps/server/src/features/inbox/service.ts",
+        "apps/server/src/features/inbox/mcp.ts",
+        "apps/server/src/features/work-sessions/service.ts",
+        "packages/contract/src/projects.ts",
+        "packages/contract/src/questions.ts",
+        "packages/contract/src/mcp-tools.ts",
+        "apps/server/src/db/schema.ts",
+        "db/migrations/0028_fast_puck.sql",
+    ]
+
+    def verify(g: dict[str, bool]) -> CheckResult:
+        def transitions(state):
+            project, override, clock, qstatus, needs, claim, follow, violations = state
+            out: list[tuple[str, Any]] = []
+
+            def go(label, **changes):
+                nxt = {
+                    "project": project,
+                    "override": override,
+                    "clock": clock,
+                    "qstatus": qstatus,
+                    "needs": needs,
+                    "claim": claim,
+                    "follow": follow,
+                }
+                nxt.update(changes)
+                out.append(
+                    (
+                        label,
+                        (
+                            nxt["project"],
+                            nxt["override"],
+                            nxt["clock"],
+                            nxt["qstatus"],
+                            nxt["needs"],
+                            nxt["claim"],
+                            nxt["follow"],
+                            violations | changes.get("extra", frozenset()),
+                        ),
+                    )
+                )
+
+            def bad(*reasons):
+                return frozenset(reasons)
+
+            # Database time advances independently of any process.
+            if clock == "before":
+                go("one-hour response deadline passes in database time", clock="after")
+
+            # Project policy: only a human with Manage. A contributor, reader, outsider
+            # or agent key is refused; the violation only appears when the guard is gone.
+            policy_guard = g["project_manage"] and g["no_agent"]
+            for actor in ("manage", "contribute", "read", "outsider", "agent"):
+                if actor == "manage":
+                    if policy_guard:
+                        go("Manage sets the project policy to fallback_allowed", project="fallback_allowed")
+                    else:
+                        go("Manage is wrongly refused the project policy (bug)", extra=bad("manage_policy_refused"))
+                elif policy_guard:
+                    go(f"{actor} is refused the project policy")
+                else:
+                    go(
+                        f"{actor} sets the project policy without Manage (bug)",
+                        project="fallback_allowed",
+                        extra=bad("non_manage_project_policy"),
+                    )
+
+            # Issue override: Contribute may tighten; Manage may also loosen. Explicit
+            # fallback_allowed and clearing a require_human override under a
+            # fallback_allowed project are the two loosening shapes.
+            for actor in ("manage", "contribute", "read", "outsider", "agent"):
+                human = actor in ("manage", "contribute")
+                for requested, label in (
+                    ("require_human", "require_human override (tighten)"),
+                    ("fallback_allowed", "explicit fallback_allowed override (loosen)"),
+                    (None, "cleared override"),
+                ):
+                    before = override or project
+                    after = requested or project
+                    loosens = requested == "fallback_allowed" or (
+                        after == "fallback_allowed" and before == "require_human"
+                    )
+                    role_allows = human and (not loosens or actor == "manage")
+                    guards_allow = g["issue_contribute"] and g["no_agent"] and (
+                        not loosens or g["tighten_only"]
+                    )
+                    if role_allows and guards_allow:
+                        go(f"{actor} sets {label}", override=requested)
+                    elif role_allows and not guards_allow:
+                        go(f"{actor} is wrongly refused {label} (bug)", extra=bad("valid_override_refused"))
+                    elif guards_allow:
+                        go(f"{actor} is refused {label}")
+                    else:
+                        go(
+                            f"{actor} sets {label} without authority (bug)",
+                            override=requested,
+                            extra=bad("unauthorized_override"),
+                        )
+
+            # A checking-in worker near the boundary keeps a full lease when the fallback
+            # is authorized; clipping it would expire the claim one second after 1h.
+            if qstatus == "open" and clock == "before" and project == "fallback_allowed":
+                go(
+                    "worker checks in near the 1h boundary under fallback_allowed",
+                    extra=frozenset() if g["lease_unclipped"] else bad("lease_clipped_to_deadline"),
+                )
+
+            # An expired claim can reacquire after the deadline only because the deadline
+            # evaluation first clears Needs input under fallback_allowed.
+            if qstatus == "fallback_used" and clock == "after":
+                go(
+                    "an expired worker reacquires after the authorized deadline",
+                    extra=frozenset()
+                    if g["reacquire_deadline"]
+                    else bad("reacquire_blocked_by_stale_needs_input"),
+                )
+
+            # Changing policy while a question is already past due freezes its outcome
+            # first; without that it could be re-projected from fallback_used to paused.
+            if qstatus == "open" and clock == "after":
+                go(
+                    "manager changes policy while a question is already past due",
+                    extra=frozenset() if g["freeze"] else bad("due_question_reprojected"),
+                )
+
+            # The deadline reads the effective policy on the issue-locked transaction.
+            if qstatus == "open" and clock == "after":
+                effective = override or project
+                if g["effective"] and effective == "fallback_allowed":
+                    if g["branch"] and g["db_time"]:
+                        go(
+                            "deadline authorizes the proposed fallback, clears Needs input "
+                            "and keeps a checking-in claim",
+                            qstatus="fallback_used",
+                            needs=False,
+                        )
+                    else:
+                        go(
+                            "deadline mishandles an authorized fallback (bug)",
+                            qstatus="fallback_used",
+                            needs=True,
+                            claim="released",
+                            extra=bad("fallback_mishandled"),
+                        )
+                elif g["effective"] and effective == "require_human":
+                    if g["branch"] and g["db_time"]:
+                        go(
+                            "deadline pauses, releases the claim and keeps Needs input",
+                            qstatus="paused",
+                            needs=True,
+                            claim="released",
+                        )
+                    else:
+                        go(
+                            "deadline pauses without releasing the claim (bug)",
+                            qstatus="paused",
+                            extra=bad("pause_without_release"),
+                        )
+                else:
+                    go(
+                        "deadline ignores the effective policy (bug)",
+                        qstatus="fallback_used",
+                        needs=False,
+                        extra=bad("override_ignored"),
+                    )
+
+            # A human answer resolves an on-time or paused question exactly once.
+            for actor in ("manage", "contribute"):
+                if qstatus in ("open", "paused") and (
+                    qstatus == "paused" or clock == "before" or not g["db_time"]
+                ):
+                    go(
+                        f"{actor} answers an unresolved question",
+                        qstatus="answered",
+                        needs=False,
+                        extra=frozenset() if g["db_time"] or clock == "before" else bad("answer_raced_deadline"),
+                    )
+                elif qstatus == "fallback_used":
+                    if g["follow_up"]:
+                        go(
+                            "late human answer is a follow-up: status, Needs input and "
+                            "the closed issue stay untouched",
+                            follow=True,
+                        )
+                    else:
+                        go(
+                            "late answer reverses the fallback (bug)",
+                            qstatus="answered",
+                            needs=False,
+                            extra=bad("answer_reversed_fallback"),
+                        )
+            # Agents (including sibling runs) cannot answer at all.
+            go(
+                "agent key tries to answer the question",
+                extra=frozenset() if g["no_agent"] else bad("agent_answered"),
+            )
+
+            # The harness only sees the proposed fallback once it is authorized.
+            if qstatus == "fallback_used":
+                go(
+                    "harness reads the authorized fallback from a fallback_used question",
+                    extra=frozenset() if g["authorized_only"] else bad("fallback_not_authorized"),
+                )
+            if qstatus == "open":
+                go(
+                    "harness reads an open question's authorized fallback",
+                    extra=frozenset() if g["authorized_only"] else bad("premature_fallback"),
+                )
+
+            # A fallback authorization never enlarges an agent's current project access.
+            if project == "fallback_allowed" and qstatus == "fallback_used":
+                go(
+                    "a Read-ceiling agent attempts a fenced write after the fallback",
+                    extra=frozenset() if g["no_enlarge"] else bad("fallback_enlarged_access"),
+                )
+
+            # Static source guards: absence is itself a reachable violation trace.
+            if not g["contract"]:
+                go("contract lacks the policy or fallback_used shape (bug)", extra=bad("no_fallback_contract"))
+            if not g["schema"]:
+                go("schema lacks the policy columns or CHECK constraints (bug)", extra=bad("no_policy_constraints"))
+            if not g["activity"]:
+                go("policy or fallback event is missing from history (bug)", extra=bad("policy_event_missing"))
+            if not g["problems"]:
+                go("policy route lacks its 400 Problem (bug)", extra=bad("missing_400_problem"))
+            return out
+
+        def invariant(state):
+            project, override, clock, qstatus, needs, claim, follow, violations = state
+            if violations:
+                return False, "fallback policy invariant broken: " + sorted(violations)[0]
+            if qstatus == "fallback_used" and needs:
+                return False, "Needs input stayed set after an authorized fallback"
+            if qstatus == "paused" and claim == "held":
+                return False, "a paused issue still holds the claim"
+            if qstatus == "answered" and needs:
+                return False, "an answered issue is still Needs input"
+            if follow and qstatus != "fallback_used":
+                return False, "a follow-up reversed the fallback resolution"
+            return True, ""
+
+        return bfs_check(
+            "M23",
+            "Fallback Policy & Late Answers (#42)",
+            "Only Manage sets policy or loosens, Contribute tightens, no agent self-authorizes, the 1h deadline branches to an authorized fallback or a paused claim, and a late answer is a follow-up",
+            "safety",
+            init,
+            transitions,
+            invariant,
+            files,
+        )
+
+    fixed = verify(guards)
+    if fixed.status != "verified":
+        return fixed
+    weak = []
+    for key in guards:
+        flipped = dict(guards)
+        flipped[key] = False
+        if verify(flipped).status == "verified":
+            weak.append(key)
+    if weak:
+        return CheckResult(
+            "M23",
+            "Fallback Policy & Late Answers (#42)",
+            "Sensitivity: every M23 source guard must matter",
+            "safety",
+            "violated",
+            fixed.states_explored,
+            fixed.transitions_explored,
+            "Insensitive guards: " + ", ".join(weak),
+            [],
+            files,
+        )
+    return CheckResult(
+        "M23",
+        "Fallback Policy & Late Answers (#42)",
+        "Only Manage sets policy or loosens, Contribute tightens, no agent self-authorizes, the 1h deadline branches to an authorized fallback or a paused claim, and a late answer is a follow-up",
+        "safety",
+        "verified",
+        fixed.states_explored,
+        fixed.transitions_explored,
+        f"Verified across {fixed.states_explored} reachable states ({fixed.transitions_explored} transitions); "
+        f"all {len(guards)} source guards proven sensitive by source mutation.",
+        [],
+        files,
+    )
+
+
 def main() -> None:
     facts = extract_code_facts()
     results = [
@@ -4655,6 +5286,7 @@ def main() -> None:
         check_m20(facts),
         check_m21(facts),
         check_m22(facts),
+        check_m23(facts),
     ]
 
     if "--json" in sys.argv:

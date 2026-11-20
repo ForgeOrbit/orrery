@@ -1,0 +1,12 @@
+ALTER TABLE "project_activity" DROP CONSTRAINT "project_activity_type";--> statement-breakpoint
+ALTER TABLE "project_activity" DROP CONSTRAINT "project_activity_target_matches_type";--> statement-breakpoint
+ALTER TABLE "issues" ADD COLUMN "fallback_policy_override" text;--> statement-breakpoint
+ALTER TABLE "projects" ADD COLUMN "fallback_policy" text DEFAULT 'require_human' NOT NULL;--> statement-breakpoint
+ALTER TABLE "issues" ADD CONSTRAINT "issues_fallback_policy_override" CHECK (("issues"."fallback_policy_override" is null or "issues"."fallback_policy_override" in ('require_human', 'fallback_allowed')));--> statement-breakpoint
+ALTER TABLE "project_activity" ADD CONSTRAINT "project_activity_type" CHECK ("project_activity"."type" in ('project_created', 'project_renamed', 'project_fallback_policy_changed', 'issue_created', 'issue_edited', 'issue_commented', 'issue_closed', 'issue_reopened', 'issue_question_asked', 'issue_question_answered', 'issue_question_paused', 'issue_question_fallback_used', 'issue_question_follow_up', 'issue_fallback_policy_override_changed', 'knowledge_created', 'knowledge_edited'));--> statement-breakpoint
+ALTER TABLE "project_activity" ADD CONSTRAINT "project_activity_target_matches_type" CHECK ((
+        ("project_activity"."type" in ('project_created', 'project_renamed', 'project_fallback_policy_changed') and "project_activity"."issue_id" is null and "project_activity"."knowledge_entry_id" is null)
+        or ("project_activity"."type" in ('issue_created', 'issue_edited', 'issue_commented', 'issue_closed', 'issue_reopened', 'issue_question_asked', 'issue_question_answered', 'issue_question_paused', 'issue_question_fallback_used', 'issue_question_follow_up', 'issue_fallback_policy_override_changed') and "project_activity"."issue_id" is not null and "project_activity"."knowledge_entry_id" is null)
+        or ("project_activity"."type" in ('knowledge_created', 'knowledge_edited') and "project_activity"."issue_id" is null and "project_activity"."knowledge_entry_id" is not null)
+      ));--> statement-breakpoint
+ALTER TABLE "projects" ADD CONSTRAINT "projects_fallback_policy" CHECK ("projects"."fallback_policy" in ('require_human', 'fallback_allowed'));
