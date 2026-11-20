@@ -4,6 +4,7 @@ import {
   type Assignee as AssigneeShape,
   IssueLinkKind,
   IssuePriority,
+  IssueStatus,
   IssueSortOrder,
   projectTools,
 } from "@orrery/contract";
@@ -53,6 +54,7 @@ export function createProjectsMcp(service: ProjectsService, authenticate: AgentA
       issue: await service.createIssue(actor, str(args.projectId, "projectId"), {
         title: str(args.title, "title"),
         body: args.body === undefined ? undefined : str(args.body, "body"),
+        status: args.status === undefined ? undefined : IssueStatus.parse(args.status),
         priority: priority(args.priority),
         sortOrder: sortOrder(args.sortOrder),
       }),
@@ -61,7 +63,7 @@ export function createProjectsMcp(service: ProjectsService, authenticate: AgentA
       issue: await service.updateIssue(actor, str(args.issueId, "issueId"), {
         title: args.title === undefined ? undefined : str(args.title, "title"),
         body: args.body === undefined ? undefined : str(args.body, "body"),
-        status: args.status === "open" || args.status === "closed" ? args.status : undefined,
+        status: args.status === undefined ? undefined : IssueStatus.parse(args.status),
         priority: priority(args.priority),
         sortOrder: sortOrder(args.sortOrder),
         assignee: assignee(args.assignee),

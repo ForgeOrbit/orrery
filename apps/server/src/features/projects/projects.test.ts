@@ -14,6 +14,7 @@ import {
   Problem,
   Project,
   ProjectActivityResponse,
+  ProjectKey,
   ProjectsResponse,
 } from "@orrery/contract";
 import { eq, sql } from "drizzle-orm";
@@ -262,7 +263,7 @@ describe("projects", () => {
     expect(issue).toMatchObject({
       projectId: project.id,
       number: 1,
-      status: "open",
+      status: "todo",
       createdBy: { humanId: admin.id, email: EMAIL },
       updatedBy: { humanId: admin.id, email: EMAIL },
       closedAt: null,
@@ -282,7 +283,7 @@ describe("projects", () => {
       await postJson(app, `/api/projects/${project.id}/issues`, { title: "No" }),
       await postJson(app, `/api/issues/${issue.id}/comments`, { body: "No" }),
       await postJson(app, `/api/projects/${project.id}/knowledge`, { title: "No" }),
-      await patchJson(app, `/api/issues/${issue.id}`, { status: "closed" }),
+      await patchJson(app, `/api/issues/${issue.id}`, { status: "done" }),
       await patchJson(app, `/api/knowledge/${randomUUID()}`, { title: "No" }),
     ];
     for (const res of anonymous) {
@@ -312,7 +313,7 @@ describe("projects", () => {
       number: 1,
       title: "Write the release notes",
       body: "Draft the **release notes** for the next version.",
-      status: "open",
+      status: "todo",
       createdByHumanId: admin.id,
       updatedByHumanId: admin.id,
       closedAt: null,
@@ -330,7 +331,7 @@ describe("projects", () => {
     expect(editedIssue).toMatchObject({
       title: "Write the final release notes",
       body: "Final **release notes**.",
-      status: "open",
+      status: "todo",
       createdBy: { humanId: admin.id, email: EMAIL },
       updatedBy: { humanId: admin.id, email: EMAIL },
     });
@@ -364,12 +365,12 @@ describe("projects", () => {
     const closed = await patchJson(
       app,
       `/api/issues/${created.id}`,
-      { status: "closed" },
+      { status: "done" },
       adminCookie,
     );
     expect(closed.status).toBe(200);
     const closedIssue = Issue.parse(await closed.json());
-    expect(closedIssue.status).toBe("closed");
+    expect(closedIssue.status).toBe("done");
     expect(closedIssue.closedAt).not.toBeNull();
     const closedAt = closedIssue.closedAt;
 
@@ -381,30 +382,30 @@ describe("projects", () => {
     );
     expect(editedWhileClosed.status).toBe(200);
     const stillClosed = Issue.parse(await editedWhileClosed.json());
-    expect(stillClosed.status).toBe("closed");
+    expect(stillClosed.status).toBe("done");
     expect(stillClosed.closedAt).toBe(closedAt);
 
     // Reopen: closedAt is cleared.
     const reopened = await patchJson(
       app,
       `/api/issues/${created.id}`,
-      { status: "open" },
+      { status: "todo" },
       adminCookie,
     );
     expect(reopened.status).toBe(200);
     const reopenedIssue = Issue.parse(await reopened.json());
-    expect(reopenedIssue.status).toBe("open");
+    expect(reopenedIssue.status).toBe("todo");
     expect(reopenedIssue.closedAt).toBeNull();
 
     // A repeated close is a no-op: no new event, no changed timestamp.
     const closeAgain = await patchJson(
       app,
       `/api/issues/${created.id}`,
-      { status: "open" },
+      { status: "todo" },
       adminCookie,
     );
     expect(closeAgain.status).toBe(200);
-    expect(Issue.parse(await closeAgain.json()).status).toBe("open");
+    expect(Issue.parse(await closeAgain.json()).status).toBe("todo");
 
     // The activity feed has one event per real change, in order, each with its actor.
     const activity = await activityFor(app, adminCookie, project.id);
@@ -442,7 +443,7 @@ describe("projects", () => {
     expect(Issue.parse(await fetched.json())).toMatchObject({
       title: "Write the final release notes",
       body: "An addendum while closed.",
-      status: "open",
+      status: "todo",
       createdBy: { humanId: admin.id },
       updatedBy: { humanId: admin.id },
     });
@@ -552,7 +553,7 @@ describe("projects", () => {
           insert into issues
             (id, project_id, number, title, status, priority, sort_order, created_by_human_id, updated_by_human_id)
           values
-            (${randomUUID()}, ${project.id}, 99, 'Bypass', 'open', 'critical', 1, ${writerId}, ${writerId})
+            (${randomUUID()}, ${project.id}, 99, 'Bypass', 'todo', 'critical', 1, ${writerId}, ${writerId})
         `),
       ),
     ).toContain("issues_priority");
@@ -570,7 +571,7 @@ describe("projects", () => {
             insert into issues
               (id, project_id, number, title, status, priority, sort_order, created_by_human_id, updated_by_human_id)
             values
-              (${randomUUID()}, ${project.id}, 98, 'Non-finite', 'open', 'none', ${sql.raw(nonFinite)}, ${writerId}, ${writerId})
+              (${randomUUID()}, ${project.id}, 98, 'Non-finite', 'todo', 'none', ${sql.raw(nonFinite)}, ${writerId}, ${writerId})
           `),
         ),
       ).toContain("issues_sort_order_finite");
@@ -842,9 +843,9 @@ describe("projects", () => {
 
     // Race a close with a title edit and a second close on the same issue.
     const [close1, editTitle, close2] = await Promise.all([
-      patchJson(app, `/api/issues/${issue.id}`, { status: "closed" }, adminCookie),
+      patchJson(app, `/api/issues/${issue.id}`, { status: "done" }, adminCookie),
       patchJson(app, `/api/issues/${issue.id}`, { title: "Updated title" }, adminCookie),
-      patchJson(app, `/api/issues/${issue.id}`, { status: "closed" }, adminCookie),
+      patchJson(app, `/api/issues/${issue.id}`, { status: "done" }, adminCookie),
     ]);
     expect(close1.status).toBe(200);
     expect(editTitle.status).toBe(200);
@@ -854,7 +855,7 @@ describe("projects", () => {
     expect(finalRes.status).toBe(200);
     expect(await finalRes.json()).toMatchObject({
       title: "Updated title",
-      status: "closed",
+      status: "done",
     });
 
     const activity = await activityFor(app, adminCookie, project.id);
@@ -1179,6 +1180,136 @@ describe("projects", () => {
     expect(row).toEqual({ type: null, id: null });
   });
 
+  it("stores an explicit workspace-unique key and derives one from the name when omitted", async () => {
+    const { app, adminCookie, workspaceId } = await readyApp();
+    const createWithKey = async (name: string, key?: string) => {
+      const res = await postJson(
+        app,
+        `/api/workspaces/${workspaceId}/projects`,
+        key === undefined ? { name } : { name, key },
+        adminCookie,
+      );
+      expect(res.status).toBe(201);
+      return Project.parse(await res.json());
+    };
+
+    const explicit = await createWithKey("Orchard", "ORR");
+    expect(explicit.key).toBe("ORR");
+    expect(ProjectKey.parse(explicit.key)).toBe("ORR");
+    const fetched = await getJson(app, `/api/projects/${explicit.id}`, adminCookie);
+    expect(Project.parse(await fetched.json()).key).toBe("ORR");
+    const listed = await getJson(app, `/api/workspaces/${workspaceId}/projects`, adminCookie);
+    expect(
+      ProjectsResponse.parse(await listed.json()).find((p) => p.id === explicit.id),
+    ).toMatchObject({ key: "ORR" });
+
+    await expectProblem(
+      await postJson(
+        app,
+        `/api/workspaces/${workspaceId}/projects`,
+        { name: "Other Orchard", key: "ORR" },
+        adminCookie,
+      ),
+      409,
+      "project_key_taken",
+    );
+    await expectProblem(
+      await postJson(
+        app,
+        `/api/workspaces/${workspaceId}/projects`,
+        { name: "Lowercase", key: "orr" },
+        adminCookie,
+      ),
+      400,
+      "validation_failed",
+    );
+
+    // Existing callers that only send a name still get a valid, workspace-unique key.
+    const first = await createProject(app, adminCookie, workspaceId, "Alpha Beta");
+    const second = await createProject(app, adminCookie, workspaceId, "Alpha Beta");
+    expect(first.key).toMatch(/^[A-Z][A-Z0-9]{1,9}$/);
+    expect(second.key).toMatch(/^[A-Z][A-Z0-9]{1,9}$/);
+    expect(first.key).not.toBe(second.key);
+    expect(first.key).not.toBe("ORR");
+  });
+
+  it("keeps the key immutable and enforces its format and workspace uniqueness in the database", async () => {
+    const { app, adminCookie, workspaceId } = await readyApp();
+    const project = await postJson(
+      app,
+      `/api/workspaces/${workspaceId}/projects`,
+      { name: "Fixed", key: "FIX" },
+      adminCookie,
+    );
+    expect(project.status).toBe(201);
+    const fixed = Project.parse(await project.json());
+
+    await expectProblem(
+      await patchJson(
+        app,
+        `/api/projects/${fixed.id}`,
+        { name: "Renamed", key: "NEW" },
+        adminCookie,
+      ),
+      409,
+      "project_key_immutable",
+    );
+    const after = await getJson(app, `/api/projects/${fixed.id}`, adminCookie);
+    expect(Project.parse(await after.json())).toMatchObject({ name: "Fixed", key: "FIX" });
+    const renamed = await patchJson(
+      app,
+      `/api/projects/${fixed.id}`,
+      { name: "Renamed" },
+      adminCookie,
+    );
+    expect(Project.parse(await renamed.json())).toMatchObject({ name: "Renamed", key: "FIX" });
+
+    const other = await postJson(
+      app,
+      `/api/workspaces/${workspaceId}/projects`,
+      { name: "Other", key: "OTH" },
+      adminCookie,
+    );
+    expect(other.status).toBe(201);
+    expect(
+      await rejection(
+        database.db.execute(sql`update projects set key = 'bad' where id = ${fixed.id}`),
+      ),
+    ).toContain("projects_key_format");
+    expect(
+      await rejection(
+        database.db.execute(sql`update projects set key = 'OTH' where id = ${fixed.id}`),
+      ),
+    ).toContain("one_project_key_per_workspace");
+  });
+
+  it("carries the formatted <KEY>-<N> identifier on every issue payload", async () => {
+    const { app, adminCookie, workspaceId } = await readyApp();
+    const created = await postJson(
+      app,
+      `/api/workspaces/${workspaceId}/projects`,
+      { name: "Issue Keys", key: "ISK" },
+      adminCookie,
+    );
+    expect(created.status).toBe(201);
+    const project = Project.parse(await created.json());
+
+    const first = await createIssue(app, adminCookie, project.id, { title: "First" });
+    const second = await createIssue(app, adminCookie, project.id, { title: "Second" });
+    expect(first.identifier).toBe("ISK-1");
+    expect(second.identifier).toBe("ISK-2");
+
+    const listed = await getJson(app, `/api/projects/${project.id}/issues`, adminCookie);
+    expect(IssuesResponse.parse(await listed.json()).map((issue) => issue.identifier)).toEqual([
+      "ISK-1",
+      "ISK-2",
+    ]);
+    const fetched = await getJson(app, `/api/issues/${first.id}`, adminCookie);
+    expect(IssueDetail.parse(await fetched.json()).identifier).toBe("ISK-1");
+    const edited = await patchIssue(app, first.id, { title: "Edited" }, adminCookie);
+    expect(Issue.parse(await edited.json()).identifier).toBe("ISK-1");
+  });
+
   it("keeps the assignee pair integral in the database and records only real changes", async () => {
     const { app, admin, adminCookie, workspaceId } = await readyApp();
     const project = await createProject(app, adminCookie, workspaceId, "Integral");
@@ -1209,5 +1340,58 @@ describe("projects", () => {
     const after = await activityFor(app, adminCookie, project.id);
     expect(after.length).toBe(before.length);
     expect(after.filter((entry) => entry.type === "issue_edited")).toHaveLength(1);
+  });
+
+  // #94: new work is ready work by default; backlog is the explicit triage queue.
+  it("defaults new issues to todo, allows backlog at creation, and enforces the six-state closedAt invariant", async () => {
+    const { app, adminCookie, workspaceId } = await readyApp();
+    const project = await createProject(app, adminCookie, workspaceId, "Workflow");
+
+    const ready = await createIssue(app, adminCookie, project.id, { title: "Ready" });
+    expect(ready).toMatchObject({ status: "todo", closedAt: null });
+
+    const staged = await createIssue(app, adminCookie, project.id, {
+      title: "Staged",
+      status: "backlog",
+    });
+    expect(staged).toMatchObject({ status: "backlog", closedAt: null });
+
+    // Both terminal states set closedAt; every other state clears it.
+    const done = await patchJson(app, `/api/issues/${ready.id}`, { status: "done" }, adminCookie);
+    expect(done.status).toBe(200);
+    const doneIssue = Issue.parse(await done.json());
+    expect(doneIssue).toMatchObject({ status: "done" });
+    expect(doneIssue.closedAt).not.toBeNull();
+
+    const reopened = await patchJson(
+      app,
+      `/api/issues/${ready.id}`,
+      { status: "todo" },
+      adminCookie,
+    );
+    expect(Issue.parse(await reopened.json())).toMatchObject({ status: "todo", closedAt: null });
+
+    const cancelled = await patchJson(
+      app,
+      `/api/issues/${ready.id}`,
+      { status: "cancelled" },
+      adminCookie,
+    );
+    expect(Issue.parse(await cancelled.json()).closedAt).not.toBeNull();
+
+    // The database rejects an unknown status and a terminal status without closedAt.
+    const probe = await createIssue(app, adminCookie, project.id, { title: "Constraint probe" });
+    expect(
+      await rejection(
+        database.db.execute(sql`update issues set status = 'not_a_status' where id = ${probe.id}`),
+      ),
+    ).toContain("issues_status");
+    expect(
+      await rejection(
+        database.db.execute(
+          sql`update issues set status = 'done', closed_at = null where id = ${probe.id}`,
+        ),
+      ),
+    ).toContain("issues_closed_at_matches_status");
   });
 });

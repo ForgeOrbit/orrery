@@ -1,14 +1,18 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import {
+  ActivityDetailBlockV1,
   ActiveWorkSessionsResponse,
   AgentIdentity,
   CreateAgentKeyResponse,
   IssuesResponse,
   Problem,
+  RenewWorkSessionInput,
   RequestStopWorkSessionInput,
   SessionActivitiesResponse,
   SessionActivity,
+  SessionActivityDetail,
+  StopWorkSessionInput,
   WorkSession,
 } from "@orrery/contract";
 import { and, eq, sql } from "drizzle-orm";
@@ -354,6 +358,16 @@ function rejection(promise: Promise<unknown>): Promise<unknown> {
   );
 }
 
+// #94: read the persisted issue state, not just the returned view.
+async function issueStatus(issueId: string) {
+  const [row] = await database.db
+    .select({ status: issues.status, closedAt: issues.closedAt })
+    .from(issues)
+    .where(eq(issues.id, issueId));
+  if (row === undefined) throw new Error("missing issue");
+  return row;
+}
+
 describe("work sessions against real Postgres", () => {
   it("claims and stops a session tied to the agent, run, workspace and issue", async () => {
     const f = await bootstrap();
@@ -389,9 +403,9 @@ describe("work sessions against real Postgres", () => {
     expect(stopped).toMatchObject({ status: "completed" });
     expect(stopped.endedAt).not.toBeNull();
     expect(await activeCount(issue.id)).toBe(0);
-    expect(await sessionsService.readyWork({ kind: "agent", identity }, f.projectId)).toEqual([
-      expect.objectContaining({ id: issue.id }),
-    ]);
+    // #94: completing a session is a handoff to review, not a return to the ready queue.
+    expect(await issueStatus(issue.id)).toMatchObject({ status: "review", closedAt: null });
+    expect(await sessionsService.readyWork({ kind: "agent", identity }, f.projectId)).toEqual([]);
   });
 
   it("lets one of two concurrent claims win and enforces the unique index", async () => {
@@ -489,7 +503,7 @@ describe("work sessions against real Postgres", () => {
     const staleWrites = [
       () => projectsService.updateIssue(actor, issue.id, { title: "Stale edit" }),
       () => projectsService.updateIssue(actor, issue.id, { body: "Stale body" }),
-      () => projectsService.updateIssue(actor, issue.id, { status: "closed" }),
+      () => projectsService.updateIssue(actor, issue.id, { status: "done" }),
     ];
     for (const write of staleWrites) {
       const error = await rejection(write());
@@ -508,7 +522,7 @@ describe("work sessions against real Postgres", () => {
     const [row] = await database.db.select().from(issues).where(eq(issues.id, issue.id));
     expect(row?.title).toBe("Fenced issue");
     expect(row?.body).toBe("");
-    expect(row?.status).toBe("open");
+    expect(row?.status).toBe("todo");
     expect(await activeCount(issue.id)).toBe(0);
     expect((await sessionsService.getSession(actor, issue.id)).progress).toBe("before lapse");
 
@@ -751,13 +765,17 @@ describe("work sessions against real Postgres", () => {
         },
       },
       closed.id,
-      { status: "closed" },
+      { status: "done" },
     );
 
     const ready = await sessionsService.readyWork({ kind: "agent", identity }, f.projectId);
     expect(ready.map((item) => item.id)).toEqual([plain.id]);
     await setLease(claimed.id, "statement_timestamp() - interval '1 second'");
+    // #94: a lapsed lease ends the work even with no check-in. Ready work materializes
+    // the expiry itself, so the crashed worker's issue is immediately claimable again.
+    expect((await issueStatus(claimed.id)).status).toBe("in_progress");
     const afterExpiry = await sessionsService.readyWork({ kind: "agent", identity }, f.projectId);
+    expect((await issueStatus(claimed.id)).status).toBe("todo");
     expect(afterExpiry.map((item) => item.id)).toEqual([plain.id, claimed.id]);
   });
 
@@ -781,7 +799,7 @@ describe("work sessions against real Postgres", () => {
     expect(before.map((item) => item.id)).toContain(blocker.id);
     expect(before.map((item) => item.id)).not.toContain(downstream.id);
 
-    await projectsService.updateIssue(human, blocker.id, { status: "closed" });
+    await projectsService.updateIssue(human, blocker.id, { status: "done" });
     const after = await sessionsService.readyWork({ kind: "agent", identity }, f.projectId);
     expect(after.map((item) => item.id)).toContain(downstream.id);
 
@@ -790,6 +808,30 @@ describe("work sessions against real Postgres", () => {
     await projectsService.removeBlockedBy(human, downstream.id, blocker.id);
     const afterRemoval = await sessionsService.readyWork({ kind: "agent", identity }, f.projectId);
     expect(afterRemoval.map((item) => item.id)).toContain(downstream.id);
+  });
+
+  it("unblocks a dependent when its blocker is cancelled, but not when it is in review", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const agent = { kind: "agent" as const, identity };
+    const blocker = await humanIssue(f, "Cancelled prerequisite");
+    const downstream = await humanIssue(f, "Downstream of cancelled");
+    await projectsService.addBlockedBy(humanActor(f), downstream.id, {
+      blockedByIssueId: blocker.id,
+    });
+
+    // Review is a non-terminal handoff and still blocks.
+    await projectsService.updateIssue(humanActor(f), blocker.id, { status: "review" });
+    expect((await sessionsService.readyWork(agent, f.projectId)).map((i) => i.id)).not.toContain(
+      downstream.id,
+    );
+
+    // Cancelling is terminal: it sets closed_at and frees the dependent immediately.
+    await projectsService.updateIssue(humanActor(f), blocker.id, { status: "cancelled" });
+    expect((await issueStatus(blocker.id)).closedAt).not.toBeNull();
+    expect((await sessionsService.readyWork(agent, f.projectId)).map((i) => i.id)).toContain(
+      downstream.id,
+    );
   });
 
   it("orders ready work by priority, then sortOrder, then createdAt", async () => {
@@ -1011,7 +1053,11 @@ describe("work sessions against real Postgres", () => {
     const runId = await newRun(identity);
     const actor = { kind: "agent" as const, identity };
     const original = await sessionsService.claim(actor, { issueId: issue.id, runId });
-    await sessionsService.progress(actor, issue.id, "Halfway through");
+    await sessionsService.progress(actor, issue.id, "Halfway through", undefined, {
+      inputTokens: 50,
+      outputTokens: 10,
+      costUsdMicros: 200,
+    });
     await setLease(issue.id, "statement_timestamp() - interval '1 second'");
 
     const reacquired = await sessionsService.reacquire(actor, { issueId: issue.id, runId });
@@ -1021,6 +1067,23 @@ describe("work sessions against real Postgres", () => {
       agentId: identity.agentId,
       issueId: issue.id,
       progress: "Halfway through",
+    });
+    // A reacquired row is fresh: it never inherits the expired row's reported totals,
+    // which stay on that row instead of being double-counted in list_work_sessions (#96).
+    expect(reacquired).toMatchObject({
+      inputTokens: null,
+      outputTokens: null,
+      costUsdMicros: null,
+    });
+    const sessions = await database.db
+      .select()
+      .from(workSessions)
+      .where(eq(workSessions.issueId, issue.id));
+    expect(sessions.find((row) => row.id === original.id)).toMatchObject({
+      status: "expired",
+      inputTokens: 50,
+      outputTokens: 10,
+      costUsdMicros: 200,
     });
     expect(reacquired.id).not.toBe(original.id); // a fresh session, not a resurrected lease
     expect(await activeCount(issue.id)).toBe(1);
@@ -1122,7 +1185,7 @@ describe("work sessions against real Postgres", () => {
       () => sessionsService.progress(stale, issue.id, "Stale overwrite"),
       () => sessionsService.stop(stale, issue.id, "completed"),
       () => projectsService.updateIssue(stale, issue.id, { title: "Stale title" }),
-      () => projectsService.updateIssue(stale, issue.id, { status: "closed" }),
+      () => projectsService.updateIssue(stale, issue.id, { status: "done" }),
     ]) {
       const error = await rejection(operation());
       expect(errorKind(error)).toBe("session_required");
@@ -1131,7 +1194,8 @@ describe("work sessions against real Postgres", () => {
     expect(await activeCount(issue.id)).toBe(1);
     const [row] = await database.db.select().from(issues).where(eq(issues.id, issue.id));
     expect(row?.title).toBe("Contested issue");
-    expect(row?.status).toBe("open");
+    // #94: the replacement worker's claim moved the issue to in_progress.
+    expect(row?.status).toBe("in_progress");
     // The original progress lives on its expired session; the replacement has none.
     const history = await sessionsService.listSessions(current, issue.id);
     expect(history).toEqual(
@@ -1229,7 +1293,7 @@ describe("work sessions against real Postgres", () => {
         },
       },
       issue.id,
-      { status: "closed" },
+      { status: "done" },
     );
     const blocked = await rejection(sessionsService.reacquire(actor, { issueId: issue.id, runId }));
     expect(errorKind(blocked)).toBe("issue_blocked");
@@ -1247,7 +1311,7 @@ describe("work sessions against real Postgres", () => {
         },
       },
       issue.id,
-      { status: "open" },
+      { status: "todo" },
     );
     await expect(
       sessionsService.reacquire(actor, { issueId: issue.id, runId }),
@@ -1514,6 +1578,7 @@ describe("human stop requests on active work sessions (#82)", () => {
           id: randomUUID(),
           workspaceId: sharedId,
           name: "Shared stop project",
+          key: `P${randomUUID().replaceAll("-", "").slice(0, 9).toUpperCase()}`,
           createdByHumanId: f.humanId,
         })
         .returning({ id: projects.id });
@@ -2173,5 +2238,397 @@ describe("agent assignment and the ready queue (#84)", () => {
     expect(rest.status).toBe(200);
     const rows = IssuesResponse.parse(await rest.json());
     expect(rows.map((row) => row.id)).toEqual([mineUrgent.id, mineLow.id]);
+  });
+
+  // #94: the six-state workflow is driven by the work-session lifecycle. Every write
+  // below is asserted against the issue row in the same real Postgres instance.
+  it("moves todo -> in_progress on claim and back on release or lease expiry", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const agent = { kind: "agent" as const, identity };
+    const issue = await humanIssue(f, "Workflow claim");
+    expect((await issueStatus(issue.id)).status).toBe("todo");
+
+    const run = await newRun(identity);
+    await sessionsService.claim(agent, { issueId: issue.id, runId: run });
+    expect((await issueStatus(issue.id)).status).toBe("in_progress");
+
+    await sessionsService.stop(agent, issue.id, "released");
+    expect((await issueStatus(issue.id)).status).toBe("todo");
+
+    // A five-minute lease lapse is materialized on the next check-in; it returns the
+    // issue to the ready queue even when the operation that noticed it is refused.
+    await sessionsService.claim(agent, { issueId: issue.id, runId: run });
+    await setLease(issue.id, "statement_timestamp() - interval '1 second'");
+    await rejection(sessionsService.renew(agent, issue.id));
+    expect((await issueStatus(issue.id)).status).toBe("todo");
+    expect((await sessionsService.readyWork(agent, f.projectId)).map((i) => i.id)).toContain(
+      issue.id,
+    );
+  });
+
+  it("completes to review by default and to done when asked, unblocking dependents only on done", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const agent = { kind: "agent" as const, identity };
+    const blocked = await humanIssue(f, "Blocked dependent");
+    const blocker = await humanIssue(f, "Blocking task");
+    await projectsService.addBlockedBy(humanActor(f), blocked.id, {
+      blockedByIssueId: blocker.id,
+    });
+    expect((await sessionsService.readyWork(agent, f.projectId)).map((i) => i.id)).not.toContain(
+      blocked.id,
+    );
+
+    // Default completion is a non-terminal handoff. closedAt stays null and the
+    // dependent remains blocked while the blocker sits in review.
+    await sessionsService.claim(agent, { issueId: blocker.id, runId: await newRun(identity) });
+    await sessionsService.stop(agent, blocker.id, "completed");
+    expect(await issueStatus(blocker.id)).toMatchObject({ status: "review", closedAt: null });
+    expect((await sessionsService.readyWork(agent, f.projectId)).map((i) => i.id)).not.toContain(
+      blocked.id,
+    );
+
+    // Close the first blocker too; review is non-terminal and still blocks.
+    await projectsService.updateIssue(humanActor(f), blocker.id, { status: "done" });
+
+    // An explicit done outcome closes a blocker and unblocks the dependent.
+    const doneIssue = await humanIssue(f, "Closed directly");
+    await projectsService.addBlockedBy(humanActor(f), blocked.id, {
+      blockedByIssueId: doneIssue.id,
+    });
+    await sessionsService.claim(agent, { issueId: doneIssue.id, runId: await newRun(identity) });
+    await sessionsService.stop(agent, doneIssue.id, "done");
+    expect((await issueStatus(doneIssue.id)).status).toBe("done");
+    expect((await issueStatus(doneIssue.id)).closedAt).not.toBeNull();
+    expect((await sessionsService.readyWork(agent, f.projectId)).map((i) => i.id)).toContain(
+      blocked.id,
+    );
+  });
+
+  it("answers a REST claim on a non-todo issue with 409 issue_blocked", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const runId = await newRun(identity);
+    const backlog = await humanIssue(f, "Triage queue");
+    await projectsService.updateIssue(humanActor(f), backlog.id, { status: "backlog" });
+    const review = await humanIssue(f, "Handoff");
+    await projectsService.updateIssue(humanActor(f), review.id, { status: "review" });
+
+    for (const issue of [backlog, review]) {
+      const res = await postJson(
+        `/api/issues/${issue.id}/work-sessions`,
+        { runId },
+        undefined,
+        f.secret,
+      );
+      expect(res.status).toBe(409);
+      expect(res.headers.get("content-type")).toBe("application/problem+json");
+      expect(Problem.parse(await res.json())).toMatchObject({
+        status: 409,
+        code: "issue_blocked",
+      });
+    }
+  });
+
+  it("offers only todo issues, and reacquisition returns an expired issue to in_progress", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const agent = { kind: "agent" as const, identity };
+    const ready = await humanIssue(f, "Ready");
+    const backlog = await humanIssue(f, "Backlog");
+    await projectsService.updateIssue(humanActor(f), backlog.id, { status: "backlog" });
+
+    const visible = (await sessionsService.readyWork(agent, f.projectId)).map((i) => i.id);
+    expect(visible).toContain(ready.id);
+    expect(visible).not.toContain(backlog.id);
+
+    const run = await newRun(identity);
+    await sessionsService.claim(agent, { issueId: ready.id, runId: run });
+    await setLease(ready.id, "statement_timestamp() - interval '1 second'");
+    await sessionsService.reacquire(agent, { issueId: ready.id, runId: run });
+    expect((await issueStatus(ready.id)).status).toBe("in_progress");
+  });
+});
+
+// #96: telemetry totals are overwritten only when reported, and a `block` is validated only
+// when present. Both are proved against real rows so the contract's validation and the
+// database's non-negative CHECK constraints are exercised together.
+describe("cumulative session telemetry and v1 activity blocks (#96)", () => {
+  it("overwrites reported totals on renew/progress/complete and preserves omitted fields", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const actor = { kind: "agent" as const, identity };
+    const issue = await humanIssue(f, "Telemetry issue");
+    const claim = await sessionsService.claim(actor, {
+      issueId: issue.id,
+      runId: await newRun(identity),
+    });
+    expect(WorkSession.parse(claim)).toMatchObject({
+      inputTokens: null,
+      outputTokens: null,
+      costUsdMicros: null,
+    });
+
+    const renewed = await sessionsService.renew(actor, issue.id, undefined, {
+      inputTokens: 100,
+      outputTokens: 20,
+    });
+    expect(renewed).toMatchObject({ inputTokens: 100, outputTokens: 20, costUsdMicros: null });
+
+    // A retry of the same cumulative totals writes the same values, never a sum.
+    const retried = await sessionsService.renew(actor, issue.id, undefined, {
+      inputTokens: 100,
+      outputTokens: 20,
+    });
+    expect(retried).toMatchObject({ inputTokens: 100, outputTokens: 20, costUsdMicros: null });
+
+    // Progress reports a higher input total and the first cost; output is preserved.
+    const progressed = await sessionsService.progress(actor, issue.id, "Halfway", undefined, {
+      inputTokens: 250,
+      costUsdMicros: 750,
+    });
+    expect(progressed).toMatchObject({ inputTokens: 250, outputTokens: 20, costUsdMicros: 750 });
+
+    // A check-in that omits telemetry entirely leaves every stored total untouched.
+    expect(await sessionsService.progress(actor, issue.id, "Still going")).toMatchObject({
+      inputTokens: 250,
+      outputTokens: 20,
+      costUsdMicros: 750,
+    });
+    expect(await sessionsService.renew(actor, issue.id)).toMatchObject({
+      inputTokens: 250,
+      outputTokens: 20,
+      costUsdMicros: 750,
+    });
+
+    // Completion reports final input and cost totals; output carries forward.
+    const stopped = await sessionsService.stop(actor, issue.id, "completed", undefined, {
+      inputTokens: 400,
+      costUsdMicros: 1200,
+    });
+    expect(stopped).toMatchObject({ inputTokens: 400, outputTokens: 20, costUsdMicros: 1200 });
+    expect(await sessionsService.getSession(actor, issue.id)).toMatchObject({
+      inputTokens: 400,
+      outputTokens: 20,
+      costUsdMicros: 1200,
+    });
+
+    // A session that never reported telemetry keeps all three null through every write.
+    const quiet = await humanIssue(f, "Quiet issue");
+    await sessionsService.claim(actor, { issueId: quiet.id, runId: await newRun(identity) });
+    expect(await sessionsService.renew(actor, quiet.id)).toMatchObject({
+      inputTokens: null,
+      outputTokens: null,
+      costUsdMicros: null,
+    });
+    expect(await sessionsService.progress(actor, quiet.id, "No numbers")).toMatchObject({
+      inputTokens: null,
+      outputTokens: null,
+      costUsdMicros: null,
+    });
+    expect(await sessionsService.stop(actor, quiet.id, "completed")).toMatchObject({
+      inputTokens: null,
+      outputTokens: null,
+      costUsdMicros: null,
+    });
+  });
+
+  it("rejects negative or fractional totals in the contract and in the database", async () => {
+    for (const input of [
+      { issueId: "i", inputTokens: -1 },
+      { issueId: "i", outputTokens: -1 },
+      { issueId: "i", costUsdMicros: -1 },
+      { issueId: "i", inputTokens: 1.5 },
+    ]) {
+      expect(RenewWorkSessionInput.safeParse(input).success).toBe(false);
+    }
+    expect(StopWorkSessionInput.safeParse({ issueId: "i", inputTokens: -1 }).success).toBe(false);
+
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "Constraint issue");
+    const session = await sessionsService.claim(
+      { kind: "agent", identity },
+      {
+        issueId: issue.id,
+        runId: await newRun(identity),
+      },
+    );
+    // The CHECK constraints are the backstop for any writer that bypasses the contract.
+    for (const [column, constraint] of [
+      ["inputTokens", "work_sessions_input_tokens_nonnegative"],
+      ["outputTokens", "work_sessions_output_tokens_nonnegative"],
+      ["costUsdMicros", "work_sessions_cost_usd_micros_nonnegative"],
+    ] as const) {
+      let updateError: unknown;
+      try {
+        await database.db
+          .update(workSessions)
+          .set({ [column]: -1 })
+          .where(eq(workSessions.id, session.id));
+      } catch (error) {
+        updateError = error;
+      }
+      expect(rootCause(updateError)).toMatchObject({ code: "23514", constraint_name: constraint });
+    }
+    // Zero and positive totals remain writable.
+    await database.db
+      .update(workSessions)
+      .set({ inputTokens: 0, outputTokens: 0, costUsdMicros: 0 })
+      .where(eq(workSessions.id, session.id));
+    expect(await sessionsService.getSession({ kind: "agent", identity }, issue.id)).toMatchObject({
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsdMicros: 0,
+    });
+  });
+
+  it("validates every v1 block, rejects malformed ones and keeps arbitrary JSON without a block", async () => {
+    const blocks = [
+      { version: 1, type: "key_value", items: [{ key: "model", value: "gpt" }] },
+      { version: 1, type: "table", columns: ["name", "value"], rows: [["a", "1"]] },
+      { version: 1, type: "checklist", items: [{ label: "tests", checked: true }] },
+      {
+        version: 1,
+        type: "test_results",
+        passed: 3,
+        failed: 0,
+        skipped: 1,
+        cases: [{ name: "adds", status: "passed" }],
+      },
+    ] as const;
+    for (const block of blocks) {
+      expect(ActivityDetailBlockV1.parse(block)).toEqual(block);
+      expect(SessionActivityDetail.safeParse({ source: "ci", block }).success).toBe(true);
+    }
+    for (const malformed of [
+      { version: 2, type: "table", columns: [], rows: [] },
+      { version: 1, type: "unknown", items: [] },
+      { version: 1, type: "key_value", items: [{ key: "missing value" }] },
+      { version: 1, type: "test_results", passed: -1, failed: 0 },
+    ]) {
+      expect(ActivityDetailBlockV1.safeParse(malformed).success).toBe(false);
+      expect(SessionActivityDetail.safeParse({ source: "ci", block: malformed }).success).toBe(
+        false,
+      );
+    }
+    // Without a block, arbitrary JSON passes through as before #83.
+    expect(SessionActivityDetail.parse({ tool: "edit", nested: { n: 1 } })).toEqual({
+      tool: "edit",
+      nested: { n: 1 },
+    });
+    // The 64000-character size bound still applies to a detail carrying a block.
+    expect(
+      SessionActivityDetail.safeParse({ block: blocks[0], blob: "x".repeat(64_001) }).success,
+    ).toBe(false);
+
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "Block issue");
+    const actor = { kind: "agent" as const, identity };
+    const session = await sessionsService.claim(actor, {
+      issueId: issue.id,
+      runId: await newRun(identity),
+    });
+    // Parse gives a mutable, typed block from the readonly fixture literal.
+    const testResults = ActivityDetailBlockV1.parse(blocks[3]);
+    const withBlock = await sessionsService.logActivity(actor, {
+      issueId: issue.id,
+      kind: "status",
+      summary: "Tests finished",
+      detail: { source: "ci", block: testResults },
+    });
+    expect(withBlock.detail).toEqual({ source: "ci", block: testResults });
+    const custom = await sessionsService.logActivity(actor, {
+      issueId: issue.id,
+      kind: "thought",
+      summary: "Custom telemetry",
+      detail: { tool: "edit", nested: { n: 1 } },
+    });
+    expect(custom.detail).toEqual({ tool: "edit", nested: { n: 1 } });
+    const timeline = await sessionsService.listActivities(actor, issue.id, session.id);
+    expect(timeline.map((entry) => entry.detail)).toEqual([custom.detail, withBlock.detail]);
+  });
+
+  it("accepts telemetry on REST check-ins and validates v1 blocks on the activity route", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const issue = await humanIssue(f, "REST telemetry issue");
+    await sessionsService.claim(
+      { kind: "agent", identity },
+      {
+        issueId: issue.id,
+        runId: await newRun(identity),
+      },
+    );
+
+    const renewed = await postJson(
+      `/api/issues/${issue.id}/work-sessions/renew`,
+      { inputTokens: 12, outputTokens: 3 },
+      undefined,
+      f.secret,
+    );
+    expect(renewed.status).toBe(200);
+    expect(WorkSession.parse(await renewed.json())).toMatchObject({
+      inputTokens: 12,
+      outputTokens: 3,
+      costUsdMicros: null,
+    });
+
+    const progressed = await postJson(
+      `/api/issues/${issue.id}/work-sessions/progress`,
+      { summary: "REST progress", costUsdMicros: 42 },
+      undefined,
+      f.secret,
+    );
+    expect(progressed.status).toBe(200);
+    expect(WorkSession.parse(await progressed.json())).toMatchObject({
+      inputTokens: 12,
+      outputTokens: 3,
+      costUsdMicros: 42,
+    });
+
+    const block = { version: 1, type: "checklist", items: [{ label: "done", checked: true }] };
+    const activity = await postJson(
+      `/api/issues/${issue.id}/work-sessions/activities`,
+      { kind: "status", summary: "REST block", detail: { source: "ci", block } },
+      undefined,
+      f.secret,
+    );
+    expect(activity.status).toBe(201);
+    expect(SessionActivity.parse(await activity.json()).detail).toEqual({ source: "ci", block });
+
+    const malformed = await postJson(
+      `/api/issues/${issue.id}/work-sessions/activities`,
+      {
+        kind: "status",
+        summary: "Bad block",
+        detail: { block: { version: 1, type: "checklist", items: [{ label: "done" }] } },
+      },
+      undefined,
+      f.secret,
+    );
+    await expectProblem(malformed, 400, "validation_failed");
+    const negative = await postJson(
+      `/api/issues/${issue.id}/work-sessions/renew`,
+      { inputTokens: -1 },
+      undefined,
+      f.secret,
+    );
+    await expectProblem(negative, 400, "validation_failed");
+
+    const stopped = await postJson(
+      `/api/issues/${issue.id}/work-sessions/stop`,
+      { outcome: "completed", inputTokens: 20 },
+      undefined,
+      f.secret,
+    );
+    expect(stopped.status).toBe(200);
+    expect(WorkSession.parse(await stopped.json())).toMatchObject({
+      inputTokens: 20,
+      outputTokens: 3,
+      costUsdMicros: 42,
+    });
   });
 });

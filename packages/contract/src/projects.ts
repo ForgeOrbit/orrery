@@ -13,8 +13,20 @@ export const ProjectAccessLevel = z
   .meta({ id: "ProjectAccessLevel" });
 export type ProjectAccessLevel = z.infer<typeof ProjectAccessLevel>;
 
-export const IssueStatus = z.enum(["open", "closed"]).meta({ id: "IssueStatus" });
+// The fixed six-state workflow (#94). `needs_input` is deliberately not a status: it stays
+// an orthogonal flag derived from the questions table (ADR-0005). `done` and `cancelled`
+// are terminal (they set closed_at and unblock dependents); `review` is a non-terminal
+// handoff. `todo` is the agent-ready queue; `backlog` is triage.
+export const IssueStatus = z
+  .enum(["backlog", "todo", "in_progress", "review", "done", "cancelled"])
+  .meta({ id: "IssueStatus" });
 export type IssueStatus = z.infer<typeof IssueStatus>;
+
+// Statuses whose closed_at is set. Kept beside the enum so every service uses one rule.
+export const TERMINAL_ISSUE_STATUSES = ["done", "cancelled"] as const;
+export function isTerminalIssueStatus(status: IssueStatus): boolean {
+  return status === "done" || status === "cancelled";
+}
 
 // Human-set importance (#88). `none` is the default so an unordered board stays neutral.
 // The order here is also the ready-work order: urgent first, none last.
@@ -74,6 +86,10 @@ export const ProjectActivityType = z
     "issue_created",
     "issue_edited",
     "issue_commented",
+    // #94: a work session's default "review" completion hands the issue to a human before
+    // it is closed; "done" uses issue_closed and a status change out of a terminal state
+    // uses issue_reopened.
+    "issue_review_handoff",
     "issue_closed",
     "issue_reopened",
     "issue_dependency_added",
@@ -116,11 +132,21 @@ export type Actor = z.infer<typeof Actor>;
 export const IssueAssignee = Actor.nullable().meta({ id: "IssueAssignee" });
 export type IssueAssignee = z.infer<typeof IssueAssignee>;
 
+// A project's short, immutable key (#95). It is unique within one workspace and forms the
+// readable prefix of every issue identifier (`ORR-42`). The database repeats this rule.
+export const ProjectKey = z
+  .string()
+  .regex(/^[A-Z][A-Z0-9]{1,9}$/, "Use 2-10 uppercase letters or digits, starting with a letter.")
+  .meta({ id: "ProjectKey" });
+export type ProjectKey = z.infer<typeof ProjectKey>;
+
 export const Project = z
   .object({
     id: z.string(),
     workspaceId: z.string(),
     name: z.string(),
+    // Workspace-unique and immutable after creation; issue identifiers use it as prefix.
+    key: ProjectKey,
     createdAt: Timestamp,
     createdBy: Actor,
     // The workspace kind is part of the project's own view so a client knows whether
@@ -141,15 +167,21 @@ export type ProjectsResponse = z.infer<typeof ProjectsResponse>;
 export const CreateProjectRequest = z
   .object({
     name: z.string().trim().min(1, "Name the project.").max(120),
+    // Explicit keys are validated here. When omitted the service derives a valid,
+    // workspace-unique key from the name.
+    key: ProjectKey.optional(),
   })
   .meta({ id: "CreateProjectRequest" });
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequest>;
 
 // A project manager's configuration change. Only Manage access may rename a project;
-// the name is the project setting this slice exposes.
+// the name is the project setting this slice exposes. A key is immutable (#95): the
+// field is accepted only so the service can refuse an attempted change with a stable
+// problem instead of silently stripping it.
 export const UpdateProjectRequest = z
   .object({
     name: z.string().trim().min(1, "Name the project.").max(120),
+    key: ProjectKey.optional(),
   })
   .meta({ id: "UpdateProjectRequest" });
 export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;
@@ -201,12 +233,15 @@ export const ProjectAccessEventType = z
 export type ProjectAccessEventType = z.infer<typeof ProjectAccessEventType>;
 
 // An issue as its readers see it. `number` is the project-local issue number (1, 2, …),
-// not a global identity; the id is the stable one. `closedAt` is set only while closed.
+// not a global identity; the id is the stable one. `identifier` is the human-readable
+// `<PROJECT_KEY>-<NUMBER>` form (#95) carried alongside them; `closedAt` is set exactly
+// while the issue is in a terminal state (done or cancelled).
 export const Issue = z
   .object({
     id: z.string(),
     projectId: z.string(),
     number: z.int().positive(),
+    identifier: z.string(),
     title: z.string(),
     body: z.string(),
     status: IssueStatus,
@@ -292,15 +327,17 @@ export const CreateIssueRequest = z
   .object({
     title: z.string().trim().min(1, "Give the issue a title.").max(200),
     body: IssueBody.optional(),
+    // #94: new issues are ready work unless explicitly staged in the backlog triage queue.
+    status: IssueStatus.optional(),
     priority: IssuePriority.optional(),
     sortOrder: IssueSortOrder.optional(),
   })
   .meta({ id: "CreateIssueRequest" });
 export type CreateIssueRequest = z.infer<typeof CreateIssueRequest>;
 
-// Editing an issue, closing it, or reopening it. Every field is optional; a request that
-// changes nothing is answered with the issue unchanged. Status is a transition, so
-// "closed" while already closed is a no-op, not an error.
+// Editing an issue, moving it through the workflow, or closing it. Every field is
+// optional; a request that changes nothing is answered with the issue unchanged. Status
+// is a transition, so naming the current status is a no-op, not an error.
 export const UpdateIssueRequest = z
   .object({
     title: z.string().trim().min(1, "Give the issue a title.").max(200).optional(),

@@ -225,6 +225,41 @@
       "when": 1795208513949,
       "tag": "0031_next_masked_marvel",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1795209088416,
+      "tag": "0032_busy_namor",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1795209115512,
+      "tag": "0033_backfill_project_keys",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1795209146237,
+      "tag": "0034_unknown_logan",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1795212270100,
+      "tag": "0035_aspiring_lyja",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1795212353313,
+      "tag": "0036_tan_firebrand",
+      "breakpoints": true
     }
   ]
 }

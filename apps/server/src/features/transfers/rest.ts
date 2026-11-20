@@ -112,7 +112,9 @@ const completeTransfer = createRoute({
     401: problem("Not signed in"),
     403: problem("The caller lacks Create projects in the destination"),
     404: problem("No project owned by the caller or shared workspace with these ids is accessible"),
-    409: problem("Active work remains, or the project changed since authorization"),
+    409: problem(
+      "Active work remains, the project changed, or its key collides in the destination",
+    ),
   },
 });
 
@@ -134,7 +136,9 @@ const acceptTransfer = createRoute({
     401: problem("Not signed in"),
     403: problem("The caller lacks Create projects in the destination"),
     404: problem("No accessible project, destination, or pending authorization"),
-    409: problem("The project changed since authorization, or active work remains"),
+    409: problem(
+      "The project changed, active work remains, or its key collides in the destination",
+    ),
   },
 });
 
@@ -157,6 +161,8 @@ const statusFor = {
   transfer_stale: 409,
   source_authority_lost: 409,
   active_work: 409,
+  project_key_conflict: 409,
+  project_key_immutable: 409,
 } as const satisfies Record<TransfersErrorKind, number>;
 
 function isKind<K extends readonly TransfersErrorKind[]>(
@@ -184,6 +190,8 @@ const acceptKinds = [
   "transfer_stale",
   "source_authority_lost",
   "active_work",
+  "project_key_conflict",
+  "project_key_immutable",
 ] as const;
 
 function failure<K extends readonly TransfersErrorKind[]>(c: Context, error: unknown, kinds: K) {
@@ -251,6 +259,7 @@ export function createTransfersRest(service: TransfersService, sessionReader: Se
           await sessionReader(c),
           projectId,
           c.req.valid("json").destinationWorkspaceId,
+          c.req.valid("json").key,
         ),
         200,
       );
@@ -261,7 +270,14 @@ export function createTransfersRest(service: TransfersService, sessionReader: Se
 
   app.openapi(acceptTransfer, async (c) => {
     try {
-      return c.json(await service.accept(await sessionReader(c), c.req.valid("json").token), 200);
+      return c.json(
+        await service.accept(
+          await sessionReader(c),
+          c.req.valid("json").token,
+          c.req.valid("json").key,
+        ),
+        200,
+      );
     } catch (error) {
       return failure(c, error, acceptKinds);
     }

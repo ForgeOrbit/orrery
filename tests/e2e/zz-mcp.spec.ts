@@ -241,10 +241,10 @@ test("a Contribute key runs the full issue and knowledge cycle over MCP and REST
     expect(commented.isError).toBe(false);
     expect(field(field(commented.data.comment, "author"), "agentId")).toBe(agentId);
 
-    const closed = await call(client, "update_issue", { issueId, status: "closed" });
-    expect(field(closed.data.issue, "status")).toBe("closed");
-    const reopened = await call(client, "update_issue", { issueId, status: "open" });
-    expect(field(reopened.data.issue, "status")).toBe("open");
+    const closed = await call(client, "update_issue", { issueId, status: "done" });
+    expect(field(closed.data.issue, "status")).toBe("done");
+    const reopened = await call(client, "update_issue", { issueId, status: "todo" });
+    expect(field(reopened.data.issue, "status")).toBe("todo");
     expect(field(reopened.data.issue, "closedAt")).toBeNull();
     expect(field(reopened.data.issue, "updatedBy")).toMatchObject({ agentId });
 
@@ -290,9 +290,9 @@ test("a Contribute key runs the full issue and knowledge cycle over MCP and REST
     });
     expect(restEdited.status).toBe(200);
     expect(field(await restEdited.json(), "title")).toBe("Edited over REST");
-    const restClosed = await rest.patch(`/api/issues/${restIssueId}`, { status: "closed" });
+    const restClosed = await rest.patch(`/api/issues/${restIssueId}`, { status: "done" });
     expect(restClosed.status).toBe(200);
-    const restReopened = await rest.patch(`/api/issues/${restIssueId}`, { status: "open" });
+    const restReopened = await rest.patch(`/api/issues/${restIssueId}`, { status: "todo" });
     expect(restReopened.status).toBe(200);
     expect(field(await restReopened.json(), "closedAt")).toBeNull();
     const restComment = await rest.post(`/api/issues/${restIssueId}/comments`, {
@@ -445,7 +445,7 @@ test("a Read key inspects over MCP and REST but cannot change work on either", a
 
     const mcpDenials = await Promise.all([
       call(client, "create_issue", { projectId, title: "No" }),
-      call(client, "update_issue", { issueId, status: "closed" }),
+      call(client, "update_issue", { issueId, status: "done" }),
       call(client, "create_comment", { issueId, body: "No" }),
       call(client, "add_issue_link", {
         issueId,
@@ -463,7 +463,7 @@ test("a Read key inspects over MCP and REST but cannot change work on either", a
     }
     const restDenials = await Promise.all([
       rest.post(`/api/projects/${projectId}/issues`, { title: "No" }),
-      rest.patch(`/api/issues/${issueId}`, { status: "closed" }),
+      rest.patch(`/api/issues/${issueId}`, { status: "done" }),
       rest.post(`/api/issues/${issueId}/comments`, { body: "No" }),
       rest.post(`/api/issues/${issueId}/links`, {
         url: "https://example.com/no",
@@ -501,7 +501,7 @@ test("a Read key inspects over MCP and REST but cannot change work on either", a
   });
   expect(accepted.status()).toBe(200);
   const humanDenied = await memberApi.patch(`/api/issues/${issueId}`, {
-    data: { status: "closed" },
+    data: { status: "done" },
   });
   expect(humanDenied.status()).toBe(403);
   expect(await humanDenied.json()).toMatchObject({ code: "insufficient_project_access" });

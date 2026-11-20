@@ -13,12 +13,33 @@ export const WorkSessionStatus = z
   .meta({ id: "WorkSessionStatus" });
 export type WorkSessionStatus = z.infer<typeof WorkSessionStatus>;
 
-// The stop outcome releases the claim. "completed" is the normal stop; "released" is the
-// explicit give-up that leaves the issue open for another worker. Both end the session.
+// How the session row ends. "completed" is the normal stop; "released" is the explicit
+// give-up that leaves the issue for another worker. Both are terminal session states.
 export const WorkSessionOutcome = z
   .enum(["completed", "released"])
   .meta({ id: "WorkSessionOutcome" });
 export type WorkSessionOutcome = z.infer<typeof WorkSessionOutcome>;
+
+// Cumulative session telemetry (#96). A reported value is the session's running total, not
+// a delta: overwriting it on a retry is idempotent, and omitting a field leaves the stored
+// value untouched. All three are non-negative integers in the contract and in the database;
+// a field the client never reports stays null. Orrery records only what the client reports.
+export const SessionTelemetry = z
+  .object({
+    inputTokens: z.number().int().nonnegative().optional(),
+    outputTokens: z.number().int().nonnegative().optional(),
+    costUsdMicros: z.number().int().nonnegative().optional(),
+  })
+  .meta({ id: "SessionTelemetry" });
+export type SessionTelemetry = z.infer<typeof SessionTelemetry>;
+
+// #94: where a completed session leaves the issue. "review" is the default handoff to a
+// human (non-terminal, closed_at null); "done" closes the issue and requires Contribute
+// or Manage, which every caller holding a live claim already has.
+export const WorkCompletionOutcome = z
+  .enum(["review", "done"])
+  .meta({ id: "WorkCompletionOutcome" });
+export type WorkCompletionOutcome = z.infer<typeof WorkCompletionOutcome>;
 
 export const WorkSession = z
   .object({
@@ -40,6 +61,10 @@ export const WorkSession = z
     stopRequested: z.boolean(),
     stopRequestedAt: Timestamp.nullable(),
     stopReason: z.string().nullable(),
+    // Cumulative telemetry, null until the client first reports it (#96).
+    inputTokens: z.number().int().nonnegative().nullable(),
+    outputTokens: z.number().int().nonnegative().nullable(),
+    costUsdMicros: z.number().int().nonnegative().nullable(),
     createdAt: Timestamp,
     updatedAt: Timestamp,
     endedAt: Timestamp.nullable(),
@@ -87,31 +112,35 @@ export type ClaimWorkSessionInput = z.infer<typeof ClaimWorkSessionInput>;
 // Omitting it keeps #36 callers (helpers, older clients) working unchanged.
 const SessionFence = z.string().trim().min(1).max(200);
 
-export const RenewWorkSessionInput = z
-  .object({
-    issueId: z.string().trim().min(1).max(200),
-    sessionId: SessionFence.optional(),
-  })
-  .meta({ id: "RenewWorkSessionInput" });
+// Renew, progress and completion all accept the same optional cumulative telemetry (#96).
+// Each field overwrites the stored total when present and preserves it when omitted.
+export const RenewWorkSessionInput = SessionTelemetry.extend({
+  issueId: z.string().trim().min(1).max(200),
+  sessionId: SessionFence.optional(),
+}).meta({ id: "RenewWorkSessionInput" });
 export type RenewWorkSessionInput = z.infer<typeof RenewWorkSessionInput>;
 
-export const ReportProgressInput = z
-  .object({
-    issueId: z.string().trim().min(1).max(200),
-    summary: z.string().trim().min(1).max(20_000),
-    sessionId: SessionFence.optional(),
-  })
-  .meta({ id: "ReportProgressInput" });
+export const ReportProgressInput = SessionTelemetry.extend({
+  issueId: z.string().trim().min(1).max(200),
+  summary: z.string().trim().min(1).max(20_000),
+  sessionId: SessionFence.optional(),
+}).meta({ id: "ReportProgressInput" });
 export type ReportProgressInput = z.infer<typeof ReportProgressInput>;
 
-export const StopWorkSessionInput = z
-  .object({
-    issueId: z.string().trim().min(1).max(200),
-    outcome: WorkSessionOutcome.default("completed"),
-    sessionId: SessionFence.optional(),
-  })
-  .meta({ id: "StopWorkSessionInput" });
+// `outcome` chooses both how the session ends and, for a completion, where the issue goes:
+// "released" gives up the claim (an in_progress issue returns to todo); "completed" is the
+// legacy spelling of the default "review" handoff; "review" and "done" are the explicit
+// #94 completion outcomes. "done" is permitted only for a caller with Contribute or
+// Manage, which the live-session gate already requires.
+export const StopWorkSessionInput = SessionTelemetry.extend({
+  issueId: z.string().trim().min(1).max(200),
+  outcome: z
+    .union([WorkSessionOutcome, WorkCompletionOutcome])
+    .default("completed"),
+  sessionId: SessionFence.optional(),
+}).meta({ id: "StopWorkSessionInput" });
 export type StopWorkSessionInput = z.infer<typeof StopWorkSessionInput>;
+export type StopOutcome = z.infer<typeof StopWorkSessionInput>["outcome"];
 
 export const GetWorkSessionInput = z
   .object({ issueId: z.string().trim().min(1).max(200) })
@@ -177,11 +206,11 @@ export const ResumeWorkSessionResponse = z
   .meta({ id: "ResumeWorkSessionResponse" });
 export type ResumeWorkSessionResponse = z.infer<typeof ResumeWorkSessionResponse>;
 
-// Minimal ready work: the eligible open issues in a project, not a full board. An issue
-// is ready while open, not marked Needs input, without a live (unevaluated-expired) active
-// session, and with no blocked_by issue whose status is not closed (#86). The rows are
-// ordinary Issues so REST and MCP use the same shape as every other issue listing; only
-// the filtering is minimal.
+// Minimal ready work: the eligible `todo` issues in a project, not a full board (#94). An
+// issue is ready while todo, not marked Needs input, without a live (unevaluated-expired)
+// active session, and with no blocked_by issue whose status is not done or cancelled (#86).
+// The rows are ordinary Issues so REST and MCP use the same shape as every other issue
+// listing; only the filtering is minimal.
 export const ReadyWorkResponse = z.array(Issue).meta({ id: "ReadyWorkResponse" });
 export type ReadyWorkResponse = z.infer<typeof ReadyWorkResponse>;
 
@@ -216,12 +245,55 @@ export const SessionActivityKind = z
   .meta({ id: "SessionActivityKind" });
 export type SessionActivityKind = z.infer<typeof SessionActivityKind>;
 
-// A flat JSON object. z.json() is deliberately avoided: its recursive schema makes the
-// OpenAPI generator recurse forever; an unknown-valued record is still fully extensible.
+// A versioned structured block inside an activity's `detail` (#96). v1 is a closed
+// discriminated union on `type`, so a renderer can rely on each shape. Counts and sizes are
+// bounded non-negative integers; an unknown version or type is rejected rather than stored.
+export const ActivityDetailBlockV1 = z
+  .discriminatedUnion("type", [
+    z.object({
+      version: z.literal(1),
+      type: z.literal("key_value"),
+      items: z.array(z.object({ key: z.string(), value: z.string() })),
+    }),
+    z.object({
+      version: z.literal(1),
+      type: z.literal("table"),
+      columns: z.array(z.string()),
+      rows: z.array(z.array(z.string())),
+    }),
+    z.object({
+      version: z.literal(1),
+      type: z.literal("checklist"),
+      items: z.array(z.object({ label: z.string(), checked: z.boolean() })),
+    }),
+    z.object({
+      version: z.literal(1),
+      type: z.literal("test_results"),
+      passed: z.number().int().nonnegative(),
+      failed: z.number().int().nonnegative(),
+      skipped: z.number().int().nonnegative().optional(),
+      cases: z
+        .array(
+          z.object({
+            name: z.string(),
+            status: z.enum(["passed", "failed", "skipped"]),
+            message: z.string().optional(),
+          }),
+        )
+        .optional(),
+    }),
+  ])
+  .meta({ id: "ActivityDetailBlockV1" });
+export type ActivityDetailBlockV1 = z.infer<typeof ActivityDetailBlockV1>;
+
+// A loose object keeps `detail` extensible for custom harness telemetry while making the
+// optional v1 `block` structural, so it is emitted into the generated OpenAPI and MCP JSON
+// Schemas rather than hidden inside a validation refine. A present block must be one of the
+// four v1 shapes; an absent (or explicitly undefined) one keeps arbitrary JSON accepted.
 // The bound keeps a single telemetry entry from becoming an unbounded JSONB payload; an
 // oversized detail is a 400 validation_failed, not a silently truncated value.
 export const SessionActivityDetail = z
-  .record(z.string(), z.unknown())
+  .looseObject({ block: ActivityDetailBlockV1.optional() })
   .refine((value) => JSON.stringify(value).length <= 64_000, {
     message: "Activity detail must be at most 64000 characters when serialized.",
   })

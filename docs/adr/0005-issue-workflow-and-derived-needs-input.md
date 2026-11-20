@@ -1,0 +1,11 @@
+---
+status: accepted
+---
+
+# Fixed six-state issue workflow with derived needs-input
+
+Orrery tracks work by humans and agents on one shared board. Earlier proposals conflicted: the identity and work-sessions spec used binary `open` / `closed` states and allowed authorized agents to close issues directly, while the M2–M4 milestone proposals introduced a six-column workflow (`Backlog → Todo → In progress → Needs input → Review → Done`) with human-only completion.
+
+Issues use a fixed six-state `status`: `backlog`, `todo`, `in_progress`, `review`, `done`, and `cancelled`. `needs_input` is **not** a status value; it remains an orthogonal flag derived from the `questions` table (backed by the one-open-question-per-issue constraint) so the board can surface a Needs input column and filter without status ever drifting from question state. `list_ready_work` considers `todo` issues only, making `backlog` the triage queue and `todo` the agent-ready queue. Claiming a `todo` issue atomically transitions it to `in_progress`. Whenever a work session ends without completion — via explicit release, five-minute lease expiry, or one-hour question pause (`require_human`) — `in_progress` always reverts to `todo` in the same update (while `needs_input = true` keeps a waiting or paused issue out of `list_ready_work` until answered, preventing an answered question from leaving an unclaimed issue stranded in `in_progress`). Completing a work session accepts `outcome: "review" | "done"`, defaulting to `review` (handoff) while still allowing authorized callers (`Contribute` or `Manage`) to close directly to `done`. Both `done` and `cancelled` are terminal: they set `closed_at` and unblock `blocked_by` dependents, whereas `review` stays non-terminal.
+
+Custom per-project workflows were rejected for MVP because agents depend on predictable state transitions across projects without per-project workflow discovery. Putting `needs_input` into `issues.status` was rejected because a manual status update could disagree with an open or paused question row. Mandatory human review for every completion was rejected to preserve autonomous completion where teams want it, while making `review` the default completion outcome so handoff is the safe path.

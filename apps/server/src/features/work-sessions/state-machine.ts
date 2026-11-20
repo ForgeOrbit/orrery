@@ -30,14 +30,16 @@ export function resumeDispositionFor(effective: WorkSessionStatus | undefined): 
 
 export type ReacquireDecision = "reacquire" | "session_required" | "issue_blocked";
 
-// Pure guard for reacquire(): only the run's own expired claim on an open, unpaused issue
-// may be reacquired into a fresh active session.
+// Pure guard for reacquire(): only the run's own expired claim on a ready (`todo`),
+// unpaused issue may be reacquired into a fresh active session (#94). `backlog` is triage,
+// `review`/`done`/`cancelled` are not ready, and an in_progress issue without a live
+// session is never accepted here.
 export function decideReacquire(
   effectivePrior: WorkSessionStatus | undefined,
   issueStatus: IssueStatus,
   needsInput: boolean,
 ): ReacquireDecision {
   if (effectivePrior !== "expired") return "session_required";
-  if (issueStatus !== "open" || needsInput) return "issue_blocked";
+  if (issueStatus !== "todo" || needsInput) return "issue_blocked";
   return "reacquire";
 }

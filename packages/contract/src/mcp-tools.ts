@@ -90,7 +90,7 @@ const getIssue = {
 const createIssue = {
   name: "create_issue",
   description:
-    "Create an issue in an in-scope project. Priority and sortOrder may be set at creation; omitted priority defaults to none and omitted sortOrder is spaced by 65535 from the project-local issue number. Requires Contribute access on the key and on its human owner.",
+    "Create an issue in an in-scope project. Omitted status defaults to `todo` (ready work); pass `backlog` to stage it for triage. Priority and sortOrder may be set at creation; omitted priority defaults to none and omitted sortOrder is spaced by 65535 from the project-local issue number. Requires Contribute access on the key and on its human owner.",
   input: CreateIssueRequest.extend({ projectId: id("The project id") }),
   output: z.object({ issue: Issue }),
 };
@@ -98,13 +98,14 @@ const createIssue = {
 const updateIssue = {
   name: "update_issue",
   description:
-    "Edit an issue's title or body, close/reopen it, change its priority or sortOrder (a float; the midpoint of two neighbours moves one card without rewriting them), or set/clear its assignee (`{\"type\":\"human\"|\"agent\",\"id\":\"...\"}`, or null to clear). An assignee must be an active member or a registered agent in the workspace. Requires Contribute access and, for an agent, a live work session on the issue. The actor recorded is the agent, not its human owner.",
+    "Edit an issue's title or body, move it through the six-state workflow (`backlog`, `todo`, `in_progress`, `review`, `done`, `cancelled` — only done and cancelled set closedAt), change its priority or sortOrder (a float; the midpoint of two neighbours moves one card without rewriting them), or set/clear its assignee (`{\"type\":\"human\"|\"agent\",\"id\":\"...\"}`, or null to clear). An assignee must be an active member or a registered agent in the workspace. Requires Contribute access and, for an agent, a live work session on the issue. The actor recorded is the agent, not its human owner.",
   input: UpdateIssueRequest.extend({ issueId: id("The issue id") }),
   output: z.object({ issue: Issue }),
 };
 
-// Directed blocked_by dependencies (#86). An issue with any open blocker is omitted from
-// ready work, so agents cannot claim downstream work before its prerequisites are closed.
+// Directed blocked_by dependencies (#86/#94). An issue with any non-terminal blocker is
+// omitted from ready work, so agents cannot claim downstream work before its prerequisites
+// reach done or cancelled; review is a handoff and still blocks.
 // Modifying an edge needs Contribute; reading either direction needs only Read.
 const addBlockedBy = {
   name: "add_blocked_by",
@@ -131,7 +132,7 @@ const removeBlockedBy = {
 const listBlockedBy = {
   name: "list_blocked_by",
   description:
-    "List the issues that block an issue (its prerequisites, open or closed). Read access is enough.",
+    "List the issues that block an issue (its prerequisites, in any status). Read access is enough.",
   input: z.object({ issueId: id("The issue id") }),
   output: z.object({ issues: IssuesResponse }),
 };
@@ -139,7 +140,7 @@ const listBlockedBy = {
 const listBlocking = {
   name: "list_blocking",
   description:
-    "List the issues that an issue blocks (its dependants, open or closed). Read access is enough.",
+    "List the issues that an issue blocks (its dependants, in any status). Read access is enough.",
   input: z.object({ issueId: id("The issue id") }),
   output: z.object({ issues: IssuesResponse }),
 };
@@ -230,7 +231,7 @@ const runCheckin = {
 const claimIssue = {
   name: "claim_issue",
   description:
-    "Claim an issue this agent needs to work on, for this agent and run. An agent may claim only work that is unassigned or assigned to that same agent; issues assigned to a human or another agent are refused. The issue may already be closed: a worker reopening it must claim it first, because a fenced update_issue needs a live session. One active session per issue: a second worker is refused. Helpers on the same issue pass the same runId and join the existing session. The claim is a five-minute lease in database time; renew it while working.",
+    "Claim a `todo` issue this agent needs to work on, for this agent and run; the claim atomically moves it to `in_progress`. Backlog, review and terminal issues are refused. An agent may claim only work that is unassigned or assigned to that same agent; issues assigned to a human or another agent are refused. One active session per issue: a second worker is refused. Helpers on the same issue pass the same runId and join the existing session. The claim is a five-minute lease in database time; renew it while working.",
   input: ClaimWorkSessionInput,
   output: WorkSessionResponse,
 };
@@ -238,7 +239,7 @@ const claimIssue = {
 const renewClaim = {
   name: "renew_claim",
   description:
-    "Check in on an issue this agent currently holds and refresh its five-minute lease in database time. Requires a live session; an expired or released session is never renewed or silently reacquired. Pass sessionId to fence a delayed call from an interrupted session: it is refused if that session is no longer the live one, even after reacquisition. The returned session carries stopRequested, stopRequestedAt and stopReason: when stopRequested is true a human has asked you to stop, so flush a brief handoff and call stop_session promptly. The five-minute lease remains the hard backstop.",
+    "Check in on an issue this agent currently holds and refresh its five-minute lease in database time. Requires a live session; an expired or released session is never renewed or silently reacquired. Pass sessionId to fence a delayed call from an interrupted session: it is refused if that session is no longer the live one, even after reacquisition. Optionally report cumulative inputTokens, outputTokens and costUsdMicros: each provided value overwrites the session's total, an omitted one is preserved, and unreported ones stay null. The returned session carries stopRequested, stopRequestedAt and stopReason: when stopRequested is true a human has asked you to stop, so flush a brief handoff and call stop_session promptly. The five-minute lease remains the hard backstop.",
   input: RenewWorkSessionInput,
   output: WorkSessionResponse,
 };
@@ -246,7 +247,7 @@ const renewClaim = {
 const reportProgress = {
   name: "report_progress",
   description:
-    "Record progress on the live session this agent holds for an issue. Progress is stored independently of the lease, so an interruption never erases it. Requires a live session; pass sessionId to refuse a delayed report from an expired session instead of writing to a newer one. The returned session carries stopRequested, stopRequestedAt and stopReason: check them on every report and stop promptly if a human has asked you to stop.",
+    "Record progress on the live session this agent holds for an issue. Progress is stored independently of the lease, so an interruption never erases it. Requires a live session; pass sessionId to refuse a delayed report from an expired session instead of writing to a newer one. Optionally report cumulative inputTokens, outputTokens and costUsdMicros: each provided value overwrites the session's total, an omitted one is preserved, and unreported ones stay null. The returned session carries stopRequested, stopRequestedAt and stopReason: check them on every report and stop promptly if a human has asked you to stop.",
   input: ReportProgressInput,
   output: WorkSessionResponse,
 };
@@ -254,7 +255,7 @@ const reportProgress = {
 const stopSession = {
   name: "stop_session",
   description:
-    "Complete or release the live session this agent holds for an issue. Requires a live session; stopping is distinct from closing the issue. Pass sessionId to fence a delayed completion from an interrupted session: it is refused rather than completing a newer session.",
+    "Complete or release the live session this agent holds for an issue. Requires a live session. `outcome` defaults to `review`: the issue moves to the non-terminal review handoff with closedAt null. `outcome: done` closes the issue (closedAt set, unblocking dependents) and requires Contribute or Manage; `outcome: released` gives up the claim and returns an in_progress issue to todo. Pass sessionId to fence a delayed completion from an interrupted session: it is refused rather than completing a newer session. Optionally report final cumulative inputTokens, outputTokens and costUsdMicros; each provided value overwrites the session's total and an omitted one is preserved.",
   input: StopWorkSessionInput,
   output: WorkSessionResponse,
 };
@@ -291,7 +292,7 @@ const reacquireWorkSession = {
 const readyWork = {
   name: "ready_work",
   description:
-    "List minimal ready work in a project: open issues that are not Needs input, have no live active session, and have no blocker whose status is not closed, evaluated in database time. Optional `filter` is all (default), assignedToMe or unassigned; an agent never sees issues assigned to a human or another agent. Work assigned to the caller sorts first, then priority urgent > high > medium > low > none, then sortOrder ascending, then creation time ascending. Needs no claim.",
+    "List minimal ready work in a project: `todo` issues that are not Needs input, have no live active session, and have no blocker whose status is not done or cancelled, evaluated in database time. `backlog`, `in_progress`, `review` and terminal issues are never offered. Optional `filter` is all (default), assignedToMe or unassigned; an agent never sees issues assigned to a human or another agent. Work assigned to the caller sorts first, then priority urgent > high > medium > low > none, then sortOrder ascending, then creation time ascending. Needs no claim.",
   input: ReadyWorkInput,
   output: z.object({ issues: ReadyWorkResponse }),
 };
@@ -310,7 +311,7 @@ const allSessionsForIssue = {
 const logSessionActivity = {
   name: "log_session_activity",
   description:
-    "Append an ephemeral thought, action or status entry to the live work session this agent holds on an issue. Optional detail is an extensible JSON object for structured blocks. Entries are kept independently of the claim lease, so an interrupted or completed session keeps its whole trail, and are never posted as issue comments. Requires a live session; pass sessionId to refuse a delayed write from an expired session instead of writing to a newer one.",
+    "Append an ephemeral thought, action or status entry to the live work session this agent holds on an issue. Optional detail is an extensible JSON object; when it carries a `block`, that block must be a validated v1 key_value, table, checklist or test_results block, while detail without a block accepts arbitrary JSON. Entries are kept independently of the claim lease, so an interrupted or completed session keeps its whole trail, and are never posted as issue comments. Requires a live session; pass sessionId to refuse a delayed write from an expired session instead of writing to a newer one.",
   input: LogSessionActivityInput,
   output: LogSessionActivityResponse,
 };

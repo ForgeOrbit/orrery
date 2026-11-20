@@ -1355,6 +1355,9 @@
           "name": {
             "type": "string"
           },
+          "key": {
+            "$ref": "#/components/schemas/ProjectKey"
+          },
           "createdAt": {
             "$ref": "#/components/schemas/Timestamp"
           },
@@ -1375,12 +1378,17 @@
           "id",
           "workspaceId",
           "name",
+          "key",
           "createdAt",
           "createdBy",
           "workspaceKind",
           "accessLevel",
           "fallbackPolicy"
         ]
+      },
+      "ProjectKey": {
+        "type": "string",
+        "pattern": "^[A-Z][A-Z0-9]{1,9}$"
       },
       "Actor": {
         "type": "object",
@@ -1441,6 +1449,9 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 120
+          },
+          "key": {
+            "$ref": "#/components/schemas/ProjectKey"
           }
         },
         "required": [
@@ -1454,6 +1465,9 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 120
+          },
+          "key": {
+            "$ref": "#/components/schemas/ProjectKey"
           }
         },
         "required": [
@@ -1542,6 +1556,9 @@
             "type": "integer",
             "exclusiveMinimum": 0
           },
+          "identifier": {
+            "type": "string"
+          },
           "title": {
             "type": "string"
           },
@@ -1589,6 +1606,7 @@
           "id",
           "projectId",
           "number",
+          "identifier",
           "title",
           "body",
           "status",
@@ -1608,8 +1626,12 @@
       "IssueStatus": {
         "type": "string",
         "enum": [
-          "open",
-          "closed"
+          "backlog",
+          "todo",
+          "in_progress",
+          "review",
+          "done",
+          "cancelled"
         ]
       },
       "IssuePriority": {
@@ -1695,6 +1717,9 @@
           "body": {
             "$ref": "#/components/schemas/IssueBody"
           },
+          "status": {
+            "$ref": "#/components/schemas/IssueStatus"
+          },
           "priority": {
             "$ref": "#/components/schemas/IssuePriority"
           },
@@ -1722,6 +1747,9 @@
           "number": {
             "type": "integer",
             "exclusiveMinimum": 0
+          },
+          "identifier": {
+            "type": "string"
           },
           "title": {
             "type": "string"
@@ -1776,6 +1804,7 @@
           "id",
           "projectId",
           "number",
+          "identifier",
           "title",
           "body",
           "status",
@@ -2068,6 +2097,7 @@
           "issue_created",
           "issue_edited",
           "issue_commented",
+          "issue_review_handoff",
           "issue_closed",
           "issue_reopened",
           "issue_dependency_added",
@@ -2730,6 +2760,27 @@
               "null"
             ]
           },
+          "inputTokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "outputTokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "costUsdMicros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
           "createdAt": {
             "$ref": "#/components/schemas/Timestamp"
           },
@@ -2753,6 +2804,9 @@
           "stopRequested",
           "stopRequestedAt",
           "stopReason",
+          "inputTokens",
+          "outputTokens",
+          "costUsdMicros",
           "createdAt",
           "updatedAt",
           "endedAt"
@@ -2772,8 +2826,14 @@
         "enum": [
           "completed",
           "released"
-        ],
-        "default": "completed"
+        ]
+      },
+      "WorkCompletionOutcome": {
+        "type": "string",
+        "enum": [
+          "review",
+          "done"
+        ]
       },
       "ResumeWorkSessionResult": {
         "type": "object",
@@ -2871,7 +2931,195 @@
           "object",
           "null"
         ],
+        "properties": {
+          "block": {
+            "$ref": "#/components/schemas/ActivityDetailBlockV1"
+          }
+        },
         "additionalProperties": {}
+      },
+      "ActivityDetailBlockV1": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "number",
+                "enum": [
+                  1
+                ]
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "key_value"
+                ]
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "value"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "version",
+              "type",
+              "items"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "number",
+                "enum": [
+                  1
+                ]
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "table"
+                ]
+              },
+              "columns": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "rows": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "required": [
+              "version",
+              "type",
+              "columns",
+              "rows"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "number",
+                "enum": [
+                  1
+                ]
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "checklist"
+                ]
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string"
+                    },
+                    "checked": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "label",
+                    "checked"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "version",
+              "type",
+              "items"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "number",
+                "enum": [
+                  1
+                ]
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "test_results"
+                ]
+              },
+              "passed": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "failed": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "skipped": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "cases": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "passed",
+                        "failed",
+                        "skipped"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "status"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "version",
+              "type",
+              "passed",
+              "failed"
+            ]
+          }
+        ]
       },
       "SessionActivitiesResponse": {
         "type": "array",
@@ -2927,6 +3175,27 @@
               "null"
             ]
           },
+          "inputTokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "outputTokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "costUsdMicros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
           "createdAt": {
             "$ref": "#/components/schemas/Timestamp"
           },
@@ -2953,6 +3222,9 @@
           "stopRequested",
           "stopRequestedAt",
           "stopReason",
+          "inputTokens",
+          "outputTokens",
+          "costUsdMicros",
           "createdAt",
           "updatedAt",
           "endedAt",
@@ -3343,10 +3615,29 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 512
+          },
+          "key": {
+            "$ref": "#/components/schemas/ProjectKey"
           }
         },
         "required": [
           "token"
+        ]
+      },
+      "CompleteTransferRequest": {
+        "type": "object",
+        "properties": {
+          "destinationWorkspaceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "key": {
+            "$ref": "#/components/schemas/ProjectKey"
+          }
+        },
+        "required": [
+          "destinationWorkspaceId"
         ]
       }
     },
@@ -6188,7 +6479,7 @@
       },
       "post": {
         "summary": "Create a project in a workspace",
-        "description": "A personal workspace's owner or a shared workspace's owner can always create a project. A shared member needs the Create projects capability; the member who creates a project receives Manage on it. The project belongs to the workspace, its creator is recorded as authorship, and the creation is recorded in the project's activity.",
+        "description": "A personal workspace's owner or a shared workspace's owner can always create a project. A shared member needs the Create projects capability; the member who creates a project receives Manage on it. The project belongs to the workspace, its creator is recorded as authorship, and the creation is recorded in the project's activity. Supply a workspace-unique uppercase key or let the server derive one from the name.",
         "parameters": [
           {
             "schema": {
@@ -6261,6 +6552,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Another project in this workspace already uses that key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         }
       }
@@ -6326,7 +6627,7 @@
       },
       "patch": {
         "summary": "Configure a project",
-        "description": "Manage access may rename the project. A request that does not change the name returns the project unchanged and records no event.",
+        "description": "Manage access may rename the project. A request that does not change the name returns the project unchanged and records no event. A project's key is immutable and cannot be changed here.",
         "parameters": [
           {
             "schema": {
@@ -6392,6 +6693,16 @@
           },
           "404": {
             "description": "No project with this id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A project's key cannot be changed after it is created",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8382,7 +8693,7 @@
             }
           },
           "409": {
-            "description": "The issue is assigned to a human or another agent, or another worker holds it",
+            "description": "The issue is not ready work (todo), is assigned to another worker, or another worker holds it",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8495,6 +8806,18 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "inputTokens": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "outputTokens": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "costUsdMicros": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
                   "sessionId": {
                     "type": "string",
                     "minLength": 1,
@@ -8592,6 +8915,18 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "inputTokens": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "outputTokens": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "costUsdMicros": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
                   "summary": {
                     "type": "string",
                     "minLength": 1,
@@ -8697,8 +9032,28 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "inputTokens": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "outputTokens": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "costUsdMicros": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
                   "outcome": {
-                    "$ref": "#/components/schemas/WorkSessionOutcome"
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/WorkSessionOutcome"
+                      },
+                      {
+                        "$ref": "#/components/schemas/WorkCompletionOutcome"
+                      }
+                    ],
+                    "default": "completed"
                   },
                   "sessionId": {
                     "type": "string",
@@ -9955,7 +10310,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AuthorizeTransferRequest"
+                "$ref": "#/components/schemas/CompleteTransferRequest"
               }
             }
           }
@@ -10012,7 +10367,7 @@
             }
           },
           "409": {
-            "description": "Active work remains, or the project changed since authorization",
+            "description": "Active work remains, the project changed, or its key collides in the destination",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -10090,7 +10445,7 @@
             }
           },
           "409": {
-            "description": "The project changed since authorization, or active work remains",
+            "description": "The project changed, active work remains, or its key collides in the destination",
             "content": {
               "application/problem+json": {
                 "schema": {

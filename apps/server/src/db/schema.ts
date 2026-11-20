@@ -8,6 +8,7 @@ import {
   IssueLinkKind,
   IssuePriority,
   IssueStatus,
+  TERMINAL_ISSUE_STATUSES,
   ProjectAccessEventType,
   ProjectAccessLevel,
   ProjectActivityType,
@@ -448,6 +449,9 @@ export const projects = pgTable(
       .notNull()
       .references(() => workspaces.id),
     name: text("name").notNull(),
+    // #95: an immutable, workspace-unique uppercase key. The CHECK enforces the shared
+    // contract's format even for a writer that bypasses the service.
+    key: text("key").notNull(),
     createdByHumanId: text("created_by_human_id")
       .notNull()
       .references(() => humans.id),
@@ -461,11 +465,14 @@ export const projects = pgTable(
       .default("require_human"),
   },
   (t) => [
+    check("projects_key_format", sql`${t.key} ~ '^[A-Z][A-Z0-9]{1,9}$'`),
     check("projects_next_issue_number_positive", sql`${t.nextIssueNumber} > 0`),
     check(
       "projects_fallback_policy",
       sql`${t.fallbackPolicy} in (${sql.raw(sqlLiteralList(FallbackPolicy))})`,
     ),
+    // #95: keys are unique inside one workspace, not across the installation.
+    uniqueIndex("one_project_key_per_workspace").on(t.workspaceId, t.key),
     index("projects_workspace_created").on(t.workspaceId, t.createdAt),
   ],
 );
@@ -838,7 +845,8 @@ export const runChildren = pgTable(
 
 // An issue in a project. The body is Markdown, stored as written. `number` is local to
 // the project; the id is the stable identity. `closed_at` is set exactly while the issue
-// is closed, so reopening clears it and an edit while closed leaves it untouched.
+// is terminal (done or cancelled), so leaving a terminal state clears it and an edit
+// while terminal leaves it untouched.
 export const issues = pgTable(
   "issues",
   {
@@ -921,15 +929,17 @@ export const issues = pgTable(
         sqlLiteralList(FallbackPolicy),
       )}))`,
     ),
+    // #94: both done and cancelled are terminal; review stays non-terminal and blocking.
     check(
       "issues_closed_at_matches_status",
-      sql`(${t.status} = 'closed') = (${t.closedAt} is not null)`,
+      sql`(${t.status} in (${sql.raw(TERMINAL_ISSUE_STATUSES.map((status) => `'${status}'`).join(", "))})) = (${t.closedAt} is not null)`,
     ),
   ],
 );
 
 // A directed blocked_by edge (#86): `issue_id` cannot be ready work until
-// `blocked_by_issue_id` is closed. Both issues belong to one project; the service checks
+// `blocked_by_issue_id` reaches a terminal state (done or cancelled, #94). `review` is a
+// non-terminal handoff and still blocks. Both issues belong to one project; the service checks
 // project scope and acyclicity before writing, and these constraints make the data rule
 // hold even for a writer that bypasses it. The unique index stops duplicate edges, and the
 // reverse index keeps "what does this issue block" lookups indexed.
@@ -1052,6 +1062,11 @@ export const workSessions = pgTable(
     stopRequestedAt: timestamp("stop_requested_at", { withTimezone: true }),
     stopRequestedByHumanId: text("stop_requested_by_human_id").references(() => humans.id),
     stopReason: text("stop_reason"),
+    // Cumulative session telemetry (#96), reported by the harness on renew/progress/complete.
+    // Null until first reported; a reported total is never negative, in the contract or here.
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    costUsdMicros: integer("cost_usd_micros"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     endedAt: timestamp("ended_at", { withTimezone: true }),
@@ -1069,6 +1084,19 @@ export const workSessions = pgTable(
         (${t.stopRequestedAt} is null and ${t.stopRequestedByHumanId} is null and ${t.stopReason} is null)
         or (${t.stopRequestedAt} is not null and ${t.stopRequestedByHumanId} is not null)
       )`,
+    ),
+    // A reported total is non-negative; a null is "never reported" and stays null (#96).
+    check(
+      "work_sessions_input_tokens_nonnegative",
+      sql`${t.inputTokens} is null or ${t.inputTokens} >= 0`,
+    ),
+    check(
+      "work_sessions_output_tokens_nonnegative",
+      sql`${t.outputTokens} is null or ${t.outputTokens} >= 0`,
+    ),
+    check(
+      "work_sessions_cost_usd_micros_nonnegative",
+      sql`${t.costUsdMicros} is null or ${t.costUsdMicros} >= 0`,
     ),
     // At most one active session per issue, enforced by Postgres under a concurrent race.
     uniqueIndex("one_active_work_session_per_issue")

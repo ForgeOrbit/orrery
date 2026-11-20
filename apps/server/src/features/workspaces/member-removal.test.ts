@@ -776,6 +776,7 @@ describe("member removal and voluntary leave against real Postgres (#37)", () =>
       id: personalProjectId,
       workspaceId: memberPersonal.id,
       name: "Personal project",
+      key: `P${randomUUID().replaceAll("-", "").slice(0, 9).toUpperCase()}`,
       createdByHumanId: f.memberHumanId,
     });
     const personalIssueId = randomUUID();
@@ -784,7 +785,7 @@ describe("member removal and voluntary leave against real Postgres (#37)", () =>
       projectId: personalProjectId,
       number: 1,
       title: "Personal issue kept after departure",
-      status: "open",
+      status: "todo",
       sortOrder: 65535,
       needsInput: false,
       createdByHumanId: f.memberHumanId,

@@ -15,6 +15,7 @@ import {
   ResumeWorkSessionResult,
   SessionActivitiesResponse,
   SessionActivity,
+  type SessionTelemetry,
   StopWorkSessionInput,
   WorkSession,
   WorkSessionsResponse,
@@ -46,6 +47,16 @@ const reacquireBody = ReacquireWorkSessionInput.omit({ issueId: true });
 const logActivityBody = LogSessionActivityInput.omit({ issueId: true });
 const readyWorkQuery = ReadyWorkInput.omit({ projectId: true });
 
+// Only the three cumulative totals go to the service; the fence is passed separately.
+const telemetryOf = (body: SessionTelemetry | undefined): SessionTelemetry | undefined =>
+  body === undefined
+    ? undefined
+    : {
+        inputTokens: body.inputTokens,
+        outputTokens: body.outputTokens,
+        costUsdMicros: body.costUsdMicros,
+      };
+
 const claim = createRoute({
   method: "post",
   path: "/api/issues/{issueId}/work-sessions",
@@ -65,7 +76,9 @@ const claim = createRoute({
     401: problem("An agent key is required, or the key is invalid or revoked"),
     403: problem("Contribute access is required to claim this issue"),
     404: problem("No such issue or run is in scope for this agent"),
-    409: problem("The issue is assigned to a human or another agent, or another worker holds it"),
+    409: problem(
+      "The issue is not ready work (todo), is assigned to another worker, or another worker holds it",
+    ),
   },
 });
 
@@ -387,6 +400,7 @@ const claimKinds = [
   "run_not_found",
   "insufficient_access",
   "issue_claimed",
+  "issue_blocked",
   "issue_needs_input",
   "issue_assigned_to_human",
   "issue_assigned_to_other_agent",
@@ -463,11 +477,13 @@ export function createSessionsRest(
 
   app.openapi(renew, async (c) => {
     try {
+      const body = c.req.valid("json");
       return c.json(
         await service.renew(
           await agentActor(c),
           c.req.valid("param").issueId,
-          c.req.valid("json")?.sessionId,
+          body?.sessionId,
+          telemetryOf(body),
         ),
         200,
       );
@@ -478,12 +494,14 @@ export function createSessionsRest(
 
   app.openapi(progress, async (c) => {
     try {
+      const body = c.req.valid("json");
       return c.json(
         await service.progress(
           await agentActor(c),
           c.req.valid("param").issueId,
-          c.req.valid("json").summary,
-          c.req.valid("json").sessionId,
+          body.summary,
+          body.sessionId,
+          telemetryOf(body),
         ),
         200,
       );
@@ -494,12 +512,14 @@ export function createSessionsRest(
 
   app.openapi(stop, async (c) => {
     try {
+      const body = c.req.valid("json");
       return c.json(
         await service.stop(
           await agentActor(c),
           c.req.valid("param").issueId,
-          c.req.valid("json").outcome,
-          c.req.valid("json").sessionId,
+          body.outcome,
+          body.sessionId,
+          telemetryOf(body),
         ),
         200,
       );
