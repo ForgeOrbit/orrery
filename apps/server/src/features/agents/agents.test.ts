@@ -25,8 +25,16 @@ import { createApp } from "../../platform/http.ts";
 import { createLogger, type Logger } from "../../platform/log.ts";
 import { migrate } from "../../platform/migrate.ts";
 import { tokenHash } from "../../platform/tokens.ts";
-import { createAccountsFeature } from "../accounts/index.ts";
+import {
+  createAccountsFeature,
+  accountByEmail,
+  invalidateAccountSessions,
+  setAccountPassword,
+} from "../accounts/index.ts";
+import { createHistoryFeature } from "../history/index.ts";
 import { createProjectsFeature, ProjectsError, type ProjectsErrorKind } from "../projects/index.ts";
+import { createRecoveryFeature } from "../recovery/index.ts";
+import type { OutgoingMail } from "../settings/index.ts";
 import { createAgentsFeature, type AgentAuthenticator } from "./index.ts";
 
 // Real Postgres (AGENTS.md): key scoping, revocation, expiry, the dynamic human-access
@@ -187,6 +195,77 @@ async function makeBearerApp() {
       log: silentLogger,
     }),
     projects: projectsFeature.service,
+  };
+}
+
+// Rotation also has to survive a password reset and appear in the owner's history, so
+// this app wires the real recovery and history features alongside agents.
+async function makeRotationApp() {
+  const accounts = createAccountsFeature({
+    db: database.db,
+    setupSecret: SECRET,
+    publicUrl: PUBLIC_URL,
+  });
+  const projectsFeature = createProjectsFeature({
+    db: database.db,
+    sessionReader: accounts.sessionReader,
+    agentAuthenticator: async () => null,
+  });
+  const agentsFeature = createAgentsFeature({
+    db: database.db,
+    sessionReader: accounts.sessionReader,
+    projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
+      projectsFeature.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
+    projectAccessAtLeast: (actual, required) =>
+      ["read", "contribute", "manage"].indexOf(actual) >=
+      ["read", "contribute", "manage"].indexOf(required),
+  });
+  let delivered: OutgoingMail | undefined;
+  const app = createApp({
+    features: [
+      accounts,
+      projectsFeature,
+      agentsFeature,
+      createRecoveryFeature({
+        db: database.db,
+        accounts: {
+          accountByEmail: (email, tx) => accountByEmail(tx ?? database.db, email),
+          setPassword: (humanId, password, tx) => setAccountPassword(tx, humanId, password),
+          invalidateBrowserSessions: (humanId, tx) => invalidateAccountSessions(tx, humanId),
+        },
+        deliver: async (mail) => {
+          delivered = mail;
+        },
+        publicUrl: PUBLIC_URL,
+        log: silentLogger,
+      }),
+      createHistoryFeature({
+        db: database.db,
+        sessionReader: accounts.sessionReader,
+        projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
+          projectsFeature.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
+      }),
+    ],
+    publicUrl: PUBLIC_URL,
+    log: silentLogger,
+  });
+  return {
+    app,
+    // Drive the real recovery REST flow, with an in-memory mail catcher, so the proof
+    // covers #31's endpoints rather than a hand-rolled password change.
+    resetPassword: async (email: string, password: string) => {
+      const asked = await postJson(app, "/api/auth/password-reset/request", { email });
+      expect(asked.status).toBe(200);
+      if (delivered === undefined) throw new Error("no reset email was delivered");
+      const token = /\/reset-password\?token=([A-Za-z0-9_-]+)/.exec(delivered.text)?.[1];
+      if (token === undefined) throw new Error("the reset email had no token");
+      const confirmed = await postJson(app, "/api/auth/password-reset/confirm", {
+        token,
+        password,
+      });
+      expect(confirmed.status).toBe(200);
+      delivered = undefined;
+    },
   };
 }
 
@@ -394,6 +473,25 @@ async function issueKey(
   return CreateAgentKeyResponse.parse(await res.json());
 }
 
+async function rotate(
+  app: Hono,
+  cookie: string,
+  keyId: string,
+  input: {
+    validity?: string;
+    projects?: { projectId: string; level: string }[];
+  } = {},
+) {
+  const res = await postJson(
+    app,
+    `/api/agents/keys/${encodeURIComponent(keyId)}/rotate`,
+    input,
+    cookie,
+  );
+  expect(res.status).toBe(201);
+  return CreateAgentKeyResponse.parse(await res.json());
+}
+
 beforeAll(async () => {
   pg = await new PostgreSqlContainer("postgres:18").start();
   database = createDb(pg.getConnectionUri());
@@ -411,6 +509,8 @@ afterEach(async () => {
   // is protected by a trigger and cannot be truncated.
   await database.db.transaction(async (tx) => {
     await tx.execute(sql`delete from agent_key_events`);
+    await tx.execute(sql`delete from account_recovery_events`);
+    await tx.execute(sql`delete from password_reset_tokens`);
     await tx.execute(sql`delete from agent_api_key_projects`);
     await tx.execute(sql`delete from agent_api_keys`);
     await tx.execute(sql`delete from project_access_events`);
@@ -1145,6 +1245,343 @@ describe("workspace-scoped agent API keys", () => {
         401,
         "key_revoked",
       );
+    });
+  });
+
+  describe("key rotation (issue #35)", () => {
+    it("creates an overlapping replacement for the same agent and workspace, without re-exposing the old secret", async () => {
+      const { app } = await makeRotationApp();
+      await bootstrapAdmin(app);
+      const cookie = await cookieFor(app, ADMIN_EMAIL, ADMIN_PASSWORD);
+      const [admin] = await database.db.select().from(humans).where(eq(humans.email, ADMIN_EMAIL));
+      if (admin === undefined) throw new Error("the admin was not found");
+      const workspace = await personalWorkspaceOf(admin.id);
+      const p = await project(workspace.id, "Rotating project", admin.id);
+      const agentId = await makeAgent(app, cookie, "rotating-bot");
+      const source = await issueKey(app, cookie, {
+        agentId,
+        workspaceId: workspace.id,
+        validity: "7",
+        projects: [{ projectId: p.id, level: "contribute" }],
+      });
+
+      // Omitted options preserve the source's validity and grants. The replacement is a
+      // distinct key that names its source but never its secret.
+      const replacement = await rotate(app, cookie, source.key.id);
+      expect(replacement.key.id).not.toBe(source.key.id);
+      expect(replacement.secret).not.toBe(source.secret);
+      expect(replacement.secret).toMatch(/^orr_ak_/);
+      expect(replacement.key).toMatchObject({
+        agentId,
+        agentName: source.key.agentName,
+        workspaceId: workspace.id,
+        createdByHumanId: admin.id,
+        validity: "7",
+        replacesKeyId: source.key.id,
+        revokedAt: null,
+        projects: [{ projectId: p.id, projectName: "Rotating project", level: "contribute" }],
+      });
+      expect(replacement.key.expiresAt).not.toBeNull();
+      expect(JSON.stringify(replacement)).not.toContain(source.secret);
+      const listing = JSON.stringify(await (await getJson(app, "/api/agents/keys", cookie)).json());
+      expect(listing).toContain(replacement.key.id);
+      expect(listing).not.toContain(source.secret);
+      expect(listing).not.toContain(replacement.secret);
+
+      // Both keys work during the overlap, as the same agent in the same workspace.
+      expect(await identityFor(app, source.secret)).toMatchObject({
+        agentId,
+        keyId: source.key.id,
+      });
+      expect(await identityFor(app, replacement.secret)).toMatchObject({
+        agentId,
+        keyId: replacement.key.id,
+      });
+
+      // Update one client to the new key, then revoke the old one. The replacement is
+      // unaffected, and the old secret cannot be used any more.
+      const revoked = await deleteRequest(app, `/api/agents/keys/${source.key.id}`, cookie);
+      expect(revoked.status).toBe(204);
+      await expectProblem(
+        await getJson(app, "/api/agents/me", undefined, source.secret),
+        401,
+        "key_revoked",
+      );
+      expect(await identityFor(app, replacement.secret)).toMatchObject({
+        agentId,
+        keyId: replacement.key.id,
+      });
+
+      // One secret-free event per lifecycle step, including the rotation on the new key.
+      const events = await database.db.select().from(agentKeyEvents);
+      expect(events).toHaveLength(3);
+      expect(events.map((event) => event.type)).toEqual(
+        expect.arrayContaining(["agent_key_created", "agent_key_rotated", "agent_key_revoked"]),
+      );
+      expect(events.find((event) => event.type === "agent_key_rotated")).toMatchObject({
+        keyId: replacement.key.id,
+        agentId,
+        workspaceId: workspace.id,
+        actorHumanId: admin.id,
+      });
+      for (const event of events) {
+        expect(JSON.stringify(event)).not.toContain(source.secret);
+        expect(JSON.stringify(event)).not.toContain(replacement.secret);
+      }
+    });
+
+    it("keeps each key's expiry independent of the other key's deadline", async () => {
+      const app = await makeApp();
+      await bootstrapAdmin(app);
+      const cookie = await cookieFor(app, ADMIN_EMAIL, ADMIN_PASSWORD);
+      const [admin] = await database.db.select().from(humans).where(eq(humans.email, ADMIN_EMAIL));
+      if (admin === undefined) throw new Error("the admin was not found");
+      const workspace = await personalWorkspaceOf(admin.id);
+      const p = await project(workspace.id, "Timed rotation", admin.id);
+      const agentId = await makeAgent(app, cookie, "expiry-bot");
+
+      // The replacement's deadline is computed from now, not copied from a source that
+      // is about to expire, even though its validity is preserved when not overridden.
+      const source = await issueKey(app, cookie, {
+        agentId,
+        workspaceId: workspace.id,
+        validity: "7",
+        projects: [{ projectId: p.id, level: "read" }],
+      });
+      await database.db
+        .update(agentApiKeys)
+        .set({ expiresAt: sql`now() + interval '2 seconds'` })
+        .where(eq(agentApiKeys.id, source.key.id));
+      const replacement = await rotate(app, cookie, source.key.id, { validity: "90" });
+      expect(replacement.key.validity).toBe("90");
+      const [fresh] = await database.db
+        .select({ expiresAt: agentApiKeys.expiresAt })
+        .from(agentApiKeys)
+        .where(eq(agentApiKeys.id, replacement.key.id));
+      if (fresh?.expiresAt === undefined || fresh.expiresAt === null)
+        throw new Error("the replacement was not stored with an expiry");
+      const days = (fresh.expiresAt.getTime() - Date.now()) / 86_400_000;
+      expect(days).toBeGreaterThan(80);
+      expect(days).toBeLessThanOrEqual(91);
+
+      // Letting the source key expire refuses only that key.
+      await database.db
+        .update(agentApiKeys)
+        .set({ expiresAt: sql`now() - interval '1 second'` })
+        .where(eq(agentApiKeys.id, source.key.id));
+      await expectProblem(
+        await getJson(app, "/api/agents/me", undefined, source.secret),
+        401,
+        "key_expired",
+      );
+      expect((await getJson(app, "/api/agents/me", undefined, replacement.secret)).status).toBe(
+        200,
+      );
+
+      // The reverse: expiring a replacement leaves a Never source key working, and a
+      // replacement can shorten a Never key without touching it.
+      const never = await issueKey(app, cookie, {
+        agentId,
+        workspaceId: workspace.id,
+        validity: "never",
+        projects: [{ projectId: p.id, level: "read" }],
+      });
+      const short = await rotate(app, cookie, never.key.id, { validity: "7" });
+      expect(short.key.expiresAt).not.toBeNull();
+      await database.db
+        .update(agentApiKeys)
+        .set({ expiresAt: sql`now() - interval '1 second'` })
+        .where(eq(agentApiKeys.id, short.key.id));
+      await expectProblem(
+        await getJson(app, "/api/agents/me", undefined, short.secret),
+        401,
+        "key_expired",
+      );
+      expect((await getJson(app, "/api/agents/me", undefined, never.secret)).status).toBe(200);
+    });
+
+    it("re-caps preserved grants by current human access and validates explicit grants", async () => {
+      const app = await makeApp();
+      await bootstrapAdmin(app);
+      const [admin] = await database.db.select().from(humans).where(eq(humans.email, ADMIN_EMAIL));
+      if (admin === undefined) throw new Error("the admin was not found");
+      const team = await sharedWorkspace("Rotation team", admin.id);
+      const member = await insertHuman(MEMBER_EMAIL);
+      const memberCookie = await createSession(member.id);
+      await membership(team.id, member.id);
+      const p = await project(team.id, "Team project", admin.id);
+      await grant(p.id, member.id, "contribute");
+      const agentId = await makeAgent(app, memberCookie, "member-rotator");
+      const source = await issueKey(app, memberCookie, {
+        agentId,
+        workspaceId: team.id,
+        validity: "30",
+        projects: [{ projectId: p.id, level: "contribute" }],
+      });
+
+      // A preserved grant is clamped when the human's level drops; it never keeps the
+      // authority the human no longer has (story 46).
+      await setGrant(p.id, member.id, "read");
+      const capped = await rotate(app, memberCookie, source.key.id);
+      expect(capped.key.projects).toMatchObject([{ projectId: p.id, level: "read" }]);
+      expect((await identityFor(app, capped.secret)).projects).toMatchObject([
+        { projectId: p.id, level: "read" },
+      ]);
+
+      // Explicit grants are validated exactly like issuance: above current access or
+      // outside the workspace is refused with the same stable code.
+      await expectProblem(
+        await postJson(
+          app,
+          `/api/agents/keys/${source.key.id}/rotate`,
+          { projects: [{ projectId: p.id, level: "contribute" }] },
+          memberCookie,
+        ),
+        400,
+        "invalid_key_grant",
+      );
+      const other = await sharedWorkspace("Other rotation team", admin.id);
+      const outside = await project(other.id, "Outside", admin.id);
+      await expectProblem(
+        await postJson(
+          app,
+          `/api/agents/keys/${source.key.id}/rotate`,
+          { projects: [{ projectId: outside.id, level: "read" }] },
+          memberCookie,
+        ),
+        400,
+        "invalid_key_grant",
+      );
+      const explicit = await rotate(app, memberCookie, source.key.id, {
+        projects: [{ projectId: p.id, level: "read" }],
+      });
+      expect(explicit.key.projects).toMatchObject([{ projectId: p.id, level: "read" }]);
+
+      // Losing the grant entirely drops it from a preserved set; rotation still succeeds.
+      await removeGrant(p.id, member.id);
+      const none = await rotate(app, memberCookie, source.key.id);
+      expect(none.key.projects).toEqual([]);
+    });
+
+    it("refuses a revoked, expired, foreign, or inaccessible key and mints no replacement", async () => {
+      const app = await makeApp();
+      await bootstrapAdmin(app);
+      const adminCookie = await cookieFor(app, ADMIN_EMAIL, ADMIN_PASSWORD);
+      const [admin] = await database.db.select().from(humans).where(eq(humans.email, ADMIN_EMAIL));
+      if (admin === undefined) throw new Error("the admin was not found");
+      const workspace = await personalWorkspaceOf(admin.id);
+      const p = await project(workspace.id, "Refusal project", admin.id);
+      const agentId = await makeAgent(app, adminCookie, "refusal-bot");
+      const source = await issueKey(app, adminCookie, {
+        agentId,
+        workspaceId: workspace.id,
+        validity: "7",
+        projects: [{ projectId: p.id, level: "read" }],
+      });
+      expect(
+        (await deleteRequest(app, `/api/agents/keys/${source.key.id}`, adminCookie)).status,
+      ).toBe(204);
+      await expectProblem(
+        await postJson(app, `/api/agents/keys/${source.key.id}/rotate`, {}, adminCookie),
+        409,
+        "source_key_revoked",
+      );
+
+      const expiring = await issueKey(app, adminCookie, {
+        agentId,
+        workspaceId: workspace.id,
+        validity: "7",
+        projects: [{ projectId: p.id, level: "read" }],
+      });
+      await database.db
+        .update(agentApiKeys)
+        .set({ expiresAt: sql`now() - interval '1 second'` })
+        .where(eq(agentApiKeys.id, expiring.key.id));
+      await expectProblem(
+        await postJson(app, `/api/agents/keys/${expiring.key.id}/rotate`, {}, adminCookie),
+        409,
+        "source_key_expired",
+      );
+
+      // Another human's key is not a rotation source even if the id is known.
+      const team = await sharedWorkspace("Foreign rotation team", admin.id);
+      const teamProject = await project(team.id, "Team", admin.id);
+      const member = await insertHuman(MEMBER_EMAIL);
+      const memberCookie = await createSession(member.id);
+      await membership(team.id, member.id);
+      await grant(teamProject.id, member.id, "read");
+      const memberAgent = await makeAgent(app, memberCookie, "member-bot");
+      const foreign = await issueKey(app, memberCookie, {
+        agentId: memberAgent,
+        workspaceId: team.id,
+        projects: [{ projectId: teamProject.id, level: "read" }],
+      });
+      await expectProblem(
+        await postJson(app, `/api/agents/keys/${foreign.key.id}/rotate`, {}, adminCookie),
+        404,
+        "key_not_found",
+      );
+
+      // Once the owner leaves the workspace, they cannot mint a replacement there.
+      await removeMembership(team.id, member.id);
+      await expectProblem(
+        await postJson(app, `/api/agents/keys/${foreign.key.id}/rotate`, {}, memberCookie),
+        404,
+        "workspace_not_found",
+      );
+
+      // None of the refusals wrote a key or a rotation event: three keys were created
+      // and one was revoked, but nothing was rotated.
+      expect(await database.db.select().from(agentApiKeys)).toHaveLength(3);
+      const events = await database.db.select().from(agentKeyEvents);
+      expect(events).toHaveLength(4);
+      expect(events.some((event) => event.type === "agent_key_rotated")).toBe(false);
+    });
+
+    it("keeps both keys working through a password reset and surfaces the rotation in history", async () => {
+      const { app, resetPassword } = await makeRotationApp();
+      await bootstrapAdmin(app);
+      const cookie = await cookieFor(app, ADMIN_EMAIL, ADMIN_PASSWORD);
+      const [admin] = await database.db.select().from(humans).where(eq(humans.email, ADMIN_EMAIL));
+      if (admin === undefined) throw new Error("the admin was not found");
+      const workspace = await personalWorkspaceOf(admin.id);
+      const p = await project(workspace.id, "Audit project", admin.id);
+      // Bootstrap leaves the administrator's email unverified; recovery only mails a
+      // verified address, so verify it through the same accounts seam as the app.
+      await database.db
+        .update(humans)
+        .set({ emailVerifiedAt: sql`now()` })
+        .where(eq(humans.id, admin.id));
+      const agentId = await makeAgent(app, cookie, "reset-bot");
+      const source = await issueKey(app, cookie, {
+        agentId,
+        workspaceId: workspace.id,
+        validity: "7",
+        projects: [{ projectId: p.id, level: "read" }],
+      });
+      const replacement = await rotate(app, cookie, source.key.id);
+
+      // #31 signs out browser sessions, but story 12 requires every agent key to
+      // survive a routine password reset — both source and replacement stay live.
+      await resetPassword(ADMIN_EMAIL, "a-brand-new-password");
+      expect((await getJson(app, "/api/agents/keys", cookie)).status).toBe(401);
+      expect(await identityFor(app, source.secret)).toMatchObject({ agentId });
+      expect(await identityFor(app, replacement.secret)).toMatchObject({ agentId });
+      const newCookie = await cookieFor(app, ADMIN_EMAIL, "a-brand-new-password");
+
+      // #32 surfaces the new event to the owner, with the agent as subject and no secret.
+      const history = await getJson(app, `/api/workspaces/${workspace.id}/history`, newCookie);
+      expect(history.status).toBe(200);
+      const historyBody = await history.json();
+      const historyText = JSON.stringify(historyBody);
+      expect(historyText).toContain("agent_key_rotated");
+      expect(historyText).not.toContain(source.secret);
+      expect(historyText).not.toContain(replacement.secret);
+      const events = Array.isArray(historyBody) ? historyBody : [];
+      expect(events.find((event) => field(event, "type") === "agent_key_rotated")).toMatchObject({
+        kind: "agent_key",
+        subject: { agentId, agentName: "reset-bot" },
+      });
     });
   });
 });
