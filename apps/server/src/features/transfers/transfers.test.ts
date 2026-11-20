@@ -3,10 +3,12 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import {
   AgentIdentity,
   CreateAgentKeyResponse,
+  HistoryResponse,
   Problem,
   Project,
   TransferAuthorization,
   TransferPreview,
+  type HistoryEvent,
 } from "@orrery/contract";
 import { and, eq, sql } from "drizzle-orm";
 import type { Hono } from "hono";
@@ -35,6 +37,7 @@ import { migrate } from "../../platform/migrate.ts";
 import { tokenHash } from "../../platform/tokens.ts";
 import { createAccountsFeature } from "../accounts/index.ts";
 import { createAgentsFeature, type AgentAuthenticator } from "../agents/index.ts";
+import { createHistoryFeature } from "../history/index.ts";
 import { createProjectsFeature, type WorkSessionGate } from "../projects/index.ts";
 import { createSessionsFeature, type SessionsService } from "../work-sessions/index.ts";
 import { createWorkspacesFeature } from "../workspaces/index.ts";
@@ -335,6 +338,12 @@ beforeAll(async () => {
     db: database.db,
     sessionReader: accounts.sessionReader,
   });
+  const historyFeature = createHistoryFeature({
+    db: database.db,
+    sessionReader: accounts.sessionReader,
+    projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
+      projectsFeature.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
+  });
   app = createApp({
     features: [
       accounts,
@@ -343,6 +352,7 @@ beforeAll(async () => {
       sessionsFeature,
       workspacesFeature,
       transfersFeature,
+      historyFeature,
     ],
     publicUrl: PUBLIC_URL,
     log: silentLogger,
@@ -413,6 +423,38 @@ async function source() {
   const workspaceId = await personalWorkspaceId(admin.id);
   const project = await createPersonalProject(cookie, workspaceId, "Personal project");
   return { cookie, humanId: admin.id, workspaceId, project };
+}
+
+const patchJson = (path: string, body: unknown, cookie: string) =>
+  app.request(path, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify(body),
+  });
+
+// A shared workspace owns the source project (#46). The caller is its owner, so the
+// source authority check exercises the membership path rather than personal ownership.
+async function sharedSource(name: string) {
+  const cookie = await cookieFor(ADMIN_EMAIL, ADMIN_PASSWORD);
+  const [admin] = await database.db
+    .select({ id: humans.id })
+    .from(humans)
+    .where(eq(humans.email, ADMIN_EMAIL));
+  if (admin === undefined) throw new Error("no admin");
+  const created = await createSharedWorkspace(cookie, name, ADMIN_EMAIL);
+  const project = await createPersonalProject(cookie, created.workspaceId, `${name} project`);
+  return { cookie, humanId: admin.id, workspaceId: created.workspaceId, project };
+}
+
+async function setAccess(cookie: string, projectId: string, email: string, level: string) {
+  const res = await patchJson(`/api/projects/${projectId}/access`, { email, level }, cookie);
+  expect(res.status).toBe(200);
+}
+
+async function readHistory(cookie: string, path: string): Promise<HistoryEvent[]> {
+  const res = await getJson(path, cookie);
+  expect(res.status).toBe(200);
+  return HistoryResponse.parse(await res.json());
 }
 
 describe("personal-to-shared project transfer against real Postgres", () => {
@@ -840,5 +882,386 @@ describe("personal-to-shared project transfer against real Postgres", () => {
     expect(authorizations.find((row) => row.id === secondAuth.authorizationId)?.status).toBe(
       "revoked",
     );
+  });
+});
+
+describe("shared-to-shared project transfer against real Postgres", () => {
+  it("previews a shared_to_shared move and completes it directly when one owner holds both sides", async () => {
+    const sourceW1 = await sharedSource("W1 Direct");
+    const destW2 = await createSharedWorkspace(sourceW1.cookie, "W2 Direct", ADMIN_EMAIL);
+
+    const view = await preview(sourceW1.cookie, sourceW1.project.id, destW2.workspaceId);
+    expect(view).toMatchObject({
+      projectId: sourceW1.project.id,
+      visibilityChange: "shared_to_shared",
+      source: { workspaceId: sourceW1.workspaceId, kind: "shared" },
+      destination: { workspaceId: destW2.workspaceId, kind: "shared" },
+      ready: true,
+    });
+    expect(view.accessChanges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ humanId: sourceW1.humanId, reason: "destination_owner" }),
+      ]),
+    );
+
+    const res = await complete(sourceW1.cookie, sourceW1.project.id, destW2.workspaceId);
+    expect(res.status).toBe(200);
+    expect(await getProject(sourceW1.cookie, sourceW1.project.id)).toMatchObject({
+      id: sourceW1.project.id,
+      workspaceId: destW2.workspaceId,
+      workspaceKind: "shared",
+      accessLevel: "manage",
+    });
+    const outEvents = await database.db
+      .select({ type: workspaceEvents.type })
+      .from(workspaceEvents)
+      .where(eq(workspaceEvents.workspaceId, sourceW1.workspaceId));
+    expect(outEvents.map((event) => event.type)).toContain("project_transferred_out");
+  });
+
+  it("authorizes a shared source; a separate Create projects member previews and accepts", async () => {
+    const sourceW1 = await sharedSource("W1 Two Party");
+    // A destination owned by someone else keeps the two parties genuinely separate.
+    const destinationOwner = await insertHuman("shared-dest-owner@example.com");
+    const ownerCookie = await sessionFor(destinationOwner.id);
+    const destW2 = await createSharedWorkspace(
+      ownerCookie,
+      "W2 Two Party",
+      "shared-dest-owner@example.com",
+    );
+    const receiver = await insertHuman("shared-receiver@example.com");
+    await addMembership(destW2.workspaceId, receiver.id, true);
+    const receiverCookie = await sessionFor(receiver.id);
+    const plain = await insertHuman("shared-plain@example.com");
+    await addMembership(destW2.workspaceId, plain.id, false);
+    const plainCookie = await sessionFor(plain.id);
+
+    // The source owner is not a destination member, so the authorization carries no PII.
+    const authorization = await authorize(sourceW1.cookie, sourceW1.project.id, destW2.workspaceId);
+    expect(authorization.preview).toBeNull();
+    expect(authorization.authorizedByHumanId).toBe(sourceW1.humanId);
+
+    const receiverView = await receiverPreview(receiverCookie, authorization.token);
+    expect(receiverView).toMatchObject({
+      projectId: sourceW1.project.id,
+      visibilityChange: "shared_to_shared",
+      source: { workspaceId: sourceW1.workspaceId, kind: "shared" },
+      destination: { workspaceId: destW2.workspaceId },
+    });
+    expect(receiverView.accessChanges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          humanId: destinationOwner.id,
+          reason: "destination_owner",
+          level: "manage",
+        }),
+        expect.objectContaining({ humanId: receiver.id, reason: "receiver", level: "manage" }),
+      ]),
+    );
+    await expectProblem(
+      await postJson("/api/transfers/preview", { token: authorization.token }, plainCookie),
+      403,
+      "destination_authority_required",
+    );
+
+    const res = await accept(receiverCookie, authorization.token);
+    expect(res.status).toBe(200);
+    expect(await getProject(receiverCookie, sourceW1.project.id)).toMatchObject({
+      workspaceId: destW2.workspaceId,
+      accessLevel: "manage",
+    });
+  });
+
+  it("refuses a transfer to the same workspace", async () => {
+    const sourceW1 = await sharedSource("W1 Same");
+    await expectProblem(
+      await postJson(
+        `/api/projects/${sourceW1.project.id}/transfer/preview`,
+        { destinationWorkspaceId: sourceW1.workspaceId },
+        sourceW1.cookie,
+      ),
+      400,
+      "same_workspace",
+    );
+    await expectProblem(
+      await postJson(
+        `/api/projects/${sourceW1.project.id}/transfer`,
+        { destinationWorkspaceId: sourceW1.workspaceId },
+        sourceW1.cookie,
+      ),
+      400,
+      "same_workspace",
+    );
+    await expectProblem(
+      await complete(sourceW1.cookie, sourceW1.project.id, sourceW1.workspaceId),
+      400,
+      "same_workspace",
+    );
+    expect(await database.db.select().from(projectTransferAuthorizations)).toHaveLength(0);
+  });
+
+  it("refuses a shared source owner who is only a member or a stranger", async () => {
+    const sourceW1 = await sharedSource("W1 Guarded");
+    const destW2 = await createSharedWorkspace(sourceW1.cookie, "W2 Guarded", ADMIN_EMAIL);
+    const member = await insertHuman("shared-source-member@example.com");
+    await addMembership(sourceW1.workspaceId, member.id, true);
+    const memberCookie = await sessionFor(member.id);
+    const stranger = await insertHuman("shared-source-stranger@example.com");
+    const strangerCookie = await sessionFor(stranger.id);
+
+    for (const cookie of [memberCookie, strangerCookie]) {
+      await expectProblem(
+        await postJson(
+          `/api/projects/${sourceW1.project.id}/transfer/preview`,
+          { destinationWorkspaceId: destW2.workspaceId },
+          cookie,
+        ),
+        404,
+        "project_not_found",
+      );
+      await expectProblem(
+        await postJson(
+          `/api/projects/${sourceW1.project.id}/transfer`,
+          { destinationWorkspaceId: destW2.workspaceId },
+          cookie,
+        ),
+        404,
+        "project_not_found",
+      );
+      await expectProblem(
+        await complete(cookie, sourceW1.project.id, destW2.workspaceId),
+        404,
+        "project_not_found",
+      );
+    }
+    expect(await database.db.select().from(projectTransferAuthorizations)).toHaveLength(0);
+  });
+
+  it("revives neither an old grant nor an old source key on a W1 -> W2 -> W1 round trip", async () => {
+    const sourceW1 = await sharedSource("W1 Round");
+    const destW2 = await createSharedWorkspace(sourceW1.cookie, "W2 Round", ADMIN_EMAIL);
+    const member = await insertHuman("round-grant@example.com");
+    await addMembership(sourceW1.workspaceId, member.id);
+    await setAccess(sourceW1.cookie, sourceW1.project.id, member.email, "read");
+    const issueId = await createIssue(sourceW1.cookie, sourceW1.project.id, "Round issue");
+    const secret = await issueKey(sourceW1.cookie, sourceW1.workspaceId, sourceW1.project.id);
+
+    expect((await complete(sourceW1.cookie, sourceW1.project.id, destW2.workspaceId)).status).toBe(
+      200,
+    );
+    expect(await database.db.select().from(agentApiKeyProjects)).toHaveLength(0);
+    let grants = await database.db
+      .select({ humanId: projectAccessGrants.humanId })
+      .from(projectAccessGrants)
+      .where(eq(projectAccessGrants.projectId, sourceW1.project.id));
+    expect(grants.map((g) => g.humanId)).not.toContain(member.id);
+
+    expect(
+      (await complete(sourceW1.cookie, sourceW1.project.id, sourceW1.workspaceId)).status,
+    ).toBe(200);
+    expect(await getProject(sourceW1.cookie, sourceW1.project.id)).toMatchObject({
+      workspaceId: sourceW1.workspaceId,
+    });
+    // The old W1 key and the old W1 read grant are still gone after returning to W1.
+    expect(await database.db.select().from(agentApiKeyProjects)).toHaveLength(0);
+    const identity = await identityFor(secret);
+    expect(identity.projects.map((grant) => grant.projectId)).not.toContain(sourceW1.project.id);
+    const refused = await postJson(
+      `/api/projects/${sourceW1.project.id}/issues`,
+      { title: "Refused" },
+      undefined,
+      secret,
+    );
+    expect(refused.status).toBeGreaterThanOrEqual(400);
+    grants = await database.db
+      .select({ humanId: projectAccessGrants.humanId })
+      .from(projectAccessGrants)
+      .where(eq(projectAccessGrants.projectId, sourceW1.project.id));
+    expect(grants.map((g) => g.humanId)).not.toContain(member.id);
+    const issues = await getJson(`/api/projects/${sourceW1.project.id}/issues`, sourceW1.cookie);
+    expect(stringsOf(await issues.json(), "id")).toContain(issueId);
+  });
+
+  it("fails acceptance with source_authority_lost when the authorizing owner is demoted", async () => {
+    const sourceW1 = await sharedSource("W1 Lost Owner");
+    const destW2 = await createSharedWorkspace(sourceW1.cookie, "W2 Lost Owner", ADMIN_EMAIL);
+    const authorization = await authorize(sourceW1.cookie, sourceW1.project.id, destW2.workspaceId);
+
+    // Keep the shared workspace valid by appointing a successor before demoting the
+    // authorizer, then remove the authorizer's ownership before acceptance.
+    const successor = await insertHuman("shared-successor@example.com");
+    await database.db.insert(workspaceMemberships).values({
+      id: randomUUID(),
+      workspaceId: sourceW1.workspaceId,
+      humanId: successor.id,
+      isOwner: true,
+    });
+    await database.db
+      .update(workspaceMemberships)
+      .set({ isOwner: false })
+      .where(
+        and(
+          eq(workspaceMemberships.workspaceId, sourceW1.workspaceId),
+          eq(workspaceMemberships.humanId, sourceW1.humanId),
+        ),
+      );
+
+    await expectProblem(
+      await accept(sourceW1.cookie, authorization.token),
+      409,
+      "source_authority_lost",
+    );
+    // The demoted authorizer no longer has project access through ownership, so read the
+    // stored row rather than through the HTTP project view.
+    const [stored] = await database.db
+      .select({ workspaceId: projects.workspaceId })
+      .from(projects)
+      .where(eq(projects.id, sourceW1.project.id));
+    expect(stored?.workspaceId).toBe(sourceW1.workspaceId);
+    expect(await database.db.select().from(projectTransferAuthorizations)).toHaveLength(1);
+  });
+
+  it("invalidates a pending invitation offer so redemption after the move grants nothing", async () => {
+    const sourceW1 = await sharedSource("W1 Offer");
+    const destW2 = await createSharedWorkspace(sourceW1.cookie, "W2 Offer", ADMIN_EMAIL);
+    const authorization = await authorize(sourceW1.cookie, sourceW1.project.id, destW2.workspaceId);
+    const invitee = await insertHuman("shared-offered@example.com");
+    const token = randomBytes(32).toString("base64url");
+    const [invitation] = await database.db
+      .insert(workspaceInvitations)
+      .values({
+        id: randomUUID(),
+        workspaceId: sourceW1.workspaceId,
+        email: invitee.email,
+        status: "pending",
+        tokenHash: tokenHash(token),
+        invitedByHumanId: sourceW1.humanId,
+        expiresAt: sql`statement_timestamp() + interval '7 days'`,
+      })
+      .returning();
+    if (invitation === undefined) throw new Error("the invitation was not created");
+    // Invitation redemption rechecks that the inviter can still invite, which needs a
+    // verified mailbox. Bootstrap does not verify the first administrator's email.
+    await database.db
+      .update(humans)
+      .set({ emailVerifiedAt: sql`now()` })
+      .where(eq(humans.id, sourceW1.humanId));
+    await database.db.insert(workspaceInvitationGrants).values({
+      id: randomUUID(),
+      invitationId: invitation.id,
+      projectId: sourceW1.project.id,
+      level: "read",
+    });
+
+    expect((await accept(sourceW1.cookie, authorization.token)).status).toBe(200);
+    expect(
+      await database.db
+        .select()
+        .from(workspaceInvitationGrants)
+        .where(eq(workspaceInvitationGrants.projectId, sourceW1.project.id)),
+    ).toHaveLength(0);
+
+    const inviteeCookie = await sessionFor(invitee.id);
+    const redeemed = await postJson(
+      "/api/workspace-invitations/acceptance",
+      { token },
+      inviteeCookie,
+    );
+    expect(redeemed.status).toBe(200);
+    const grants = await database.db
+      .select({ humanId: projectAccessGrants.humanId })
+      .from(projectAccessGrants)
+      .where(eq(projectAccessGrants.projectId, sourceW1.project.id));
+    expect(grants.map((g) => g.humanId)).not.toContain(invitee.id);
+  });
+
+  it("keeps source access-change events in W1 and out of W2's project and workspace history", async () => {
+    const sourceW1 = await sharedSource("W1 History");
+    const destW2 = await createSharedWorkspace(sourceW1.cookie, "W2 History", ADMIN_EMAIL);
+    const member = await insertHuman("history-grant@example.com");
+    await addMembership(sourceW1.workspaceId, member.id);
+    await setAccess(sourceW1.cookie, sourceW1.project.id, member.email, "read");
+    await createIssue(sourceW1.cookie, sourceW1.project.id, "Travelling issue");
+
+    const before = await readHistory(
+      sourceW1.cookie,
+      `/api/projects/${sourceW1.project.id}/history`,
+    );
+    const sourceAccessIds = before
+      .filter((event) => event.kind === "project_access")
+      .map((event) => event.id);
+    expect(sourceAccessIds.length).toBeGreaterThan(0);
+    expect(
+      before.some(
+        (event) => event.kind === "project_access" && event.subject?.email === member.email,
+      ),
+    ).toBe(true);
+
+    expect((await complete(sourceW1.cookie, sourceW1.project.id, destW2.workspaceId)).status).toBe(
+      200,
+    );
+
+    // The received project keeps its authored activity but none of W1's access changes.
+    const after = await readHistory(
+      sourceW1.cookie,
+      `/api/projects/${sourceW1.project.id}/history`,
+    );
+    expect(after.map((event) => event.id)).not.toEqual(expect.arrayContaining(sourceAccessIds));
+    expect(after.map((event) => event.type)).toContain("issue_created");
+    expect(after.some((event) => event.type === "project_access_granted")).toBe(true);
+    expect(after.some((event) => event.subject?.email === member.email)).toBe(false);
+
+    // W1 still reads its own access-change events; W2 reads only its receipt.
+    const w1History = await readHistory(
+      sourceW1.cookie,
+      `/api/workspaces/${sourceW1.workspaceId}/history`,
+    );
+    expect(w1History.map((event) => event.id)).toEqual(expect.arrayContaining(sourceAccessIds));
+    const w2History = await readHistory(
+      sourceW1.cookie,
+      `/api/workspaces/${destW2.workspaceId}/history`,
+    );
+    expect(w2History.map((event) => event.id)).not.toEqual(expect.arrayContaining(sourceAccessIds));
+    expect(w2History.map((event) => event.type)).toContain("project_transfer_received");
+    expect(w2History.some((event) => event.type === "project_access_granted")).toBe(true);
+
+    // The row scopes themselves never changed: W1's events are still W1's.
+    const stored = await database.db
+      .select({
+        id: projectAccessEvents.id,
+        workspaceId: projectAccessEvents.workspaceId,
+      })
+      .from(projectAccessEvents)
+      .where(eq(projectAccessEvents.projectId, sourceW1.project.id));
+    expect(
+      stored
+        .filter((row) => sourceAccessIds.includes(row.id))
+        .every((row) => row.workspaceId === sourceW1.workspaceId),
+    ).toBe(true);
+    expect(stored.some((row) => row.workspaceId === destW2.workspaceId)).toBe(true);
+  });
+
+  it("blocks a shared-to-shared transfer while a claim is live in database time", async () => {
+    const sourceW1 = await sharedSource("W1 Busy");
+    const destW2 = await createSharedWorkspace(sourceW1.cookie, "W2 Busy", ADMIN_EMAIL);
+    const authorization = await authorize(sourceW1.cookie, sourceW1.project.id, destW2.workspaceId);
+    const issueId = await createIssue(sourceW1.cookie, sourceW1.project.id, "Claimed issue");
+    const secret = await issueKey(sourceW1.cookie, sourceW1.workspaceId, sourceW1.project.id);
+    await claimIssue(secret, issueId);
+
+    await expectProblem(await accept(sourceW1.cookie, authorization.token), 409, "active_work");
+    expect(await getProject(sourceW1.cookie, sourceW1.project.id)).toMatchObject({
+      workspaceId: sourceW1.workspaceId,
+    });
+
+    await sessionsService.stop(
+      { kind: "agent", identity: await identityFor(secret) },
+      issueId,
+      "completed",
+    );
+    expect((await accept(sourceW1.cookie, authorization.token)).status).toBe(200);
+    expect(await getProject(sourceW1.cookie, sourceW1.project.id)).toMatchObject({
+      workspaceId: destW2.workspaceId,
+    });
   });
 });

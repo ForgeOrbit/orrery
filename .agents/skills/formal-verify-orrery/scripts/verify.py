@@ -1457,6 +1457,113 @@ def extract_code_facts() -> dict[str, Any]:
         'status: "revoked"' in accept_fn and "ne(projectTransferAuthorizations.id, auth.id)" in accept_fn
     )
 
+    # M22 (#46): shared-to-shared transfer. Reuse the transfer slices above; the new
+    # guards come from the shared-source authority path, the acceptance recheck, the
+    # workspace-scoped access-event insert/migration and the history filter.
+    shared_source_fn = slice_between(
+        tr_src, "async function readSharedSourceProject(", "async function readSourceProject("
+    )
+    source_dispatch_fn = slice_between(
+        tr_src, "async function readSourceProject(", "async function readSharedDestination("
+    )
+    access_events_table = slice_between(
+        ag_schema,
+        "export const projectAccessEvents = pgTable(",
+        "// An agent is a worker identity",
+    )
+    mig_0026 = read_text("db/migrations/0026_common_sir_ram.sql")
+    m22_shared_source = (
+        "eq(workspaceMemberships.isOwner, true)" in shared_source_fn
+        and 'throw new TransfersError("project_not_found")' in shared_source_fn
+        and "readSharedSourceProject(tx, projectId, humanId)" in source_dispatch_fn
+    )
+    m22_recheck_shared_owner = (
+        "source.kind === WorkspaceKind.enum.shared" in accept_fn
+        and "eq(workspaceMemberships.isOwner, true)" in accept_fn
+        and 'throw new TransfersError("source_authority_lost")' in accept_fn
+    )
+    m22_same_workspace = (
+        "function rejectSameWorkspace(" in tr_src
+        and 'throw new TransfersError("same_workspace")' in tr_src
+        and tr_src.count("rejectSameWorkspace(") >= 4
+    )
+    m22_visibility = (
+        '"shared_to_shared"' in tr_src
+        and 'z.enum(["personal_to_shared", "shared_to_shared"])' in tr_contract
+    )
+    m22_access_event_scope = (
+        'workspaceId: text("workspace_id")' in access_events_table
+        and "SET NOT NULL" in mig_0026
+        and "FROM \"projects\" p" in mig_0026
+    )
+    m22_grant_event_workspace = "workspaceId: destination.id" in accept_fn
+    m22_history_filter = (
+        "eq(projectAccessEvents.workspaceId, workspaceId)" in hist_src
+        and "loadProjectAccessEvents(" in hist_src
+    )
+    m22_history_project_filter = (
+        "loadProjectAccessEvents(db" in hist_proj_fn and "project.workspaceId" in hist_proj_fn
+    )
+    m22_key_cleanup = "tx.delete(agentApiKeyProjects)" in accept_fn
+    m22_grant_cleanup = "tx.delete(projectAccessGrants)" in accept_fn
+    m22_offer_cleanup = ".delete(workspaceInvitationGrants)" in accept_fn
+    m22_pending_offers_only = "eq(workspaceInvitations.status, InvitationStatus.enum.pending)" in accept_fn
+    m22_revoke_siblings = "ne(projectTransferAuthorizations.id, auth.id)" in accept_fn
+    m22_grant_rebuild = (
+        "tx.insert(projectAccessGrants).values" in accept_fn and 'level: "manage"' in accept_fn
+    )
+    m22_grant_events = (
+        "tx.insert(projectAccessEvents).values" in accept_fn
+        and "ProjectAccessEventType.enum.project_access_granted" in accept_fn
+    )
+    m22_receipt_events = (
+        '"project_transferred_out"' in accept_fn and '"project_transfer_received"' in accept_fn
+    )
+    m22_two_party = 'throw new TransfersError("destination_authority_required")' not in authorize_impl
+    m22_authorize_redaction = "canSeeDestination ? fullPreview : null" in authorize_impl
+    m22_receiver_preview = (
+        "async receiverPreview(" in tr_src and "/api/transfers/preview" in tr_rest
+    )
+    m22_receiver_authority = (
+        "hasDestinationMembership(" in receiver_preview_impl
+        and "hasCreateProjectsAuthority(" in receiver_preview_impl
+    )
+    m22_dest_membership_preview = (
+        "requireDestinationMember(tx, destinationWorkspaceId, account.humanId)" in preview_impl
+    )
+    m22_dest_membership_complete = (
+        "requireDestinationMember(tx, destinationWorkspaceId, account.humanId)" in complete_impl
+    )
+    m22_accept_membership = (
+        "hasDestinationMembership(tx, auth.destinationWorkspaceId, acceptorHumanId)" in accept_fn
+    )
+    m22_dest_authority = "hasCreateProjectsAuthority(tx, destination.id, acceptorHumanId)" in accept_fn
+    m22_recheck_workspace = "project.workspaceId !== auth.sourceWorkspaceId" in accept_fn
+    m22_active_work = (
+        'eq(workSessions.status, "active")' in accept_fn and "workSessions.leaseExpiresAt" in accept_fn
+    )
+    m22_db_time_live = "gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`)" in accept_fn
+    m22_db_time_expiry = (
+        "gt(projectTransferAuthorizations.expiresAt, sql`statement_timestamp()`)" in accept_fn
+    )
+    m22_single_tx = tr_src.count("db.transaction(") >= 4 and "db.transaction(" not in accept_fn
+    m22_lock_first = all(
+        ordered(fn, "db.transaction(async (tx) => {", "await lockOwnershipWrites(tx);")
+        for fn in (authorize_impl, accept_impl, complete_impl)
+    )
+    m22_guard_order = "ids.toSorted()" in tr_src and ordered(
+        accept_fn, "await bumpGuards(tx, [source.id, destination.id]);", '.for("update")'
+    )
+    m22_issue_lock = ordered(
+        accept_fn, "from(issues)", '.for("update")', "workSessions.leaseExpiresAt"
+    )
+    m22_preserve_identity = (
+        "set({ workspaceId: destination.id })" in accept_fn and ".set({ createdBy" not in accept_fn
+    )
+    m22_expire_lapsed = 'status: "expired"' in accept_fn and "lte(workSessions.leaseExpiresAt" in accept_fn
+    m22_http_problems = tr_rest.count("400: problem(") >= 4
+    m22_human_only = "sessionReader" in tr_rest and "agentAuthenticator" not in tr_rest
+
 
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
@@ -1690,6 +1797,42 @@ def extract_code_facts() -> dict[str, Any]:
         "m21_pending_offers_only": m21_pending_offers_only,
         "m21_revoke_siblings": m21_revoke_siblings,
         "m21_accept_membership": m21_accept_membership,
+        "m22_shared_source": m22_shared_source,
+        "m22_recheck_shared_owner": m22_recheck_shared_owner,
+        "m22_same_workspace": m22_same_workspace,
+        "m22_visibility": m22_visibility,
+        "m22_access_event_scope": m22_access_event_scope,
+        "m22_grant_event_workspace": m22_grant_event_workspace,
+        "m22_history_filter": m22_history_filter,
+        "m22_history_project_filter": m22_history_project_filter,
+        "m22_key_cleanup": m22_key_cleanup,
+        "m22_grant_cleanup": m22_grant_cleanup,
+        "m22_offer_cleanup": m22_offer_cleanup,
+        "m22_pending_offers_only": m22_pending_offers_only,
+        "m22_revoke_siblings": m22_revoke_siblings,
+        "m22_grant_rebuild": m22_grant_rebuild,
+        "m22_grant_events": m22_grant_events,
+        "m22_receipt_events": m22_receipt_events,
+        "m22_two_party": m22_two_party,
+        "m22_authorize_redaction": m22_authorize_redaction,
+        "m22_receiver_preview": m22_receiver_preview,
+        "m22_receiver_authority": m22_receiver_authority,
+        "m22_dest_membership_preview": m22_dest_membership_preview,
+        "m22_dest_membership_complete": m22_dest_membership_complete,
+        "m22_accept_membership": m22_accept_membership,
+        "m22_dest_authority": m22_dest_authority,
+        "m22_recheck_workspace": m22_recheck_workspace,
+        "m22_active_work": m22_active_work,
+        "m22_db_time_live": m22_db_time_live,
+        "m22_db_time_expiry": m22_db_time_expiry,
+        "m22_single_tx": m22_single_tx,
+        "m22_lock_first": m22_lock_first,
+        "m22_guard_order": m22_guard_order,
+        "m22_issue_lock": m22_issue_lock,
+        "m22_preserve_identity": m22_preserve_identity,
+        "m22_expire_lapsed": m22_expire_lapsed,
+        "m22_http_problems": m22_http_problems,
+        "m22_human_only": m22_human_only,
     }
 
 
@@ -4252,6 +4395,358 @@ def check_m21(facts: dict[str, Any]) -> CheckResult:
         ],
     )
 
+
+def check_m22(facts: dict[str, Any]) -> CheckResult:
+    """#46: a shared-to-shared transfer is authorized by a source owner, accepted by a
+    destination authority (or completed directly by one person), and rechecks that owner,
+    destination authority, current ownership and no live DB-time work in one transaction.
+    It removes the source grant, every source key's project scope and every still-pending
+    offer, so a W1 -> W2 -> W1 round trip revives none of them. Access-change events carry
+    the owning workspace, so a source's membership history never appears in the destination's
+    project or workspace history. Every transition consults a source-extracted guard."""
+    g = facts
+
+    def bad(violations: frozenset[str], reason: str) -> frozenset[str]:
+        return violations | {reason}
+
+    def apply_transfer(state, destination: str):
+        (phase, auth, owner, dest_ok, dest_member, pws, claim, keys, grants,
+         offers, events, auth_live, v) = state
+
+        # One transaction, ownership lock first, guards before the project row and issues.
+        if not g["m22_single_tx"]:
+            v = bad(v, "accept_split_across_transactions")
+        if not g["m22_lock_first"]:
+            v = bad(v, "ownership_lock_not_first")
+        if not g["m22_guard_order"]:
+            v = bad(v, "workspace_guards_not_ordered_before_project")
+        if not g["m22_issue_lock"]:
+            v = bad(v, "issues_not_locked_before_active_work_check")
+        if not g["m22_preserve_identity"]:
+            v = bad(v, "authorship_rewritten_on_move")
+
+        # Cleanup is what makes a return trip non-reviving.
+        if not g["m22_grant_cleanup"]:
+            v = bad(v, "source_grant_survived")
+        else:
+            grants = grants - {"old"}
+        if not g["m22_key_cleanup"]:
+            v = bad(v, "source_key_followed_project")
+        else:
+            keys = False
+        if not g["m22_offer_cleanup"] or not g["m22_pending_offers_only"]:
+            v = bad(v, "pending_offer_not_invalidated")
+        else:
+            offers = False
+        if not g["m22_expire_lapsed"]:
+            v = bad(v, "stale_active_session_moved")
+        if not g["m22_revoke_siblings"]:
+            v = bad(v, "sibling_authorization_left_pending")
+
+        # Move, then rebuild destination access and its audit trail.
+        pws = destination
+        if not g["m22_grant_rebuild"]:
+            v = bad(v, "destination_manage_grants_missing")
+        else:
+            grants = grants | {"dest"}
+        if not g["m22_grant_events"]:
+            v = bad(v, "destination_grant_events_missing")
+        if not g["m22_receipt_events"]:
+            v = bad(v, "destination_receipt_missing")
+        if not g["m22_access_event_scope"]:
+            v = bad(v, "access_events_not_workspace_scoped")
+        # The new grant event must be scoped to the destination, never to the source.
+        grant_scope = "dest" if g["m22_grant_event_workspace"] else "source"
+        new_events = {(grant_scope, "grant"), ("source", "out"), ("dest", "receipt")}
+        if not g["m22_history_filter"] and any(scope == "source" for scope, _ in events):
+            v = bad(v, "source_access_history_leaked_to_dest")
+        if not g["m22_history_project_filter"]:
+            v = bad(v, "source_events_in_dest_project_history")
+        events = events | new_events
+
+        phase = "transferred" if destination == "W2" else "returned"
+        return (phase, "accepted", owner, dest_ok, dest_member, pws, "none", keys,
+                grants, offers, events, auth_live, v)
+
+    def authorize(state):
+        (phase, auth, owner, dest_ok, dest_member, pws, claim, keys, grants,
+         offers, events, auth_live, v) = state
+        if phase != "start":
+            return state
+        if not g["m22_shared_source"]:
+            v = bad(v, "shared_source_authority_not_checked")
+        if not owner:
+            if not g["m22_recheck_shared_owner"]:
+                v = bad(v, "authorized_without_shared_source_ownership")
+            return state
+        if not g["m22_two_party"]:
+            v = bad(v, "two_party_authorization_required_destination_authority")
+        if not g["m22_visibility"]:
+            v = bad(v, "wrong_visibility_change_for_shared_source")
+        if not g["m22_http_problems"]:
+            v = bad(v, "validated_route_without_400_problem")
+        if not g["m22_human_only"]:
+            v = bad(v, "agent_key_can_authorize_transfer")
+        if not dest_member and not g["m22_authorize_redaction"]:
+            v = bad(v, "destination_owner_pii_leaked")
+        return ("authorized", "pending", owner, dest_ok, dest_member, pws, claim,
+                keys, grants, offers, events, True, v)
+
+    def preview(state):
+        (phase, auth, owner, dest_ok, dest_member, pws, claim, keys, grants,
+         offers, events, auth_live, v) = state
+        if not dest_member and not g["m22_dest_membership_preview"]:
+            v = bad(v, "destination_enumerated_by_preview")
+        return (phase, auth, owner, dest_ok, dest_member, pws, claim, keys,
+                grants, offers, events, auth_live, v)
+
+    def receiver_preview(state):
+        (phase, auth, owner, dest_ok, dest_member, pws, claim, keys, grants,
+         offers, events, auth_live, v) = state
+        if phase != "authorized" or auth != "pending":
+            return state
+        if not g["m22_receiver_preview"]:
+            v = bad(v, "no_receiver_preview")
+        if not dest_member or not dest_ok:
+            if not g["m22_receiver_authority"]:
+                v = bad(v, "unauthorized_receiver_saw_preview")
+        return (phase, auth, owner, dest_ok, dest_member, pws, claim, keys,
+                grants, offers, events, auth_live, v)
+
+    def same_workspace_probe(state):
+        (phase, auth, owner, dest_ok, dest_member, pws, claim, keys, grants,
+         offers, events, auth_live, v) = state
+        if phase != "start":
+            return state
+        if not g["m22_same_workspace"]:
+            v = bad(v, "same_workspace_transfer_allowed")
+        return (phase, auth, owner, dest_ok, dest_member, pws, claim, keys,
+                grants, offers, events, auth_live, v)
+
+    def lose_owner(state):
+        (phase, auth, owner, dest_ok, dest_member, pws, claim, keys, grants,
+         offers, events, auth_live, v) = state
+        return (phase, auth, False, dest_ok, dest_member, pws, claim, keys,
+                grants, offers, events, auth_live, v)
+
+    def gain_dest(state):
+        (phase, auth, owner, dest_ok, dest_member, pws, claim, keys, grants,
+         offers, events, auth_live, v) = state
+        return (phase, auth, owner, True, True, pws, claim, keys, grants,
+                offers, events, auth_live, v)
+
+    def lose_dest(state):
+        (phase, auth, owner, dest_ok, dest_member, pws, claim, keys, grants,
+         offers, events, auth_live, v) = state
+        return (phase, auth, owner, False, dest_member, pws, claim, keys,
+                grants, offers, events, auth_live, v)
+
+    def leave_dest(state):
+        (phase, auth, owner, dest_ok, dest_member, pws, claim, keys, grants,
+         offers, events, auth_live, v) = state
+        return (phase, auth, owner, False, False, pws, claim, keys, grants,
+                offers, events, auth_live, v)
+
+    def claim(state):
+        (phase, auth, owner, dest_ok, dest_member, pws, claim, keys, grants,
+         offers, events, auth_live, v) = state
+        return (phase, auth, owner, dest_ok, dest_member, pws, "live", keys,
+                grants, offers, events, auth_live, v)
+
+    def expire_claim(state):
+        (phase, auth, owner, dest_ok, dest_member, pws, claim, keys, grants,
+         offers, events, auth_live, v) = state
+        return (phase, auth, owner, dest_ok, dest_member, pws, "expired", keys,
+                grants, offers, events, auth_live, v)
+
+    def expire_auth(state):
+        (phase, auth, owner, dest_ok, dest_member, pws, claim, keys, grants,
+         offers, events, auth_live, v) = state
+        return (phase, auth, owner, dest_ok, dest_member, pws, claim, keys,
+                grants, offers, events, False, v)
+
+    def move_project(state):
+        (phase, auth, owner, dest_ok, dest_member, pws, claim, keys, grants,
+         offers, events, auth_live, v) = state
+        return (phase, auth, owner, dest_ok, dest_member, "elsewhere", claim,
+                keys, grants, offers, events, auth_live, v)
+
+    def accept(state):
+        (phase, auth, owner, dest_ok, dest_member, pws, claim, keys, grants,
+         offers, events, auth_live, v) = state
+        if phase != "authorized" or auth != "pending":
+            return state
+        if not auth_live:
+            if not g["m22_db_time_expiry"]:
+                return apply_transfer_expired(state)
+            return state
+        if not dest_member:
+            if not g["m22_accept_membership"]:
+                return apply_transfer_violation(state, "non_member_accepted_transfer")
+            return state
+        if not owner:
+            if not g["m22_recheck_shared_owner"]:
+                return apply_transfer_violation(state, "accepted_after_source_owner_lost")
+            return state
+        if not dest_ok:
+            if not g["m22_dest_authority"]:
+                return apply_transfer_violation(state, "accepted_after_destination_authority_lost")
+            return state
+        if dest_ok and not g["m22_dest_authority"]:
+            v = bad(v, "valid_destination_authority_refused")
+        if pws != "W1":
+            if not g["m22_recheck_workspace"]:
+                return apply_transfer_violation(state, "accepted_after_workspace_changed")
+            return state
+        if claim == "live":
+            if not (g["m22_active_work"] and g["m22_db_time_live"]):
+                return apply_transfer_violation(state, "transferred_with_live_work")
+            return state
+        return apply_transfer(state, "W2")
+
+    def apply_transfer_violation(state, reason: str):
+        (phase, auth, owner, dest_ok, dest_member, pws, claim, keys, grants,
+         offers, events, auth_live, v) = state
+        return apply_transfer(
+            (phase, auth, owner, dest_ok, dest_member, pws, claim, keys, grants,
+             offers, events, auth_live, bad(v, reason)),
+            "W2",
+        )
+
+    def apply_transfer_expired(state):
+        (phase, auth, owner, dest_ok, dest_member, pws, claim, keys, grants,
+         offers, events, auth_live, v) = state
+        return apply_transfer(
+            (phase, auth, owner, dest_ok, dest_member, pws, claim, keys, grants,
+             offers, events, auth_live, bad(v, "expired_authorization_accepted")),
+            "W2",
+        )
+
+    def complete(state):
+        (phase, auth, owner, dest_ok, dest_member, pws, claim, keys, grants,
+         offers, events, auth_live, v) = state
+        if phase != "start" or not owner:
+            return state
+        if not dest_member:
+            if not g["m22_dest_membership_complete"]:
+                v = bad(v, "complete_enumerated_destination")
+            return (phase, auth, owner, dest_ok, dest_member, pws, claim, keys,
+                    grants, offers, events, auth_live, v)
+        if not dest_ok:
+            return (phase, auth, owner, dest_ok, dest_member, pws, claim, keys,
+                    grants, offers, events, auth_live, v)
+        if not g["m22_dest_authority"]:
+            v = bad(v, "direct_flow_denied_valid_authority")
+        if pws != "W1":
+            return state
+        if claim == "live":
+            if not (g["m22_active_work"] and g["m22_db_time_live"]):
+                return apply_transfer_violation(state, "transferred_with_live_work")
+            return state
+        return apply_transfer(state, "W2")
+
+    def transfer_back(state):
+        (phase, auth, owner, dest_ok, dest_member, pws, claim, keys, grants,
+         offers, events, auth_live, v) = state
+        if phase != "transferred" or pws != "W2":
+            return state
+        if not owner:
+            if not g["m22_recheck_shared_owner"]:
+                v = bad(v, "returned_after_source_owner_lost")
+            return state
+        if claim == "live":
+            if not (g["m22_active_work"] and g["m22_db_time_live"]):
+                v = bad(v, "returned_with_live_work")
+            return state
+        return apply_transfer(state, "W1")
+
+    def redeem_offer(state):
+        (phase, auth, owner, dest_ok, dest_member, pws, claim, keys, grants,
+         offers, events, auth_live, v) = state
+        if phase not in ("transferred", "returned"):
+            return state
+        if offers:
+            v = bad(v, "pending_offer_granted_after_move")
+        return (phase, auth, owner, dest_ok, dest_member, pws, claim, keys,
+                grants, offers, events, auth_live, v)
+
+    def project_history(state):
+        (phase, auth, owner, dest_ok, dest_member, pws, claim, keys, grants,
+         offers, events, auth_live, v) = state
+        if phase not in ("transferred", "returned"):
+            return state
+        if not g["m22_history_project_filter"]:
+            v = bad(v, "source_events_in_dest_project_history")
+        if not g["m22_history_filter"] and any(scope == "source" for scope, _ in events):
+            v = bad(v, "source_access_history_leaked_to_dest")
+        return (phase, auth, owner, dest_ok, dest_member, pws, claim, keys,
+                grants, offers, events, auth_live, v)
+
+    actions = [
+        ("the source owner previews the shared-to-shared move", preview),
+        ("a transfer to the same workspace is probed", same_workspace_probe),
+        ("a stranger previews the pending token", receiver_preview),
+        ("the authorizing owner is demoted or removed", lose_owner),
+        ("the destination grants Create projects", gain_dest),
+        ("destination Create projects authority is withdrawn", lose_dest),
+        ("the receiver leaves the destination", leave_dest),
+        ("the source owner authorizes without destination authority", authorize),
+        ("a worker claims an issue on the project", claim),
+        ("the claim's lease lapses in database time", expire_claim),
+        ("the authorization expires in database time", expire_auth),
+        ("the project moves elsewhere before acceptance", move_project),
+        ("the destination authority accepts", accept),
+        ("one person with both authorities completes directly", complete),
+        ("the project is transferred back to W1", transfer_back),
+        ("the old pending offer is redeemed after the move", redeem_offer),
+        ("the destination reads the project's history", project_history),
+    ]
+
+    init = ("start", "none", True, False, False, "W1", "none", True,
+            frozenset({"old"}), True, frozenset({("source", "grant")}), True,
+            frozenset())
+
+    def next_states(state):
+        return [(label, action(state)) for label, action in actions]
+
+    def inv(state):
+        v = state[-1]
+        if v:
+            return False, f"shared-transfer invariant broken: {sorted(v)[0]}"
+        (phase, auth, owner, dest_ok, dest_member, pws, claim, keys, grants,
+         offers, events, auth_live, _) = state
+        if phase in ("transferred", "returned"):
+            if keys:
+                return False, "a W1 key still names the moved project"
+            if "old" in grants:
+                return False, "a W1 grant survived or revived after a move"
+            if offers:
+                return False, "a pending offer still names the moved project"
+            if ("dest", "grant") not in events:
+                return False, "the destination recorded no Manage grant event"
+            if ("source", "out") not in events or ("dest", "receipt") not in events:
+                return False, "both sides of the transfer were not recorded"
+        return True, ""
+
+    return bfs_check(
+        "M22",
+        "Shared-to-Shared Project Transfer (#46)",
+        "A shared source owner authorizes (or one person completes) a move to another shared workspace; one transaction rechecks that owner, destination authority, current ownership and no live DB-time work, removes every W1 grant/key/pending offer so a round trip revives none, and keeps each workspace's access-change events strictly its own",
+        "safety",
+        init,
+        next_states,
+        inv,
+        [
+            "apps/server/src/features/transfers/service.ts",
+            "apps/server/src/features/transfers/rest.ts",
+            "packages/contract/src/transfers.ts",
+            "apps/server/src/features/history/service.ts",
+            "apps/server/src/db/schema.ts",
+            "db/migrations/0026_common_sir_ram.sql",
+        ],
+    )
+
+
 def main() -> None:
     facts = extract_code_facts()
     results = [
@@ -4277,6 +4772,7 @@ def main() -> None:
         check_m19(facts),
         check_m20(facts),
         check_m21(facts),
+        check_m22(facts),
     ]
 
     if "--json" in sys.argv:

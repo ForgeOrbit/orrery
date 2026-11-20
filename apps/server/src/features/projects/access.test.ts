@@ -894,6 +894,7 @@ describe("shared project access", () => {
         database.db.insert(projectAccessEvents).values({
           id: randomUUID(),
           projectId: project.id,
+          workspaceId: workspace.id,
           actorHumanId: admin.id,
           subjectHumanId: member.human.id,
           type: "project_access_granted",
@@ -914,6 +915,7 @@ describe("shared project access", () => {
     await database.db.insert(projectAccessEvents).values({
       id: randomUUID(),
       projectId: project.id,
+      workspaceId: workspace.id,
       actorHumanId: admin.id,
       subjectHumanId: member.human.id,
       type: "project_access_granted",

@@ -2577,7 +2577,8 @@
           "visibilityChange": {
             "type": "string",
             "enum": [
-              "personal_to_shared"
+              "personal_to_shared",
+              "shared_to_shared"
             ]
           },
           "accessChanges": {
@@ -7924,8 +7925,8 @@
     },
     "/api/projects/{projectId}/transfer/preview": {
       "post": {
-        "summary": "Preview a personal-to-shared transfer",
-        "description": "The personal owner sees where the project would go, the visibility and access changes, and any live work that must finish first. Nothing is written.",
+        "summary": "Preview a project transfer",
+        "description": "The source owner sees where the project would go, the visibility and access changes, and any live work that must finish first. Both personal-to-shared (#39) and shared-to-shared (#46) moves are supported. Nothing is written.",
         "parameters": [
           {
             "schema": {
@@ -7994,8 +7995,8 @@
     },
     "/api/projects/{projectId}/transfer": {
       "post": {
-        "summary": "Authorize a personal-to-shared transfer",
-        "description": "The personal workspace owner authorizes moving the project into a shared workspace and receives a one-time token. A destination owner or a member with Create projects then accepts. The authorization is recorded in the source workspace's history.",
+        "summary": "Authorize a project transfer",
+        "description": "The source owner (a personal workspace's owner, or a shared workspace's owner) authorizes moving the project into a different shared workspace and receives a one-time token. A destination owner or a member with Create projects then accepts. The authorization is recorded in the source workspace's history.",
         "parameters": [
           {
             "schema": {
@@ -8132,8 +8133,8 @@
     },
     "/api/projects/{projectId}/transfer/complete": {
       "post": {
-        "summary": "Transfer a personal project directly",
-        "description": "One person who owns the personal project and also holds Create projects in the shared destination completes both authorization and acceptance in a single transaction.",
+        "summary": "Transfer a project directly",
+        "description": "One person who owns the source project (personally or in a shared workspace) and also holds Create projects in the destination completes both authorization and acceptance in a single transaction.",
         "parameters": [
           {
             "schema": {
@@ -8222,8 +8223,8 @@
     },
     "/api/transfers/accept": {
       "post": {
-        "summary": "Accept an authorized personal-to-shared transfer",
-        "description": "A destination owner or a member with Create projects accepts a pending authorization. Every authority, the project's current ownership and the absence of live work are rechecked in one transaction before access is rebuilt under the destination.",
+        "summary": "Accept an authorized project transfer",
+        "description": "A destination owner or a member with Create projects accepts a pending authorization. Every authority (including the source owner's, who may have since lost ownership), the project's current ownership and the absence of live work are rechecked in one transaction before access is rebuilt under the destination.",
         "requestBody": {
           "required": true,
           "content": {

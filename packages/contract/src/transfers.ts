@@ -2,11 +2,11 @@ import { z } from "zod";
 import { Email, Timestamp, WorkspaceKind } from "./common.ts";
 import { ProjectAccessLevel } from "./projects.ts";
 
-// Personal-to-shared project transfer (issue #39). The schemas here are the shared
-// language for the transfer preview, the source owner's authorization and the
-// destination's acceptance. Transport adapters stay thin; the policy lives in the
-// transfers service. Only humans perform a transfer: it is an ownership decision, not
-// project work, so there is deliberately no MCP tool for it.
+// Project transfer between workspaces: personal-to-shared (#39) and shared-to-shared
+// (#46). The schemas here are the shared language for the transfer preview, the source
+// owner's authorization and the destination's acceptance. Transport adapters stay thin;
+// the policy lives in the transfers service. Only humans perform a transfer: it is an
+// ownership decision, not project work, so there is deliberately no MCP tool for it.
 
 export const TransferAuthorizationStatus = z
   .enum(["pending", "accepted", "revoked", "expired"])
@@ -50,14 +50,15 @@ export const TransferActiveWork = z
 export type TransferActiveWork = z.infer<typeof TransferActiveWork>;
 
 // Shown before confirmation: where the project goes, what visibility and access change,
-// and whether any live work currently blocks the transfer.
+// and whether any live work currently blocks the transfer. A #39 move makes a personal
+// project shared; a #46 move keeps both sides shared but changes which workspace owns it.
 export const TransferPreview = z
   .object({
     projectId: z.string(),
     projectName: z.string(),
     source: TransferParty,
     destination: TransferParty,
-    visibilityChange: z.literal("personal_to_shared"),
+    visibilityChange: z.enum(["personal_to_shared", "shared_to_shared"]),
     accessChanges: z.array(TransferAccessChange),
     revokedSourceGrants: z.int().nonnegative(),
     activeWork: TransferActiveWork,

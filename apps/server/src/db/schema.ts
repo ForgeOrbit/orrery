@@ -527,7 +527,10 @@ export const workspaceInvitationGrants = pgTable(
   ],
 );
 
-// Project access-change events (#27), scoped to the project whose access changed. The
+// Project access-change events (#27), scoped to the project whose access changed and to
+// the workspace that owned the project when the change happened. The workspace scope is
+// what keeps a source's membership history from following a project after a shared-to-
+// shared move (#46): each workspace only ever reads its own access-change events. The
 // type implies the shape: a grant has a level and no previous level, a level change has
 // both, and a revocation has only the previous level. #32 builds the history view on
 // these rows; writing starts here, with no backfill. No emails or secrets are stored.
@@ -538,6 +541,11 @@ export const projectAccessEvents = pgTable(
     projectId: text("project_id")
       .notNull()
       .references(() => projects.id),
+    // #46: the workspace that owned the project at the moment of the change. A transfer
+    // never rewrites old rows, so a project moving W1 -> W2 cannot expose W1's grants.
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id),
     actorHumanId: text("actor_human_id")
       .notNull()
       .references(() => humans.id),
@@ -577,6 +585,8 @@ export const projectAccessEvents = pgTable(
       )`,
     ),
     index("project_access_events_project_created").on(t.projectId, t.createdAt),
+    // Workspace history filters on this column for every project it owns.
+    index("project_access_events_workspace_created").on(t.workspaceId, t.createdAt),
   ],
 );
 
