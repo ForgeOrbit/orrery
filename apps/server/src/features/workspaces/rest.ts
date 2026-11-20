@@ -71,7 +71,7 @@ const listWorkspaceMembers = createRoute({
   path: "/api/workspaces/{workspaceId}/members",
   summary: "The members of a shared workspace",
   description:
-    "Owners only: the directory used to appoint another owner or remove a member. Ordinary members do not receive everyone else's address.",
+    "Owners and members holding Remove members or Manage member permissions: the directory used to manage a team. An ordinary member without those capabilities does not receive everyone else's address.",
   request: { params: workspaceParams },
   responses: {
     200: {
@@ -80,7 +80,7 @@ const listWorkspaceMembers = createRoute({
     },
     400: problem("The workspace id is invalid"),
     401: problem("Not signed in"),
-    403: problem("Not an owner of this workspace"),
+    403: problem("The caller lacks the workspace capability required to see the directory"),
     404: problem("No accessible shared workspace"),
   },
 });
@@ -109,7 +109,7 @@ const inviteWorkspaceMember = createRoute({
   path: "/api/workspaces/{workspaceId}/invitations",
   summary: "Invite an email into a shared workspace",
   description:
-    "Owners only, and the inviter's email must be verified. A single-use link valid for seven days goes to the invited address, offering workspace membership and any selected project grants. Every offered project must currently belong to the workspace. An existing account accepts it after signing in; a new address registers through it. Following the link (GET) changes nothing.",
+    "Owners and delegated inviters, whose email must be verified. A single-use link valid for seven days goes to the invited address, offering workspace membership and any selected project grants. Every offered project must currently belong to the workspace, and a delegated inviter may only offer projects they currently Manage in that workspace. Owners may offer any workspace project. An existing account accepts it after signing in; a new address registers through it. Following the link (GET) changes nothing.",
   request: {
     params: workspaceParams,
     body: {
@@ -124,7 +124,9 @@ const inviteWorkspaceMember = createRoute({
     },
     400: problem("The request is invalid"),
     401: problem("Not signed in"),
-    403: problem("Not an owner, or the inviter's email is unverified"),
+    403: problem(
+      "The caller cannot invite, their email is unverified, or they do not Manage an offered project",
+    ),
     404: problem("No shared workspace with this id is accessible to the caller"),
     409: problem(
       "The invitee is already a member or already has a pending invitation, an offered project no longer belongs to the workspace, or SMTP is not configured or its stored password is unreadable",
@@ -138,7 +140,7 @@ const listWorkspaceInvitations = createRoute({
   path: "/api/workspaces/{workspaceId}/invitations",
   summary: "List a shared workspace's invitations",
   description:
-    "Owners only. Every invitation for this workspace, newest first, with recipient, inviter, target, offered grants, lifecycle timestamps, and email delivery as a separate fact. A pending invitation whose seven days have passed is reported and stored as expired. The token never appears.",
+    "Owners and delegated inviters. Every invitation for this workspace, newest first, with recipient, inviter, target, offered grants, lifecycle timestamps, and email delivery as a separate fact. A pending invitation whose seven days have passed is reported and stored as expired. The token never appears.",
   request: { params: workspaceParams },
   responses: {
     200: {
@@ -147,7 +149,7 @@ const listWorkspaceInvitations = createRoute({
     },
     400: problem("The workspace id is invalid"),
     401: problem("Not signed in"),
-    403: problem("Not an owner of this workspace"),
+    403: problem("Not an owner or delegated inviter of this workspace"),
     404: problem("No accessible shared workspace"),
   },
 });
@@ -157,7 +159,7 @@ const resendWorkspaceInvitation = createRoute({
   path: "/api/workspaces/{workspaceId}/invitations/{invitationId}/resend",
   summary: "Resend a workspace invitation",
   description:
-    "Owners only, and the resending owner's email must be verified, exactly as for an initial invitation. Rotates the link: a still-live pending invitation becomes revoked at replacement time, one past its deadline becomes expired at the deadline it passed, and a new pending invitation from the current owner starts a fresh seven-day deadline. The previous link stops working. A delivery failure is recorded on the new invitation and answered as a delivery Problem; the invitation's lifecycle stays pending. Answers 409 invitation_not_pending when the invitation is accepted, declined, or revoked; invitation_scope_invalid when an offered project left the workspace; invitation_pending when a concurrent invitation already owns the address; smtp_unconfigured when SMTP is missing; and smtp_password_unreadable when the stored password cannot be read. Answers 502 smtp_unreachable, smtp_auth_failed, smtp_tls_failed, or smtp_send_failed when the relay refuses the message.",
+    "Owners and delegated inviters, whose email must be verified exactly as for an initial invitation. A delegate may only resend an offer whose projects they currently Manage. Rotates the link: a still-live pending invitation becomes revoked at replacement time, one past its deadline becomes expired at the deadline it passed, and a new pending invitation from the current inviter starts a fresh seven-day deadline. The previous link stops working. A delivery failure is recorded on the new invitation and answered as a delivery Problem; the invitation's lifecycle stays pending. Answers 409 invitation_not_pending when the invitation is accepted, declined, or revoked; invitation_scope_invalid when an offered project left the workspace; invitation_pending when a concurrent invitation already owns the address; smtp_unconfigured when SMTP is missing; and smtp_password_unreadable when the stored password cannot be read. Answers 502 smtp_unreachable, smtp_auth_failed, smtp_tls_failed, or smtp_send_failed when the relay refuses the message.",
   request: { params: invitationParams },
   responses: {
     200: {
@@ -166,7 +168,9 @@ const resendWorkspaceInvitation = createRoute({
     },
     400: problem("The workspace or invitation id is invalid"),
     401: problem("Not signed in"),
-    403: problem("Not an owner of this workspace, or the owner's email is unverified"),
+    403: problem(
+      "Not an owner or delegated inviter, the inviter's email is unverified, or a delegate does not Manage an offered project",
+    ),
     404: problem("No accessible shared workspace or invitation"),
     409: problem(
       "The invitation is accepted, declined, or revoked; an offered project left the workspace; the recipient is already a member; another invitation is pending; or SMTP is not configured or its stored password is unreadable",
@@ -180,7 +184,7 @@ const revokeWorkspaceInvitation = createRoute({
   path: "/api/workspaces/{workspaceId}/invitations/{invitationId}/revoke",
   summary: "Revoke a workspace invitation",
   description:
-    "Owners only. Only a pending, unexpired invitation is revoked; the link stops working and the row keeps its history and revocation timestamp.",
+    "Owners and delegated inviters. Only a pending, unexpired invitation is revoked; the link stops working and the row keeps its history and revocation timestamp. A delegate cannot revoke an offer containing a project they do not Manage.",
   request: { params: invitationParams },
   responses: {
     200: {
@@ -189,7 +193,7 @@ const revokeWorkspaceInvitation = createRoute({
     },
     400: problem("The workspace or invitation id is invalid"),
     401: problem("Not signed in"),
-    403: problem("Not an owner of this workspace"),
+    403: problem("Not an owner or delegated inviter of this workspace"),
     404: problem("No accessible shared workspace or invitation"),
     409: problem("The invitation is no longer pending and unexpired"),
   },
@@ -313,9 +317,9 @@ const appointWorkspaceOwner = createRoute({
 const updateWorkspaceMember = createRoute({
   method: "patch",
   path: "/api/workspaces/{workspaceId}/members/{humanId}",
-  summary: "Grant or revoke a member's Create projects capability",
+  summary: "Grant or revoke a member's workspace capabilities",
   description:
-    "Owners only. An owner can always create projects; this capability lets one member create projects without workspace-wide authority. The created project's creator receives Manage on it, and membership alone still grants no existing project's content.",
+    "Grant or revoke Create projects, Invite members, Remove members, and Manage member permissions independently; at least one field is required. Owners may change any capability on any non-owner. A permission manager may change only capabilities they hold themselves, on someone else, and may never appoint or remove a permission manager. An owner's capabilities are implicit: setting one true is a no-op and setting one false is refused. A non-member answers 404 like a missing workspace. Each real change records an attributed event. Create projects never grants access to an existing project, and Project Manage grants no workspace capability.",
   request: {
     params: memberParams,
     body: {
@@ -325,14 +329,14 @@ const updateWorkspaceMember = createRoute({
   },
   responses: {
     200: {
-      description: "The member with the effective capability",
+      description: "The member with its effective capabilities",
       content: { "application/json": { schema: WorkspaceMember } },
     },
     400: problem("The request is invalid"),
     401: problem("Not signed in"),
-    403: problem("Not an owner of this workspace"),
+    403: problem("The caller lacks the authority to change this member's capabilities"),
     404: problem("No accessible shared workspace or member"),
-    409: problem("Workspace owners always have Create projects"),
+    409: problem("Workspace owners always hold every capability"),
   },
 });
 
@@ -341,13 +345,13 @@ const removeWorkspaceMember = createRoute({
   path: "/api/workspaces/{workspaceId}/members/{humanId}",
   summary: "Remove a member from a shared workspace",
   description:
-    "Owners only. Removing an owner is refused when it would leave the workspace with no owner. The removed human keeps their personal workspace and every other membership.",
+    "Owners, and members holding Remove members. A delegated remover cannot remove an owner or a permission manager, even themselves; owners may remove either but not the last owner. The removed human keeps their personal workspace and every other membership.",
   request: { params: memberParams },
   responses: {
     204: { description: "The membership was removed" },
     400: problem("The workspace or member id is invalid"),
     401: problem("Not signed in"),
-    403: problem("Not an owner of this workspace"),
+    403: problem("The caller lacks removal authority, or the target is protected"),
     404: problem("No accessible shared workspace or member"),
     409: problem("Removing this owner would leave the workspace with no owner"),
   },

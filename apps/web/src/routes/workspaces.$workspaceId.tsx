@@ -1,13 +1,22 @@
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { ProjectAccessLevel, type InvitationSummary } from "@orrery/contract";
+import {
+  ProjectAccessLevel,
+  workspaceCapabilities,
+  type InvitationSummary,
+  type Workspace,
+  type WorkspaceCapability,
+  type WorkspaceMember,
+} from "@orrery/contract";
 import type { FormEvent } from "react";
 import { useState } from "react";
+import { sessionQuery } from "../features/accounts/index.ts";
 import { InvitationList } from "../features/invitations/index.ts";
 import { createProject, projectQuery, projectsQuery } from "../features/projects/index.ts";
 import {
   appointWorkspaceOwner,
   inviteWorkspaceMember,
+  removeWorkspaceMember,
   resendWorkspaceInvitation,
   revokeWorkspaceInvitation,
   updateWorkspaceMember,
@@ -18,19 +27,64 @@ import {
 } from "../features/workspaces/index.ts";
 
 // One workspace's own view. Every workspace lists the projects the caller can access.
-// A shared workspace shows its owners the member directory, capability management,
-// owner appointment, and invite form; ordinary members see their own role and, when
-// granted Create projects, the project form. Those controls are owner-only.
+// A shared workspace shows its members only to callers with member-management or removal
+// authority, and its invite form and invitation history only to owners and delegated
+// inviters. Which controls appear is a user-experience decision; the server enforces the
+// same boundary for every client (#33). No client state is a capability: the effective
+// capabilities come from the Workspace response on every load.
+
+const capabilityLabels: Record<WorkspaceCapability, string> = {
+  canCreateProjects: "Create projects",
+  canInviteMembers: "Invite members",
+  canRemoveMembers: "Remove members",
+  canManageMemberPermissions: "Manage member permissions",
+};
+
+function mayManageMembers(workspace: Workspace): boolean {
+  return (
+    workspace.kind === "shared" &&
+    (workspace.isOwner || workspace.canManageMemberPermissions || workspace.canRemoveMembers)
+  );
+}
+
+function mayInvite(workspace: Workspace): boolean {
+  return workspace.kind === "shared" && (workspace.isOwner || workspace.canInviteMembers);
+}
+
+// Owners can change any capability on a non-owner. A permission manager can change only
+// the capabilities they hold, on someone else, and never appoint or remove a permission
+// manager. An owner's own authority is implicit, so it has no controls.
+function changeableCapabilities(
+  workspace: Workspace,
+  member: WorkspaceMember,
+  ownEmail: string | undefined,
+): readonly WorkspaceCapability[] {
+  if (member.isOwner || member.email === ownEmail) return [];
+  if (workspace.isOwner) return workspaceCapabilities;
+  if (!workspace.canManageMemberPermissions) return [];
+  return workspaceCapabilities.filter(
+    (capability) => capability !== "canManageMemberPermissions" && workspace[capability],
+  );
+}
+
+// Owners may remove anyone except the last owner (a server-side check). A delegated
+// remover cannot remove an owner or a permission manager, including themselves.
+function mayRemove(workspace: Workspace, member: WorkspaceMember): boolean {
+  if (!workspace.isOwner && !workspace.canRemoveMembers) return false;
+  return workspace.isOwner || (!member.isOwner && !member.canManageMemberPermissions);
+}
+
 export const Route = createFileRoute("/workspaces/$workspaceId")({
   loader: async ({ context, params }) => {
     const workspace = await context.queryClient.ensureQueryData(workspaceQuery(params.workspaceId));
     const loads = [
       context.queryClient.ensureQueryData(projectsQuery(params.workspaceId)),
-      ...(workspace.kind === "shared" && workspace.isOwner
-        ? [
-            context.queryClient.ensureQueryData(workspaceMembersQuery(params.workspaceId)),
-            context.queryClient.ensureQueryData(workspaceInvitationsQuery(params.workspaceId)),
-          ]
+      context.queryClient.ensureQueryData(sessionQuery),
+      ...(mayManageMembers(workspace)
+        ? [context.queryClient.ensureQueryData(workspaceMembersQuery(params.workspaceId))]
+        : []),
+      ...(mayInvite(workspace)
+        ? [context.queryClient.ensureQueryData(workspaceInvitationsQuery(params.workspaceId))]
         : []),
     ];
     await Promise.all(loads);
@@ -57,11 +111,13 @@ function WorkspacePage() {
         workspaceId={workspace.id}
         canCreate={workspace.isOwner || workspace.canCreateProjects}
       />
-      {workspace.kind === "shared" && workspace.isOwner && (
+      {mayManageMembers(workspace) && (
+        <WorkspaceMembers workspaceId={workspace.id} workspace={workspace} />
+      )}
+      {mayInvite(workspace) && (
         <>
-          <OwnerMembers workspaceId={workspace.id} />
-          <InviteMemberForm workspaceId={workspace.id} workspaceName={workspace.name} />
-          <OwnerInvitations workspaceId={workspace.id} />
+          <InviteMemberForm workspaceId={workspace.id} workspace={workspace} />
+          <WorkspaceInvitations workspaceId={workspace.id} />
         </>
       )}
     </main>
@@ -138,11 +194,20 @@ function CreateProjectForm({ workspaceId }: { workspaceId: string }) {
   );
 }
 
-// Owner-only directory. The server enforces the same boundary; this only decides what
-// the page offers. Appointing and capability changes refresh the member roles and the
-// caller's workspace list so the effective state comes from the server.
-function OwnerMembers({ workspaceId }: { workspaceId: string }) {
+// The member directory, shown only to callers whose authority needs it. Every capability
+// is shown as an effective value; controls appear only where the caller can change that
+// capability on that target. Appointing is always owner-only. Each action refreshes the
+// member roles, the caller's workspace capabilities, and the caller's workspace list.
+function WorkspaceMembers({
+  workspaceId,
+  workspace,
+}: {
+  workspaceId: string;
+  workspace: Workspace;
+}) {
   const { data: members } = useSuspenseQuery(workspaceMembersQuery(workspaceId));
+  const { data: session } = useSuspenseQuery(sessionQuery);
+  const ownEmail = session.signedIn ? session.email : undefined;
   const queryClient = useQueryClient();
   const [error, setError] = useState<string>();
   const [updating, setUpdating] = useState<string>();
@@ -168,14 +233,29 @@ function OwnerMembers({ workspaceId }: { workspaceId: string }) {
     }
   }
 
-  async function onCapability(humanId: string, canCreateProjects: boolean) {
+  async function onCapability(humanId: string, capability: WorkspaceCapability) {
+    const member = members.find((candidate) => candidate.humanId === humanId);
+    if (member === undefined) return;
     setUpdating(humanId);
     setError(undefined);
     try {
-      await updateWorkspaceMember(workspaceId, humanId, { canCreateProjects });
+      await updateWorkspaceMember(workspaceId, humanId, { [capability]: !member[capability] });
       await refresh();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not change the capability.");
+    } finally {
+      setUpdating(undefined);
+    }
+  }
+
+  async function onRemove(humanId: string) {
+    setUpdating(humanId);
+    setError(undefined);
+    try {
+      await removeWorkspaceMember(workspaceId, humanId);
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not remove the member.");
     } finally {
       setUpdating(undefined);
     }
@@ -189,27 +269,46 @@ function OwnerMembers({ workspaceId }: { workspaceId: string }) {
         {members.map((member) => (
           <li key={member.humanId} data-member-id={member.humanId}>
             {member.email} <span>{member.isOwner ? "Owner" : "Member"}</span>{" "}
-            <span data-can-create-projects={String(member.canCreateProjects)}>
-              {member.canCreateProjects ? "Can create projects" : "Cannot create projects"}
-            </span>
-            {!member.isOwner && (
-              <>
-                {" "}
-                <button
-                  type="button"
-                  onClick={() => void onCapability(member.humanId, !member.canCreateProjects)}
-                  disabled={updating !== undefined}
-                >
-                  {member.canCreateProjects ? "Revoke Create projects" : "Grant Create projects"}
-                </button>{" "}
-                <button
-                  type="button"
-                  onClick={() => void onAppoint(member.humanId)}
-                  disabled={updating !== undefined}
-                >
-                  Make owner
-                </button>
-              </>
+            {workspaceCapabilities.map((capability) => (
+              <span
+                key={capability}
+                data-capability={capability}
+                data-enabled={String(member[capability])}
+              >
+                {member[capability]
+                  ? `Can ${capabilityLabels[capability].toLowerCase()}`
+                  : `Cannot ${capabilityLabels[capability].toLowerCase()}`}{" "}
+              </span>
+            ))}
+            {changeableCapabilities(workspace, member, ownEmail).map((capability) => (
+              <button
+                key={capability}
+                type="button"
+                data-capability-action={capability}
+                onClick={() => void onCapability(member.humanId, capability)}
+                disabled={updating !== undefined}
+              >
+                {member[capability] ? "Revoke" : "Grant"} {capabilityLabels[capability]}
+              </button>
+            ))}{" "}
+            {!member.isOwner && workspace.isOwner && (
+              <button
+                type="button"
+                onClick={() => void onAppoint(member.humanId)}
+                disabled={updating !== undefined}
+              >
+                Make owner
+              </button>
+            )}{" "}
+            {mayRemove(workspace, member) && (
+              <button
+                type="button"
+                data-action="remove-member"
+                onClick={() => void onRemove(member.humanId)}
+                disabled={updating !== undefined}
+              >
+                Remove member
+              </button>
             )}
           </li>
         ))}
@@ -218,10 +317,10 @@ function OwnerMembers({ workspaceId }: { workspaceId: string }) {
   );
 }
 
-// Owner-only history. Delivery is shown as its own fact, so a failed email never reads
-// as a failed invitation; resend and revoke are the lifecycle actions, and each keeps
-// the previous row visible.
-function OwnerInvitations({ workspaceId }: { workspaceId: string }) {
+// The invitation history, shown to owners and delegated inviters. Delivery is its own
+// fact, so a failed email never reads as a failed invitation; resend and revoke are the
+// lifecycle actions, and each keeps the previous row visible.
+function WorkspaceInvitations({ workspaceId }: { workspaceId: string }) {
   const { data: invitations } = useSuspenseQuery(workspaceInvitationsQuery(workspaceId));
   const queryClient = useQueryClient();
   const [busyId, setBusyId] = useState<string>();
@@ -262,13 +361,18 @@ function OwnerInvitations({ workspaceId }: { workspaceId: string }) {
 
 function InviteMemberForm({
   workspaceId,
-  workspaceName,
+  workspace,
 }: {
   workspaceId: string;
-  workspaceName: string;
+  workspace: Workspace;
 }) {
   const queryClient = useQueryClient();
   const { data: projects } = useSuspenseQuery(projectsQuery(workspaceId));
+  // A delegate may only offer a project they Manage; owners may offer any workspace
+  // project. The server rechecks this on create, resend, and acceptance.
+  const selectable = workspace.isOwner
+    ? projects
+    : projects.filter((project) => project.accessLevel === "manage");
   const [email, setEmail] = useState("");
   const [offered, setOffered] = useState<Record<string, ProjectAccessLevel>>({});
   const [error, setError] = useState<string>();
@@ -321,7 +425,7 @@ function InviteMemberForm({
 
   return (
     <section>
-      <h2>Invite someone to {workspaceName}</h2>
+      <h2>Invite someone to {workspace.name}</h2>
       <form onSubmit={(event) => void onSubmit(event)}>
         <label htmlFor="invite-email">Email</label>
         <input
@@ -333,10 +437,10 @@ function InviteMemberForm({
           required
           autoComplete="off"
         />
-        {projects.length > 0 && (
+        {selectable.length > 0 && (
           <fieldset>
             <legend>Project access (optional)</legend>
-            {projects.map((project) => (
+            {selectable.map((project) => (
               <div key={project.id}>
                 <label>
                   <input

@@ -79,6 +79,13 @@ const putJson = (app: Hono, path: string, body: unknown, cookie?: string) =>
 const deleteRequest = (app: Hono, path: string, cookie?: string) =>
   app.request(path, { method: "DELETE", ...(cookie ? { headers: { cookie } } : {}) });
 
+const patchJson = (app: Hono, path: string, body: unknown, cookie?: string) =>
+  app.request(path, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}) },
+    body: JSON.stringify(body),
+  });
+
 const postEmpty = (app: Hono, path: string, cookie?: string) =>
   app.request(path, { method: "POST", ...(cookie ? { headers: { cookie } } : {}) });
 
@@ -229,6 +236,10 @@ async function createWorkspace(app: Hono, cookie: string, name = "Rocket Team") 
   const res = await postJson(app, "/api/workspaces", { name }, cookie);
   expect(res.status).toBe(201);
   return Workspace.parse(await res.json());
+}
+
+async function assertForbidden(res: Response | Promise<Response>) {
+  expect((await res).status).toBe(403);
 }
 
 async function invite(
@@ -472,7 +483,15 @@ describe("workspaces", () => {
     const members = await getJson(app, `/api/workspaces/${created.id}/members`, adminCookie);
     expect(members.status).toBe(200);
     expect(WorkspaceMembersResponse.parse(await members.json())).toEqual([
-      { humanId: admin.id, email: EMAIL, isOwner: true, canCreateProjects: true },
+      {
+        humanId: admin.id,
+        email: EMAIL,
+        isOwner: true,
+        canCreateProjects: true,
+        canInviteMembers: true,
+        canRemoveMembers: true,
+        canManageMemberPermissions: true,
+      },
     ]);
 
     // Another signed-in person sees neither the workspace nor its detail.
@@ -582,6 +601,9 @@ describe("workspaces", () => {
       name: "Rocket Team",
       isOwner: false,
       canCreateProjects: false,
+      canInviteMembers: false,
+      canRemoveMembers: false,
+      canManageMemberPermissions: false,
     });
     const [membership] = await database.db
       .select()
@@ -771,6 +793,9 @@ describe("workspaces", () => {
       email: INVITEE,
       isOwner: true,
       canCreateProjects: true,
+      canInviteMembers: true,
+      canRemoveMembers: true,
+      canManageMemberPermissions: true,
     });
     const [membership] = await database.db
       .select()
@@ -2202,4 +2227,759 @@ describe("workspaces", () => {
       ).toHaveLength(1); // the creator only
     },
   );
+
+  // #28: four independent capabilities, the delegation ceilings, inviter scope, and
+  // attributed events. Every assertion goes through the HTTP surface a client uses,
+  // against real Postgres, so a constraint or a rollback cannot be hidden by a mock.
+  type CapabilityFlags = {
+    canCreateProjects?: boolean;
+    canInviteMembers?: boolean;
+    canRemoveMembers?: boolean;
+    canManageMemberPermissions?: boolean;
+  };
+
+  async function addMember(
+    app: Hono,
+    workspaceId: string,
+    email: string,
+    flags: CapabilityFlags = {},
+  ) {
+    const [human] = await insertHuman({ email, verified: true });
+    await database.db.insert(workspaceMemberships).values({
+      id: randomUUID(),
+      workspaceId,
+      humanId: human.id,
+      isOwner: false,
+      ...flags,
+    });
+    return { human, cookie: await sessionFor(app, human.id) };
+  }
+
+  async function grantProjectManage(projectId: string, humanId: string, grantedByHumanId: string) {
+    await database.db.insert(projectAccessGrants).values({
+      id: randomUUID(),
+      projectId,
+      humanId,
+      level: "manage",
+      grantedByHumanId,
+    });
+  }
+
+  it("exposes four independent effective capabilities on workspaces and members", async () => {
+    const { app, adminCookie } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const ownerView = await getJson(app, `/api/workspaces/${workspace.id}`, adminCookie);
+    expect(ownerView.status).toBe(200);
+    expect(Workspace.parse(await ownerView.json())).toMatchObject({
+      isOwner: true,
+      canCreateProjects: true,
+      canInviteMembers: true,
+      canRemoveMembers: true,
+      canManageMemberPermissions: true,
+    });
+
+    const member = await addMember(app, workspace.id, "flags.member@example.com");
+    const memberView = await getJson(app, `/api/workspaces/${workspace.id}`, member.cookie);
+    expect(memberView.status).toBe(200);
+    expect(Workspace.parse(await memberView.json())).toMatchObject({
+      isOwner: false,
+      canCreateProjects: false,
+      canInviteMembers: false,
+      canRemoveMembers: false,
+      canManageMemberPermissions: false,
+    });
+
+    const directory = await getJson(app, `/api/workspaces/${workspace.id}/members`, adminCookie);
+    expect(directory.status).toBe(200);
+    expect(WorkspaceMembersResponse.parse(await directory.json())).toContainEqual(
+      expect.objectContaining({
+        humanId: member.human.id,
+        canCreateProjects: false,
+        canInviteMembers: false,
+        canRemoveMembers: false,
+        canManageMemberPermissions: false,
+      }),
+    );
+
+    // A single capability and a multi-capability update both work independently.
+    const memberPath = `/api/workspaces/${workspace.id}/members/${member.human.id}`;
+    const single = await patchJson(app, memberPath, { canCreateProjects: true }, adminCookie);
+    expect(single.status).toBe(200);
+    expect(WorkspaceMember.parse(await single.json())).toMatchObject({
+      canCreateProjects: true,
+      canInviteMembers: false,
+    });
+    const rest = await patchJson(
+      app,
+      memberPath,
+      {
+        canInviteMembers: true,
+        canRemoveMembers: true,
+        canManageMemberPermissions: true,
+      },
+      adminCookie,
+    );
+    expect(rest.status).toBe(200);
+    expect(WorkspaceMember.parse(await rest.json())).toMatchObject({
+      canCreateProjects: true,
+      canInviteMembers: true,
+      canRemoveMembers: true,
+      canManageMemberPermissions: true,
+    });
+    const refreshed = await getJson(app, `/api/workspaces/${workspace.id}`, member.cookie);
+    expect(Workspace.parse(await refreshed.json())).toMatchObject({
+      canInviteMembers: true,
+      canRemoveMembers: true,
+      canManageMemberPermissions: true,
+    });
+    const empty = await patchJson(app, memberPath, {}, adminCookie);
+    expect(empty.status).toBe(400);
+    expect(await problemBody(empty)).toMatchObject({ code: "validation_failed" });
+  });
+
+  it("records one attributed event per real capability change and none for a no-op", async () => {
+    const { app, adminCookie, admin } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const member = await addMember(app, workspace.id, "events.member@example.com");
+    const memberPath = `/api/workspaces/${workspace.id}/members/${member.human.id}`;
+
+    const granted = await patchJson(
+      app,
+      memberPath,
+      { canCreateProjects: true, canInviteMembers: true },
+      adminCookie,
+    );
+    expect(granted.status).toBe(200);
+    expect((await eventsFor(workspace.id)).map((event) => event.type)).toEqual(
+      expect.arrayContaining([
+        "workspace_created",
+        "create_projects_granted",
+        "invite_members_granted",
+      ]),
+    );
+
+    const noop = await patchJson(app, memberPath, { canCreateProjects: true }, adminCookie);
+    expect(noop.status).toBe(200);
+    expect(await eventsFor(workspace.id)).toHaveLength(3);
+
+    const changed = await patchJson(
+      app,
+      memberPath,
+      { canInviteMembers: false, canRemoveMembers: true, canManageMemberPermissions: true },
+      adminCookie,
+    );
+    expect(changed.status).toBe(200);
+    const events = await eventsFor(workspace.id);
+    expect(events).toHaveLength(6);
+    expect(events.map((event) => event.type)).toEqual(
+      expect.arrayContaining([
+        "workspace_created",
+        "create_projects_granted",
+        "invite_members_granted",
+        "invite_members_revoked",
+        "remove_members_granted",
+        "manage_member_permissions_granted",
+      ]),
+    );
+    for (const event of events.slice(1)) {
+      expect(event).toMatchObject({
+        workspaceId: workspace.id,
+        actorHumanId: admin.id,
+        subjectHumanId: member.human.id,
+      });
+    }
+
+    const revoked = await patchJson(
+      app,
+      memberPath,
+      { canRemoveMembers: false, canManageMemberPermissions: false },
+      adminCookie,
+    );
+    expect(revoked.status).toBe(200);
+    expect((await eventsFor(workspace.id)).map((event) => event.type)).toEqual(
+      expect.arrayContaining(["remove_members_revoked", "manage_member_permissions_revoked"]),
+    );
+
+    // An owner already holds every capability: granting one writes no event.
+    const ownerNoop = await patchJson(
+      app,
+      `/api/workspaces/${workspace.id}/members/${admin.id}`,
+      { canCreateProjects: true },
+      adminCookie,
+    );
+    expect(ownerNoop.status).toBe(200);
+    expect(await eventsFor(workspace.id)).toHaveLength(8);
+  });
+
+  it("lets only owners appoint permission managers and bounds a manager's delegation", async () => {
+    const { app, adminCookie, admin } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const manager = await addMember(app, workspace.id, "manager@example.com", {
+      canManageMemberPermissions: true,
+      canCreateProjects: true,
+      canRemoveMembers: true,
+    });
+    const ordinary = await addMember(app, workspace.id, "ordinary.delegate@example.com");
+    const path = (humanId: string) => `/api/workspaces/${workspace.id}/members/${humanId}`;
+
+    // A manager cannot elevate themselves.
+    const self = await patchJson(
+      app,
+      path(manager.human.id),
+      { canInviteMembers: true },
+      manager.cookie,
+    );
+    expect(self.status).toBe(403);
+    expect(await problemBody(self)).toMatchObject({ code: "not_workspace_owner" });
+
+    // Only owners appoint or remove permission managers, in either direction.
+    const appoint = await patchJson(
+      app,
+      path(ordinary.human.id),
+      { canManageMemberPermissions: true },
+      manager.cookie,
+    );
+    expect(appoint.status).toBe(403);
+    const resign = await patchJson(
+      app,
+      path(manager.human.id),
+      { canManageMemberPermissions: false },
+      manager.cookie,
+    );
+    expect(resign.status).toBe(403);
+
+    // A manager cannot grant what they do not hold, but can grant and revoke what they do.
+    const aboveCeiling = await patchJson(
+      app,
+      path(ordinary.human.id),
+      { canInviteMembers: true },
+      manager.cookie,
+    );
+    expect(aboveCeiling.status).toBe(403);
+    const withinCeiling = await patchJson(
+      app,
+      path(ordinary.human.id),
+      { canCreateProjects: true },
+      manager.cookie,
+    );
+    expect(withinCeiling.status).toBe(200);
+    const revokeWithinCeiling = await patchJson(
+      app,
+      path(ordinary.human.id),
+      { canCreateProjects: false },
+      manager.cookie,
+    );
+    expect(revokeWithinCeiling.status).toBe(200);
+
+    // A manager cannot modify an owner, even with an otherwise harmless no-op grant.
+    const owner = await patchJson(app, path(admin.id), { canCreateProjects: true }, manager.cookie);
+    expect(owner.status).toBe(403);
+
+    // Revoking the manager capability removes all delegation authority with it.
+    const removed = await patchJson(
+      app,
+      path(manager.human.id),
+      { canManageMemberPermissions: false },
+      adminCookie,
+    );
+    expect(removed.status).toBe(200);
+    const nowPowerless = await patchJson(
+      app,
+      path(ordinary.human.id),
+      { canCreateProjects: true },
+      manager.cookie,
+    );
+    expect(nowPowerless.status).toBe(403);
+  });
+
+  it("protects owner capabilities and hides workspaces from non-members", async () => {
+    const { app, adminCookie, admin } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const member = await addMember(app, workspace.id, "plain.capability@example.com");
+    const outsider = await verifiedCookie(app, "outsider.capability@example.com");
+    const path = (humanId: string) => `/api/workspaces/${workspace.id}/members/${humanId}`;
+
+    const noop = await patchJson(app, path(admin.id), { canCreateProjects: true }, adminCookie);
+    expect(noop.status).toBe(200);
+    expect(WorkspaceMember.parse(await noop.json()).canCreateProjects).toBe(true);
+    const reduce = await patchJson(app, path(admin.id), { canInviteMembers: false }, adminCookie);
+    expect(reduce.status).toBe(409);
+    expect(await problemBody(reduce)).toMatchObject({ code: "workspace_owner_capability" });
+
+    const hidden = await patchJson(
+      app,
+      path(member.human.id),
+      { canCreateProjects: true },
+      outsider.cookie,
+    );
+    expect(hidden.status).toBe(404);
+    expect(await problemBody(hidden)).toMatchObject({ code: "workspace_not_found" });
+    const missingTarget = await patchJson(
+      app,
+      path(randomUUID()),
+      { canCreateProjects: true },
+      adminCookie,
+    );
+    expect(missingTarget.status).toBe(404);
+    expect(await problemBody(missingTarget)).toMatchObject({ code: "member_not_found" });
+    const ordinary = await patchJson(
+      app,
+      path(member.human.id),
+      { canCreateProjects: true },
+      member.cookie,
+    );
+    expect(ordinary.status).toBe(403);
+  });
+
+  it("protects owners and permission managers from delegated removal", async () => {
+    const { app, adminCookie, admin } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const remover = await addMember(app, workspace.id, "remover@example.com", {
+      canRemoveMembers: true,
+    });
+    const manager = await addMember(app, workspace.id, "protected.manager@example.com", {
+      canManageMemberPermissions: true,
+    });
+    const ordinary = await addMember(app, workspace.id, "removable@example.com");
+    const path = (humanId: string) => `/api/workspaces/${workspace.id}/members/${humanId}`;
+
+    const refuseOwner = await deleteRequest(app, path(admin.id), remover.cookie);
+    expect(refuseOwner.status).toBe(403);
+    const refuseManager = await deleteRequest(app, path(manager.human.id), remover.cookie);
+    expect(refuseManager.status).toBe(403);
+    const noAuthority = await deleteRequest(app, path(ordinary.human.id), manager.cookie);
+    expect(noAuthority.status).toBe(403);
+    const removed = await deleteRequest(app, path(ordinary.human.id), remover.cookie);
+    expect(removed.status).toBe(204);
+
+    const outsider = await verifiedCookie(app, "outsider.removal@example.com");
+    const hidden = await deleteRequest(app, path(manager.human.id), outsider.cookie);
+    expect(hidden.status).toBe(404);
+    expect(await problemBody(hidden)).toMatchObject({ code: "workspace_not_found" });
+
+    // Owners keep full authority, including removing a permission manager, but not the
+    // last owner.
+    expect((await deleteRequest(app, path(manager.human.id), adminCookie)).status).toBe(204);
+    const last = await deleteRequest(app, path(admin.id), adminCookie);
+    expect(last.status).toBe(409);
+    expect(await problemBody(last)).toMatchObject({ code: "last_owner" });
+  });
+
+  it("limits the member directory to callers with member-management authority", async () => {
+    const { app, adminCookie } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const manager = await addMember(app, workspace.id, "directory.manager@example.com", {
+      canManageMemberPermissions: true,
+    });
+    const remover = await addMember(app, workspace.id, "directory.remover@example.com", {
+      canRemoveMembers: true,
+    });
+    const plain = await addMember(app, workspace.id, "directory.plain@example.com");
+    const outsider = await verifiedCookie(app, "directory.outsider@example.com");
+    const url = `/api/workspaces/${workspace.id}/members`;
+
+    for (const cookie of [adminCookie, manager.cookie, remover.cookie]) {
+      expect((await getJson(app, url, cookie)).status).toBe(200);
+    }
+    const denied = await getJson(app, url, plain.cookie);
+    expect(denied.status).toBe(403);
+    expect(await problemBody(denied)).toMatchObject({ code: "not_workspace_owner" });
+    const hidden = await getJson(app, url, outsider.cookie);
+    expect(hidden.status).toBe(404);
+    expect(await problemBody(hidden)).toMatchObject({ code: "workspace_not_found" });
+  });
+
+  it("bounds a delegated inviter to the projects they Manage", async () => {
+    const { app, adminCookie, admin } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const managed = await createProjectDirect(workspace.id, admin.id, "Managed Project");
+    const other = await createProjectDirect(workspace.id, admin.id, "Other Project");
+    const inviter = await addMember(app, workspace.id, "delegated.inviter@example.com", {
+      canInviteMembers: true,
+    });
+    const noAuthority = await addMember(app, workspace.id, "no.invite@example.com");
+    const url = `/api/workspaces/${workspace.id}/invitations`;
+
+    expect((await getJson(app, url, inviter.cookie)).status).toBe(200);
+    const plain = await postJson(
+      app,
+      url,
+      { email: "delegated.first@example.com" },
+      inviter.cookie,
+    );
+    expect(plain.status).toBe(201);
+
+    const outOfScope = await postJson(
+      app,
+      url,
+      {
+        email: "delegated.second@example.com",
+        projectGrants: [{ projectId: managed, level: "read" }],
+      },
+      inviter.cookie,
+    );
+    expect(outOfScope.status).toBe(403);
+    expect(await problemBody(outOfScope)).toMatchObject({ code: "not_workspace_owner" });
+
+    await grantProjectManage(managed, inviter.human.id, admin.id);
+    const inScope = await postJson(
+      app,
+      url,
+      {
+        email: "delegated.third@example.com",
+        projectGrants: [{ projectId: managed, level: "contribute" }],
+      },
+      inviter.cookie,
+    );
+    expect(inScope.status).toBe(201);
+
+    const pending = (await invitationList(app, inviter.cookie, workspace.id)).find(
+      (item) => item.email === "delegated.third@example.com" && item.status === "pending",
+    );
+    expect(pending).toBeDefined();
+    if (pending === undefined) throw new Error("the delegated invitation was not listed");
+    const resent = await postEmpty(app, `${url}/${pending.id}/resend`, inviter.cookie);
+    expect(resent.status).toBe(200);
+
+    // An owner-made offer on a project the delegate does not Manage is neither listed
+    // nor touchable by that delegate: its grant would leak a project they cannot see.
+    await invite(app, adminCookie, workspace.id, "delegated.fourth@example.com", [
+      { projectId: other, level: "read" },
+    ]);
+    const inviterHistory = await invitationList(app, inviter.cookie, workspace.id);
+    expect(inviterHistory.some((item) => item.email === "delegated.fourth@example.com")).toBe(
+      false,
+    );
+    const foreign = (await invitationList(app, adminCookie, workspace.id)).find(
+      (item) => item.email === "delegated.fourth@example.com" && item.status === "pending",
+    );
+    expect(foreign).toBeDefined();
+    if (foreign === undefined) throw new Error("the owner invitation was not listed for the owner");
+    expect((await postEmpty(app, `${url}/${foreign.id}/resend`, inviter.cookie)).status).toBe(403);
+    expect((await postEmpty(app, `${url}/${foreign.id}/revoke`, inviter.cookie)).status).toBe(403);
+
+    // Without the capability, none of the invitation endpoints are available.
+    expect((await getJson(app, url, noAuthority.cookie)).status).toBe(403);
+    expect(
+      (await postJson(app, url, { email: "delegated.fifth@example.com" }, noAuthority.cookie))
+        .status,
+    ).toBe(403);
+    expect((await postEmpty(app, `${url}/${pending.id}/resend`, noAuthority.cookie)).status).toBe(
+      403,
+    );
+    expect((await postEmpty(app, `${url}/${foreign.id}/revoke`, noAuthority.cookie)).status).toBe(
+      403,
+    );
+  });
+
+  it("scopes a delegated inviter's invitation history to projects they currently Manage", async () => {
+    const { app, adminCookie, admin } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie, "Scoped Directory Team");
+    const managed = await createProjectDirect(workspace.id, admin.id, "Visible Project");
+    const unmanaged = await createProjectDirect(workspace.id, admin.id, "Hidden Project");
+    const inviter = await addMember(app, workspace.id, "scope.directory@example.com", {
+      canInviteMembers: true,
+    });
+    await grantProjectManage(managed, inviter.human.id, admin.id);
+
+    // The owner may offer any workspace project; the delegate may offer only the one
+    // they Manage. The delegate's history must not carry the other offer's project id,
+    // name, or level — all three are in the invitation summary's grants.
+    await invite(app, adminCookie, workspace.id, "scope.hidden@example.com", [
+      { projectId: unmanaged, level: "manage" },
+    ]);
+    await invite(app, inviter.cookie, workspace.id, "scope.visible@example.com", [
+      { projectId: managed, level: "read" },
+    ]);
+    await invite(app, inviter.cookie, workspace.id, "scope.plain@example.com");
+
+    const delegateHistory = await invitationList(app, inviter.cookie, workspace.id);
+    const emails = delegateHistory.map((item) => item.email);
+    expect(emails).toContain("scope.visible@example.com");
+    expect(emails).toContain("scope.plain@example.com");
+    expect(emails).not.toContain("scope.hidden@example.com");
+    expect(JSON.stringify(delegateHistory)).not.toContain(unmanaged);
+    expect(JSON.stringify(delegateHistory)).not.toContain("Hidden Project");
+
+    const ownerHistory = await invitationList(app, adminCookie, workspace.id);
+    expect(ownerHistory.some((item) => item.email === "scope.hidden@example.com")).toBe(true);
+    expect(JSON.stringify(ownerHistory)).toContain(unmanaged);
+  });
+
+  it("frees a dead pending invitation for revoke and immediate re-invite after Manage is lost", async () => {
+    const { app, sent, adminCookie, admin } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie, "Reinvite Team");
+    const project = await createProjectDirect(workspace.id, admin.id, "Revocable Project");
+    const inviter = await addMember(app, workspace.id, "reinvite.inviter@example.com", {
+      canInviteMembers: true,
+    });
+    await grantProjectManage(project, inviter.human.id, admin.id);
+    const url = `/api/workspaces/${workspace.id}/invitations`;
+    const dropManage = () =>
+      database.db
+        .delete(projectAccessGrants)
+        .where(
+          and(
+            eq(projectAccessGrants.projectId, project),
+            eq(projectAccessGrants.humanId, inviter.human.id),
+          ),
+        );
+    const lastToken = (email: string) => {
+      const mail = sent.findLast(
+        (candidate) => candidate.to === email && candidate.text.includes('"Reinvite Team"'),
+      );
+      const token = mail === undefined ? undefined : tokenFrom(mail.text);
+      if (token === undefined) throw new Error(`no invitation token for ${email}`);
+      return token;
+    };
+
+    // The original inviter can still revoke their own dead offer after losing Manage.
+    const firstEmail = "reinvite.revoke@example.com";
+    await invite(app, inviter.cookie, workspace.id, firstEmail, [
+      { projectId: project, level: "read" },
+    ]);
+    const firstToken = lastToken(firstEmail);
+    await dropManage();
+    const [firstHuman] = await insertHuman({ email: firstEmail, verified: true });
+    const firstRefused = await postJson(
+      app,
+      "/api/workspace-invitations/acceptance",
+      { token: firstToken },
+      await sessionFor(app, firstHuman.id),
+    );
+    expect(firstRefused.status).toBe(403);
+    expect(await problemBody(firstRefused)).toMatchObject({ code: "inviter_not_authorized" });
+    const own = (await invitationList(app, adminCookie, workspace.id)).find(
+      (item) => item.email === firstEmail && item.status === "pending",
+    );
+    expect(own).toBeDefined();
+    if (own === undefined) throw new Error("the dead invitation was not listed for the owner");
+    expect((await postEmpty(app, `${url}/${own.id}/revoke`, inviter.cookie)).status).toBe(200);
+    expect((await postJson(app, url, { email: firstEmail }, inviter.cookie)).status).toBe(201);
+
+    // A second dead offer need not be revoked first: creating a new invitation must
+    // supersede it rather than answering 409 invitation_pending for seven days.
+    const secondEmail = "reinvite.replace@example.com";
+    await grantProjectManage(project, inviter.human.id, admin.id);
+    await invite(app, inviter.cookie, workspace.id, secondEmail, [
+      { projectId: project, level: "contribute" },
+    ]);
+    const secondToken = lastToken(secondEmail);
+    await dropManage();
+    const [secondHuman] = await insertHuman({ email: secondEmail, verified: true });
+    const secondRefused = await postJson(
+      app,
+      "/api/workspace-invitations/acceptance",
+      { token: secondToken },
+      await sessionFor(app, secondHuman.id),
+    );
+    expect(secondRefused.status).toBe(403);
+    expect(await problemBody(secondRefused)).toMatchObject({ code: "inviter_not_authorized" });
+    const replacement = await postJson(app, url, { email: secondEmail }, inviter.cookie);
+    expect(replacement.status).toBe(201);
+
+    const rows = await database.db
+      .select({ status: workspaceInvitations.status })
+      .from(workspaceInvitations)
+      .where(
+        and(
+          eq(workspaceInvitations.workspaceId, workspace.id),
+          eq(workspaceInvitations.email, secondEmail),
+        ),
+      );
+    expect(rows.map((row) => row.status).toSorted()).toEqual(["pending", "revoked"]);
+    const accepted = await postJson(
+      app,
+      "/api/workspace-invitations/acceptance",
+      { token: lastToken(secondEmail) },
+      await sessionFor(app, secondHuman.id),
+    );
+    expect(accepted.status).toBe(200);
+  });
+
+  it("refuses a pending invitation once the inviter loses capability or project Manage", async () => {
+    const { app, sent, adminCookie, admin } = await readyApp();
+
+    // A delegate loses Invite members after sending an offer with a project grant.
+    const first = await createWorkspace(app, adminCookie, "Withdraw Capability Team");
+    const firstProject = await createProjectDirect(first.id, admin.id, "Withdraw Project");
+    const inviter = await addMember(app, first.id, "withdraw.capability@example.com", {
+      canInviteMembers: true,
+    });
+    await grantProjectManage(firstProject, inviter.human.id, admin.id);
+    const firstRecipient = "withdraw.capability.recipient@example.com";
+    await invite(app, inviter.cookie, first.id, firstRecipient, [
+      { projectId: firstProject, level: "read" },
+    ]);
+    const firstToken = await workspaceInviteToken(sent, firstRecipient, "Withdraw Capability Team");
+    expect(
+      (
+        await patchJson(
+          app,
+          `/api/workspaces/${first.id}/members/${inviter.human.id}`,
+          { canInviteMembers: false },
+          adminCookie,
+        )
+      ).status,
+    ).toBe(200);
+    const [firstHuman] = await insertHuman({ email: firstRecipient, verified: true });
+    const firstCookie = await sessionFor(app, firstHuman.id);
+    const refused = await postJson(
+      app,
+      "/api/workspace-invitations/acceptance",
+      { token: firstToken },
+      firstCookie,
+    );
+    expect(refused.status).toBe(403);
+    expect(await problemBody(refused)).toMatchObject({ code: "inviter_not_authorized" });
+    const [firstInvitation] = await database.db
+      .select()
+      .from(workspaceInvitations)
+      .where(eq(workspaceInvitations.workspaceId, first.id));
+    expect(firstInvitation).toMatchObject({ status: "pending", acceptedAt: null });
+    expect(
+      await database.db
+        .select()
+        .from(workspaceMemberships)
+        .where(eq(workspaceMemberships.humanId, firstHuman.id)),
+    ).toHaveLength(0);
+
+    // A delegate keeps the capability but loses Manage on the offered project.
+    const second = await createWorkspace(app, adminCookie, "Withdraw Manage Team");
+    const secondProject = await createProjectDirect(second.id, admin.id, "Manage Project");
+    const secondInviter = await addMember(app, second.id, "withdraw.manage@example.com", {
+      canInviteMembers: true,
+    });
+    await grantProjectManage(secondProject, secondInviter.human.id, admin.id);
+    const secondRecipient = "withdraw.manage.recipient@example.com";
+    await invite(app, secondInviter.cookie, second.id, secondRecipient, [
+      { projectId: secondProject, level: "contribute" },
+    ]);
+    const secondToken = await workspaceInviteToken(sent, secondRecipient, "Withdraw Manage Team");
+    await database.db
+      .delete(projectAccessGrants)
+      .where(
+        and(
+          eq(projectAccessGrants.projectId, secondProject),
+          eq(projectAccessGrants.humanId, secondInviter.human.id),
+        ),
+      );
+    const [secondHuman] = await insertHuman({ email: secondRecipient, verified: true });
+    const secondRefused = await postJson(
+      app,
+      "/api/workspace-invitations/acceptance",
+      { token: secondToken },
+      await sessionFor(app, secondHuman.id),
+    );
+    expect(secondRefused.status).toBe(403);
+    expect(await problemBody(secondRefused)).toMatchObject({ code: "inviter_not_authorized" });
+    const [secondInvitation] = await database.db
+      .select()
+      .from(workspaceInvitations)
+      .where(eq(workspaceInvitations.workspaceId, second.id));
+    expect(secondInvitation).toMatchObject({ status: "pending", acceptedAt: null });
+
+    // The registration path rolls back the whole account, not just the membership.
+    const third = await createWorkspace(app, adminCookie, "Withdraw Registration Team");
+    const thirdInviter = await addMember(app, third.id, "withdraw.registration@example.com", {
+      canInviteMembers: true,
+    });
+    const thirdRecipient = "withdraw.registration.new@example.com";
+    await invite(app, thirdInviter.cookie, third.id, thirdRecipient);
+    const thirdToken = await workspaceInviteToken(
+      sent,
+      thirdRecipient,
+      "Withdraw Registration Team",
+    );
+    expect(
+      (
+        await patchJson(
+          app,
+          `/api/workspaces/${third.id}/members/${thirdInviter.human.id}`,
+          { canInviteMembers: false },
+          adminCookie,
+        )
+      ).status,
+    ).toBe(200);
+    const registration = await postJson(app, "/api/workspace-invitations/registration", {
+      token: thirdToken,
+      password: "a-strong-password-123",
+    });
+    expect(registration.status).toBe(403);
+    expect(await problemBody(registration)).toMatchObject({ code: "inviter_not_authorized" });
+    expect(
+      await database.db.select().from(humans).where(eq(humans.email, thirdRecipient)),
+    ).toHaveLength(0);
+    const [thirdInvitation] = await database.db
+      .select()
+      .from(workspaceInvitations)
+      .where(eq(workspaceInvitations.workspaceId, third.id));
+    expect(thirdInvitation).toMatchObject({ status: "pending", acceptedAt: null });
+  });
+
+  it("gives Project Manage no workspace-wide authority", async () => {
+    const { app, adminCookie, admin } = await readyApp();
+    const workspace = await createWorkspace(app, adminCookie);
+    const project = await createProjectDirect(workspace.id, admin.id);
+    const manager = await addMember(app, workspace.id, "project.manager@example.com");
+    await grantProjectManage(project, manager.human.id, admin.id);
+    const other = await addMember(app, workspace.id, "project.other@example.com");
+
+    const view = await getJson(app, `/api/workspaces/${workspace.id}`, manager.cookie);
+    expect(view.status).toBe(200);
+    expect(Workspace.parse(await view.json())).toMatchObject({
+      isOwner: false,
+      canCreateProjects: false,
+      canInviteMembers: false,
+      canRemoveMembers: false,
+      canManageMemberPermissions: false,
+    });
+
+    await assertForbidden(getJson(app, `/api/workspaces/${workspace.id}/members`, manager.cookie));
+    await assertForbidden(
+      patchJson(
+        app,
+        `/api/workspaces/${workspace.id}/members/${other.human.id}`,
+        { canCreateProjects: true },
+        manager.cookie,
+      ),
+    );
+    await assertForbidden(
+      deleteRequest(
+        app,
+        `/api/workspaces/${workspace.id}/members/${other.human.id}`,
+        manager.cookie,
+      ),
+    );
+    await assertForbidden(
+      getJson(app, `/api/workspaces/${workspace.id}/invitations`, manager.cookie),
+    );
+    await assertForbidden(
+      postJson(
+        app,
+        `/api/workspaces/${workspace.id}/invitations`,
+        { email: "project.manager.blocked@example.com" },
+        manager.cookie,
+      ),
+    );
+    await assertForbidden(
+      postJson(
+        app,
+        `/api/workspaces/${workspace.id}/projects`,
+        { name: "Blocked" },
+        manager.cookie,
+      ),
+    );
+
+    await invite(app, adminCookie, workspace.id, "project.manager.pending@example.com");
+    const [invitation] = await database.db
+      .select()
+      .from(workspaceInvitations)
+      .where(eq(workspaceInvitations.workspaceId, workspace.id));
+    expect(invitation).toBeDefined();
+    if (invitation === undefined) throw new Error("the owner invitation was not found");
+    const url = `/api/workspaces/${workspace.id}/invitations`;
+    await assertForbidden(postEmpty(app, `${url}/${invitation.id}/resend`, manager.cookie));
+    await assertForbidden(postEmpty(app, `${url}/${invitation.id}/revoke`, manager.cookie));
+  });
 });

@@ -647,6 +647,15 @@
           },
           "canCreateProjects": {
             "type": "boolean"
+          },
+          "canInviteMembers": {
+            "type": "boolean"
+          },
+          "canRemoveMembers": {
+            "type": "boolean"
+          },
+          "canManageMemberPermissions": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -654,7 +663,10 @@
           "kind",
           "name",
           "isOwner",
-          "canCreateProjects"
+          "canCreateProjects",
+          "canInviteMembers",
+          "canRemoveMembers",
+          "canManageMemberPermissions"
         ]
       },
       "WorkspaceKind": {
@@ -684,13 +696,25 @@
           },
           "canCreateProjects": {
             "type": "boolean"
+          },
+          "canInviteMembers": {
+            "type": "boolean"
+          },
+          "canRemoveMembers": {
+            "type": "boolean"
+          },
+          "canManageMemberPermissions": {
+            "type": "boolean"
           }
         },
         "required": [
           "humanId",
           "email",
           "isOwner",
-          "canCreateProjects"
+          "canCreateProjects",
+          "canInviteMembers",
+          "canRemoveMembers",
+          "canManageMemberPermissions"
         ]
       },
       "CreateWorkspaceRequest": {
@@ -855,11 +879,17 @@
         "properties": {
           "canCreateProjects": {
             "type": "boolean"
+          },
+          "canInviteMembers": {
+            "type": "boolean"
+          },
+          "canRemoveMembers": {
+            "type": "boolean"
+          },
+          "canManageMemberPermissions": {
+            "type": "boolean"
           }
-        },
-        "required": [
-          "canCreateProjects"
-        ]
+        }
       },
       "ProjectsResponse": {
         "type": "array",
@@ -2227,7 +2257,7 @@
     "/api/workspaces/{workspaceId}/members": {
       "get": {
         "summary": "The members of a shared workspace",
-        "description": "Owners only: the directory used to appoint another owner or remove a member. Ordinary members do not receive everyone else's address.",
+        "description": "Owners and members holding Remove members or Manage member permissions: the directory used to manage a team. An ordinary member without those capabilities does not receive everyone else's address.",
         "parameters": [
           {
             "schema": {
@@ -2272,7 +2302,7 @@
             }
           },
           "403": {
-            "description": "Not an owner of this workspace",
+            "description": "The caller lacks the workspace capability required to see the directory",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2297,7 +2327,7 @@
     "/api/workspaces/{workspaceId}/invitations": {
       "post": {
         "summary": "Invite an email into a shared workspace",
-        "description": "Owners only, and the inviter's email must be verified. A single-use link valid for seven days goes to the invited address, offering workspace membership and any selected project grants. Every offered project must currently belong to the workspace. An existing account accepts it after signing in; a new address registers through it. Following the link (GET) changes nothing.",
+        "description": "Owners and delegated inviters, whose email must be verified. A single-use link valid for seven days goes to the invited address, offering workspace membership and any selected project grants. Every offered project must currently belong to the workspace, and a delegated inviter may only offer projects they currently Manage in that workspace. Owners may offer any workspace project. An existing account accepts it after signing in; a new address registers through it. Following the link (GET) changes nothing.",
         "parameters": [
           {
             "schema": {
@@ -2352,7 +2382,7 @@
             }
           },
           "403": {
-            "description": "Not an owner, or the inviter's email is unverified",
+            "description": "The caller cannot invite, their email is unverified, or they do not Manage an offered project",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2395,7 +2425,7 @@
       },
       "get": {
         "summary": "List a shared workspace's invitations",
-        "description": "Owners only. Every invitation for this workspace, newest first, with recipient, inviter, target, offered grants, lifecycle timestamps, and email delivery as a separate fact. A pending invitation whose seven days have passed is reported and stored as expired. The token never appears.",
+        "description": "Owners and delegated inviters. Every invitation for this workspace, newest first, with recipient, inviter, target, offered grants, lifecycle timestamps, and email delivery as a separate fact. A pending invitation whose seven days have passed is reported and stored as expired. The token never appears.",
         "parameters": [
           {
             "schema": {
@@ -2440,7 +2470,7 @@
             }
           },
           "403": {
-            "description": "Not an owner of this workspace",
+            "description": "Not an owner or delegated inviter of this workspace",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2465,7 +2495,7 @@
     "/api/workspaces/{workspaceId}/invitations/{invitationId}/resend": {
       "post": {
         "summary": "Resend a workspace invitation",
-        "description": "Owners only, and the resending owner's email must be verified, exactly as for an initial invitation. Rotates the link: a still-live pending invitation becomes revoked at replacement time, one past its deadline becomes expired at the deadline it passed, and a new pending invitation from the current owner starts a fresh seven-day deadline. The previous link stops working. A delivery failure is recorded on the new invitation and answered as a delivery Problem; the invitation's lifecycle stays pending. Answers 409 invitation_not_pending when the invitation is accepted, declined, or revoked; invitation_scope_invalid when an offered project left the workspace; invitation_pending when a concurrent invitation already owns the address; smtp_unconfigured when SMTP is missing; and smtp_password_unreadable when the stored password cannot be read. Answers 502 smtp_unreachable, smtp_auth_failed, smtp_tls_failed, or smtp_send_failed when the relay refuses the message.",
+        "description": "Owners and delegated inviters, whose email must be verified exactly as for an initial invitation. A delegate may only resend an offer whose projects they currently Manage. Rotates the link: a still-live pending invitation becomes revoked at replacement time, one past its deadline becomes expired at the deadline it passed, and a new pending invitation from the current inviter starts a fresh seven-day deadline. The previous link stops working. A delivery failure is recorded on the new invitation and answered as a delivery Problem; the invitation's lifecycle stays pending. Answers 409 invitation_not_pending when the invitation is accepted, declined, or revoked; invitation_scope_invalid when an offered project left the workspace; invitation_pending when a concurrent invitation already owns the address; smtp_unconfigured when SMTP is missing; and smtp_password_unreadable when the stored password cannot be read. Answers 502 smtp_unreachable, smtp_auth_failed, smtp_tls_failed, or smtp_send_failed when the relay refuses the message.",
         "parameters": [
           {
             "schema": {
@@ -2520,7 +2550,7 @@
             }
           },
           "403": {
-            "description": "Not an owner of this workspace, or the owner's email is unverified",
+            "description": "Not an owner or delegated inviter, the inviter's email is unverified, or a delegate does not Manage an offered project",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2565,7 +2595,7 @@
     "/api/workspaces/{workspaceId}/invitations/{invitationId}/revoke": {
       "post": {
         "summary": "Revoke a workspace invitation",
-        "description": "Owners only. Only a pending, unexpired invitation is revoked; the link stops working and the row keeps its history and revocation timestamp.",
+        "description": "Owners and delegated inviters. Only a pending, unexpired invitation is revoked; the link stops working and the row keeps its history and revocation timestamp. A delegate cannot revoke an offer containing a project they do not Manage.",
         "parameters": [
           {
             "schema": {
@@ -2620,7 +2650,7 @@
             }
           },
           "403": {
-            "description": "Not an owner of this workspace",
+            "description": "Not an owner or delegated inviter of this workspace",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2939,8 +2969,8 @@
     },
     "/api/workspaces/{workspaceId}/members/{humanId}": {
       "patch": {
-        "summary": "Grant or revoke a member's Create projects capability",
-        "description": "Owners only. An owner can always create projects; this capability lets one member create projects without workspace-wide authority. The created project's creator receives Manage on it, and membership alone still grants no existing project's content.",
+        "summary": "Grant or revoke a member's workspace capabilities",
+        "description": "Grant or revoke Create projects, Invite members, Remove members, and Manage member permissions independently; at least one field is required. Owners may change any capability on any non-owner. A permission manager may change only capabilities they hold themselves, on someone else, and may never appoint or remove a permission manager. An owner's capabilities are implicit: setting one true is a no-op and setting one false is refused. A non-member answers 404 like a missing workspace. Each real change records an attributed event. Create projects never grants access to an existing project, and Project Manage grants no workspace capability.",
         "parameters": [
           {
             "schema": {
@@ -2975,7 +3005,7 @@
         },
         "responses": {
           "200": {
-            "description": "The member with the effective capability",
+            "description": "The member with its effective capabilities",
             "content": {
               "application/json": {
                 "schema": {
@@ -3005,7 +3035,7 @@
             }
           },
           "403": {
-            "description": "Not an owner of this workspace",
+            "description": "The caller lacks the authority to change this member's capabilities",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3025,7 +3055,7 @@
             }
           },
           "409": {
-            "description": "Workspace owners always have Create projects",
+            "description": "Workspace owners always hold every capability",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3038,7 +3068,7 @@
       },
       "delete": {
         "summary": "Remove a member from a shared workspace",
-        "description": "Owners only. Removing an owner is refused when it would leave the workspace with no owner. The removed human keeps their personal workspace and every other membership.",
+        "description": "Owners, and members holding Remove members. A delegated remover cannot remove an owner or a permission manager, even themselves; owners may remove either but not the last owner. The removed human keeps their personal workspace and every other membership.",
         "parameters": [
           {
             "schema": {
@@ -3086,7 +3116,7 @@
             }
           },
           "403": {
-            "description": "Not an owner of this workspace",
+            "description": "The caller lacks removal authority, or the target is protected",
             "content": {
               "application/problem+json": {
                 "schema": {

@@ -7,6 +7,7 @@ export {
   declineWorkspaceInvitation,
   inviteWorkspaceMember,
   registerThroughWorkspaceInvitation,
+  removeWorkspaceMember,
   resendWorkspaceInvitation,
   revokeWorkspaceInvitation,
   updateWorkspaceMember,

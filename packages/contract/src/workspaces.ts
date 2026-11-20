@@ -7,11 +7,24 @@ import { InvitationGrant, InvitationStatus, WorkspaceInvitationProjectGrant } fr
 // scoped to the caller's own access: another person's personal workspace never appears
 // in it, not even for a system administrator.
 
+// The four independently delegated workspace capabilities (#20, #28). One tuple, shared
+// by the server's policy checks and the web app's controls, so a capability added here
+// cannot be forgotten by one client. Project Manage is not in this list: it is a project
+// level and grants none of these.
+export const workspaceCapabilities = [
+  "canCreateProjects",
+  "canInviteMembers",
+  "canRemoveMembers",
+  "canManageMemberPermissions",
+] as const;
+export type WorkspaceCapability = (typeof workspaceCapabilities)[number];
+
 // A workspace the signed-in account can access. `isOwner` is true for the owner of a
 // personal workspace and for each owner of a shared one; it is what lets a client show
-// owner-only actions without a second request. `canCreateProjects` is the caller's
-// effective Create projects capability: owners always have it, and a member has it only
-// when granted. It never grants access to an existing project by itself.
+// owner-only actions without a second request. The four `can*` fields are the caller's
+// effective workspace capabilities (#20, #28): owners always hold all four, and a member
+// holds only those granted. They are independent of project access — Create projects
+// never grants access to an existing project, and Project Manage grants none of them.
 export const Workspace = z
   .object({
     id: z.string(),
@@ -19,6 +32,9 @@ export const Workspace = z
     name: z.string(),
     isOwner: z.boolean(),
     canCreateProjects: z.boolean(),
+    canInviteMembers: z.boolean(),
+    canRemoveMembers: z.boolean(),
+    canManageMemberPermissions: z.boolean(),
   })
   .meta({ id: "Workspace" });
 export type Workspace = z.infer<typeof Workspace>;
@@ -41,17 +57,28 @@ export const WorkspaceMember = z
     humanId: z.string(),
     email: Email,
     isOwner: z.boolean(),
-    // The effective capability: an owner can always create, whatever the stored grant.
+    // Effective capabilities: an owner holds all four whatever the stored columns say.
     canCreateProjects: z.boolean(),
+    canInviteMembers: z.boolean(),
+    canRemoveMembers: z.boolean(),
+    canManageMemberPermissions: z.boolean(),
   })
   .meta({ id: "WorkspaceMember" });
 export type WorkspaceMember = z.infer<typeof WorkspaceMember>;
 
-// Owners grant one workspace capability at a time here. #28 adds the other three and the
-// delegation ceilings; in this slice an owner grants Create projects directly.
+// Grant or revoke any of the four workspace capabilities, independently. An empty body
+// is not an update: callers supply at least one field so a typo cannot silently succeed.
+// Who may change which field is a service decision, not a request-shape one: only owners
+// appoint permission managers, and a delegate cannot grant above their own access.
 export const UpdateWorkspaceMemberRequest = z
   .object({
-    canCreateProjects: z.boolean(),
+    canCreateProjects: z.boolean().optional(),
+    canInviteMembers: z.boolean().optional(),
+    canRemoveMembers: z.boolean().optional(),
+    canManageMemberPermissions: z.boolean().optional(),
+  })
+  .refine((input) => Object.values(input).some((value) => value !== undefined), {
+    message: "Provide at least one capability to grant or revoke.",
   })
   .meta({ id: "UpdateWorkspaceMemberRequest" });
 export type UpdateWorkspaceMemberRequest = z.infer<typeof UpdateWorkspaceMemberRequest>;

@@ -6,9 +6,14 @@ Shared workspaces are created by a human, who becomes their first owner; members
 invitation, and only owners can appoint owners or manage workspace capabilities.
 
 Issue #27 adds one delegated capability, **Create projects**. A member who holds it can
-create a project in the shared workspace and receives Manage on that project. The project
-still belongs to the workspace. Membership alone grants no access to any existing
-project; [projects](./projects.md) covers the Read/Contribute/Manage matrix.
+create a project in the shared workspace and receives Manage on that project. Issue #28
+adds three independent capabilities: **Invite members**, **Remove members**, and
+**Manage member permissions**. Owners hold all four implicitly; a delegate can change
+only what they hold, never themselves or an owner, and only owners appoint or remove
+permission managers. Project Manage is a project level, not workspace authority: it lets
+a delegate offer that project in an invitation while they hold it, but grants none of the
+four workspace capabilities. Membership alone grants no access to any existing project;
+[projects](./projects.md) covers the Read/Contribute/Manage matrix.
 
 ## Sub-features
 
@@ -29,6 +34,17 @@ project; [projects](./projects.md) covers the Read/Contribute/Manage matrix.
   workspace event records the change.
 - `member-removal` removal ends that human's project grants in the workspace in the same
   transaction, so a rejoin starts with fresh grants.
+- `delegated-capabilities` a member's effective capabilities come from the server on every
+  load; only owners change `canManageMemberPermissions`, and a manager cannot grant or
+  revoke a capability they lack or modify themselves or an owner.
+- `delegated-removal` a member with Remove members sees the directory and can remove an
+  ordinary member, but never an owner or a permission manager; owners keep full authority.
+- `delegated-inviter-scope` a delegated inviter may offer membership and only those project
+  grants whose project they currently Manage; owners may offer any workspace project. A
+  pending offer is rejected at both acceptance paths with `inviter_not_authorized` if the
+  inviter loses membership, verified email, Invite members, or that project Manage.
+- `delegation-events` every real capability change records an attributed row in
+  `workspace_events`; no-op changes record nothing.
 
 ## Preconditions
 
@@ -115,18 +131,111 @@ project; [projects](./projects.md) covers the Read/Contribute/Manage matrix.
    docker exec $CONTAINER psql -U orrery -d orrery -c \
      "select h.email, w.kind, w.name from humans h join workspaces w on w.personal_owner_human_id = h.id order by h.email"
    docker exec $CONTAINER psql -U orrery -d orrery -c \
-     "select w.name, h.email, m.is_owner, m.can_create_projects from workspace_memberships m join workspaces w on w.id=m.workspace_id join humans h on h.id=m.human_id order by w.name, h.email"
+     "select w.name, h.email, m.is_owner, m.can_create_projects, m.can_invite_members, m.can_remove_members, m.can_manage_member_permissions from workspace_memberships m join workspaces w on w.id=m.workspace_id join humans h on h.id=m.human_id order by w.name, h.email"
    docker exec $CONTAINER psql -U orrery -d orrery -c \
      "select type, actor_human_id, subject_human_id from workspace_events order by created_at"
    ```
+
+## Issue #28: delegation ceilings and withdrawn inviter authority
+
+Use the shared workspace from the main recipe. The administrator must be verified first
+(`POST /api/settings/smtp/test`, then redeem the Mailpit token through
+`POST /api/settings/email-verification`), or every invitation answers 403 `inviter_unverified`.
+Keep one cookie jar per account; the shortcuts below use `$J` for the acting account and
+`$A` for the administrator. `$WORKSPACE`, `$MEMBER`, `$TARGET`, and `$PROJECT` are ids.
+
+1. **Grant and ceiling.** Give one member Manage member permissions and Create projects;
+   let them read the directory and change a capability they hold, then show the refusals:
+
+   ```bash
+   curl -fsS -b "$A" -X PATCH -H "$J" \
+     -d '{"canManageMemberPermissions":true,"canCreateProjects":true}' \
+     $URL/api/workspaces/$WORKSPACE/members/$MEMBER
+   curl -fsS -b "$J" $URL/api/workspaces/$WORKSPACE/members          # 200
+   curl -sS -o /dev/null -w '%{http_code}\n' -b "$J" -X PATCH -H "$J" \
+     -d '{"canManageMemberPermissions":true}' \
+     $URL/api/workspaces/$WORKSPACE/members/$TARGET                 # 403 not_workspace_owner
+   curl -sS -o /dev/null -w '%{http_code}\n' -b "$J" -X PATCH -H "$J" \
+     -d '{"canInviteMembers":true}' \
+     $URL/api/workspaces/$WORKSPACE/members/$TARGET                 # 403 (above own access)
+   curl -sS -o /dev/null -w '%{http_code}\n' -b "$J" -X PATCH -H "$J" \
+     -d '{"canCreateProjects":false}' \
+     $URL/api/workspaces/$WORKSPACE/members/$MEMBER                 # 403 (self)
+   curl -sS -o /dev/null -w '%{http_code}\n' -b "$A" -X PATCH -H "$J" \
+     -d '{"canCreateProjects":true}' \
+     $URL/api/workspaces/$WORKSPACE/members/$MEMBER                 # 200, no event
+   ```
+
+   A non-member's `GET /members`, `PATCH /members/:id`, and `DELETE /members/:id` all answer
+   404 `workspace_not_found`, never 403; an ordinary member's `GET /members` answers 403.
+
+2. **Removal ceiling.** Grant Remove members to a different member. They can remove an
+   ordinary member but get 403 removing an owner or a permission manager. Owners can remove
+   either, subject to `last_owner`.
+
+3. **Project Manage is not workspace authority.** Grant a member project Manage with
+   `PATCH /api/projects/$PROJECT/access` using `{"email":...,"level":"manage"}`. That member
+   gets 403 on workspace member listing, capability changes, removal, invitation
+   listing/creation/resend/revoke, and project creation.
+
+4. **Delegated inviter scope.** Grant Invite members to a fourth member. They may create a
+   plain invitation (`projectGrants: []`), but offering `$PROJECT` before they Manage it is
+   403. After the owner grants them project Manage, the same offer succeeds, and resend and
+   revoke of that offer succeed. Withdraw the project Manage grant with
+   `DELETE /api/projects/$PROJECT/access/$MANAGER_ID`: the recipient's `POST
+   /api/workspace-invitations/acceptance` and a new email's `POST
+   /api/workspace-invitations/registration` both answer 403 `inviter_not_authorized`, while
+   `GET /api/workspace-invitations/preview?token=...` still shows the pending offer.
+
+5. **Withdrawal of Invite members.** Let another inviter send a plain offer, revoke their
+   `canInviteMembers`, and repeat the acceptance: 403 `inviter_not_authorized`, the
+   invitation remains pending, and no membership or account was created. The
+   real-Postgres suite asserts the rolled-back rows; here confirm with:
+
+   ```bash
+   CONTAINER=$(sed -n 's/^CONTAINER=//p' $RUN_DIR/env)
+   docker exec $CONTAINER psql -U orrery -d orrery -Atc \
+     "select email, status from workspace_invitations where workspace_id='$WORKSPACE' and status='pending'"
+   ```
+
+6. **Browser authority.** Sign in as a delegate and open `/workspaces/$WORKSPACE`. A
+   permission manager sees Members and only the controls for capabilities they hold; an
+   inviter with Manage member permissions also sees the invite form and invitation history.
+   Nobody but an owner sees `Make owner`, and a member with only project Manage sees no
+   member or invitation sections. `browse.mjs` drives one page per process, so a signed-in
+   workspace view needs a short one-off Playwright script that signs in, then navigates to
+   the workspace and asserts the role-named controls; save its PNG/ARIA/JSON under
+   `$RUN_DIR/evidence/`.
+
+7. **Attributed events.** All six new capability types appear with the acting and subject
+   human ids:
+
+   ```bash
+   docker exec $CONTAINER psql -U orrery -d orrery -c \
+     "select type, actor_human_id, subject_human_id from workspace_events \
+      where workspace_id='$WORKSPACE' and (type like '%_granted' or type like '%_revoked') \
+      order by created_at, id"
+   ```
+
+   Finally confirm `$RUN_DIR/server.log` has no `error`/`warn` lines, then
+   `$SK/orrery-verify.sh down $RUN_DIR`.
 
 ## Gotchas
 
 - Ordering is `createdAt`; equal timestamps make the order unstable.
 - The administrator has no cross-account visibility by design; do not report it as a
   bug. Installation administration and project access are separate.
-- A workspace owner's `canCreateProjects` is effectively true even if the stored member
-  flag is false; the database flag matters for members.
+- A workspace owner's four capabilities are effectively true even if the stored member
+  flags are false; the database flags matter for members. Setting an owner capability true
+  is a no-op and setting it false is 409 `workspace_owner_capability`.
+- Event ordering is by `createdAt` then id; equal timestamps order by random UUID. Compare
+  event sets with counts, not exact order.
+- A non-member probe of any shared-workspace endpoint answers 404 `workspace_not_found`,
+  including PATCH and DELETE; only an existing member without the capability answers 403.
+- A delegated inviter's invitation history is filtered to offers whose every offered project
+  they currently Manage; an owner sees every offer. A dead offer (withdrawn inviter
+  authority) does not block the same address for seven days: creating a fresh invitation
+  supersedes it, and the original inviter may revoke their own dead offer directly.
 - `workspace_ownership_guards` serializes ownership changes. Remove members in the
   documented order (events, invitations, memberships, workspace) if cleaning up by hand;
   membership removal normally goes through the service.
