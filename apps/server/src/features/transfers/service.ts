@@ -17,6 +17,7 @@ import {
   projectAccessGrants,
   projectTransferAuthorizations,
   projects,
+  questions,
   workSessions,
   workspaceEvents,
   workspaceInvitationGrants,
@@ -28,6 +29,7 @@ import {
 import type { DbTransaction } from "../../platform/db.ts";
 import { tokenHash as hashToken } from "../../platform/tokens.ts";
 import type { SessionAccount } from "../accounts/index.ts";
+import { transferAuthorizationMachine } from "./state-machine.ts";
 
 // Personal-to-shared project transfer (#39). Every authority decision is here; the REST
 // adapter only reads a human session and maps the result. Acceptance is one transaction:
@@ -586,11 +588,16 @@ async function acceptInTransaction(
   }
 
   // Move the identity. Issues, comments, knowledge, activity and runs all key on the
-  // project id, so the whole history travels with this one row change.
+  // project id, so the whole history travels with this one row change. Questions also
+  // denormalize workspace_id for inbox scoping, so keep them synchronized with the move.
   await tx
     .update(projects)
     .set({ workspaceId: destination.id })
     .where(eq(projects.id, auth.projectId));
+  await tx
+    .update(questions)
+    .set({ workspaceId: destination.id })
+    .where(eq(questions.projectId, auth.projectId));
 
   const recipients = await manageRecipients(tx, destination.id, acceptorHumanId);
   for (const recipient of recipients) {
@@ -639,15 +646,23 @@ async function acceptInTransaction(
       ),
     );
 
+  transferAuthorizationMachine.assertTransition("pending", "accepted");
   await tx
     .update(projectTransferAuthorizations)
-    .set({ status: "accepted", acceptedAt: sql`statement_timestamp()` })
+    .set({
+      status: "accepted",
+      acceptedAt: sql`statement_timestamp()`,
+    })
     .where(eq(projectTransferAuthorizations.id, auth.id));
   // A project can be authorized for several destinations; only one can win. Every other
   // pending authorization is revoked, never revived into access after a later move.
+  transferAuthorizationMachine.assertTransition("pending", "revoked");
   await tx
     .update(projectTransferAuthorizations)
-    .set({ status: "revoked", revokedAt: sql`statement_timestamp()` })
+    .set({
+      status: "revoked",
+      revokedAt: sql`statement_timestamp()`,
+    })
     .where(
       and(
         eq(projectTransferAuthorizations.projectId, auth.projectId),

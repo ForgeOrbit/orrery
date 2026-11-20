@@ -22,6 +22,7 @@ import { errorNameAndCode, uniqueConstraintName } from "../../platform/errors.ts
 import type { Logger } from "../../platform/log.ts";
 import { tokenHash } from "../../platform/tokens.ts";
 import type { SessionAccount } from "../accounts/index.ts";
+import { canResendInvitation, supersedeTargetForPending } from "../invitations/index.ts";
 import type { OutgoingMail } from "../settings/index.ts";
 import {
   humans,
@@ -1256,10 +1257,7 @@ export function createWorkspacesService({
             )
             .for("update");
           if (row === undefined) throw new WorkspacesError("invitation_not_found");
-          if (
-            row.status !== InvitationStatus.enum.pending &&
-            row.status !== InvitationStatus.enum.expired
-          ) {
+          if (!canResendInvitation(row.status)) {
             throw new WorkspacesError("invitation_not_pending");
           }
 
@@ -1276,10 +1274,11 @@ export function createWorkspacesService({
           await requireProjectManageScope(tx, workspaceId, inviter, offered, "not_workspace_owner");
 
           if (row.status === InvitationStatus.enum.pending) {
+            const superseded = supersedeTargetForPending(row.live);
             await tx
               .update(workspaceInvitations)
               .set(
-                row.live
+                superseded === "revoked"
                   ? {
                       status: InvitationStatus.enum.revoked,
                       revokedAt: sql`statement_timestamp()`,

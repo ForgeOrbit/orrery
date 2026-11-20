@@ -23,6 +23,7 @@ import {
 import type { Logger } from "../../platform/log.ts";
 import type { OutgoingMail } from "../settings/index.ts";
 import type { WorkActor } from "../projects/index.ts";
+import { decideQuestionAnswer, questionMachine } from "./state-machine.ts";
 
 // The service is the only file that decides anything for human input (#41). REST and MCP
 // authenticate, validate, and map results: every access decision, deadline evaluation and
@@ -267,9 +268,13 @@ const evaluateDeadline: InboxService["evaluateDeadline"] = async (tx, issueId) =
     )
     .limit(1);
   if (due === undefined) return;
+  questionMachine.assertTransition("open", "paused");
   const [paused] = await tx
     .update(questions)
-    .set({ status: "paused", resolvedAt: sql`statement_timestamp()` })
+    .set({
+      status: "paused",
+      resolvedAt: sql`statement_timestamp()`,
+    })
     .where(
       and(
         eq(questions.id, due.id),
@@ -279,8 +284,23 @@ const evaluateDeadline: InboxService["evaluateDeadline"] = async (tx, issueId) =
     )
     .returning();
   if (paused === undefined) return;
-  // #41 has no authorized fallback, so the one-hour deadline pauses: release the live
-  // claim, keep Needs input, and leave the issue out of ready work until a human answers.
+  // #41 has no authorized fallback, so the one-hour deadline pauses: materialize any
+  // already-lapsed session as 'expired' (preserving its terminal expiry for resume/reacquire)
+  // and release only a still-live claim, keeping Needs input set until a human answers.
+  await tx
+    .update(workSessions)
+    .set({
+      status: "expired",
+      endedAt: sql`statement_timestamp()`,
+      updatedAt: sql`statement_timestamp()`,
+    })
+    .where(
+      and(
+        eq(workSessions.issueId, issueId),
+        eq(workSessions.status, "active"),
+        lte(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
+      ),
+    );
   await tx
     .update(workSessions)
     .set({
@@ -288,7 +308,13 @@ const evaluateDeadline: InboxService["evaluateDeadline"] = async (tx, issueId) =
       endedAt: sql`statement_timestamp()`,
       updatedAt: sql`statement_timestamp()`,
     })
-    .where(and(eq(workSessions.issueId, issueId), eq(workSessions.status, "active")));
+    .where(
+      and(
+        eq(workSessions.issueId, issueId),
+        eq(workSessions.status, "active"),
+        gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
+      ),
+    );
   await tx
     .update(issues)
     .set({ needsInput: true, updatedAt: sql`statement_timestamp()` })
@@ -466,8 +492,9 @@ export function createInboxService(deps: InboxDeps): InboxService {
           .limit(1)
           .for("update");
         if (row === undefined) throw new InboxError("question_not_found");
-        if (row.status === "answered") throw new InboxError("question_resolved");
-        if (row.status === "fallback_used") {
+        const answerAction = decideQuestionAnswer(row.status, row.followUp !== null);
+        if (answerAction === "already_resolved") throw new InboxError("question_resolved");
+        if (answerAction === "record_follow_up") {
           // #42 territory: a late answer is a follow-up, never a reversal of fallback work.
           const [followed] = await tx
             .update(questions)
@@ -487,6 +514,7 @@ export function createInboxService(deps: InboxDeps): InboxService {
           if (followed === undefined) throw new InboxError("question_resolved");
           return toQuestion(followed);
         }
+        questionMachine.assertTransition(row.status, "answered");
         // Exactly one conditional update wins: open (before the deadline) or paused (after
         // a deadline pause) becomes answered. Two concurrent answers serialize on the
         // issue row lock and the guard; only one can transition the question.

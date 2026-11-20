@@ -551,4 +551,36 @@ describe("questions against real Postgres", () => {
     const rows = await database.db.select().from(projectActivity);
     expect(rows.map((row) => row.issueId)).toContain(issue.id);
   });
+
+  it("preserves an already-lapsed session as expired (not released) when the question deadline pauses", async () => {
+    const f = await bootstrap();
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    const claimed = await claim(f, issue.id, runId);
+    const actor = { kind: "agent" as const, identity: f.identity };
+    await sessions.progress(actor, issue.id, "halfway through migration");
+    const question = await ask(f, issue.id, runId);
+
+    // The 5-minute claim lapses BEFORE the 1-hour question deadline passes, without being
+    // lazily materialized yet.
+    await database.db
+      .update(workSessions)
+      .set({ leaseExpiresAt: sql`statement_timestamp() - interval '10 minutes'` })
+      .where(eq(workSessions.id, claimed.id));
+    await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
+
+    // Human answers after the 1-hour deadline: evaluateDeadline runs first, pauses, then
+    // resolves to answered. The already-lapsed session must materialize as 'expired',
+    // never be clobbered to 'released', so the interrupted run can reacquire with progress.
+    await inbox.answer(await humanActor(f), question.id, "proceed with option A");
+
+    const resumed = await sessions.resume(actor, { issueId: issue.id, runId });
+    expect(resumed.disposition).toBe("expired");
+    expect(resumed.session?.status).toBe("expired");
+    expect(resumed.session?.progress).toBe("halfway through migration");
+
+    const reacquired = await sessions.reacquire(actor, { issueId: issue.id, runId });
+    expect(reacquired.status).toBe("active");
+    expect(reacquired.progress).toBe("halfway through migration");
+  });
 });
