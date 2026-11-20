@@ -6,7 +6,8 @@ import { InboxError, type InboxService } from "./service.ts";
 
 // MCP transport adapter for human input (#41). It authenticates the bearer key on every
 // call and validates tool args with the shared contract; the service decides everything.
-// There is deliberately no MCP answer tool: only the human REST inbox may answer.
+// Agents can ask and read the resolution back, but there is deliberately no MCP answer
+// tool: only the human REST inbox may answer.
 
 type Args = Record<string, unknown>;
 
@@ -26,6 +27,12 @@ export function createInboxMcp(service: InboxService, authenticate: AgentAuthent
           question: str(args.question, "question"),
           proposedFallback: str(args.proposedFallback, "proposedFallback"),
         },
+      ),
+    }),
+    list_issue_questions: async (identity, args) => ({
+      questions: await service.issueHistory(
+        { kind: "agent", identity },
+        str(args.issueId, "issueId"),
       ),
     }),
   };

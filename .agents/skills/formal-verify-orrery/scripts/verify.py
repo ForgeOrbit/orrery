@@ -1110,6 +1110,44 @@ def extract_code_facts() -> dict[str, Any]:
         and "ask_for_input" in q_mcp_src
         and q_rest_src.count("400: problem(") >= 4
     )
+    # The follow-up guards added after review: consistent lock order, non-enumeration,
+    # workspace-scoped reads, DB-time effective status, ask scope, the boundary guard and
+    # an MCP read tool for the answer.
+    sess_deadline_fn = slice_between(sess_src, "const deadlineCommitted", "// Renew, progress")
+    q_columns_fn = slice_between(q_src, "const questionColumns = {", "const iso")
+    q_require_fn = slice_between(q_src, "async function requireAccess(", "function requireAgent")
+    q_list_fn = slice_between(q_src, "async list(actorArg)", "async issueHistory(actorArg")
+    q_history_fn = slice_between(q_src, "async issueHistory(actorArg", "    questionDeadline,")
+    m18_lock_order = (
+        '.for("update")' in sess_deadline_fn
+        and sess_deadline_fn.index('.for("update")') < sess_deadline_fn.index("checkDeadline(tx, issueId)")
+    )
+    m18_non_enumeration = "if (effective === null) throw new InboxError(missing)" in q_require_fn
+    m18_scoped_list = (
+        "workspaceMemberships" in q_list_fn
+        and "await Promise.all(" not in q_list_fn
+        and "inArray(questions.projectId" in q_list_fn
+        and ".slice(0, 200)" in q_list_fn
+    )
+    m18_db_time_reads = (
+        "effectiveStatus:" in q_columns_fn
+        and "select(questionColumns)" in q_list_fn
+        and "select(questionColumns)" in q_history_fn
+    )
+    m18_ask_scope = (
+        "eq(workSessions.runId, input.runId)" in q_ask_fn
+        and 'issue.status !== "open"' in q_ask_fn
+    )
+    m18_boundary_guard = (
+        "gt(questions.responseDeadlineAt, sql`statement_timestamp()`)" in q_answer_fn
+        and "isNull(questions.followUp)" in q_answer_fn
+    )
+    m18_read_tool = "list_issue_questions" in tools_src and "list_issue_questions" in q_mcp_src
+    m18_feature_seams = (
+        "inbox.questionDeadline" in index_src
+        and "inbox.evaluateDeadline" in index_src
+        and "inbox.service." not in index_src
+    )
 
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
@@ -1267,6 +1305,14 @@ def extract_code_facts() -> dict[str, Any]:
         "m18_history": m18_history,
         "m18_claim_bounded": m18_claim_bounded,
         "m18_adapters": m18_adapters,
+        "m18_lock_order": m18_lock_order,
+        "m18_non_enumeration": m18_non_enumeration,
+        "m18_scoped_list": m18_scoped_list,
+        "m18_db_time_reads": m18_db_time_reads,
+        "m18_ask_scope": m18_ask_scope,
+        "m18_boundary_guard": m18_boundary_guard,
+        "m18_read_tool": m18_read_tool,
+        "m18_feature_seams": m18_feature_seams,
     }
 
 
@@ -2894,6 +2940,14 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
         "history": facts["m18_history"],
         "claim": facts["m18_claim_bounded"],
         "adapters": facts["m18_adapters"],
+        "lock_order": facts["m18_lock_order"],
+        "non_enumeration": facts["m18_non_enumeration"],
+        "scoped_list": facts["m18_scoped_list"],
+        "db_time_reads": facts["m18_db_time_reads"],
+        "ask_scope": facts["m18_ask_scope"],
+        "boundary_guard": facts["m18_boundary_guard"],
+        "read_tool": facts["m18_read_tool"],
+        "feature_seams": facts["m18_feature_seams"],
     }
 
     def explore(g: dict[str, bool], naive: bool) -> CheckResult:
@@ -3024,6 +3078,22 @@ def check_m18(facts: dict[str, Any]) -> CheckResult:
                 go("question and resolution missing from history (bug)", status, needs, claim, clock, bad("question_not_in_history"))
             if not g["adapters"]:
                 go("ask tool or REST validation missing (bug)", status, needs, claim, clock, bad("adapters_missing"))
+            if not g["lock_order"]:
+                go("deadline evaluation locks questions before the issue (bug)", status, needs, claim, clock, bad("lock_order_deadlock"))
+            if not g["non_enumeration"]:
+                go("unrelated caller learns a question exists via 403 (bug)", status, needs, claim, clock, bad("cross_workspace_existence_leak"))
+            if not g["scoped_list"]:
+                go("global LIMIT hides another workspace's inbox (bug)", status, needs, claim, clock, bad("inbox_cross_workspace_starvation"))
+            if not g["db_time_reads"]:
+                go("read reports open past the deadline (bug)", status, needs, claim, clock, bad("stale_open_on_read"))
+            if not g["ask_scope"]:
+                go("sibling run or closed issue asked a question (bug)", status, needs, claim, clock, bad("unscoped_ask"))
+            if not g["boundary_guard"]:
+                go("answer or follow-up lacks its DB-time guard (bug)", status, needs, claim, clock, bad("missing_boundary_guard"))
+            if not g["read_tool"]:
+                go("agent cannot read the answer back over MCP (bug)", status, needs, claim, clock, bad("no_mcp_read_tool"))
+            if not g["feature_seams"]:
+                go("work sessions bypasses the inbox public interface (bug)", status, needs, claim, clock, bad("seams_bypassed"))
             return out
 
         def invariant(state):

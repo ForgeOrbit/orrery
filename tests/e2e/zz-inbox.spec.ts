@@ -6,6 +6,7 @@
 //   docker compose --profile mail-test up -d --build --wait
 //   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { randomUUID } from "node:crypto";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { expect, request, test, type APIRequestContext } from "@playwright/test";
 import { ADMIN_EMAIL, ADMIN_PASSWORD, recordSecret } from "./admin.ts";
 
@@ -208,6 +209,32 @@ test("emails the agent owner, refuses agent answerers and lets a human answer", 
   } finally {
     for (const cookie of await context.cookies()) await recordSecret(cookie.value);
     await context.close();
+  }
+
+  // The agent reads the human's answer back over MCP; there is still no answer tool for
+  // an agent key.
+  const mcp = new Client({ name: `orrery-inbox-e2e-${randomUUID()}`, version: "1" });
+  await mcp.connect(
+    new StreamableHTTPClientTransport(new URL("/mcp", baseUrl), {
+      authProvider: { token: async () => secret },
+    }),
+  );
+  try {
+    const result = await mcp.callTool({
+      name: "list_issue_questions",
+      arguments: { issueId },
+    });
+    expect(result.isError).not.toBe(true);
+    const listed = field(result.structuredContent, "questions");
+    if (!Array.isArray(listed)) throw new Error("MCP question history is not a list");
+    expect(
+      listed.some(
+        (item) =>
+          field(item, "id") === questionId && field(item, "answer") === "Use the v2 endpoint",
+      ),
+    ).toBe(true);
+  } finally {
+    await mcp.close();
   }
 
   const historyRes = await api.get(`/api/issues/${issueId}/questions`);

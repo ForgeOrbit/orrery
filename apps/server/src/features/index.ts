@@ -109,8 +109,8 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     deliver: settings.deliver,
     log,
   });
-  questionLeaseDeadline = (tx, issueId) => inbox.service.questionDeadline(tx, issueId);
-  questionEvaluateDeadline = (tx, issueId) => inbox.service.evaluateDeadline(tx, issueId);
+  questionLeaseDeadline = (tx, issueId) => inbox.questionDeadline(tx, issueId);
+  questionEvaluateDeadline = (tx, issueId) => inbox.evaluateDeadline(tx, issueId);
   return [
     createSystemFeature({ ping: database.ping }),
     accounts,

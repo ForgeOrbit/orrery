@@ -15,7 +15,7 @@ import {
   UpdateIssueRequest,
   UpdateKnowledgeEntryRequest,
 } from "./projects.ts";
-import { AskForInputInput, QuestionResponse } from "./questions.ts";
+import { AskForInputInput, InboxResponse, IssueQuestionParams, QuestionResponse } from "./questions.ts";
 import { RunReportInput, RunReportResponse } from "./runs.ts";
 import {
   ClaimWorkSessionInput,
@@ -222,6 +222,16 @@ const askForInput = {
   output: QuestionResponse,
 };
 
+// Agents read the human's answer back with a separate tool, matching the issue history
+// REST route. There is still no MCP answer tool: only the human REST inbox may answer.
+const listIssueQuestions = {
+  name: "list_issue_questions",
+  description:
+    "List every question asked about an in-scope issue and its resolution, newest first. A pending question may be reported as paused in database time once its one-hour deadline has passed. Needs no claim; answering remains a human-only REST operation.",
+  input: IssueQuestionParams,
+  output: z.object({ questions: InboxResponse }),
+};
+
 // Each feature registers only its own tools; `tools` is the complete list used by
 // `pnpm gen` to write contract/mcp-tools.json.
 export const projectTools: readonly ToolContract[] = [
@@ -252,7 +262,7 @@ export const sessionTools: readonly ToolContract[] = [
   allSessionsForIssue,
 ];
 
-export const questionTools: readonly ToolContract[] = [askForInput];
+export const questionTools: readonly ToolContract[] = [askForInput, listIssueQuestions];
 
 export const tools: readonly ToolContract[] = [
   ...projectTools,

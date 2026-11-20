@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { ProjectAccessLevel, type AgentIdentity, type Question } from "@orrery/contract";
-import { and, desc, eq, gt, lte, sql } from "drizzle-orm";
+import {
+  ProjectAccessLevel,
+  QuestionStatus,
+  type AgentIdentity,
+  type Question,
+} from "@orrery/contract";
+import { and, desc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
 import {
@@ -12,6 +17,8 @@ import {
   questions,
   runs,
   workSessions,
+  workspaceMemberships,
+  workspaces,
 } from "../../db/schema.ts";
 import type { Logger } from "../../platform/log.ts";
 import type { OutgoingMail } from "../settings/index.ts";
@@ -32,6 +39,7 @@ export type InboxErrorKind =
   | "insufficient_access"
   | "question_not_found"
   | "question_open"
+  | "question_not_open"
   | "question_resolved";
 
 const messages: Record<InboxErrorKind, string> = {
@@ -45,6 +53,7 @@ const messages: Record<InboxErrorKind, string> = {
   insufficient_access: "Contribute access is required to answer questions on this project.",
   question_not_found: "No such question is in scope for the caller.",
   question_open: "This issue already has an open question.",
+  question_not_open: "Only an open issue can be asked about.",
   question_resolved: "This question has already been resolved.",
 };
 
@@ -92,10 +101,35 @@ export interface InboxService {
 }
 
 type QuestionRow = typeof questions.$inferSelect;
+type QuestionView = Omit<QuestionRow, "sessionId"> & { effectiveStatus?: string };
+
+// Reads must never show an open question past the one-hour deadline: the same DB-time
+// predicate as the write path is projected in SQL, so a stale row reads as paused.
+const questionColumns = {
+  id: questions.id,
+  issueId: questions.issueId,
+  projectId: questions.projectId,
+  workspaceId: questions.workspaceId,
+  agentId: questions.agentId,
+  runId: questions.runId,
+  question: questions.question,
+  proposedFallback: questions.proposedFallback,
+  status: questions.status,
+  effectiveStatus: sql<string>`case when ${questions.status} = 'open' and ${questions.responseDeadlineAt} <= statement_timestamp() then 'paused' else ${questions.status} end`,
+  responseDeadlineAt: questions.responseDeadlineAt,
+  answer: questions.answer,
+  answeredByHumanId: questions.answeredByHumanId,
+  answeredAt: questions.answeredAt,
+  followUp: questions.followUp,
+  followUpByHumanId: questions.followUpByHumanId,
+  followUpAt: questions.followUpAt,
+  resolvedAt: questions.resolvedAt,
+  createdAt: questions.createdAt,
+};
 
 const iso = (value: Date | null) => value?.toISOString() ?? null;
 
-function toQuestion(row: QuestionRow): Question {
+function toQuestion(row: QuestionView): Question {
   return {
     id: row.id,
     issueId: row.issueId,
@@ -105,7 +139,7 @@ function toQuestion(row: QuestionRow): Question {
     runId: row.runId,
     question: row.question,
     proposedFallback: row.proposedFallback,
-    status: row.status,
+    status: QuestionStatus.parse(row.effectiveStatus ?? row.status),
     responseDeadlineAt: row.responseDeadlineAt.toISOString(),
     answer: row.answer,
     answeredByHumanId: row.answeredByHumanId,
@@ -127,6 +161,7 @@ async function lockIssue(tx: DbTransaction, issueId: string) {
       projectId: issues.projectId,
       title: issues.title,
       number: issues.number,
+      status: issues.status,
     })
     .from(issues)
     .where(eq(issues.id, issueId))
@@ -174,7 +209,7 @@ async function requireAccess(
   projectId: string,
   required: ProjectAccessLevel,
   deps: InboxDeps,
-  missing: "issue_not_found" | "project_not_found",
+  missing: "issue_not_found" | "project_not_found" | "question_not_found",
 ) {
   const [project] = await tx
     .select({ id: projects.id, workspaceId: projects.workspaceId })
@@ -201,7 +236,11 @@ async function requireAccess(
           ? keyLevel
           : humanLevel;
   }
-  if (effective === null || !deps.projectAccessAtLeast(effective, required)) {
+  // No access at all means the caller must not learn that the project, issue or question
+  // exists: answer 404 with the feature's non-enumeration code. Only a caller who *has*
+  // Read but lacks the required level (a Reader asked to Contribute) gets a 403.
+  if (effective === null) throw new InboxError(missing);
+  if (!deps.projectAccessAtLeast(effective, required)) {
     throw new InboxError("insufficient_access");
   }
   return project;
@@ -303,12 +342,14 @@ export function createInboxService(deps: InboxDeps): InboxService {
           )
           .limit(1);
         if (run === undefined) throw new InboxError("run_not_found");
+        if (issue.status !== "open") throw new InboxError("question_not_open");
         const [session] = await tx
           .select({ id: workSessions.id })
           .from(workSessions)
           .where(
             and(
               eq(workSessions.issueId, issue.id),
+              eq(workSessions.runId, input.runId),
               eq(workSessions.agentId, identity.agentId),
               eq(workSessions.workspaceId, identity.workspaceId),
               eq(workSessions.status, "active"),
@@ -413,7 +454,7 @@ export function createInboxService(deps: InboxDeps): InboxService {
           issue.projectId,
           ProjectAccessLevel.enum.contribute,
           deps,
-          "project_not_found",
+          "question_not_found",
         );
         // Evaluate the deadline in database time before reading the resolution: an answer
         // that races the boundary first pauses (releasing the claim), then unblocks.
@@ -435,7 +476,13 @@ export function createInboxService(deps: InboxDeps): InboxService {
               followUpByHumanId: actor.account.humanId,
               followUpAt: sql`statement_timestamp()`,
             })
-            .where(and(eq(questions.id, questionId), eq(questions.status, "fallback_used")))
+            .where(
+              and(
+                eq(questions.id, questionId),
+                eq(questions.status, "fallback_used"),
+                isNull(questions.followUp),
+              ),
+            )
             .returning();
           if (followed === undefined) throw new InboxError("question_resolved");
           return toQuestion(followed);
@@ -443,17 +490,38 @@ export function createInboxService(deps: InboxDeps): InboxService {
         // Exactly one conditional update wins: open (before the deadline) or paused (after
         // a deadline pause) becomes answered. Two concurrent answers serialize on the
         // issue row lock and the guard; only one can transition the question.
-        const [answered] = await tx
-          .update(questions)
-          .set({
-            status: "answered",
-            answer,
-            answeredByHumanId: actor.account.humanId,
-            answeredAt: sql`statement_timestamp()`,
-            resolvedAt: sql`statement_timestamp()`,
-          })
-          .where(and(eq(questions.id, questionId), sql`${questions.status} in ('open', 'paused')`))
-          .returning();
+        const resolveAnswered = () =>
+          tx
+            .update(questions)
+            .set({
+              status: "answered",
+              answer,
+              answeredByHumanId: actor.account.humanId,
+              answeredAt: sql`statement_timestamp()`,
+              resolvedAt: sql`statement_timestamp()`,
+            })
+            .where(
+              and(
+                eq(questions.id, questionId),
+                sql`${questions.status} in ('open', 'paused')`,
+                // An open question is answered directly only strictly before the deadline
+                // in database time; at/after it the deadline pause must release the claim.
+                or(
+                  gt(questions.responseDeadlineAt, sql`statement_timestamp()`),
+                  eq(questions.status, "paused"),
+                ),
+              ),
+            )
+            .returning();
+        const [first] = await resolveAnswered();
+        let answered = first;
+        if (answered === undefined && row.status === "open") {
+          // The deadline can land between the evaluation and this statement. Pause first,
+          // then resolve the now-paused question instead of returning a spurious 409.
+          await evaluateDeadline(tx, issue.id);
+          const [retried] = await resolveAnswered();
+          answered = retried;
+        }
         if (answered === undefined) throw new InboxError("question_resolved");
         // Clears Needs input whether the claim is still held (continue) or lapsed/released
         // at the deadline (resume after reacquisition). We never reacquire a claim here.
@@ -478,34 +546,53 @@ export function createInboxService(deps: InboxDeps): InboxService {
       const humanId = humanIdOf(actorArg);
       return db.transaction(
         async (tx) => {
-          const rows = await tx
-            .select()
-            .from(questions)
-            .orderBy(desc(questions.createdAt))
-            .limit(200);
-          const byWorkspace = new Map<string, string[]>();
-          for (const row of rows) {
-            const list = byWorkspace.get(row.workspaceId) ?? [];
-            if (!list.includes(row.projectId)) list.push(row.projectId);
-            byWorkspace.set(row.workspaceId, list);
-          }
-          const allowed = new Map<string, ProjectAccessLevel | null>();
-          await Promise.all(
-            [...byWorkspace].map(async ([workspaceId, projectIds]) => {
-              const ceiling = await deps.projectAccessCeiling(tx, workspaceId, humanId, projectIds);
-              for (const [projectId, level] of ceiling) allowed.set(projectId, level);
-            }),
-          );
-          // Readers can see the question and its resolution, but only Contribute or Manage
-          // may answer. The answer endpoint enforces the stricter rule independently.
-          return rows
-            .filter((row) => {
-              const level = allowed.get(row.projectId) ?? null;
+          // Scope to this human's workspaces first: a global LIMIT would let a busy workspace
+          // hide another workspace's inbox. One postgres.js transaction is a single connection,
+          // so the per-workspace access queries run sequentially, never via Promise.all.
+          const personal = await tx
+            .select({ id: workspaces.id })
+            .from(workspaces)
+            .where(eq(workspaces.personalOwnerHumanId, humanId));
+          const memberships = await tx
+            .select({ workspaceId: workspaceMemberships.workspaceId })
+            .from(workspaceMemberships)
+            .where(eq(workspaceMemberships.humanId, humanId));
+          const workspaceIds = [
+            ...new Set([
+              ...personal.map((row) => row.id),
+              ...memberships.map((row) => row.workspaceId),
+            ]),
+          ];
+          const visible: QuestionView[] = [];
+          for (const workspaceId of workspaceIds) {
+            const candidates = await tx
+              .selectDistinct({ projectId: questions.projectId })
+              .from(questions)
+              .where(eq(questions.workspaceId, workspaceId));
+            const projectIds = candidates.map((row) => row.projectId);
+            if (projectIds.length === 0) continue;
+            const ceiling = await deps.projectAccessCeiling(tx, workspaceId, humanId, projectIds);
+            // Readers can see the question and its resolution; only Contribute or Manage may
+            // answer, and that stricter rule is enforced by the answer endpoint itself.
+            const readable = projectIds.filter((projectId) => {
+              const level = ceiling.get(projectId) ?? null;
               return (
                 level !== null && deps.projectAccessAtLeast(level, ProjectAccessLevel.enum.read)
               );
-            })
-            .map(toQuestion);
+            });
+            if (readable.length === 0) continue;
+            const rows = await tx
+              .select(questionColumns)
+              .from(questions)
+              .where(
+                and(eq(questions.workspaceId, workspaceId), inArray(questions.projectId, readable)),
+              )
+              .orderBy(desc(questions.createdAt))
+              .limit(200);
+            visible.push(...rows);
+          }
+          visible.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+          return visible.slice(0, 200).map(toQuestion);
         },
         { accessMode: "read only" },
       );
@@ -530,7 +617,7 @@ export function createInboxService(deps: InboxDeps): InboxService {
             "issue_not_found",
           );
           const rows = await tx
-            .select()
+            .select(questionColumns)
             .from(questions)
             .where(eq(questions.issueId, issueId))
             .orderBy(desc(questions.createdAt));

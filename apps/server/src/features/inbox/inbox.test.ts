@@ -158,12 +158,12 @@ type Fixture = {
   identity: AgentIdentity;
 };
 
-async function bootstrap(): Promise<Fixture> {
+async function bootstrap(email = ADMIN_EMAIL): Promise<Fixture> {
   const [human] = await database.db
     .insert(humans)
     .values({
       id: randomUUID(),
-      email: ADMIN_EMAIL,
+      email,
       passwordHash: tokenHash(randomBytes(32).toString("hex")),
       emailVerifiedAt: new Date(),
     })
@@ -490,9 +490,42 @@ describe("questions against real Postgres", () => {
       deliver: async () => {},
       log: silentLogger,
     });
+    // No access at all is a 404: an unrelated caller must not learn that the question or
+    // its issue exists (non-enumeration), while a Reader gets a 403 on the answer.
     expect(
       kindOf(await refused(unrelated.answer(await humanActor(f), question.id, "outsider"))),
-    ).toBe("insufficient_access");
+    ).toBe("question_not_found");
+    expect(kindOf(await refused(unrelated.issueHistory(await humanActor(f), issue.id)))).toBe(
+      "issue_not_found",
+    );
+  });
+
+  it("scopes the inbox to the human's workspaces and reports DB-time status on reads", async () => {
+    const f = await bootstrap();
+    const issue = await newIssue(f);
+    const runId = await newRun(f);
+    await claim(f, issue.id, runId);
+    const mine = await ask(f, issue.id, runId);
+
+    // A question in another human's personal workspace must not appear in this inbox, even
+    // though it is the newest question in the database.
+    const other = await bootstrap(`inbox-other-${randomUUID()}@example.com`);
+    const otherIssue = await newIssue(other);
+    const otherRun = await newRun(other);
+    await claim(other, otherIssue.id, otherRun);
+    const theirs = await ask(other, otherIssue.id, otherRun);
+    const ids = (await inbox.list(await humanActor(f))).map((row) => row.id);
+    expect(ids).toContain(mine.id);
+    expect(ids).not.toContain(theirs.id);
+    expect(ids.length).toBeLessThanOrEqual(200);
+
+    // After the deadline, a read must show the question as paused in database time even if
+    // no write has evaluated the deadline yet.
+    await setDeadline(mine.id, "statement_timestamp() - interval '1 second'");
+    const fromList = (await inbox.list(await humanActor(f))).find((row) => row.id === mine.id);
+    expect(fromList?.status).toBe("paused");
+    const fromHistory = await inbox.issueHistory(await humanActor(f), issue.id);
+    expect(fromHistory[0]?.status).toBe("paused");
   });
 
   it("records the question and its resolution in project history", async () => {

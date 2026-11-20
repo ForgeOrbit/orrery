@@ -120,6 +120,7 @@ const statusFor = {
   insufficient_access: 403,
   question_not_found: 404,
   question_open: 409,
+  question_not_open: 409,
   question_resolved: 409,
 } as const satisfies Record<InboxErrorKind, number>;
 
@@ -152,10 +153,12 @@ const askKinds = [
   "session_required",
   "insufficient_access",
   "question_open",
+  "question_not_open",
 ] as const;
 const inboxKinds = ["not_signed_in", "agents_cannot_use_inbox"] as const;
 const answerKinds = [
   "not_signed_in",
+  "issue_not_found",
   "agents_cannot_answer",
   "insufficient_access",
   "question_not_found",
