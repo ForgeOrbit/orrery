@@ -69,6 +69,12 @@ const activityLabels: Record<ProjectActivityType, string> = {
   issue_question_follow_up: "added a follow-up to an authorized fallback on issue",
   issue_fallback_policy_override_changed: "changed the fallback policy override on issue",
   issue_stop_requested: "asked the agent to stop on issue",
+  project_label_created: "created a project label",
+  project_label_edited: "edited a project label",
+  project_label_deleted: "deleted a project label",
+  issue_label_added: "labelled issue",
+  issue_label_removed: "unlabelled issue",
+  issue_parent_changed: "changed the parent of issue",
   knowledge_created: "created knowledge",
   knowledge_edited: "edited knowledge",
 };

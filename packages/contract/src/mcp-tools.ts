@@ -3,6 +3,7 @@ import {
   CreateIssueCommentRequest,
   CreateIssueLinkRequest,
   CreateIssueRequest,
+  CreateProjectLabelRequest,
   CreateKnowledgeEntryRequest,
   Issue,
   IssueComment,
@@ -14,9 +15,11 @@ import {
   KnowledgeEntriesResponse,
   KnowledgeEntry,
   Project,
+  ProjectLabelsResponse,
   ProjectsResponse,
   ProjectActivityResponse,
   UpdateIssueRequest,
+  UpdateProjectLabelRequest,
   UpdateKnowledgeEntryRequest,
 } from "./projects.ts";
 import { AskForInputInput, InboxResponse, IssueQuestionParams, QuestionResponse } from "./questions.ts";
@@ -100,6 +103,52 @@ const updateIssue = {
   description:
     "Edit an issue's title or body, move it through the six-state workflow (`backlog`, `todo`, `in_progress`, `review`, `done`, `cancelled` — only done and cancelled set closedAt), change its priority or sortOrder (a float; the midpoint of two neighbours moves one card without rewriting them), or set/clear its assignee (`{\"type\":\"human\"|\"agent\",\"id\":\"...\"}`, or null to clear). An assignee must be an active member or a registered agent in the workspace. Requires Contribute access and, for an agent, a live work session on the issue. The actor recorded is the agent, not its human owner.",
   input: UpdateIssueRequest.extend({ issueId: id("The issue id") }),
+  output: z.object({ issue: Issue }),
+};
+
+// Project-scoped labels (#97). Creating, editing and deleting labels, and attaching or
+// detaching them on issues, needs Contribute; listing needs only Read.
+const labelId = id("The label id");
+const listLabels = {
+  name: "list_labels",
+  description:
+    "List the project-scoped labels in an in-scope project, with their names and hex colors. Needs Read access.",
+  input: z.object({ projectId: id("The project id") }),
+  output: z.object({ labels: ProjectLabelsResponse }),
+};
+const createLabel = {
+  name: "create_label",
+  description:
+    "Create a project-scoped label with a name and six-digit hex color. Names are unique per project ignoring case. Requires Contribute access on the key and its human owner.",
+  input: CreateProjectLabelRequest.extend({ projectId: id("The project id") }),
+  output: z.object({ label: ProjectLabelsResponse.element }),
+};
+const updateLabel = {
+  name: "update_label",
+  description:
+    "Rename a project label or change its hex color; omitted fields stay unchanged. The new name must stay unique per project ignoring case. Requires Contribute access.",
+  input: UpdateProjectLabelRequest.extend({ labelId }),
+  output: z.object({ label: ProjectLabelsResponse.element }),
+};
+const deleteLabel = {
+  name: "delete_label",
+  description:
+    "Delete a project label and detach it from every issue. Requires Contribute access.",
+  input: z.object({ labelId }),
+  output: z.object({ removed: z.literal(true) }),
+};
+const attachIssueLabel = {
+  name: "attach_issue_label",
+  description:
+    "Attach a label from the issue's own project to an issue. Attaching an already attached label is a no-op. Returns the issue with its labels. Requires Contribute access and, for an agent, a live work session on the issue.",
+  input: z.object({ issueId: id("The issue id"), labelId }),
+  output: z.object({ issue: Issue }),
+};
+const detachIssueLabel = {
+  name: "detach_issue_label",
+  description:
+    "Detach a label from an issue; detaching a label that is not attached is a no-op. Returns the issue with its labels. Requires Contribute access and, for an agent, a live work session on the issue.",
+  input: z.object({ issueId: id("The issue id"), labelId }),
   output: z.object({ issue: Issue }),
 };
 
@@ -355,6 +404,12 @@ export const projectTools: readonly ToolContract[] = [
   getIssue,
   createIssue,
   updateIssue,
+  listLabels,
+  createLabel,
+  updateLabel,
+  deleteLabel,
+  attachIssueLabel,
+  detachIssueLabel,
   addBlockedBy,
   removeBlockedBy,
   listBlockedBy,

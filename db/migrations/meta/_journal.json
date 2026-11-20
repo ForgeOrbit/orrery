@@ -260,6 +260,20 @@
       "when": 1795212353313,
       "tag": "0036_tan_firebrand",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1795215075532,
+      "tag": "0037_cute_lady_deathstrike",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1795215085776,
+      "tag": "0038_subtask_and_label_invariants",
+      "breakpoints": true
     }
   ]
 }

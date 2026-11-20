@@ -180,6 +180,8 @@ afterEach(async () => {
     await tx.execute(sql`delete from project_access_grants`);
     await tx.execute(sql`delete from project_activity`);
     await tx.execute(sql`delete from issue_dependencies`);
+    await tx.execute(sql`delete from issue_labels`);
+    await tx.execute(sql`delete from project_labels`);
     await tx.execute(sql`delete from knowledge_entries`);
     await tx.execute(sql`delete from issue_comments`);
     await tx.execute(sql`delete from issues`);
@@ -808,6 +810,56 @@ describe("work sessions against real Postgres", () => {
     await projectsService.removeBlockedBy(human, downstream.id, blocker.id);
     const afterRemoval = await sessionsService.readyWork({ kind: "agent", identity }, f.projectId);
     expect(afterRemoval.map((item) => item.id)).toContain(downstream.id);
+  });
+
+  it("offers eligible todo subtasks independently of their parent (#97)", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const agent = { kind: "agent" as const, identity };
+    const run = await newRun(identity);
+    const parent = await humanIssue(f, "Parent");
+    const first = await humanIssue(f, "Subtask one");
+    const second = await humanIssue(f, "Subtask two");
+    await projectsService.updateIssue(humanActor(f), first.id, { parentIssueId: parent.id });
+    await projectsService.updateIssue(humanActor(f), second.id, { parentIssueId: parent.id });
+
+    const ready = (await sessionsService.readyWork(agent, f.projectId)).map((item) => item.id);
+    expect(ready).toContain(parent.id);
+    expect(ready).toContain(first.id);
+    expect(ready).toContain(second.id);
+
+    // Claiming one subtask does not reserve its sibling or the parent.
+    await sessionsService.claim(agent, { issueId: first.id, runId: run });
+    const afterClaim = (await sessionsService.readyWork(agent, f.projectId)).map((item) => item.id);
+    expect(afterClaim).not.toContain(first.id);
+    expect(afterClaim).toContain(parent.id);
+    expect(afterClaim).toContain(second.id);
+  });
+
+  it("open subtasks never block the parent; only explicit blocked_by does (#97)", async () => {
+    const f = await bootstrap();
+    const identity = await identityFor(f.secret);
+    const agent = { kind: "agent" as const, identity };
+    const run = await newRun(identity);
+    const parent = await humanIssue(f, "Parent with open subtask");
+    const subtask = await humanIssue(f, "Open subtask");
+    await projectsService.updateIssue(humanActor(f), subtask.id, { parentIssueId: parent.id });
+
+    // The open subtask is not an ordering edge: the parent stays ready and claimable.
+    expect((await sessionsService.readyWork(agent, f.projectId)).map((i) => i.id)).toContain(
+      parent.id,
+    );
+    await sessionsService.claim(agent, { issueId: parent.id, runId: run });
+    await sessionsService.stop(agent, parent.id, "done");
+    expect((await issueStatus(parent.id)).status).toBe("done");
+    expect((await issueStatus(subtask.id)).status).toBe("todo");
+
+    // An explicit dependency from the parent to its subtask DOES block it: blocked_by is
+    // the single ordering mechanism, so only then is the parent withheld from ready work.
+    await projectsService.addBlockedBy(humanActor(f), parent.id, { blockedByIssueId: subtask.id });
+    expect((await sessionsService.readyWork(agent, f.projectId)).map((i) => i.id)).not.toContain(
+      parent.id,
+    );
   });
 
   it("unblocks a dependent when its blocker is cancelled, but not when it is in review", async () => {

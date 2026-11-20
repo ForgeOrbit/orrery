@@ -30,6 +30,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -885,6 +886,10 @@ export const issues = pgTable(
     // and the CHECK below keeps a bypassing writer from storing a half or unknown assignee.
     assigneeType: text("assignee_type").$type<AssigneeType>(),
     assigneeId: text("assignee_id"),
+    // #97: an optional one-level parent in the same project. The self-reference is checked
+    // here for self-parenting; same-project and depth-1 need other rows, so a trigger (in a
+    // custom migration) enforces them for writers that bypass the service as well.
+    parentIssueId: text("parent_issue_id").references((): AnyPgColumn => issues.id),
   },
   (t) => [
     // Exactly one author/editor identity: a human or an agent.
@@ -934,6 +939,59 @@ export const issues = pgTable(
       "issues_closed_at_matches_status",
       sql`(${t.status} in (${sql.raw(TERMINAL_ISSUE_STATUSES.map((status) => `'${status}'`).join(", "))})) = (${t.closedAt} is not null)`,
     ),
+    check(
+      "issues_no_self_parent",
+      sql`${t.parentIssueId} is null or ${t.parentIssueId} <> ${t.id}`,
+    ),
+    // Subtasks are listed with their parent's board; the index serves that lookup.
+    index("issues_parent").on(t.projectId, t.parentIssueId),
+  ],
+);
+
+// A project-scoped label (#97). The name is unique per project ignoring case: the service
+// checks first, and this expression index is the database's final word for bypassing writers.
+export const projectLabels = pgTable(
+  "project_labels",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    color: text("color").notNull(),
+    createdByHumanId: text("created_by_human_id").references(() => humans.id),
+    createdByAgentId: text("created_by_agent_id").references(() => agents.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("one_label_name_per_project").on(t.projectId, sql`lower(${t.name})`),
+    check("project_labels_name_nonempty", sql`btrim(${t.name}) <> ''`),
+    check("project_labels_color", sql`${t.color} ~ '^#[0-9a-fA-F]{6}$'`),
+    check(
+      "project_labels_created_by_actor",
+      sql`(${t.createdByHumanId} is not null) <> (${t.createdByAgentId} is not null)`,
+    ),
+    index("project_labels_project").on(t.projectId),
+  ],
+);
+
+// A label attached to an issue (#97). The composite primary key is also the uniqueness
+// rule: one label cannot be attached twice to the same issue. A trigger enforces that the
+// label belongs to the issue's project, since a CHECK cannot read another table.
+export const issueLabels = pgTable(
+  "issue_labels",
+  {
+    issueId: text("issue_id")
+      .notNull()
+      .references(() => issues.id, { onDelete: "cascade" }),
+    labelId: text("label_id")
+      .notNull()
+      .references(() => projectLabels.id, { onDelete: "cascade" }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.issueId, t.labelId] }),
+    index("issue_labels_label").on(t.labelId),
   ],
 );
 

@@ -1600,6 +1600,18 @@
           },
           "effectiveFallbackPolicy": {
             "$ref": "#/components/schemas/FallbackPolicy"
+          },
+          "parentIssueId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectLabel"
+            }
           }
         },
         "required": [
@@ -1620,7 +1632,9 @@
           "createdBy",
           "updatedBy",
           "fallbackPolicyOverride",
-          "effectiveFallbackPolicy"
+          "effectiveFallbackPolicy",
+          "parentIssueId",
+          "labels"
         ]
       },
       "IssueStatus": {
@@ -1706,6 +1720,45 @@
           null
         ]
       },
+      "ProjectLabel": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "color": {
+            "$ref": "#/components/schemas/LabelColor"
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "createdBy": {
+            "$ref": "#/components/schemas/Actor"
+          }
+        },
+        "required": [
+          "id",
+          "projectId",
+          "name",
+          "color",
+          "createdAt",
+          "updatedAt",
+          "createdBy"
+        ]
+      },
+      "LabelColor": {
+        "type": "string",
+        "pattern": "^#[0-9a-fA-F]{6}$"
+      },
       "CreateIssueRequest": {
         "type": "object",
         "properties": {
@@ -1725,6 +1778,14 @@
           },
           "sortOrder": {
             "$ref": "#/components/schemas/IssueSortOrder"
+          },
+          "parentIssueId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 200
           }
         },
         "required": [
@@ -1793,6 +1854,18 @@
           "effectiveFallbackPolicy": {
             "$ref": "#/components/schemas/FallbackPolicy"
           },
+          "parentIssueId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectLabel"
+            }
+          },
           "links": {
             "type": "array",
             "items": {
@@ -1819,6 +1892,8 @@
           "updatedBy",
           "fallbackPolicyOverride",
           "effectiveFallbackPolicy",
+          "parentIssueId",
+          "labels",
           "links"
         ]
       },
@@ -1893,6 +1968,14 @@
           },
           "assignee": {
             "$ref": "#/components/schemas/Assignee"
+          },
+          "parentIssueId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 200
           }
         }
       },
@@ -1922,6 +2005,42 @@
           "human",
           "agent"
         ]
+      },
+      "ProjectLabelsResponse": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ProjectLabel"
+        }
+      },
+      "CreateProjectLabelRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50
+          },
+          "color": {
+            "$ref": "#/components/schemas/LabelColor"
+          }
+        },
+        "required": [
+          "name",
+          "color"
+        ]
+      },
+      "UpdateProjectLabelRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50
+          },
+          "color": {
+            "$ref": "#/components/schemas/LabelColor"
+          }
+        }
       },
       "SetIssueFallbackPolicyRequest": {
         "type": "object",
@@ -2111,6 +2230,12 @@
           "issue_question_follow_up",
           "issue_fallback_policy_override_changed",
           "issue_stop_requested",
+          "project_label_created",
+          "project_label_edited",
+          "project_label_deleted",
+          "issue_label_added",
+          "issue_label_removed",
+          "issue_parent_changed",
           "knowledge_created",
           "knowledge_edited"
         ]
@@ -7096,7 +7221,7 @@
       },
       "post": {
         "summary": "Create an issue in a project",
-        "description": "Contribute or Manage. The issue gets the project's next local number, starts open, and records its creator. The creation is recorded in the project's activity. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
+        "description": "Contribute or Manage. The issue gets the project's next local number, starts ready work, and records its creator. An optional `parentIssueId` creates a one-level subtask in the same project; it cannot be self, cross-project, or a second nesting level. The creation is recorded in the project's activity. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
         "parameters": [
           {
             "schema": {
@@ -7131,7 +7256,7 @@
             }
           },
           "400": {
-            "description": "The request is invalid",
+            "description": "The request is invalid, or the parent is itself or in another project",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -7161,7 +7286,17 @@
             }
           },
           "404": {
-            "description": "No project with this id is accessible to the caller",
+            "description": "No project or parent issue with this id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The parent already has a parent, or has subtasks of its own",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -7234,7 +7369,7 @@
       },
       "patch": {
         "summary": "Edit, close, or reopen an issue",
-        "description": "Contribute or Manage. Every field is optional. A title, body, assignee or priority change records an edit; a status change records a close or a reopen. Set `assignee` to `{\"type\":\"human\"|\"agent\",\"id\":\"...\"}` or null to clear it; the identity must be an active member or a registered agent in the workspace. A request that changes nothing returns the issue unchanged and records no event. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
+        "description": "Contribute or Manage. Every field is optional. A title, body, assignee or priority change records an edit; a status change records a close or a reopen; `parentIssueId` sets or clears a one-level parent in the same project. Set `assignee` to `{\"type\":\"human\"|\"agent\",\"id\":\"...\"}` or null to clear it; the identity must be an active member or a registered agent in the workspace. A request that changes nothing returns the issue unchanged and records no event. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
         "parameters": [
           {
             "schema": {
@@ -7269,7 +7404,7 @@
             }
           },
           "400": {
-            "description": "The request is invalid",
+            "description": "The request is invalid, or the parent is itself or in another project",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -7309,7 +7444,464 @@
             }
           },
           "409": {
-            "description": "The agent holds no live work session for this issue",
+            "description": "The parent already has a parent, or has subtasks of its own",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{projectId}/labels": {
+      "get": {
+        "summary": "The project's labels",
+        "description": "Read access is enough. Lists the project-scoped labels with their names, hex colors and creators. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The project's labels",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectLabelsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The project id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No project with this id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create a project-scoped label",
+        "description": "Contribute or Manage. A name is unique per project ignoring case, and a color is a six-digit hex value. The creation is recorded in the project's activity. A workspace-scoped agent API key is accepted on this project-work route.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProjectLabelRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The label, created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectLabel"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read access cannot create a label",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No project with this id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A label with that name already exists in this project",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/labels/{labelId}": {
+      "patch": {
+        "summary": "Rename or recolor a project label",
+        "description": "Contribute or Manage. Both fields are optional; a request that changes nothing records no event. A new name must stay unique in the project ignoring case. A workspace-scoped agent API key is accepted on this project-work route.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "labelId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateProjectLabelRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The label after the change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectLabel"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read access cannot change a label",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No label with this id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A label with that name already exists in this project",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete a project label",
+        "description": "Contribute or Manage. Deleting detaches the label from every issue. A workspace-scoped agent API key is accepted on this project-work route.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "labelId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The label is gone"
+          },
+          "400": {
+            "description": "The label id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read access cannot delete a label",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No label with this id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issues/{issueId}/labels/{labelId}": {
+      "post": {
+        "summary": "Attach a label to an issue",
+        "description": "Contribute or Manage. The label must belong to the issue's project. Attaching a label that is already attached is a no-op. Answers with the issue and its labels. A workspace-scoped agent API key is accepted on this project-work route.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "issueId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "labelId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "The issue with its labels",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Issue"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The issue or label id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read access cannot change an issue's labels",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No issue or label with this id is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Detach a label from an issue",
+        "description": "Contribute or Manage. Detaching a label that is not attached is a no-op. Answers with the issue and its labels. A workspace-scoped agent API key is accepted on this project-work route.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "issueId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "labelId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The issue with its labels",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Issue"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The issue or label id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read access cannot change an issue's labels",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No issue or label with this id is accessible to the caller",
             "content": {
               "application/problem+json": {
                 "schema": {

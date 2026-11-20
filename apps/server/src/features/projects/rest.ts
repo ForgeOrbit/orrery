@@ -6,6 +6,7 @@ import {
   CreateIssueLinkRequest,
   CreateIssueRequest,
   CreateKnowledgeEntryRequest,
+  CreateProjectLabelRequest,
   CreateProjectRequest,
   Issue,
   IssueComment,
@@ -20,12 +21,15 @@ import {
   ProjectAccessGrant,
   ProjectAccessGrantsResponse,
   ProjectActivityResponse,
+  ProjectLabel,
+  ProjectLabelsResponse,
   ProjectsResponse,
   SetIssueFallbackPolicyRequest,
   SetProjectAccessRequest,
   SetProjectFallbackPolicyRequest,
   UpdateIssueRequest,
   UpdateKnowledgeEntryRequest,
+  UpdateProjectLabelRequest,
   UpdateProjectRequest,
 } from "@orrery/contract";
 import {
@@ -45,6 +49,8 @@ const dependencyParams = issueParams.extend({
   blockedByIssueId: z.string().min(1).max(200),
 });
 const linkParams = issueParams.extend({ linkId: z.string().min(1).max(200) });
+const labelParams = z.object({ labelId: z.string().min(1).max(200) });
+const issueLabelParams = issueParams.extend({ labelId: z.string().min(1).max(200) });
 const knowledgeParams = z.object({ entryId: z.string().min(1).max(200) });
 const accessParams = projectParams.extend({ humanId: z.string().min(1).max(200) });
 
@@ -247,7 +253,7 @@ const createIssue = createRoute({
   path: "/api/projects/{projectId}/issues",
   summary: "Create an issue in a project",
   description:
-    "Contribute or Manage. The issue gets the project's next local number, starts open, and records its creator. The creation is recorded in the project's activity. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
+    "Contribute or Manage. The issue gets the project's next local number, starts ready work, and records its creator. An optional `parentIssueId` creates a one-level subtask in the same project; it cannot be self, cross-project, or a second nesting level. The creation is recorded in the project's activity. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key's effective project access.",
   request: {
     params: projectParams,
     body: { required: true, content: { "application/json": { schema: CreateIssueRequest } } },
@@ -257,12 +263,13 @@ const createIssue = createRoute({
       description: "The issue, open",
       content: { "application/json": { schema: Issue } },
     },
-    400: problem("The request is invalid"),
+    400: problem("The request is invalid, or the parent is itself or in another project"),
     401: problem(
       "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
     ),
     403: problem("Read access cannot create an issue"),
-    404: problem("No project with this id is accessible to the caller"),
+    404: problem("No project or parent issue with this id is accessible to the caller"),
+    409: problem("The parent already has a parent, or has subtasks of its own"),
   },
 });
 
@@ -291,7 +298,7 @@ const updateIssue = createRoute({
   path: "/api/issues/{issueId}",
   summary: "Edit, close, or reopen an issue",
   description:
-    'Contribute or Manage. Every field is optional. A title, body, assignee or priority change records an edit; a status change records a close or a reopen. Set `assignee` to `{"type":"human"|"agent","id":"..."}` or null to clear it; the identity must be an active member or a registered agent in the workspace. A request that changes nothing returns the issue unchanged and records no event. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key\'s effective project access.',
+    'Contribute or Manage. Every field is optional. A title, body, assignee or priority change records an edit; a status change records a close or a reopen; `parentIssueId` sets or clears a one-level parent in the same project. Set `assignee` to `{"type":"human"|"agent","id":"..."}` or null to clear it; the identity must be an active member or a registered agent in the workspace. A request that changes nothing returns the issue unchanged and records no event. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route and acts as the agent the key identifies, with the key\'s effective project access.',
   request: {
     params: issueParams,
     body: { required: true, content: { "application/json": { schema: UpdateIssueRequest } } },
@@ -301,7 +308,7 @@ const updateIssue = createRoute({
       description: "The issue after the change",
       content: { "application/json": { schema: Issue } },
     },
-    400: problem("The request is invalid"),
+    400: problem("The request is invalid, or the parent is itself or in another project"),
     401: problem(
       "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
     ),
@@ -309,7 +316,143 @@ const updateIssue = createRoute({
     404: problem(
       "No issue with this id is accessible to the caller, or the assignee is unknown or inactive in the workspace",
     ),
-    409: problem("The agent holds no live work session for this issue"),
+    409: problem("The parent already has a parent, or has subtasks of its own"),
+  },
+});
+
+const listLabels = createRoute({
+  method: "get",
+  path: "/api/projects/{projectId}/labels",
+  summary: "The project's labels",
+  description:
+    "Read access is enough. Lists the project-scoped labels with their names, hex colors and creators. A workspace-scoped agent API key sent as `Authorization: Bearer <key>` is accepted on this project-work route.",
+  request: { params: projectParams },
+  responses: {
+    200: {
+      description: "The project's labels",
+      content: { "application/json": { schema: ProjectLabelsResponse } },
+    },
+    400: problem("The project id is invalid"),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
+    404: problem("No project with this id is accessible to the caller"),
+  },
+});
+
+const createLabel = createRoute({
+  method: "post",
+  path: "/api/projects/{projectId}/labels",
+  summary: "Create a project-scoped label",
+  description:
+    "Contribute or Manage. A name is unique per project ignoring case, and a color is a six-digit hex value. The creation is recorded in the project's activity. A workspace-scoped agent API key is accepted on this project-work route.",
+  request: {
+    params: projectParams,
+    body: {
+      required: true,
+      content: { "application/json": { schema: CreateProjectLabelRequest } },
+    },
+  },
+  responses: {
+    201: {
+      description: "The label, created",
+      content: { "application/json": { schema: ProjectLabel } },
+    },
+    400: problem("The request is invalid"),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
+    403: problem("Read access cannot create a label"),
+    404: problem("No project with this id is accessible to the caller"),
+    409: problem("A label with that name already exists in this project"),
+  },
+});
+
+const updateLabel = createRoute({
+  method: "patch",
+  path: "/api/labels/{labelId}",
+  summary: "Rename or recolor a project label",
+  description:
+    "Contribute or Manage. Both fields are optional; a request that changes nothing records no event. A new name must stay unique in the project ignoring case. A workspace-scoped agent API key is accepted on this project-work route.",
+  request: {
+    params: labelParams,
+    body: {
+      required: true,
+      content: { "application/json": { schema: UpdateProjectLabelRequest } },
+    },
+  },
+  responses: {
+    200: {
+      description: "The label after the change",
+      content: { "application/json": { schema: ProjectLabel } },
+    },
+    400: problem("The request is invalid"),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
+    403: problem("Read access cannot change a label"),
+    404: problem("No label with this id is accessible to the caller"),
+    409: problem("A label with that name already exists in this project"),
+  },
+});
+
+const deleteLabel = createRoute({
+  method: "delete",
+  path: "/api/labels/{labelId}",
+  summary: "Delete a project label",
+  description:
+    "Contribute or Manage. Deleting detaches the label from every issue. A workspace-scoped agent API key is accepted on this project-work route.",
+  request: { params: labelParams },
+  responses: {
+    204: { description: "The label is gone" },
+    400: problem("The label id is invalid"),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
+    403: problem("Read access cannot delete a label"),
+    404: problem("No label with this id is accessible to the caller"),
+  },
+});
+
+const attachIssueLabel = createRoute({
+  method: "post",
+  path: "/api/issues/{issueId}/labels/{labelId}",
+  summary: "Attach a label to an issue",
+  description:
+    "Contribute or Manage. The label must belong to the issue's project. Attaching a label that is already attached is a no-op. Answers with the issue and its labels. A workspace-scoped agent API key is accepted on this project-work route.",
+  request: { params: issueLabelParams },
+  responses: {
+    201: {
+      description: "The issue with its labels",
+      content: { "application/json": { schema: Issue } },
+    },
+    400: problem("The issue or label id is invalid"),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
+    403: problem("Read access cannot change an issue's labels"),
+    404: problem("No issue or label with this id is accessible to the caller"),
+  },
+});
+
+const detachIssueLabel = createRoute({
+  method: "delete",
+  path: "/api/issues/{issueId}/labels/{labelId}",
+  summary: "Detach a label from an issue",
+  description:
+    "Contribute or Manage. Detaching a label that is not attached is a no-op. Answers with the issue and its labels. A workspace-scoped agent API key is accepted on this project-work route.",
+  request: { params: issueLabelParams },
+  responses: {
+    200: {
+      description: "The issue with its labels",
+      content: { "application/json": { schema: Issue } },
+    },
+    400: problem("The issue or label id is invalid"),
+    401: problem(
+      "Not signed in, or the agent key is invalid, revoked, expired, or unusable in its workspace",
+    ),
+    403: problem("Read access cannot change an issue's labels"),
+    404: problem("No issue or label with this id is accessible to the caller"),
   },
 });
 
@@ -644,6 +787,12 @@ export const routes = [
   createIssue,
   getIssue,
   updateIssue,
+  listLabels,
+  createLabel,
+  updateLabel,
+  deleteLabel,
+  attachIssueLabel,
+  detachIssueLabel,
   setIssueFallbackPolicyOverride,
   addBlockedBy,
   removeBlockedBy,
@@ -681,6 +830,11 @@ const statusFor = {
   assignee_not_found: 404,
   project_key_taken: 409,
   project_key_immutable: 409,
+  label_not_found: 404,
+  label_exists: 409,
+  self_parent: 400,
+  cross_project_parent: 400,
+  subtask_depth_exceeded: 409,
 } as const satisfies Record<ProjectsErrorKind, number>;
 
 function isKind<K extends readonly ProjectsErrorKind[]>(
@@ -713,6 +867,36 @@ const issueWriteKinds = [
   "insufficient_project_access",
   "session_required",
   "assignee_not_found",
+  "self_parent",
+  "cross_project_parent",
+  "subtask_depth_exceeded",
+] as const;
+// Creating an issue can name a parent, so it can answer with a missing or invalid parent.
+const issueCreateKinds = [
+  ...projectWriteKinds,
+  "issue_not_found",
+  "self_parent",
+  "cross_project_parent",
+  "subtask_depth_exceeded",
+] as const;
+const labelReadKinds = ["not_signed_in", "project_not_found"] as const;
+const labelWriteKinds = [...labelReadKinds, "insufficient_project_access", "label_exists"] as const;
+const labelByIdWriteKinds = [
+  "not_signed_in",
+  "label_not_found",
+  "insufficient_project_access",
+  "label_exists",
+] as const;
+const labelByIdDeleteKinds = [
+  "not_signed_in",
+  "label_not_found",
+  "insufficient_project_access",
+] as const;
+const issueLabelWriteKinds = [
+  "not_signed_in",
+  "issue_not_found",
+  "label_not_found",
+  "insufficient_project_access",
 ] as const;
 // Comments, creation and knowledge stay unfenced (#20), so their failure set has no
 // session_required and their routes need no 409 response.
@@ -877,7 +1061,7 @@ export function createProjectsRest(
         201,
       );
     } catch (error) {
-      return failure(c, error, projectWriteKinds);
+      return failure(c, error, issueCreateKinds);
     }
   });
 
@@ -899,6 +1083,67 @@ export function createProjectsRest(
       );
     } catch (error) {
       return failure(c, error, issueWriteKinds);
+    }
+  });
+
+  app.openapi(listLabels, async (c) => {
+    try {
+      const { projectId } = c.req.valid("param");
+      return c.json(await service.listLabels(await workActor(c), projectId), 200);
+    } catch (error) {
+      return failure(c, error, labelReadKinds);
+    }
+  });
+
+  app.openapi(createLabel, async (c) => {
+    try {
+      const { projectId } = c.req.valid("param");
+      return c.json(
+        await service.createLabel(await workActor(c), projectId, c.req.valid("json")),
+        201,
+      );
+    } catch (error) {
+      return failure(c, error, labelWriteKinds);
+    }
+  });
+
+  app.openapi(updateLabel, async (c) => {
+    try {
+      const { labelId } = c.req.valid("param");
+      return c.json(
+        await service.updateLabel(await workActor(c), labelId, c.req.valid("json")),
+        200,
+      );
+    } catch (error) {
+      return failure(c, error, labelByIdWriteKinds);
+    }
+  });
+
+  app.openapi(deleteLabel, async (c) => {
+    try {
+      const { labelId } = c.req.valid("param");
+      await service.deleteLabel(await workActor(c), labelId);
+      return c.body(null, 204);
+    } catch (error) {
+      return failure(c, error, labelByIdDeleteKinds);
+    }
+  });
+
+  app.openapi(attachIssueLabel, async (c) => {
+    try {
+      const { issueId, labelId } = c.req.valid("param");
+      return c.json(await service.attachLabel(await workActor(c), issueId, labelId), 201);
+    } catch (error) {
+      return failure(c, error, issueLabelWriteKinds);
+    }
+  });
+
+  app.openapi(detachIssueLabel, async (c) => {
+    try {
+      const { issueId, labelId } = c.req.valid("param");
+      return c.json(await service.detachLabel(await workActor(c), issueId, labelId), 200);
+    } catch (error) {
+      return failure(c, error, issueLabelWriteKinds);
     }
   });
 

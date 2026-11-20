@@ -197,6 +197,8 @@ describe("projects", () => {
       await tx.execute(sql`delete from agent_api_keys`);
       await tx.execute(sql`delete from agents`);
       await tx.execute(sql`delete from issue_dependencies`);
+      await tx.execute(sql`delete from issue_labels`);
+      await tx.execute(sql`delete from project_labels`);
       await tx.execute(sql`delete from issue_links`);
       await tx.execute(sql`delete from issue_comments`);
       await tx.execute(sql`delete from knowledge_entries`);

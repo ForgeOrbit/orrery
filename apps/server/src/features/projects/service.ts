@@ -16,6 +16,7 @@ import {
   type CreateIssueLinkRequest,
   type CreateIssueRequest,
   type CreateKnowledgeEntryRequest,
+  type CreateProjectLabelRequest,
   type CreateProjectRequest,
   type Issue,
   type IssueComment,
@@ -29,11 +30,13 @@ import {
   type ProjectAccessGrant,
   type ProjectActivity,
   type ProjectActivityType,
+  type ProjectLabel,
   type SetIssueFallbackPolicyRequest,
   type SetProjectAccessRequest,
   type SetProjectFallbackPolicyRequest,
   type UpdateIssueRequest,
   type UpdateKnowledgeEntryRequest,
+  type UpdateProjectLabelRequest,
   type UpdateProjectRequest,
 } from "@orrery/contract";
 import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
@@ -47,12 +50,14 @@ import {
   humans,
   issueComments,
   issueDependencies,
+  issueLabels,
   issueLinks,
   issues,
   knowledgeEntries,
   projectAccessEvents,
   projectAccessGrants,
   projectActivity,
+  projectLabels,
   projects,
   questions,
   workspaceMemberships,
@@ -86,7 +91,12 @@ export type ProjectsErrorKind =
   | "dependency_cycle"
   | "assignee_not_found"
   | "project_key_taken"
-  | "project_key_immutable";
+  | "project_key_immutable"
+  | "label_not_found"
+  | "label_exists"
+  | "self_parent"
+  | "cross_project_parent"
+  | "subtask_depth_exceeded";
 
 const messages = {
   not_signed_in: "Not signed in.",
@@ -108,6 +118,12 @@ const messages = {
   assignee_not_found: "No active member or registered agent in this workspace has that id.",
   project_key_taken: "Another project in this workspace already uses that key.",
   project_key_immutable: "A project's key cannot be changed after it is created.",
+  label_not_found: "This label does not exist on the project.",
+  label_exists: "A label with that name already exists in this project.",
+  self_parent: "An issue cannot be its own parent.",
+  cross_project_parent: "A subtask and its parent must belong to the same project.",
+  subtask_depth_exceeded:
+    "Maximum subtask depth is one: a subtask cannot have children, and an issue with subtasks cannot become a subtask.",
 } as const satisfies Record<ProjectsErrorKind, string>;
 
 const ACCESS_RANK: Record<ProjectAccessLevel, number> = {
@@ -394,6 +410,7 @@ const knowledgeCreator = alias(humans, "knowledge_creator");
 const knowledgeEditor = alias(humans, "knowledge_editor");
 const activityActor = alias(humans, "activity_actor");
 const accessGrantor = alias(humans, "access_grantor");
+const labelCreator = alias(humans, "label_creator");
 // Agent aliases mirror the human aliases above; a row's actor column decides which one
 // carries the identity. Left joins keep agent-authored rows in the same query.
 const issueAgentCreator = alias(agents, "issue_agent_creator");
@@ -407,6 +424,7 @@ const linkAgentCreator = alias(agents, "link_agent_creator");
 const knowledgeAgentCreator = alias(agents, "knowledge_agent_creator");
 const knowledgeAgentEditor = alias(agents, "knowledge_agent_editor");
 const activityAgentActor = alias(agents, "activity_agent_actor");
+const labelAgentCreator = alias(agents, "label_agent_creator");
 // A dependency edge keeps who added it; both aliases are needed to render that actor.
 const dependencyHumanCreator = alias(humans, "dependency_human_creator");
 const dependencyAgentCreator = alias(agents, "dependency_agent_creator");
@@ -447,6 +465,7 @@ const issueColumns = {
   priority: issues.priority,
   sortOrder: issues.sortOrder,
   needsInput: issues.needsInput,
+  parentIssueId: issues.parentIssueId,
   assigneeType: issues.assigneeType,
   assigneeId: issues.assigneeId,
   assigneeHumanEmail: assigneeHuman.email,
@@ -575,6 +594,7 @@ type IssueRow = {
   priority: IssuePriority;
   sortOrder: number;
   needsInput: boolean;
+  parentIssueId: string | null;
   assigneeType: AssigneeType | null;
   assigneeId: string | null;
   assigneeHumanEmail: string | null;
@@ -706,7 +726,7 @@ function toProjectGrant(row: ProjectGrantRow): ProjectAccessGrant {
   };
 }
 
-function toIssue(row: IssueRow): Issue {
+function toIssue(row: IssueRow, labels: ProjectLabel[] = []): Issue {
   return {
     id: row.id,
     projectId: row.projectId,
@@ -724,6 +744,8 @@ function toIssue(row: IssueRow): Issue {
     closedAt: row.closedAt?.toISOString() ?? null,
     fallbackPolicyOverride: row.fallbackPolicyOverride,
     effectiveFallbackPolicy: row.fallbackPolicyOverride ?? row.projectFallbackPolicy,
+    parentIssueId: row.parentIssueId,
+    labels,
     createdBy: actorFromRow(
       row.createdByHumanId,
       row.createdByEmail,
@@ -746,6 +768,52 @@ function toIssueDependency(row: IssueDependencyRow): IssueDependency {
     issueId: row.issueId,
     blockedByIssueId: row.blockedByIssueId,
     createdAt: row.createdAt.toISOString(),
+    createdBy: actorFromRow(
+      row.createdByHumanId,
+      row.createdByEmail,
+      row.createdByAgentId,
+      row.createdByAgentName,
+      row.createdByDeactivatedAt,
+    ),
+  };
+}
+
+type LabelRow = {
+  id: string;
+  projectId: string;
+  name: string;
+  color: string;
+  createdAt: Date;
+  updatedAt: Date;
+  createdByHumanId: string | null;
+  createdByEmail: string | null;
+  createdByDeactivatedAt: Date | null;
+  createdByAgentId: string | null;
+  createdByAgentName: string | null;
+};
+
+const labelColumns = {
+  id: projectLabels.id,
+  projectId: projectLabels.projectId,
+  name: projectLabels.name,
+  color: projectLabels.color,
+  createdAt: projectLabels.createdAt,
+  updatedAt: projectLabels.updatedAt,
+  createdByHumanId: projectLabels.createdByHumanId,
+  createdByEmail: labelCreator.email,
+  createdByDeactivatedAt: labelCreator.deactivatedAt,
+  createdByAgentId: projectLabels.createdByAgentId,
+  createdByAgentName: labelAgentCreator.name,
+};
+
+function toProjectLabel(row: LabelRow): ProjectLabel {
+  return {
+    id: row.id,
+    projectId: row.projectId,
+    name: row.name,
+    color: row.color,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
     createdBy: actorFromRow(
       row.createdByHumanId,
       row.createdByEmail,
@@ -996,6 +1064,122 @@ async function requireIssue(
   return { ...row, accessLevel: requireLevel(row, actor, required, "issue_not_found") };
 }
 
+// #97: the labels of several issues in one query, so listing a board never pays one query
+// per card. The grouped map is keyed by issue id and ordered by label name then id.
+async function loadLabelsForIssues(
+  tx: DbTransaction,
+  issueIds: readonly string[],
+): Promise<Map<string, ProjectLabel[]>> {
+  const grouped = new Map<string, ProjectLabel[]>();
+  if (issueIds.length === 0) return grouped;
+  const rows = await tx
+    .select({ issueId: issueLabels.issueId, ...labelColumns })
+    .from(issueLabels)
+    .innerJoin(projectLabels, eq(projectLabels.id, issueLabels.labelId))
+    .leftJoin(labelCreator, eq(labelCreator.id, projectLabels.createdByHumanId))
+    .leftJoin(labelAgentCreator, eq(labelAgentCreator.id, projectLabels.createdByAgentId))
+    .where(inArray(issueLabels.issueId, [...issueIds]))
+    .orderBy(projectLabels.name, projectLabels.id);
+  for (const row of rows) {
+    const list = grouped.get(row.issueId) ?? [];
+    list.push(toProjectLabel(row));
+    grouped.set(row.issueId, list);
+  }
+  return grouped;
+}
+
+async function loadIssueLabels(tx: DbTransaction, issueId: string): Promise<ProjectLabel[]> {
+  const grouped = await loadLabelsForIssues(tx, [issueId]);
+  return grouped.get(issueId) ?? [];
+}
+
+// A label and the caller's effective access to its project, resolved by the same gates as
+// every other project object. No access answers exactly like a missing label.
+async function requireLabel(
+  tx: DbTransaction,
+  labelId: string,
+  actor: WorkActor,
+  required: ProjectAccessLevel,
+) {
+  const membershipMatch = humanIdMatch(actor, "membership");
+  const grantMatch = humanIdMatch(actor, "grant");
+  const [row] = await tx
+    .select({
+      ...labelColumns,
+      workspaceKind: workspaces.kind,
+      personalOwnerHumanId: workspaces.personalOwnerHumanId,
+      membershipIsOwner: workspaceMemberships.isOwner,
+      grantLevel: projectAccessGrants.level,
+      workspaceId: projects.workspaceId,
+    })
+    .from(projectLabels)
+    .innerJoin(projects, eq(projects.id, projectLabels.projectId))
+    .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
+    .leftJoin(labelCreator, eq(labelCreator.id, projectLabels.createdByHumanId))
+    .leftJoin(labelAgentCreator, eq(labelAgentCreator.id, projectLabels.createdByAgentId))
+    .leftJoin(
+      workspaceMemberships,
+      and(eq(workspaceMemberships.workspaceId, projects.workspaceId), membershipMatch),
+    )
+    .leftJoin(projectAccessGrants, and(eq(projectAccessGrants.projectId, projects.id), grantMatch))
+    .where(eq(projectLabels.id, labelId))
+    .limit(1);
+
+  if (row === undefined) throw new ProjectsError("label_not_found");
+  const facts = {
+    workspaceKind: WorkspaceKind.parse(row.workspaceKind),
+    personalOwnerHumanId: row.personalOwnerHumanId,
+    membershipIsOwner: row.membershipIsOwner,
+    grantLevel: row.grantLevel === null ? null : ProjectAccessLevel.parse(row.grantLevel),
+    projectId: row.projectId,
+    workspaceId: row.workspaceId,
+  };
+  return { ...row, ...facts, accessLevel: requireLevel(facts, actor, required, "label_not_found") };
+}
+
+// #97: lock the project row first (global projects -> issues order) and then the issue and
+// its would-be parent in ascending id order, so two concurrent reparentings cannot both
+// read an old tree and commit a second level. The database trigger repeats the check under
+// the same locks for writers that bypass this service.
+async function lockSubtaskWrite(
+  tx: DbTransaction,
+  projectId: string,
+  issueId: string,
+  parentIssueId: string,
+) {
+  await lockProjectForMutation(tx, projectId);
+  await tx
+    .select({ id: issues.id })
+    .from(issues)
+    .where(inArray(issues.id, [issueId, parentIssueId].toSorted()))
+    .orderBy(issues.id)
+    .for("update");
+}
+
+// #97: all three subtree rules in one place, called under lockSubtaskWrite's locks.
+async function validateParent(
+  tx: DbTransaction,
+  projectId: string,
+  issueId: string,
+  parentIssueId: string,
+): Promise<void> {
+  if (issueId === parentIssueId) throw new ProjectsError("self_parent");
+  const [parent] = await tx
+    .select({ projectId: issues.projectId, parentIssueId: issues.parentIssueId })
+    .from(issues)
+    .where(eq(issues.id, parentIssueId))
+    .limit(1);
+  if (parent === undefined) throw new ProjectsError("issue_not_found");
+  if (parent.projectId !== projectId) throw new ProjectsError("cross_project_parent");
+  if (parent.parentIssueId !== null) throw new ProjectsError("subtask_depth_exceeded");
+  const [child] = await tx
+    .select({ id: issues.id })
+    .from(issues)
+    .where(eq(issues.parentIssueId, issueId))
+    .limit(1);
+  if (child !== undefined) throw new ProjectsError("subtask_depth_exceeded");
+}
+
 // #84: resolve and validate an assignee in the caller's transaction. The locks are taken
 // in Orrery's shared M22 order — account (KEY SHARE), membership (KEY SHARE) — BEFORE the
 // caller locks the issue, so a deactivation or member removal that commits first is seen
@@ -1123,7 +1307,13 @@ async function requireKnowledge(
 type RecordActivityInput =
   | {
       projectId: string;
-      type: "project_created" | "project_renamed" | "project_fallback_policy_changed";
+      type:
+        | "project_created"
+        | "project_renamed"
+        | "project_fallback_policy_changed"
+        | "project_label_created"
+        | "project_label_edited"
+        | "project_label_deleted";
       actor: WorkActor;
       summary: string;
     }
@@ -1139,7 +1329,10 @@ type RecordActivityInput =
         | "issue_dependency_added"
         | "issue_dependency_removed"
         | "issue_link_added"
-        | "issue_link_removed";
+        | "issue_link_removed"
+        | "issue_label_added"
+        | "issue_label_removed"
+        | "issue_parent_changed";
       actor: WorkActor;
       summary: string;
       issueId: string;
@@ -1467,6 +1660,23 @@ export interface ProjectsService {
     input: CreateIssueRequest,
   ): Promise<Issue>;
   updateIssue(actor: WorkActor | null, issueId: string, input: UpdateIssueRequest): Promise<Issue>;
+  // Project-scoped labels (#97). Creating, editing, deleting and attaching need Contribute;
+  // listing needs Read. Attaching and detaching answer with the whole issue so a caller can
+  // see its labels in the same shape every issue reader returns.
+  listLabels(actor: WorkActor | null, projectId: string): Promise<ProjectLabel[]>;
+  createLabel(
+    actor: WorkActor | null,
+    projectId: string,
+    input: CreateProjectLabelRequest,
+  ): Promise<ProjectLabel>;
+  updateLabel(
+    actor: WorkActor | null,
+    labelId: string,
+    input: UpdateProjectLabelRequest,
+  ): Promise<ProjectLabel>;
+  deleteLabel(actor: WorkActor | null, labelId: string): Promise<void>;
+  attachLabel(actor: WorkActor | null, issueId: string, labelId: string): Promise<Issue>;
+  detachLabel(actor: WorkActor | null, issueId: string, labelId: string): Promise<Issue>;
   // Directed blocked_by edges (#86). Modifying an edge needs Contribute; either direction
   // can be listed with Read. Both issues must be in the same project.
   addBlockedBy(
@@ -1538,7 +1748,11 @@ export function createProjectsService({
           )
           .where(eq(issues.projectId, projectId))
           .orderBy(...issueBoardOrder);
-        return rows.map(toIssue);
+        const labels = await loadLabelsForIssues(
+          tx,
+          rows.map((row) => row.id),
+        );
+        return rows.map((row) => toIssue(row, labels.get(row.id) ?? []));
       },
       { accessMode: "read only" },
     );
@@ -2089,7 +2303,8 @@ export function createProjectsService({
       return db.transaction(
         async (tx) => {
           const issue = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.read);
-          return { ...toIssue(issue), links: await loadIssueLinks(tx, issueId) };
+          const labels = await loadIssueLabels(tx, issueId);
+          return { ...toIssue(issue, labels), links: await loadIssueLinks(tx, issueId) };
         },
         { accessMode: "read only" },
       );
@@ -2118,12 +2333,20 @@ export function createProjectsService({
         // triage staging area. A terminal status at creation still gets closed_at so the
         // database invariant holds, even though callers normally reach it via a transition.
         const status = input.status ?? IssueStatus.enum.todo;
+        const parentIssueId = input.parentIssueId ?? null;
+        if (parentIssueId !== null) {
+          // The counter update above already holds the project row. Lock the parent issue
+          // too, then validate every subtree rule under that lock.
+          await lockSubtaskWrite(tx, projectId, id, parentIssueId);
+          await validateParent(tx, projectId, id, parentIssueId);
+        }
         const [created] = await tx
           .insert(issues)
           .values({
             id,
             projectId,
             number: counter.number,
+            parentIssueId,
             title: input.title,
             body: input.body ?? "",
             status,
@@ -2171,6 +2394,8 @@ export function createProjectsService({
           sortOrder: created.sortOrder,
           needsInput: false,
           assignee: null,
+          parentIssueId,
+          labels: [],
           createdAt: created.createdAt.toISOString(),
           updatedAt: created.updatedAt.toISOString(),
           closedAt: created.closedAt === null ? null : created.closedAt.toISOString(),
@@ -2192,7 +2417,7 @@ export function createProjectsService({
       const target = await db.transaction(
         async (tx) => {
           const issue = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
-          return { workspaceId: issue.workspaceId };
+          return { workspaceId: issue.workspaceId, projectId: issue.projectId };
         },
         { accessMode: "read only" },
       );
@@ -2205,8 +2430,27 @@ export function createProjectsService({
             : await validateAssignee(tx, target.workspaceId, input.assignee);
         // Serialize concurrent updates to the same issue so two PATCHes cannot lose
         // each other's changes or diverge the activity feed from the issue's status.
-        await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issueId)).for("update");
+        // #97: setting a parent also locks the project row first and both issue rows in
+        // ascending id order, matching the global projects -> issues lock order so two
+        // reparentings cannot race past the depth check.
+        const requestedParent = input.parentIssueId;
+        if (requestedParent !== undefined && requestedParent !== null) {
+          await lockSubtaskWrite(tx, target.projectId, issueId, requestedParent);
+        } else {
+          await tx
+            .select({ id: issues.id })
+            .from(issues)
+            .where(eq(issues.id, issueId))
+            .for("update");
+        }
         const current = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
+        let parentChanged = false;
+        if (requestedParent !== undefined && requestedParent !== null) {
+          await validateParent(tx, current.projectId, issueId, requestedParent);
+          parentChanged = requestedParent !== current.parentIssueId;
+        } else if (requestedParent === null) {
+          parentChanged = current.parentIssueId !== null;
+        }
         // #84: the access precheck and the assignee validation ran in separate committed
         // transactions. A project transfer that committed between them may have moved the
         // issue to another workspace; recheck under the issue lock so a source-workspace
@@ -2251,9 +2495,10 @@ export function createProjectsService({
           !statusChanged &&
           !priorityChanged &&
           !orderChanged &&
-          !assigneeChanged
+          !assigneeChanged &&
+          !parentChanged
         ) {
-          return toIssue(current);
+          return toIssue(current, await loadIssueLabels(tx, issueId));
         }
 
         const terminalNow = isTerminalIssueStatus(status);
@@ -2275,6 +2520,8 @@ export function createProjectsService({
             sortOrder,
             assigneeType,
             assigneeId,
+            // Omitting the field keeps the current parent; an explicit null clears it.
+            parentIssueId: requestedParent === undefined ? current.parentIssueId : requestedParent,
             updatedByHumanId: humanIdOf(actor),
             updatedByAgentId: agentIdOf(actor),
             updatedAt: sql`statement_timestamp()`,
@@ -2311,6 +2558,15 @@ export function createProjectsService({
             summary: title,
           });
         }
+        if (parentChanged) {
+          await recordActivity(tx, {
+            projectId: current.projectId,
+            type: "issue_parent_changed",
+            actor,
+            issueId,
+            summary: title,
+          });
+        }
         return {
           id: current.id,
           projectId: current.projectId,
@@ -2327,6 +2583,8 @@ export function createProjectsService({
               ? null
               : resolvedAssignee
             : assigneeFromRow(current),
+          parentIssueId: requestedParent === undefined ? current.parentIssueId : requestedParent,
+          labels: await loadIssueLabels(tx, issueId),
           createdAt: current.createdAt.toISOString(),
           updatedAt: updated.updatedAt.toISOString(),
           closedAt: updated.closedAt === null ? null : updated.closedAt.toISOString(),
@@ -2813,6 +3071,222 @@ export function createProjectsService({
           ),
           updatedBy: actorForWrite(actor),
         };
+      });
+    },
+
+    // --- Project-scoped labels (#97) -------------------------------------------------
+    // A label is project metadata, like a comment or a knowledge entry: creating or
+    // attaching it needs Contribute, listing needs Read, and no live work session fences it.
+
+    async listLabels(actorArg, projectId) {
+      const actor = requireActor(actorArg);
+      return db.transaction(
+        async (tx) => {
+          await requireProject(tx, projectId, actor, ProjectAccessLevel.enum.read);
+          const rows = await tx
+            .select(labelColumns)
+            .from(projectLabels)
+            .leftJoin(labelCreator, eq(labelCreator.id, projectLabels.createdByHumanId))
+            .leftJoin(labelAgentCreator, eq(labelAgentCreator.id, projectLabels.createdByAgentId))
+            .where(eq(projectLabels.projectId, projectId))
+            .orderBy(projectLabels.name, projectLabels.id);
+          return rows.map(toProjectLabel);
+        },
+        { accessMode: "read only" },
+      );
+    },
+
+    async createLabel(actorArg, projectId, input) {
+      const actor = requireActor(actorArg);
+      return db.transaction(async (tx) => {
+        await requireProject(tx, projectId, actor, ProjectAccessLevel.enum.contribute);
+        // A friendly check gives a stable code even before the expression index is reached;
+        // the index and the catch below decide a race between two concurrent creators.
+        const [existing] = await tx
+          .select({ id: projectLabels.id })
+          .from(projectLabels)
+          .where(
+            and(
+              eq(projectLabels.projectId, projectId),
+              sql`lower(${projectLabels.name}) = lower(${input.name})`,
+            ),
+          )
+          .limit(1);
+        if (existing !== undefined) throw new ProjectsError("label_exists");
+        const id = randomUUID();
+        let created:
+          | {
+              id: string;
+              projectId: string;
+              name: string;
+              color: string;
+              createdAt: Date;
+              updatedAt: Date;
+            }
+          | undefined;
+        try {
+          [created] = await tx
+            .insert(projectLabels)
+            .values({
+              id,
+              projectId,
+              name: input.name,
+              color: input.color,
+              createdByHumanId: humanIdOf(actor),
+              createdByAgentId: agentIdOf(actor),
+              createdAt: sql`statement_timestamp()`,
+              updatedAt: sql`statement_timestamp()`,
+            })
+            .returning({
+              id: projectLabels.id,
+              projectId: projectLabels.projectId,
+              name: projectLabels.name,
+              color: projectLabels.color,
+              createdAt: projectLabels.createdAt,
+              updatedAt: projectLabels.updatedAt,
+            });
+        } catch (error) {
+          if (uniqueConstraintName(error) === "one_label_name_per_project") {
+            throw new ProjectsError("label_exists");
+          }
+          throw error;
+        }
+        if (created === undefined) throw new Error("the label was not created");
+        await recordActivity(tx, {
+          projectId,
+          type: "project_label_created",
+          actor,
+          summary: created.name,
+        });
+        return {
+          id: created.id,
+          projectId: created.projectId,
+          name: created.name,
+          color: created.color,
+          createdAt: created.createdAt.toISOString(),
+          updatedAt: created.updatedAt.toISOString(),
+          createdBy: actorForWrite(actor),
+        };
+      });
+    },
+
+    async updateLabel(actorArg, labelId, input) {
+      const actor = requireActor(actorArg);
+      return db.transaction(async (tx) => {
+        await tx
+          .select({ id: projectLabels.id })
+          .from(projectLabels)
+          .where(eq(projectLabels.id, labelId))
+          .for("update");
+        const current = await requireLabel(tx, labelId, actor, ProjectAccessLevel.enum.contribute);
+        const name = input.name ?? current.name;
+        const color = input.color ?? current.color;
+        if (name === current.name && color === current.color) return toProjectLabel(current);
+        let updated: { updatedAt: Date } | undefined;
+        try {
+          [updated] = await tx
+            .update(projectLabels)
+            .set({
+              name,
+              color,
+              updatedAt: sql`statement_timestamp()`,
+            })
+            .where(eq(projectLabels.id, labelId))
+            .returning({ updatedAt: projectLabels.updatedAt });
+        } catch (error) {
+          if (uniqueConstraintName(error) === "one_label_name_per_project") {
+            throw new ProjectsError("label_exists");
+          }
+          throw error;
+        }
+        if (updated === undefined) throw new ProjectsError("label_not_found");
+        await recordActivity(tx, {
+          projectId: current.projectId,
+          type: "project_label_edited",
+          actor,
+          summary: name,
+        });
+        return {
+          ...toProjectLabel(current),
+          name,
+          color,
+          updatedAt: updated.updatedAt.toISOString(),
+        };
+      });
+    },
+
+    async deleteLabel(actorArg, labelId) {
+      const actor = requireActor(actorArg);
+      return db.transaction(async (tx) => {
+        const current = await requireLabel(tx, labelId, actor, ProjectAccessLevel.enum.contribute);
+        await tx.delete(projectLabels).where(eq(projectLabels.id, labelId));
+        await recordActivity(tx, {
+          projectId: current.projectId,
+          type: "project_label_deleted",
+          actor,
+          summary: current.name,
+        });
+      });
+    },
+
+    // A label on a foreign project answers exactly like a missing one: the caller is
+    // already authorized on the issue's project and learns nothing about the other.
+    async attachLabel(actorArg, issueId, labelId) {
+      const actor = requireActor(actorArg);
+      return db.transaction(async (tx) => {
+        const issue = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
+        const [label] = await tx
+          .select({ projectId: projectLabels.projectId, name: projectLabels.name })
+          .from(projectLabels)
+          .where(eq(projectLabels.id, labelId))
+          .limit(1);
+        if (label === undefined || label.projectId !== issue.projectId) {
+          throw new ProjectsError("label_not_found");
+        }
+        const inserted = await tx
+          .insert(issueLabels)
+          .values({ issueId, labelId })
+          .onConflictDoNothing()
+          .returning({ labelId: issueLabels.labelId });
+        if (inserted.length > 0) {
+          await recordActivity(tx, {
+            projectId: issue.projectId,
+            type: "issue_label_added",
+            actor,
+            issueId,
+            summary: `${issue.title} labelled ${label.name}`,
+          });
+        }
+        return { ...toIssue(issue, await loadIssueLabels(tx, issueId)) };
+      });
+    },
+
+    async detachLabel(actorArg, issueId, labelId) {
+      const actor = requireActor(actorArg);
+      return db.transaction(async (tx) => {
+        const issue = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
+        const [label] = await tx
+          .select({ projectId: projectLabels.projectId, name: projectLabels.name })
+          .from(projectLabels)
+          .where(eq(projectLabels.id, labelId))
+          .limit(1);
+        if (label === undefined || label.projectId !== issue.projectId) {
+          throw new ProjectsError("label_not_found");
+        }
+        const removed = await tx
+          .delete(issueLabels)
+          .where(and(eq(issueLabels.issueId, issueId), eq(issueLabels.labelId, labelId)))
+          .returning({ labelId: issueLabels.labelId });
+        if (removed.length > 0) {
+          await recordActivity(tx, {
+            projectId: issue.projectId,
+            type: "issue_label_removed",
+            actor,
+            issueId,
+            summary: `${issue.title} unlabelled ${label.name}`,
+          });
+        }
+        return { ...toIssue(issue, await loadIssueLabels(tx, issueId)) };
       });
     },
   };
