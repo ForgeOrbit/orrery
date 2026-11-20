@@ -1414,6 +1414,58 @@ describe("shared-to-shared project transfer against real Postgres", () => {
     await expectProblem(reused, 404, "transfer_invalid");
   });
 
+  it("applies a replacement key even when the source workspace already uses it", async () => {
+    const cookie = await cookieFor(ADMIN_EMAIL, ADMIN_PASSWORD);
+    const [admin] = await database.db
+      .select({ id: humans.id })
+      .from(humans)
+      .where(eq(humans.email, ADMIN_EMAIL));
+    if (admin === undefined) throw new Error("no admin");
+    const personal = await personalWorkspaceId(admin.id);
+    const moved = await createProjectWithKey(cookie, personal, "Moved project", "ORR");
+    // ORR2 is free in the destination but already taken in the source. A separate key
+    // UPDATE would hit the source's unique index before the workspaceId moved.
+    await createProjectWithKey(cookie, personal, "Source neighbour", "ORR2");
+    const dest = await createSharedWorkspace(cookie, "Destination with ORR", ADMIN_EMAIL);
+    await createProjectWithKey(cookie, dest.workspaceId, "Destination project", "ORR");
+
+    const res = await completeWithKey(cookie, moved.id, dest.workspaceId, "ORR2");
+    expect(res.status).toBe(200);
+    expect(await getProject(cookie, moved.id)).toMatchObject({
+      workspaceId: dest.workspaceId,
+      key: "ORR2",
+    });
+    const [neighbour] = await database.db
+      .select({ workspaceId: projects.workspaceId, key: projects.key })
+      .from(projects)
+      .where(eq(projects.name, "Source neighbour"));
+    expect(neighbour).toMatchObject({ workspaceId: personal, key: "ORR2" });
+  });
+
+  it("refuses a replacement key when the transferred key does not collide", async () => {
+    const s = await source();
+    await database.db.update(projects).set({ key: "FREE" }).where(eq(projects.id, s.project.id));
+    const dest = await createSharedWorkspace(s.cookie, "No collision Team", ADMIN_EMAIL);
+
+    // A key rename is only a collision-resolution tool, not an ordinary update path.
+    await expectProblem(
+      await completeWithKey(s.cookie, s.project.id, dest.workspaceId, "OTHER"),
+      409,
+      "project_key_immutable",
+    );
+    expect(await getProject(s.cookie, s.project.id)).toMatchObject({
+      workspaceId: s.workspaceId,
+      key: "FREE",
+    });
+    // Without the extra key the transfer still succeeds.
+    const res = await complete(s.cookie, s.project.id, dest.workspaceId);
+    expect(res.status).toBe(200);
+    expect(await getProject(s.cookie, s.project.id)).toMatchObject({
+      workspaceId: dest.workspaceId,
+      key: "FREE",
+    });
+  });
+
   it("blocks a shared-to-shared transfer while a claim is live in database time", async () => {
     const sourceW1 = await sharedSource("W1 Busy");
     const destW2 = await createSharedWorkspace(sourceW1.cookie, "W2 Busy", ADMIN_EMAIL);

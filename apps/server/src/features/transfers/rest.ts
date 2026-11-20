@@ -162,6 +162,7 @@ const statusFor = {
   source_authority_lost: 409,
   active_work: 409,
   project_key_conflict: 409,
+  project_key_immutable: 409,
 } as const satisfies Record<TransfersErrorKind, number>;
 
 function isKind<K extends readonly TransfersErrorKind[]>(
@@ -190,6 +191,7 @@ const acceptKinds = [
   "source_authority_lost",
   "active_work",
   "project_key_conflict",
+  "project_key_immutable",
 ] as const;
 
 function failure<K extends readonly TransfersErrorKind[]>(c: Context, error: unknown, kinds: K) {

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -10,7 +11,10 @@ import { migrate } from "../../platform/migrate.ts";
 // each row with a valid, workspace-unique key before NOT NULL and the unique index are
 // applied. The upgrade is exercised by applying the real migrations in two stages.
 const MIGRATIONS = new URL("../../../../../db/migrations", import.meta.url).pathname;
-const KEY_MARKER = "-- #95 project key";
+// The last three migrations are the #95 upgrade: a generated nullable column, a custom
+// backfill, and the generated constraints. Partition by file name so the drizzle-kit
+// generated files never need a hand-written marker comment.
+const isKeyMigration = (file: string) => /^003[234]_/.test(file);
 
 describe("project key migration", () => {
   let pg: StartedPostgreSqlContainer;
@@ -20,11 +24,10 @@ describe("project key migration", () => {
   beforeAll(async () => {
     pg = await new PostgreSqlContainer("postgres:18").start();
     database = createDb(pg.getConnectionUri());
-    staged = await mkdtemp("/tmp/opencode/orrery-key-migration-");
+    staged = await mkdtemp(join(tmpdir(), "orrery-key-migration-"));
     for (const file of await readdir(MIGRATIONS)) {
-      if (!file.endsWith(".sql")) continue;
+      if (!file.endsWith(".sql") || isKeyMigration(file)) continue;
       const body = await readFile(join(MIGRATIONS, file), "utf8");
-      if (body.includes(KEY_MARKER)) continue;
       await writeFile(join(staged, file), body);
     }
     await migrate(database.sql, staged);
@@ -37,6 +40,10 @@ describe("project key migration", () => {
   });
 
   it("derives valid, workspace-unique keys for every legacy project", async () => {
+    // Raw SQL is required here: these rows intentionally predate the key column, so the
+    // typed Drizzle `db` (built from today's schema, which requires `key`) cannot insert
+    // them. The post-upgrade read uses raw SQL for the same reason: it reads the staged
+    // snapshot through postgres.js without coupling the test to the current `db` type.
     const human = randomUUID();
     const otherHuman = randomUUID();
     await database.sql`insert into humans (id, email, password_hash) values (${human}, ${`legacy-${human}@example.com`}, 'scrypt$anything')`;
@@ -58,9 +65,8 @@ describe("project key migration", () => {
     await database.sql`insert into projects (id, workspace_id, name, created_by_human_id, created_at) values (${numeric}, ${first}, '1234', ${human}, now() + interval '2 seconds')`;
 
     for (const file of await readdir(MIGRATIONS)) {
-      if (!file.endsWith(".sql")) continue;
+      if (!file.endsWith(".sql") || !isKeyMigration(file)) continue;
       const body = await readFile(join(MIGRATIONS, file), "utf8");
-      if (!body.includes(KEY_MARKER)) continue;
       await writeFile(join(staged, file), body);
     }
     await migrate(database.sql, staged);

@@ -47,7 +47,8 @@ export type TransfersErrorKind =
   | "transfer_stale"
   | "source_authority_lost"
   | "active_work"
-  | "project_key_conflict";
+  | "project_key_conflict"
+  | "project_key_immutable";
 
 const messages: Record<TransfersErrorKind, string> = {
   not_signed_in: "Not signed in",
@@ -61,6 +62,7 @@ const messages: Record<TransfersErrorKind, string> = {
   source_authority_lost: "The authorizing owner no longer controls the source workspace",
   active_work: "Finish or stop every active work session before transferring the project",
   project_key_conflict: "The destination workspace already uses this project key",
+  project_key_immutable: "A project key can only change to resolve a transfer collision",
 };
 
 export class TransfersError extends Error {
@@ -615,23 +617,41 @@ async function acceptInTransaction(
     throw new TransfersError("transfer_stale");
   }
 
-  // #95: a project key is unique inside its workspace. Keep the moved project's key
-  // unless a destination collision needs the caller's explicit, unused replacement.
-  // This check runs under the ownership lock and the project row lock, so the rename
-  // and the move commit together or not at all.
-  const effectiveKey = newKey ?? project.key;
-  const [keyCollision] = await tx
+  // #95: a key is immutable except for a conflict-resolving rename during acceptance.
+  // A replacement is only meaningful when this project's own key is already taken in the
+  // destination; supplying one otherwise would be an ordinary rename by another route.
+  // Both lookups run under the ownership lock and the project row lock.
+  const [destinationKeyCollision] = await tx
     .select({ id: projects.id })
     .from(projects)
     .where(
       and(
         eq(projects.workspaceId, destination.id),
-        eq(projects.key, effectiveKey),
+        eq(projects.key, project.key),
         ne(projects.id, auth.projectId),
       ),
     )
     .limit(1);
-  if (keyCollision !== undefined) throw new TransfersError("project_key_conflict");
+  const keyCollides = destinationKeyCollision !== undefined;
+  if (newKey !== undefined && (!keyCollides || newKey === project.key)) {
+    throw new TransfersError(keyCollides ? "project_key_conflict" : "project_key_immutable");
+  }
+  if (keyCollides && newKey === undefined) throw new TransfersError("project_key_conflict");
+  const effectiveKey = newKey ?? project.key;
+  if (newKey !== undefined) {
+    const [replacementCollision] = await tx
+      .select({ id: projects.id })
+      .from(projects)
+      .where(
+        and(
+          eq(projects.workspaceId, destination.id),
+          eq(projects.key, newKey),
+          ne(projects.id, auth.projectId),
+        ),
+      )
+      .limit(1);
+    if (replacementCollision !== undefined) throw new TransfersError("project_key_conflict");
+  }
 
   const issueIds = await tx
     .select({ id: issues.id })
@@ -701,18 +721,14 @@ async function acceptInTransaction(
     );
   }
 
-  // #95: rename before the move. Applying the new key first avoids a transient
-  // (workspace_id, key) collision with the destination project still holding the old key.
-  // Both writes are in the same transaction, so the rename and the move commit together.
-  if (effectiveKey !== project.key) {
-    await tx.update(projects).set({ key: effectiveKey }).where(eq(projects.id, auth.projectId));
-  }
-  // Move the identity. Issues, comments, knowledge, activity and runs all key on the
-  // project id, so the whole history travels with this one row change. Questions also
-  // denormalize workspace_id for inbox scoping, so keep them synchronized with the move.
+  // Move the identity and apply any collision-resolving rename in one UPDATE. Writing
+  // the key separately would check the unique index against the old workspace, so a
+  // replacement key that is free in the destination but used in the source would fail.
+  // Issues, comments, knowledge, activity and runs key on the project id and follow the
+  // row; questions denormalize workspace_id, so keep them synchronized with the move.
   await tx
     .update(projects)
-    .set({ workspaceId: destination.id })
+    .set({ workspaceId: destination.id, key: effectiveKey })
     .where(eq(projects.id, auth.projectId));
   await tx
     .update(questions)

@@ -108,6 +108,56 @@ test("REST exposes workspace-unique keys and immutable key updates", async () =>
   });
 });
 
+test("REST resolves a transfer key collision with a replacement key only", async () => {
+  const moved = await createProject("TRNS");
+  const destRes = await api.post("/api/workspaces", {
+    data: { name: `Transfer destination ${randomUUID()}` },
+  });
+  expect(destRes.status()).toBe(201);
+  const destinationId = idOf(await destRes.json(), "destination workspace");
+  const occupant = await api.post(`/api/workspaces/${destinationId}/projects`, {
+    data: { name: "Destination occupant", key: "TRNS" },
+  });
+  expect(occupant.status()).toBe(201);
+
+  const collided = await api.post(`/api/projects/${moved.id}/transfer/complete`, {
+    data: { destinationWorkspaceId: destinationId },
+  });
+  expect(collided.status()).toBe(409);
+  expect(await collided.json()).toMatchObject({ code: "project_key_conflict", status: 409 });
+  const unchanged = await api.get(`/api/projects/${moved.id}`);
+  expect(await unchanged.json()).toMatchObject({ key: "TRNS" });
+
+  // A key is only renameable here to resolve a collision, never as a general edit path.
+  const other = await createProject("NOCO");
+  const secondDest = await api.post("/api/workspaces", {
+    data: { name: `Other destination ${randomUUID()}` },
+  });
+  expect(secondDest.status()).toBe(201);
+  const otherDestinationId = idOf(await secondDest.json(), "other workspace");
+  const rename = await api.post(`/api/projects/${other.id}/transfer/complete`, {
+    data: { destinationWorkspaceId: otherDestinationId, key: "CHNG" },
+  });
+  expect(rename.status()).toBe(409);
+  expect(await rename.json()).toMatchObject({ code: "project_key_immutable", status: 409 });
+
+  const resolved = await api.post(`/api/projects/${moved.id}/transfer/complete`, {
+    data: { destinationWorkspaceId: destinationId, key: "TRN2" },
+  });
+  expect(resolved.status()).toBe(200);
+  expect(await resolved.json()).toMatchObject({
+    id: moved.id,
+    workspaceId: destinationId,
+    key: "TRN2",
+  });
+
+  const issue = await api.post(`/api/projects/${moved.id}/issues`, {
+    data: { title: "Issue after the key rename" },
+  });
+  expect(issue.status()).toBe(201);
+  expect(await issue.json()).toMatchObject({ identifier: "TRN2-1" });
+});
+
 test("REST and MCP carry the KEY-N identifier on issue payloads", async () => {
   const project = await createProject("MCPK");
   const created = await api.post(`/api/projects/${project.id}/issues`, {
