@@ -7,6 +7,7 @@ export * from "./health.ts";
 export * from "./invitations.ts";
 export * from "./mcp-tools.ts";
 export * from "./projects.ts";
+export * from "./runs.ts";
 export * from "./settings.ts";
 export * from "./setup.ts";
 export * from "./workspaces.ts";

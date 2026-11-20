@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import { tools } from "@orrery/contract";
+import { projectTools } from "@orrery/contract";
 import { isAgentError, type AgentAuthenticator } from "../agents/index.ts";
 import { ProjectsError, type ProjectsService, type WorkActor } from "./service.ts";
 
@@ -75,12 +75,12 @@ export function createProjectsMcp(service: ProjectsService, authenticate: AgentA
     }),
   };
 
-  for (const tool of tools) {
+  for (const tool of projectTools) {
     if (!(tool.name in strategies)) throw new Error(`no strategy for MCP tool ${tool.name}`);
   }
 
   return (server: McpServer, request: Request): void => {
-    for (const tool of tools) {
+    for (const tool of projectTools) {
       const strategy = strategies[tool.name];
       if (strategy === undefined) continue;
       server.registerTool(

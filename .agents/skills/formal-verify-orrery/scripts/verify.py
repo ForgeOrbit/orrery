@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Orrery Formal Verification Model Checker (M1-M10).
+Orrery Formal Verification Model Checker (M1-M13).
 
 Extracts critical concurrency, locking, and state-transition guards directly from
 Orrery's server source and SQL migrations, then runs an exhaustive BFS finite-state
@@ -579,6 +579,92 @@ def extract_code_facts() -> dict[str, Any]:
         and "await sessionReader(c)" in set_access_rest
     )
 
+    # M13 (#34): runs and child workers. Identity is the authenticated agent plus the
+    # harness's native session id, enforced by a DB unique index. Reported metadata is
+    # stored as reported (or null) and model changes are events; a report never leases.
+    run_src = read_text("apps/server/src/features/runs/service.ts")
+    run_mcp_src = read_text("apps/server/src/features/runs/mcp.ts")
+    run_contract_src = read_text("packages/contract/src/runs.ts")
+    mig_0019 = read_text("db/migrations/0019_slow_green_goblin.sql")
+    runs_table = slice_between(ag_schema, "export const runs = pgTable(", "// Model values observed")
+    children_table = slice_between(ag_schema, "export const runChildren = pgTable(", "// An issue in a project.")
+    report_fn = slice_between(run_src, "async report(request, input)", "async listWorkspaceRuns(")
+    list_runs_fn = slice_between(run_src, "async listWorkspaceRuns(", "  };\n}")
+    run_auth_fn = slice_between(run_src, "async function authenticateAgent(", "export interface RunsDeps")
+    child_fn = slice_between(run_src, "async function recordChild(", "export function createRunsService")
+
+    m13_db_identity = (
+        "one_run_per_agent_workspace_harness_session" in runs_table
+        and "coalesce" in runs_table
+        and 'CREATE UNIQUE INDEX "one_run_per_agent_workspace_harness_session"' in mig_0019
+        and "coalesce" in mig_0019
+    )
+    m13_identity_key = all(
+        marker in report_fn
+        for marker in [
+            "agentId: identity.agentId",
+            "workspaceId: identity.workspaceId",
+            "harness: input.runKey.harness",
+            "nativeSessionId: input.runKey.nativeSessionId",
+        ]
+    )
+    m13_conflict = (
+        ".onConflictDoNothing()" in report_fn
+        and "eq(runs.harness, input.runKey.harness)" in report_fn
+        and "eq(runs.nativeSessionId, input.runKey.nativeSessionId)" in report_fn
+        and "row = created" in report_fn
+    )
+    m13_explicit_scope = all(
+        marker in report_fn
+        for marker in [
+            "eq(runs.id, input.runId)",
+            "eq(runs.agentId, identity.agentId)",
+            "eq(runs.workspaceId, identity.workspaceId)",
+            'throw new RunsError("run_not_found")',
+        ]
+    )
+    m13_child_link = (
+        "await recordChild(db, row.id, input, observedAt)" in report_fn
+        and "runId," in child_fn
+        and "agentId," in child_fn
+        and "agentType," in child_fn
+        and "one_child_per_run_and_reported_identity" in children_table
+        and "one_child_per_run_and_reported_identity" in mig_0019
+    )
+    m13_model_change = (
+        "const modelChanged = reportedModel !== null && reportedModel !== previousModel;" in report_fn
+        and "if (modelChanged && !inserted)" in report_fn
+        and "fromModel: previousModel" in report_fn
+        and "toModel: reportedModel" in report_fn
+        and "insert(runModelChanges)" in report_fn
+    )
+    m13_unknown = (
+        "const reportedModel = input.model ?? null" in report_fn
+        and "runId: null," in report_fn
+        and "harness: null," in report_fn
+        and "harness: z.string().nullable()" in run_contract_src
+        and "model: z.string().nullable()" in run_contract_src
+        and "runId: z.string().nullable()" in run_contract_src
+    )
+    m13_no_lease = not any(
+        word in source
+        for word in ["leaseExpiresAt", "claimExpiresAt"]
+        for source in [run_src, run_contract_src, run_mcp_src, mig_0019]
+    )
+    m13_human_scope = (
+        "humanCanReadWorkspace(db, workspaceId, actor.humanId)" in list_runs_fn
+        and 'throw new RunsError("workspace_not_found")' in list_runs_fn
+    )
+    m13_reauth = (
+        "await authenticate(request)" in run_auth_fn
+        and 'throw new RunsError("not_signed_in")' in run_auth_fn
+        and "isRunsErrorKind(error.kind)" in run_auth_fn
+        and "service.report(request, parsed)" in run_mcp_src
+        and "service.report(c.req.raw, c.req.valid(\"json\"))"
+        in read_text("apps/server/src/features/runs/rest.ts")
+    )
+    m13_tool = "orrery_run_checkin" in tool_names
+
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
         "m2a_supersedes_failed": m2a_supersedes_failed,
@@ -653,6 +739,17 @@ def extract_code_facts() -> dict[str, Any]:
         "m12_rest_bearer": m12_rest_bearer,
         "m12_rest_admin_session": m12_rest_admin_session,
         "m12_list_scope": m12_list_scope,
+        "m13_db_identity": m13_db_identity,
+        "m13_identity_key": m13_identity_key,
+        "m13_conflict": m13_conflict,
+        "m13_explicit_scope": m13_explicit_scope,
+        "m13_child_link": m13_child_link,
+        "m13_model_change": m13_model_change,
+        "m13_unknown": m13_unknown,
+        "m13_no_lease": m13_no_lease,
+        "m13_human_scope": m13_human_scope,
+        "m13_reauth": m13_reauth,
+        "m13_tool": m13_tool,
     }
 
 
@@ -1521,6 +1618,76 @@ def check_m12(facts: dict[str, Any]) -> CheckResult:
     )
 
 
+def check_m13(facts: dict[str, Any]) -> CheckResult:
+    # #34: run identity is isolated per agent/workspace/harness/session, a resume reuses
+    # the run, children link to their parent, model changes are events, and missing
+    # metadata stays unknown. Each attempt is a direct probe of one extracted guard.
+    identity = facts["m13_db_identity"] and facts["m13_identity_key"]
+    resume = facts["m13_conflict"]
+    scope = facts["m13_explicit_scope"]
+    child = facts["m13_child_link"]
+    history = facts["m13_model_change"]
+    unknown = facts["m13_unknown"]
+    auth = facts["m13_reauth"]
+
+    attempts: list[tuple[str, str, bool, str]] = [
+        ("two clients share one key but report different native session ids", "2_distinct_runs", identity, "1_shared_run"),
+        ("two check-ins carry the same (harness, nativeSessionId) under one key", "1_run_resumed", resume and facts["m13_db_identity"], "2_runs"),
+        ("a resume reuses an explicit runId of this agent's run", "same_run", scope, "new_run"),
+        ("a report names a runId belonging to another workspace's agent", "run_not_found", scope, "run_hijacked"),
+        ("child_started reports agentId/agentType on the parent run", "linked_to_parent", child, "unlinked"),
+        ("a repeated child event updates the same child row", "1_child", child, "2_children"),
+        ("the model changes from A to B during one run", "history=A_to_B", history, "no_history"),
+        ("the same model is reported twice", "no_second_event", history, "duplicate_event"),
+        ("a report omits the model", "unknown_or_unchanged", unknown, "model_cleared"),
+        ("a report has no runId and no runKey", "runId=null_no_row", unknown, "transport_session_run"),
+        ("harness version and model are absent on a new run", "stored_null", unknown, "synthesised"),
+        ("a revoked key calls the check-in tool", "key_revoked", auth, "accepted"),
+        ("a check-in has no bearer key", "not_signed_in", auth, "accepted"),
+        ("REST hook and MCP check-in map key failures to the same codes", "same_codes", auth, "divergent"),
+        ("a human outside the workspace lists its runs", "workspace_not_found", facts["m13_human_scope"], "listed"),
+        ("the run-reporting tool advertises a lease expiry or claim", "absent", facts["m13_no_lease"], "present"),
+        ("orrery_run_checkin is registered on MCP", "exposed", facts["m13_tool"], "missing"),
+        ("a run is attributed to the authenticated agent, never a reported name", "actor=agent", identity, "actor=reported"),
+    ]
+    init = ("start",)
+
+    def next_states(state):
+        if state != ("start",):
+            return []
+        return [
+            (f"{label} -> {expected if guard else wrong}", ("probed", idx, expected if guard else wrong))
+            for idx, (label, expected, guard, wrong) in enumerate(attempts)
+        ]
+
+    def inv(state):
+        if state[0] != "probed":
+            return True, ""
+        label, expected, _, _ = attempts[state[1]]
+        if state[2] != expected:
+            return False, f"{label} returned {state[2]}, expected {expected}"
+        return True, ""
+
+    return bfs_check(
+        "M13",
+        "Runs and Child Workers (#34)",
+        "Run identity is isolated per key and harness session, resumes reuse the run, children link to their parent, model changes are recorded, and unreported metadata stays unknown",
+        "safety",
+        init,
+        next_states,
+        inv,
+        [
+            "apps/server/src/features/runs/service.ts",
+            "apps/server/src/features/runs/mcp.ts",
+            "apps/server/src/features/runs/rest.ts",
+            "packages/contract/src/runs.ts",
+            "packages/contract/src/mcp-tools.ts",
+            "apps/server/src/db/schema.ts",
+            "db/migrations/0019_slow_green_goblin.sql",
+        ],
+    )
+
+
 def main() -> None:
     facts = extract_code_facts()
     results = [
@@ -1537,6 +1704,7 @@ def main() -> None:
         check_m10(facts),
         check_m11(facts),
         check_m12(facts),
+        check_m13(facts),
     ]
 
     if "--json" in sys.argv:
