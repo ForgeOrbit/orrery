@@ -120,6 +120,7 @@ export async function accountByEmail(runner: AccountRunner, email: string) {
       humanId: humans.id,
       email: humans.email,
       emailVerifiedAt: humans.emailVerifiedAt,
+      isSystemAdministrator: humans.isSystemAdministrator,
     })
     .from(humans)
     .where(eq(humans.email, email))
@@ -195,7 +196,12 @@ export interface AccountsService {
   accountByEmail(
     email: string,
     tx?: DbTransaction,
-  ): Promise<{ humanId: string; email: string; emailVerifiedAt: Date | null } | null>;
+  ): Promise<{
+    humanId: string;
+    email: string;
+    emailVerifiedAt: Date | null;
+    isSystemAdministrator: boolean;
+  } | null>;
   setPassword(humanId: string, password: string, tx: DbTransaction): Promise<void>;
   invalidateBrowserSessions(humanId: string, tx: DbTransaction): Promise<void>;
 }

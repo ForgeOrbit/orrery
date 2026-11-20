@@ -41,11 +41,16 @@ function resetMail(email: string, token: string, publicUrl: string): OutgoingMai
   };
 }
 
-export type RecoveryErrorKind = "reset_token_invalid" | "account_not_found";
+export type RecoveryErrorKind =
+  | "reset_token_invalid"
+  | "account_not_found"
+  | "not_system_administrator";
 
 const messages = {
   reset_token_invalid: "This password reset link is invalid, expired, or already used.",
   account_not_found: "No account has that email address.",
+  not_system_administrator:
+    "Local recovery is for system administrators only. An ordinary account recovers by email.",
 } as const satisfies Record<RecoveryErrorKind, string>;
 
 export class RecoveryError extends Error {
@@ -64,7 +69,12 @@ export interface RecoveryAccountAccess {
   accountByEmail(
     email: string,
     tx?: DbTransaction,
-  ): Promise<{ humanId: string; email: string; emailVerifiedAt: Date | null } | null>;
+  ): Promise<{
+    humanId: string;
+    email: string;
+    emailVerifiedAt: Date | null;
+    isSystemAdministrator: boolean;
+  } | null>;
   setPassword(humanId: string, password: string, tx: DbTransaction): Promise<void>;
   invalidateBrowserSessions(humanId: string, tx: DbTransaction): Promise<void>;
 }
@@ -86,14 +96,18 @@ export interface RecoveryService {
   // Redeems the token and changes the password in one transaction, evaluated in
   // database time. Single-use: the conditional update is the only way to consume it.
   confirmReset(token: string, password: string): Promise<{ message: string }>;
-  // Administrator's on-server command: no email, no SMTP, no token. Works for an
-  // unverified address too, because that is how the first administrator recovers.
+  // Administrator's on-server command: no email, no SMTP, no token, no public bypass.
+  // Only a system administrator may use it; an ordinary account recovers by email.
+  // Works for an unverified administrator, because that is how bootstrap recovers.
   localRecover(email: string, password: string): Promise<{ email: string; message: string }>;
 }
 
 // The one credential change both flows earn, inside the caller's transaction: a new
-// password hash, every prior browser session signed out, and one secret-free event.
-// Agent keys are another feature's table; bootstrap and workspaces are never touched.
+// password hash, every prior browser session signed out, one secret-free event, and
+// every other unused reset token for the account revoked. A password change retires
+// all outstanding links at once: with several requested, the others must not stay
+// live even after one was redeemed or an administrator recovered locally. Agent keys
+// are another feature's table; bootstrap and workspaces are never touched.
 async function changePasswordAndSignOut(
   tx: DbTransaction,
   accounts: RecoveryAccountAccess,
@@ -103,6 +117,10 @@ async function changePasswordAndSignOut(
 ) {
   await accounts.setPassword(humanId, password, tx);
   await accounts.invalidateBrowserSessions(humanId, tx);
+  await tx
+    .update(passwordResetTokens)
+    .set({ usedAt: sql`now()` })
+    .where(and(eq(passwordResetTokens.humanId, humanId), isNull(passwordResetTokens.usedAt)));
   await tx.insert(accountRecoveryEvents).values({ id: randomUUID(), humanId, type });
 }
 
@@ -179,11 +197,16 @@ export function createRecoveryService({
 
     async localRecover(email, password) {
       // No SMTP, no token, no setup: the command's authority is local access to the
-      // server. It changes only the account's password, its browser sessions, and one
-      // event — never the bootstrap singleton or a workspace owner.
+      // server plus the account being a system administrator (#20 story 10). An
+      // ordinary account cannot use it as a public bypass, even with local access.
+      // It changes only the account's password, its browser sessions, its outstanding
+      // reset links, and one event — never bootstrap or a workspace owner.
       const recoveredEmail = await db.transaction(async (tx) => {
         const account = await accounts.accountByEmail(email, tx);
         if (account === null) throw new RecoveryError("account_not_found");
+        if (!account.isSystemAdministrator) {
+          throw new RecoveryError("not_system_administrator");
+        }
         await changePasswordAndSignOut(
           tx,
           accounts,

@@ -1,10 +1,5 @@
-import { LoginResponse, RecoveryMessage, SetupAdminResponse } from "@orrery/contract";
-import type {
-  ConfirmPasswordReset,
-  LoginRequest,
-  RequestPasswordReset,
-  SetupAdminRequest,
-} from "@orrery/contract";
+import { LoginResponse, SetupAdminResponse } from "@orrery/contract";
+import type { LoginRequest, SetupAdminRequest } from "@orrery/contract";
 import { postJson } from "../../lib/api.ts";
 
 // Mutations for this feature. Each posts JSON through the app's one request helper,
@@ -19,20 +14,4 @@ export function createFirstAdministrator(input: SetupAdminRequest): Promise<Setu
 // Signs in; the server sets the session cookie, so nothing secret is handled here.
 export function signIn(input: LoginRequest): Promise<LoginResponse> {
   return postJson("/api/auth/login", input, (value) => LoginResponse.parse(value));
-}
-
-// Asks for a reset link. The answer is deliberately the same whether or not the address
-// has an account, so the form can show it verbatim without learning anything.
-export function requestPasswordReset(input: RequestPasswordReset): Promise<RecoveryMessage> {
-  return postJson("/api/auth/password-reset/request", input, (value) =>
-    RecoveryMessage.parse(value),
-  );
-}
-
-// Redeems the emailed token with the chosen password. The link's GET changes nothing;
-// only this POST sets a password and signs out the account's prior browser sessions.
-export function confirmPasswordReset(input: ConfirmPasswordReset): Promise<RecoveryMessage> {
-  return postJson("/api/auth/password-reset/confirm", input, (value) =>
-    RecoveryMessage.parse(value),
-  );
 }

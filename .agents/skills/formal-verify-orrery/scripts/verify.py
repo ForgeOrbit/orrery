@@ -651,6 +651,18 @@ def extract_code_facts() -> dict[str, Any]:
         rec_rest_src.count("400: problem(") >= 2
         and rec_rest_src.count("app.openapi(") >= 2
     )
+    # A password change retires every outstanding link, and local recovery is an
+    # administrator-only path: the role must come from accounts and be checked here.
+    m13_revokes_pending_tokens = (
+        ".update(passwordResetTokens)" in rec_change_fn
+        and "isNull(passwordResetTokens.usedAt)" in rec_change_fn
+    )
+    account_by_email_fn = slice_between(acc_src, "export async function accountByEmail(", "export async function setAccountPassword(")
+    m13_admin_only_local = (
+        "isSystemAdministrator: humans.isSystemAdministrator" in account_by_email_fn
+        and "!account.isSystemAdministrator" in rec_local_fn
+        and 'throw new RecoveryError("not_system_administrator")' in rec_local_fn
+    )
 
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
@@ -739,6 +751,8 @@ def extract_code_facts() -> dict[str, Any]:
         "m13_events_without_secret": m13_events_without_secret,
         "m13_local_no_smtp": m13_local_no_smtp,
         "m13_http_problems": m13_http_problems,
+        "m13_revokes_pending_tokens": m13_revokes_pending_tokens,
+        "m13_admin_only_local": m13_admin_only_local,
     }
 
 
@@ -1623,11 +1637,14 @@ def check_m13(facts: dict[str, Any]) -> CheckResult:
     scope_untouched = facts["m13_scope_untouched"]
     audit_ok = facts["m13_events_without_secret"]
     local_no_smtp = facts["m13_local_no_smtp"]
+    revoke_pending = facts["m13_revokes_pending_tokens"]
+    admin_only = facts["m13_admin_only_local"]
 
     fields = [
         "token", "verified", "smtp", "mailed", "pw_changed", "expired_used", "reused",
         "torn", "leak", "secret_event", "bootstrap", "owner", "sessions", "keys",
         "events", "smtp_dependency", "unverified_mailed", "raw_token_stored", "no_problem",
+        "other_token", "non_admin_local",
     ]
     idx = {name: i for i, name in enumerate(fields)}
 
@@ -1646,6 +1663,7 @@ def check_m13(facts: dict[str, Any]) -> CheckResult:
         "none", False, True, False, False, False, False, False, False, False,
         "closed", "u1", frozenset({"s1", "s2"}), frozenset({"k1"}), frozenset(),
         False, False, not facts["m13_token_hash_only"], not facts["m13_http_problems"],
+        "none", False,
     )
 
     def next_states(state):
@@ -1677,6 +1695,14 @@ def check_m13(facts: dict[str, Any]) -> CheckResult:
                     mailed=True,
                     events=add_event(state[idx["events"]], "requested"),
                 )
+                if state[idx["pw_changed"]]:
+                    # A fresh request after a password change is legitimate, not a
+                    # leftover link that survived the change.
+                    new = setf(new, other_token="none")
+                elif token in ("pre", "post"):
+                    # A second request while another link is live: two outstanding
+                    # links, only one of which the confirm POST will consume.
+                    new = setf(new, other_token="live")
                 if not audit_ok:
                     new = setf(new, secret_event=True)
             elif eligibility == "verified" and not failed_send_deletes:
@@ -1729,6 +1755,8 @@ def check_m13(facts: dict[str, Any]) -> CheckResult:
                     new = setf(new, keys=frozenset())
                 if not audit_ok:
                     new = setf(new, secret_event=True)
+                if revoke_pending:
+                    new = setf(new, other_token="none")
                 out.append(("confirmReset(token) redeems the link", new))
             else:
                 out.append(("confirmReset(token) refused: invalid, expired, or used", state))
@@ -1752,7 +1780,21 @@ def check_m13(facts: dict[str, Any]) -> CheckResult:
             new = setf(new, secret_event=True)
         if not local_no_smtp:
             new = setf(new, smtp_dependency=True)
+        if revoke_pending:
+            new = setf(new, other_token="none")
         out.append(("local recovery changes the password with broken SMTP", new))
+
+        # Local recovery is an administrator-only path. An ordinary human with local
+        # shell access must be refused, not handed a public recovery bypass.
+        if not admin_only:
+            out.append(
+                (
+                    "local recovery invoked for an ordinary account [NOT ADMIN]",
+                    setf(new, non_admin_local=True),
+                )
+            )
+        else:
+            out.append(("local recovery refused for an ordinary account", state))
         return out
 
     def inv(state):
@@ -1778,6 +1820,10 @@ def check_m13(facts: dict[str, Any]) -> CheckResult:
             return False, "Prior browser sessions survived a password change."
         if state[idx["pw_changed"]] and state[idx["keys"]] != frozenset({"k1"}):
             return False, "Agent API keys were touched by a password recovery."
+        if state[idx["pw_changed"]] and state[idx["other_token"]] == "live":
+            return False, "An earlier unused reset link survived a password change."
+        if state[idx["non_admin_local"]]:
+            return False, "Local recovery was used by a non-administrator."
         if state[idx["bootstrap"]] != "closed":
             return False, "Local recovery reopened bootstrap."
         if state[idx["owner"]] != "u1":
@@ -1789,7 +1835,7 @@ def check_m13(facts: dict[str, Any]) -> CheckResult:
     return bfs_check(
         "M13",
         "Password Recovery & Local Recovery (#31)",
-        "Reset links are single-use and expire in database time, unverified addresses are never mailed, responses never enumerate accounts, both paths end browser sessions without touching agent keys/bootstrap/ownership, and local recovery works without SMTP",
+        "Reset links are single-use, expire in database time, and are all retired on a password change; unverified addresses are never mailed, responses never enumerate accounts, both paths end browser sessions without touching agent keys/bootstrap/ownership, and local recovery is administrator-only and works without SMTP",
         "safety",
         init,
         next_states,

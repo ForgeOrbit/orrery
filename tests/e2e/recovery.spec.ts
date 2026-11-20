@@ -163,28 +163,58 @@ test("redeems once, signs out old browser sessions, and refuses reuse", async ()
   }
 });
 
-test("local recovery works with broken SMTP and cannot reopen setup or change ownership", async () => {
+test("administrator local recovery signs out sessions, works with broken SMTP, and refuses ordinary accounts", async () => {
   await recordSecret(LOCAL_PASSWORD);
   const broken = await api.put("/api/settings/smtp", {
     data: { ...SETTINGS, port: 9265 },
   });
   expect(broken.status()).toBe(200);
 
-  // The command runs inside the container, with the server's own environment. Secrets
-  // travel through exec's environment, not the script's arguments or the container logs.
-  const command =
-    `docker compose -f "${composeFile}" exec -T ` +
-    `-e ORRERY_RECOVERY_EMAIL="${RECOVERED_EMAIL}" ` +
-    `-e ORRERY_RECOVERY_PASSWORD="${LOCAL_PASSWORD}" ` +
-    `${composeService} node apps/server/src/recovery-cli.ts`;
-  const { stdout } = await exec(command, { timeout: 60_000 });
-  expect(stdout).toContain(RECOVERED_EMAIL);
+  // A separate browser session for the administrator, to prove it is signed out.
+  const adminSession = await request.newContext({ baseURL: baseUrl });
+  let signedOut = false;
+  try {
+    const login = await adminSession.post("/api/auth/login", {
+      data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
+    });
+    expect(login.status()).toBe(200);
+    for (const cookie of await adminSession.cookies()) await recordSecret(cookie.value);
+    expect((await adminSession.get("/api/auth/session")).status()).toBe(200);
 
-  // SMTP was broken throughout: recovery needed no relay.
-  const session = await api.get("/api/auth/session");
-  expect(session.status()).toBe(200);
-  expect(await loginStatus(RESET_PASSWORD)).toBe(401);
-  expect(await loginStatus(LOCAL_PASSWORD)).toBe(200);
+    // The command runs inside the container with the server's own environment. Secrets
+    // travel through exec's environment, not the script's arguments or the logs.
+    // The administrator's password stays the same so the later suites still sign in;
+    // the proof here is that every prior session is ended and no relay is needed.
+    const { stdout } = await exec(localRecoveryCommand(ADMIN_EMAIL, ADMIN_PASSWORD), {
+      timeout: 60_000,
+    });
+    expect(stdout).toContain(ADMIN_EMAIL);
+    expect((await adminSession.get("/api/auth/session")).status()).toBe(401);
+    signedOut = true;
+
+    // An ordinary account cannot use the local command, even with container access.
+    type ExecFailure = Error & { code?: number; stderr?: string };
+    const refused = await exec(localRecoveryCommand(RECOVERED_EMAIL, LOCAL_PASSWORD), {
+      timeout: 60_000,
+    }).then(
+      () => undefined,
+      (error: ExecFailure) => error,
+    );
+    expect(refused).toBeDefined();
+    expect(refused?.code).not.toBe(0);
+    expect(refused?.stderr).toContain("system administrators only");
+    // The refused attempt changed nothing for that account.
+    expect(await loginStatus(RESET_PASSWORD)).toBe(200);
+  } finally {
+    await adminSession.dispose();
+  }
+
+  // The shared admin context's session was ended too; sign in again for the checks.
+  expect(signedOut).toBe(true);
+  const relogin = await api.post("/api/auth/login", {
+    data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
+  });
+  expect(relogin.status()).toBe(200);
 
   // Recovery cannot reopen bootstrap, and it leaves workspace ownership untouched.
   const status = await api.get("/api/setup/status");
@@ -216,6 +246,17 @@ test("serves the request and reset forms", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Choose a new password" })).toBeVisible();
   await expect(page.getByLabel("New password")).toBeVisible();
 });
+
+// The local administrator command inside the container. Secrets travel through exec's
+// environment, never the script's arguments or the stack's logs.
+function localRecoveryCommand(email: string, password: string): string {
+  return (
+    `docker compose -f "${composeFile}" exec -T ` +
+    `-e ORRERY_RECOVERY_EMAIL="${email}" ` +
+    `-e ORRERY_RECOVERY_PASSWORD="${password}" ` +
+    `${composeService} node apps/server/src/recovery-cli.ts`
+  );
+}
 
 // Sign in as the recovered account in a throwaway context. The shared `api` context
 // stays the administrator's, so settings and setup remain admin-only throughout.
@@ -255,14 +296,14 @@ async function caughtResetMessage(
   context: APIRequestContext,
   to: string,
 ): Promise<string | undefined> {
-  return caughtMessage(api, RESET_SUBJECT, to);
+  return caughtMessage(context, RESET_SUBJECT, to);
 }
 
 async function caughtInvitationToken(
   context: APIRequestContext,
   to: string,
 ): Promise<string | undefined> {
-  const id = await caughtMessage(api, INVITATION_SUBJECT, to);
+  const id = await caughtMessage(context, INVITATION_SUBJECT, to);
   if (id === undefined) return undefined;
   const detail = await context.get(`${mailpit}/api/v1/message/${id}`);
   const token = /\/register\?token=([A-Za-z0-9_-]+)/.exec(messageText(await detail.json()))?.[1];

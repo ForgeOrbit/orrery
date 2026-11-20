@@ -62,6 +62,13 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
   );
 }
 
+function tokenFromMail(mail: OutgoingMail | undefined): string {
+  if (mail === undefined) throw new Error("no email was delivered");
+  const token = /\/reset-password\?token=([A-Za-z0-9_-]+)/.exec(mail.text)?.[1];
+  if (token === undefined) throw new Error("the email had no reset token");
+  return token;
+}
+
 describe("password recovery", () => {
   let pg: StartedPostgreSqlContainer;
   let database: Database;
@@ -153,11 +160,7 @@ describe("password recovery", () => {
   }
 
   async function tokenFromLastMail(): Promise<string> {
-    const mail = delivered.at(-1);
-    if (mail === undefined) throw new Error("no email was delivered");
-    const token = /\/reset-password\?token=([A-Za-z0-9_-]+)/.exec(mail.text)?.[1];
-    if (token === undefined) throw new Error("the email had no reset token");
-    return token;
+    return tokenFromMail(delivered.at(-1));
   }
 
   it("mails a single-use link only to a verified address, with one uniform answer", async () => {
@@ -224,8 +227,8 @@ describe("password recovery", () => {
     expect(refused).toMatchObject({ kind: "reset_token_invalid" });
 
     const rows = await database.db.select().from(passwordResetTokens);
-    expect(rows.find((row) => row.tokenHash === tokenHash(before))?.usedAt).not.toBeNull();
-    expect(rows.find((row) => row.tokenHash === tokenHash(after))?.usedAt).toBeNull();
+    // Redeeming one password change revokes every other outstanding link too.
+    expect(rows.every((row) => row.usedAt !== null)).toBe(true);
   });
 
   it("refuses a reused or fabricated token and changes the password exactly once", async () => {
@@ -250,6 +253,70 @@ describe("password recovery", () => {
     expect(events.map((event) => event.type)).toContain("password_reset_completed");
     expect(events.filter((event) => event.type === "password_reset_completed")).toHaveLength(1);
     expect(humanId).not.toBe("");
+  });
+
+  it("redeeming one of two pending links revokes the other", async () => {
+    await bootstrap(true);
+    await service.requestReset(EMAIL);
+    await service.requestReset(EMAIL);
+    expect(delivered).toHaveLength(2);
+    const first = tokenFromMail(delivered[0]);
+    const second = tokenFromMail(delivered[1]);
+    expect(first).not.toBe(second);
+
+    expect((await service.confirmReset(first, NEW_PASSWORD)).message).toBe(
+      PASSWORD_RESET_CONFIRM_MESSAGE,
+    );
+    const refused = await rejection(service.confirmReset(second, "another-new-password"));
+    expect(refused).toMatchObject({ kind: "reset_token_invalid" });
+    expect((await accounts().login({ email: EMAIL, password: NEW_PASSWORD })).email).toBe(EMAIL);
+
+    const rows = await database.db.select().from(passwordResetTokens);
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.usedAt !== null)).toBe(true);
+  });
+
+  it("local recovery revokes pending links and is for system administrators only", async () => {
+    const adminId = await bootstrap(false); // The bootstrap administrator is unverified.
+    const nonAdminId = await createUnverifiedHuman();
+    expect((await accountByEmail(database.db, EMAIL))?.isSystemAdministrator).toBe(true);
+    expect((await accountByEmail(database.db, OTHER_EMAIL))?.isSystemAdministrator).toBe(false);
+
+    // A verified administrator can have a live link outstanding when recovery runs.
+    await database.db
+      .update(humans)
+      .set({ emailVerifiedAt: sql`now()` })
+      .where(eq(humans.email, EMAIL));
+    await service.requestReset(EMAIL);
+    const pending = tokenFromMail(delivered[0]);
+
+    // An ordinary human cannot use the local command as a bypass.
+    const refused = await rejection(service.localRecover(OTHER_EMAIL, NEW_PASSWORD));
+    expect(refused).toMatchObject({ kind: "not_system_administrator" });
+    expect((await accounts().login({ email: OTHER_EMAIL, password: PASSWORD })).email).toBe(
+      OTHER_EMAIL,
+    );
+    expect((await database.db.select().from(accountRecoveryEvents)).map((e) => e.type)).toEqual([
+      "password_reset_requested",
+    ]);
+
+    // The administrator's local recovery needs no working relay and retires the link.
+    const broken = makeService(async () => {
+      throw new Error("smtp is broken");
+    });
+    expect((await broken.localRecover(EMAIL, NEW_PASSWORD)).email).toBe(EMAIL);
+    expect(delivered).toHaveLength(1);
+    const redeemedLater = await rejection(service.confirmReset(pending, "later-password"));
+    expect(redeemedLater).toMatchObject({ kind: "reset_token_invalid" });
+    expect(
+      (await database.db.select().from(passwordResetTokens)).every((r) => r.usedAt !== null),
+    ).toBe(true);
+    expect((await database.db.select().from(accountRecoveryEvents)).map((e) => e.type)).toEqual([
+      "password_reset_requested",
+      "local_recovery_completed",
+    ]);
+    expect(adminId).not.toBe("");
+    expect(nonAdminId).not.toBe("");
   });
 
   it("signs out every prior browser session, leaves other sessions and agent keys alone", async () => {
