@@ -17,6 +17,7 @@ import {
 import { ActivityDetailBlockV1, type SessionActivityDetail } from "@orrery/contract";
 import { useQuery } from "@tanstack/react-query";
 import { Fragment, useId, useState, type ReactNode } from "react";
+import { HarnessBadge } from "../../lib/harness.tsx";
 import { TelemetryFacts } from "../../lib/telemetry.tsx";
 import { Link } from "../../lib/Link.tsx";
 import { isPendingQuestion, issueQuestionsQuery, QuestionDetails } from "../inbox/index.ts";
@@ -278,7 +279,9 @@ export function SessionInspectorDetails({
           )}
           <dl className="session-facts">
             <dt>Harness</dt>
-            <dd>{run?.harness ?? "Unknown"}</dd>
+            <dd>
+              <HarnessBadge harness={run?.harness} empty="Unknown" />
+            </dd>
             <dt>Model</dt>
             <dd>{run?.model ?? "Unknown"}</dd>
             <dt>Run</dt>
