@@ -240,6 +240,16 @@ function IssuePage() {
     }
   }
 
+  async function onCopyLink() {
+    const url = `${window.location.origin}/issues/${issue.id}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      toast({ body: `Copied link to ${issue.identifier}.` });
+    } catch {
+      toast({ body: "Could not copy link to clipboard.", type: "error" });
+    }
+  }
+
   return (
     <main className="issue-page">
       <PageHeader
@@ -269,34 +279,43 @@ function IssuePage() {
           </>
         }
         actions={
-          canContribute ? (
-            <>
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                label="Edit"
-                onClick={() => setEditOpen(true)}
-              />
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                isDisabled={statusSubmitting}
-                label={toggleNextStatus === "done" ? "Close issue" : "Reopen issue"}
-                onClick={() => requestStatusChange(toggleNextStatus)}
-              />
-              <Button
-                type="button"
-                size="sm"
-                variant="destructive"
-                label="Move to Trash"
-                isDisabled={activeSession !== undefined || trashing}
-                data-trash-button
-                onClick={() => void onDelete()}
-              />
-            </>
-          ) : undefined
+          <>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              label="Copy link"
+              onClick={() => void onCopyLink()}
+            />
+            {canContribute && (
+              <>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  label="Edit"
+                  onClick={() => setEditOpen(true)}
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  isDisabled={statusSubmitting}
+                  label={toggleNextStatus === "done" ? "Close issue" : "Reopen issue"}
+                  onClick={() => requestStatusChange(toggleNextStatus)}
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="destructive"
+                  label="Move to Trash"
+                  isDisabled={activeSession !== undefined || trashing}
+                  data-trash-button
+                  onClick={() => void onDelete()}
+                />
+              </>
+            )}
+          </>
         }
       />
 
@@ -447,7 +466,9 @@ function IssuePage() {
                 ))}
               </ul>
             )}
-            {canContribute && <CommentForm issueId={issue.id} projectId={issue.projectId} />}
+            {canContribute && (
+              <CommentForm issueId={issue.id} projectId={issue.projectId} issues={projectIssues} />
+            )}
           </Section>
         </Stack>
 
@@ -745,12 +766,55 @@ function Blockers({
   );
 }
 
-function CommentForm({ issueId, projectId }: { issueId: string; projectId: string }) {
+function findHashMention(text: string): { start: number; query: string } | null {
+  const match = /(?:^|[\s(])#([a-zA-Z0-9-]*)$/.exec(text);
+  if (match === null) return null;
+  const query = match[1] ?? "";
+  const hashIndex = text.lastIndexOf("#");
+  if (hashIndex < 0) return null;
+  return { start: hashIndex, query };
+}
+
+function CommentForm({
+  issueId,
+  projectId,
+  issues,
+}: {
+  issueId: string;
+  projectId: string;
+  issues: Issue[];
+}) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const [body, setBody] = useState("");
+  const [dismissedAt, setDismissedAt] = useState<number | null>(null);
+  const [selectedIndex, setSelectedIndex] = useState(0);
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
+
+  const mention = findHashMention(body);
+  const showMenu = mention !== null && dismissedAt !== mention.start;
+  const matches = showMenu
+    ? issues
+        .filter((candidate) => {
+          const q = mention.query.trim().toLowerCase();
+          if (q === "") return true;
+          return (
+            String(candidate.number).includes(q) ||
+            candidate.identifier.toLowerCase().includes(q) ||
+            candidate.title.toLowerCase().includes(q)
+          );
+        })
+        .slice(0, 6)
+    : [];
+  const activeIndex = matches.length === 0 ? 0 : Math.min(selectedIndex, matches.length - 1);
+
+  function insertMention(target: Issue) {
+    if (mention === null) return;
+    setBody(`${body.slice(0, mention.start)}#${target.number} `);
+    setDismissedAt(null);
+    setSelectedIndex(0);
+  }
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -763,6 +827,7 @@ function CommentForm({ issueId, projectId }: { issueId: string; projectId: strin
         queryClient.invalidateQueries({ queryKey: projectActivityQuery(projectId).queryKey }),
       ]);
       setBody("");
+      setDismissedAt(null);
       toast({ body: "Comment added." });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not add the comment.");
@@ -773,15 +838,66 @@ function CommentForm({ issueId, projectId }: { issueId: string; projectId: strin
 
   return (
     <form className="comment-composer" onSubmit={(event) => void onSubmit(event)}>
-      <TextAreaField
-        label="Comment"
-        id="issue-comment"
-        htmlName="body"
-        value={body}
-        onChange={setBody}
-        rows={3}
-        required
-      />
+      <div
+        className="mention-field-wrap"
+        onKeyDown={(event) => {
+          if (matches.length === 0) return;
+          if (event.key === "ArrowDown") {
+            event.preventDefault();
+            setSelectedIndex((prev) => (prev + 1) % matches.length);
+          } else if (event.key === "ArrowUp") {
+            event.preventDefault();
+            setSelectedIndex((prev) => (prev - 1 + matches.length) % matches.length);
+          } else if (event.key === "Enter" || event.key === "Tab") {
+            const chosen = matches[activeIndex];
+            if (chosen !== undefined) {
+              event.preventDefault();
+              insertMention(chosen);
+            }
+          } else if (event.key === "Escape" && mention !== null) {
+            event.preventDefault();
+            setDismissedAt(mention.start);
+          }
+        }}
+      >
+        <TextAreaField
+          label="Comment"
+          id="issue-comment"
+          htmlName="body"
+          placeholder="Write a comment… Type # to reference an issue"
+          value={body}
+          onChange={(value) => {
+            setBody(value);
+            setDismissedAt(null);
+            setSelectedIndex(0);
+          }}
+          rows={3}
+          required
+        />
+        {matches.length > 0 && (
+          <ul className="mention-popover" role="listbox" aria-label="Reference an issue">
+            {matches.map((candidate, index) => (
+              <li
+                key={candidate.id}
+                role="option"
+                aria-selected={index === activeIndex}
+                className={
+                  index === activeIndex ? "mention-option mention-option-active" : "mention-option"
+                }
+                onMouseEnter={() => setSelectedIndex(index)}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  insertMention(candidate);
+                }}
+              >
+                <span className="issue-key">{candidate.identifier}</span>
+                <span className="mention-option-title">{candidate.title}</span>
+                <span className="meta-pill">{issueStatusLabels[candidate.status]}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
       {error !== undefined && (
         <Text as="p" display="block" type="inherit" color="inherit" role="alert">
           {error}
