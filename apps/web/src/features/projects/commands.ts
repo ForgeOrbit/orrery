@@ -14,6 +14,7 @@ import {
   type CreateProjectLabelRequest,
   type CreateProjectRequest,
   type SetProjectAccessRequest,
+  type SetProjectFallbackPolicyRequest,
   type UpdateIssueRequest,
   type UpdateKnowledgeEntryRequest,
   type UpdateProjectLabelRequest,
@@ -30,6 +31,17 @@ export function createProject(workspaceId: string, input: CreateProjectRequest):
 export function updateProject(projectId: string, input: UpdateProjectRequest): Promise<Project> {
   return patchJson(`/api/projects/${encodeURIComponent(projectId)}`, input, (value) =>
     Project.parse(value),
+  );
+}
+
+export function setProjectFallbackPolicy(
+  projectId: string,
+  input: SetProjectFallbackPolicyRequest,
+): Promise<Project> {
+  return patchJson(
+    `/api/projects/${encodeURIComponent(projectId)}/fallback-policy`,
+    input,
+    (value) => Project.parse(value),
   );
 }
 

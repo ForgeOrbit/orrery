@@ -2,9 +2,10 @@ import { Stack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
 import { useQuery } from "@tanstack/react-query";
 import mermaid from "mermaid";
-import type { ReactNode } from "react";
+import { type ReactNode, useId } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useResolvedAppearance } from "./appearance.tsx";
 import { Link } from "./Link.tsx";
 
 export interface IssueReference {
@@ -100,31 +101,42 @@ function safeUrl(url: string): string {
   return value;
 }
 
-let initialized = false;
+let initializedTheme: "light" | "dark" | null = null;
 
-function diagramId(source: string): string {
+function diagramId(source: string, instanceId: string): string {
   let hash = 0;
   for (let index = 0; index < source.length; index += 1) {
     hash = (hash * 31 + source.charCodeAt(index)) | 0;
   }
-  return `orrery-mermaid-${Math.abs(hash).toString(36)}`;
+  const safeSuffix = instanceId.replace(/[^a-zA-Z0-9_-]/g, "");
+  return `orrery-mermaid-${Math.abs(hash).toString(36)}-${safeSuffix}`;
 }
 
-async function renderMermaid(source: string): Promise<string> {
-  if (!initialized) {
-    mermaid.initialize({ startOnLoad: false, securityLevel: "strict" });
-    initialized = true;
+async function renderMermaid(
+  source: string,
+  scheme: "light" | "dark",
+  instanceId: string,
+): Promise<string> {
+  if (initializedTheme !== scheme) {
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: "strict",
+      theme: scheme === "dark" ? "dark" : "neutral",
+    });
+    initializedTheme = scheme;
   }
-  const { svg } = await mermaid.render(diagramId(source), source);
+  const { svg } = await mermaid.render(diagramId(source, instanceId), source);
   return svg;
 }
 
 function MermaidDiagram({ source }: { source: string }) {
+  const scheme = useResolvedAppearance();
+  const instanceId = useId();
   const result = useQuery({
-    queryKey: ["mermaid-diagram", source],
-    queryFn: () => renderMermaid(source),
+    queryKey: ["mermaid-diagram", scheme, instanceId, source],
+    queryFn: () => renderMermaid(source, scheme, instanceId),
     staleTime: Number.POSITIVE_INFINITY,
-    gcTime: Number.POSITIVE_INFINITY,
+    gcTime: 5 * 60_000,
     retry: false,
   });
 
@@ -152,6 +164,13 @@ function MermaidDiagram({ source }: { source: string }) {
 const components: Components = {
   pre({ children }: { children?: ReactNode }) {
     return <>{children}</>;
+  },
+  table({ children, node: _node, ...props }) {
+    return (
+      <Stack className="markdown-table-wrap">
+        <table {...props}>{children}</table>
+      </Stack>
+    );
   },
   code({ className, children, node: _node, ...props }) {
     const language = /language-([\w-]+)/.exec(className ?? "")?.[1];

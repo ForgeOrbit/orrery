@@ -66,6 +66,20 @@ function MoonIcon() {
   );
 }
 
+export function useResolvedAppearance(): "light" | "dark" {
+  const appearance = use(AppearanceContext);
+  const mode = appearance?.[0] ?? "system";
+  if (mode === "light" || mode === "dark") return mode;
+  if (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-color-scheme: dark)").matches
+  ) {
+    return "dark";
+  }
+  return "light";
+}
+
 export function AppearancePicker({ forceDark = false }: { forceDark?: boolean }) {
   const appearance = use(AppearanceContext);
   if (appearance === null) throw new Error("AppearancePicker requires AppearanceProvider.");

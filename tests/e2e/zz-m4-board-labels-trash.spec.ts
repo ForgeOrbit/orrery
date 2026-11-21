@@ -79,6 +79,7 @@ test("board, badges, labels, subtasks, trash and restore work in the browser", a
   await temporaryRow.getByRole("button", { name: "Save label" }).click();
   await expect(page.locator('[data-label-name="Renamed label"]')).toBeVisible();
   await temporaryRow.getByRole("button", { name: "Delete label" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Delete label" }).click();
   await expect(page.locator('[data-label-name="Renamed label"]')).toHaveCount(0);
 
   await page.getByRole("tab", { name: /Issues/ }).click();

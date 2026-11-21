@@ -1,4 +1,4 @@
-import { Text } from "@astryxdesign/core/Text";
+import { Banner } from "@astryxdesign/core/Banner";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { HistoryList, installationHistoryQuery } from "../features/history/index.ts";
@@ -26,9 +26,12 @@ function InstallationHistoryPage() {
         title="Installation history"
       />
       {events === null ? (
-        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
-          Installation history is available to system administrators only.
-        </Text>
+        <Banner
+          status="error"
+          role="alert"
+          title="Administrator access required"
+          description="Installation history is available to system administrators only."
+        />
       ) : (
         <HistoryList
           events={events}
