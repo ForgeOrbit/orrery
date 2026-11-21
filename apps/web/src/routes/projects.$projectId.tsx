@@ -1,4 +1,6 @@
+import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Badge } from "@astryxdesign/core/Badge";
+import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { Drawer, DrawerHeader } from "@astryxdesign/core/Drawer";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
@@ -9,8 +11,25 @@ import { Section } from "@astryxdesign/core/Section";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Stack } from "@astryxdesign/core/Stack";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHeader,
+  TableHeaderCell,
+  TableRow,
+} from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
-import { ProjectAccessLevel, type Project, type ProjectActivityType } from "@orrery/contract";
+import { useToast } from "@astryxdesign/core/Toast";
+import { Token } from "@astryxdesign/core/Token";
+import {
+  FallbackPolicy,
+  ProjectAccessLevel,
+  type IssueStatus,
+  type Project,
+  type ProjectAccessGrant,
+  type ProjectActivityType,
+} from "@orrery/contract";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import type { FormEvent } from "react";
@@ -24,22 +43,24 @@ import {
   knowledgeEntriesQuery,
   knowledgeEntryQuery,
   LabelPill,
+  PriorityBadge,
   projectAccessQuery,
   projectActivityQuery,
   projectLabelsQuery,
   projectQuery,
   projectsQuery,
-  PriorityBadge,
   ProjectLabels,
   removeProjectAccess,
   ResourceLoadError,
   setProjectAccess,
+  setProjectFallbackPolicy,
   TitleBodyForm,
   updateProject,
 } from "../features/projects/index.ts";
 import { TextField } from "../lib/fields.tsx";
 import { Link } from "../lib/Link.tsx";
 import { PageHeader } from "../lib/PageHeader.tsx";
+import { formatFullDateTime, relativeTime } from "../lib/time.ts";
 
 export const Route = createFileRoute("/projects/$projectId")({
   loader: async ({ context, params }) => {
@@ -57,6 +78,18 @@ export const Route = createFileRoute("/projects/$projectId")({
   component: ProjectPage,
   errorComponent: ({ error }) => <ResourceLoadError resource="project" error={error} />,
 });
+
+const statusTokenColors: Record<
+  IssueStatus,
+  "gray" | "blue" | "orange" | "purple" | "green" | "red"
+> = {
+  backlog: "gray",
+  todo: "blue",
+  in_progress: "orange",
+  review: "purple",
+  done: "green",
+  cancelled: "red",
+};
 
 const activityLabels: Record<ProjectActivityType, string> = {
   project_created: "created the project",
@@ -231,94 +264,148 @@ function ProjectPage() {
               />
             </Stack>
           ) : (
-            <ul className="row-list">
-              {issues.map((issue) => (
-                <li key={issue.id} data-issue-id={issue.id} className="row-item">
-                  <Stack direction="horizontal" className="row-item-main">
-                    <Text as="span" className="issue-key" data-issue-identifier={issue.identifier}>
-                      {issue.identifier}
-                    </Text>
-                    <Link
-                      to="/issues/$issueId"
-                      params={{ issueId: issue.id }}
-                      className="row-item-title"
-                    >
-                      {issue.title}
-                    </Link>
-                    {issue.labels.map((label) => (
-                      <LabelPill key={label.id} label={label} />
-                    ))}
-                  </Stack>
-                  <Stack direction="horizontal" className="row-item-meta">
-                    {!canContribute && <PriorityBadge priority={issue.priority} />}
-                    <span className="meta-pill" data-issue-status={issue.status}>
-                      {issueStatusLabels[issue.status]}
-                    </span>
-                    {canContribute && (
-                      <IssuePriorityControls
-                        issue={issue}
-                        issues={issues}
-                        projectId={project.id}
-                        compact
-                      />
-                    )}
-                  </Stack>
-                </li>
-              ))}
-            </ul>
+            <Section className="page-section" padding={3}>
+              <Table aria-label="Project issues">
+                <TableHeader>
+                  <TableRow>
+                    <TableHeaderCell>Key</TableHeaderCell>
+                    <TableHeaderCell>Issue</TableHeaderCell>
+                    <TableHeaderCell>Status</TableHeaderCell>
+                    <TableHeaderCell>Priority</TableHeaderCell>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {issues.map((issue) => (
+                    <TableRow key={issue.id} data-issue-id={issue.id}>
+                      <TableCell>
+                        <Text
+                          as="span"
+                          className="issue-key"
+                          data-issue-identifier={issue.identifier}
+                        >
+                          {issue.identifier}
+                        </Text>
+                      </TableCell>
+                      <TableCell>
+                        <Stack direction="horizontal" gap={1.5} vAlign="center" wrap="wrap">
+                          <Link
+                            to="/issues/$issueId"
+                            params={{ issueId: issue.id }}
+                            className="row-item-title"
+                          >
+                            {issue.title}
+                          </Link>
+                          {issue.labels.map((label) => (
+                            <LabelPill key={label.id} label={label} />
+                          ))}
+                        </Stack>
+                      </TableCell>
+                      <TableCell>
+                        <Token
+                          label={issueStatusLabels[issue.status]}
+                          color={statusTokenColors[issue.status]}
+                          size="sm"
+                          data-issue-status={issue.status}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        {canContribute ? (
+                          <IssuePriorityControls
+                            issue={issue}
+                            issues={issues}
+                            projectId={project.id}
+                            compact
+                          />
+                        ) : (
+                          <PriorityBadge priority={issue.priority} />
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Section>
           )}
         </section>
       )}
 
       {activeTab === "knowledge" && (
         <section id="panel-knowledge" role="tabpanel" className="tab-panel">
-          <Stack direction="horizontal" className="section-toolbar">
-            <Heading level={2} color="inherit">
-              Knowledge
-            </Heading>
-            {canContribute && (
-              <Button
-                type="button"
-                label="New document"
-                variant="primary"
-                size="sm"
-                onClick={() => setNewKnowledgeOpen(true)}
-              />
-            )}
-          </Stack>
-          {knowledge.length === 0 ? (
-            <Stack className="empty-panel">
-              <EmptyState
-                title="No knowledge entries yet"
-                description="Capture architecture notes and decisions for humans and agents."
-                headingLevel={3}
-                actions={
-                  canContribute ? (
-                    <Button
-                      label="New document"
-                      variant="primary"
-                      onClick={() => setNewKnowledgeOpen(true)}
-                    />
-                  ) : undefined
-                }
-              />
+          <Section className="page-section" padding={3}>
+            <Stack gap={3}>
+              <Stack direction="horizontal" className="section-toolbar">
+                <Heading level={2} color="inherit">
+                  Knowledge
+                </Heading>
+                {canContribute && (
+                  <Button
+                    type="button"
+                    label="New document"
+                    variant="primary"
+                    size="sm"
+                    onClick={() => setNewKnowledgeOpen(true)}
+                  />
+                )}
+              </Stack>
+              {knowledge.length === 0 ? (
+                <EmptyState
+                  title="No knowledge entries yet"
+                  description="Capture architecture notes and decisions for humans and agents."
+                  isCompact
+                  headingLevel={3}
+                  actions={
+                    canContribute ? (
+                      <Button
+                        label="New document"
+                        variant="primary"
+                        onClick={() => setNewKnowledgeOpen(true)}
+                      />
+                    ) : undefined
+                  }
+                />
+              ) : (
+                <Table aria-label="Knowledge documents">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHeaderCell>Document</TableHeaderCell>
+                      <TableHeaderCell>Updated by</TableHeaderCell>
+                      <TableHeaderCell>Last updated</TableHeaderCell>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {knowledge.map((entry) => (
+                      <TableRow key={entry.id} data-knowledge-id={entry.id}>
+                        <TableCell>
+                          <Link
+                            to="/knowledge/$entryId"
+                            params={{ entryId: entry.id }}
+                            className="row-item-title"
+                          >
+                            {entry.title}
+                          </Link>
+                        </TableCell>
+                        <TableCell>
+                          <Text type="supporting" color="secondary">
+                            {entry.updatedBy.displayName}
+                          </Text>
+                        </TableCell>
+                        <TableCell>
+                          <Text type="supporting" color="secondary">
+                            <time
+                              dateTime={entry.updatedAt}
+                              title={formatFullDateTime(entry.updatedAt)}
+                            >
+                              {relativeTime(entry.updatedAt)}
+                            </time>
+                          </Text>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
             </Stack>
-          ) : (
-            <ul className="row-list">
-              {knowledge.map((entry) => (
-                <li key={entry.id} data-knowledge-id={entry.id} className="row-item">
-                  <Link
-                    to="/knowledge/$entryId"
-                    params={{ entryId: entry.id }}
-                    className="row-item-title"
-                  >
-                    {entry.title}
-                  </Link>
-                  <Text type="supporting">by {entry.updatedBy.displayName}</Text>
-                </li>
-              ))}
-            </ul>
-          )}
+          </Section>
         </section>
       )}
 
@@ -336,8 +423,10 @@ function ProjectPage() {
 
       {activeTab === "settings" && canManage && (
         <section id="panel-settings" role="tabpanel" className="tab-panel">
-          <ProjectSettings key={project.name} project={project} />
-          {project.workspaceKind === "shared" && <ProjectAccess projectId={project.id} />}
+          <Stack gap={3}>
+            <ProjectSettings key={`${project.name}:${project.fallbackPolicy}`} project={project} />
+            {project.workspaceKind === "shared" && <ProjectAccess projectId={project.id} />}
+          </Stack>
         </section>
       )}
 
@@ -401,9 +490,13 @@ function ProjectPage() {
 
 function ProjectSettings({ project }: { project: Project }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [name, setName] = useState(project.name);
+  const [fallbackPolicy, setFallbackPolicy] = useState<FallbackPolicy>(project.fallbackPolicy);
   const [error, setError] = useState<string>();
+  const [policyError, setPolicyError] = useState<string>();
   const [saving, setSaving] = useState(false);
+  const [savingPolicy, setSavingPolicy] = useState(false);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -416,6 +509,7 @@ function ProjectSettings({ project }: { project: Project }) {
         queryClient.invalidateQueries({ queryKey: projectActivityQuery(project.id).queryKey }),
         queryClient.invalidateQueries({ queryKey: projectsQuery(project.workspaceId).queryKey }),
       ]);
+      toast({ body: "Project settings saved." });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not save the project.");
     } finally {
@@ -423,28 +517,103 @@ function ProjectSettings({ project }: { project: Project }) {
     }
   }
 
+  async function onPolicyChange(next: FallbackPolicy) {
+    setFallbackPolicy(next);
+    setSavingPolicy(true);
+    setPolicyError(undefined);
+    try {
+      const updated = await setProjectFallbackPolicy(project.id, { fallbackPolicy: next });
+      queryClient.setQueryData(projectQuery(project.id).queryKey, updated);
+      await queryClient.invalidateQueries({
+        queryKey: projectActivityQuery(project.id).queryKey,
+      });
+      toast({ body: "Fallback policy updated." });
+    } catch (cause) {
+      setFallbackPolicy(project.fallbackPolicy);
+      setPolicyError(cause instanceof Error ? cause.message : "Could not update fallback policy.");
+    } finally {
+      setSavingPolicy(false);
+    }
+  }
+
   return (
     <Section className="page-section" padding={3}>
-      <Heading level={2} color="inherit">
-        Project settings
-      </Heading>
-      <form onSubmit={(event) => void onSubmit(event)}>
-        <TextField
-          label="Project name"
-          id="project-rename"
-          htmlName="name"
-          value={name}
-          onChange={setName}
-          required
-          maxLength={120}
-        />
-        {error !== undefined && (
-          <Text as="p" display="block" type="inherit" color="inherit" role="alert">
-            {error}
+      <Stack gap={4}>
+        <Stack gap={2}>
+          <Heading level={2} color="inherit">
+            Project settings
+          </Heading>
+          <form onSubmit={(event) => void onSubmit(event)}>
+            <Stack gap={3} hAlign="start">
+              <TextField
+                label="Project name"
+                id="project-rename"
+                htmlName="name"
+                value={name}
+                onChange={setName}
+                required
+                maxLength={120}
+                width="min(100%, 28rem)"
+              />
+              {error !== undefined && (
+                <Banner
+                  status="error"
+                  role="alert"
+                  title="Could not save project"
+                  description={error}
+                />
+              )}
+              <Button
+                type="submit"
+                isDisabled={saving}
+                isLoading={saving}
+                label="Save project"
+                variant="primary"
+              />
+            </Stack>
+          </form>
+        </Stack>
+
+        <Stack gap={2} hAlign="start">
+          <Heading level={3} color="inherit">
+            Agent question fallback policy
+          </Heading>
+          <Text as="p" display="block" type="supporting">
+            Controls what happens when an agent question reaches its 1-hour response deadline
+            without a human answer.
           </Text>
-        )}
-        <Button type="submit" isDisabled={saving} label="Save project" variant="primary" />
-      </form>
+          <Selector
+            label="Default fallback policy"
+            id="project-fallback-policy"
+            value={fallbackPolicy}
+            isDisabled={savingPolicy}
+            onChange={(value) => {
+              const parsed = FallbackPolicy.safeParse(value);
+              if (parsed.success && parsed.data !== project.fallbackPolicy) {
+                void onPolicyChange(parsed.data);
+              }
+            }}
+            options={[
+              {
+                value: "require_human",
+                label: "Require human answer (pause at deadline)",
+              },
+              {
+                value: "fallback_allowed",
+                label: "Allow proposed fallback (continue at deadline)",
+              },
+            ]}
+          />
+          {policyError !== undefined && (
+            <Banner
+              status="error"
+              role="alert"
+              title="Could not update policy"
+              description={policyError}
+            />
+          )}
+        </Stack>
+      </Stack>
     </Section>
   );
 }
@@ -452,10 +621,13 @@ function ProjectSettings({ project }: { project: Project }) {
 function ProjectAccess({ projectId }: { projectId: string }) {
   const { data: grants } = useSuspenseQuery(projectAccessQuery(projectId));
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [email, setEmail] = useState("");
   const [level, setLevel] = useState<ProjectAccessLevel>("read");
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
+  const [updatingHumanId, setUpdatingHumanId] = useState<string>();
+  const [confirmRevoke, setConfirmRevoke] = useState<ProjectAccessGrant>();
 
   async function refresh() {
     await queryClient.invalidateQueries({ queryKey: projectAccessQuery(projectId).queryKey });
@@ -469,6 +641,7 @@ function ProjectAccess({ projectId }: { projectId: string }) {
       await setProjectAccess(projectId, { email, level });
       setEmail("");
       await refresh();
+      toast({ body: `Granted ${level} access to ${email}.` });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not grant access.");
     } finally {
@@ -476,87 +649,195 @@ function ProjectAccess({ projectId }: { projectId: string }) {
     }
   }
 
-  async function onRevoke(humanId: string) {
-    setSaving(true);
+  async function onChangeLevel(grant: ProjectAccessGrant, nextLevel: ProjectAccessLevel) {
+    setUpdatingHumanId(grant.humanId);
     setError(undefined);
     try {
-      await removeProjectAccess(projectId, humanId);
+      await setProjectAccess(projectId, { email: grant.email, level: nextLevel });
       await refresh();
+      toast({ body: `Updated ${grant.email} to ${nextLevel}.` });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not revoke access.");
+      const msg = cause instanceof Error ? cause.message : "Could not update access level.";
+      setError(msg);
+      toast({ body: msg, type: "error" });
     } finally {
-      setSaving(false);
+      setUpdatingHumanId(undefined);
+    }
+  }
+
+  async function onRevoke(grant: ProjectAccessGrant) {
+    setUpdatingHumanId(grant.humanId);
+    setError(undefined);
+    try {
+      await removeProjectAccess(projectId, grant.humanId);
+      setConfirmRevoke(undefined);
+      await refresh();
+      toast({ body: `Revoked access for ${grant.email}.` });
+    } catch (cause) {
+      const msg = cause instanceof Error ? cause.message : "Could not revoke access.";
+      setError(msg);
+      toast({ body: msg, type: "error" });
+    } finally {
+      setUpdatingHumanId(undefined);
     }
   }
 
   return (
     <Section className="page-section" padding={3}>
-      <Heading level={2} color="inherit">
-        Project access
-      </Heading>
-      {grants.length === 0 ? (
-        <Text as="p" display="block" type="supporting">
-          No one else has explicit access yet.
-        </Text>
-      ) : (
-        <ul className="row-list">
-          {grants.map((grant) => (
-            <li key={grant.humanId} data-project-access-for={grant.email} className="row-item">
-              <Stack direction="horizontal" className="row-item-main">
-                <Text type="inherit" color="inherit" className="row-item-title">
-                  {grant.email}
-                </Text>
-                <span className="meta-pill" data-access-level={grant.level}>
-                  {grant.level}
-                </span>
-                <Text type="supporting">granted by {grant.grantedBy.email}</Text>
-              </Stack>
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => void onRevoke(grant.humanId)}
-                isDisabled={saving}
-                label="Revoke access"
-                variant="destructive"
-              />
-            </li>
-          ))}
-        </ul>
-      )}
-      <form onSubmit={(event) => void onGrant(event)}>
-        <TextField
-          label="Email"
-          id="access-email"
-          htmlName="email"
-          type="email"
-          value={email}
-          onChange={setEmail}
-          required
-          autoComplete="off"
-        />
-
-        <Selector
-          label="Access level"
-          id="access-level"
-          htmlName="level"
-          value={level}
-          onChange={(value) => {
-            const next = ProjectAccessLevel.safeParse(value);
-            if (next.success) setLevel(next.data);
-          }}
-          options={[
-            { value: "read", label: "Read" },
-            { value: "contribute", label: "Contribute" },
-            { value: "manage", label: "Manage" },
-          ]}
-        />
-        {error !== undefined && (
-          <Text as="p" display="block" type="inherit" color="inherit" role="alert">
-            {error}
-          </Text>
+      <Stack gap={3}>
+        <Heading level={2} color="inherit">
+          Project access
+        </Heading>
+        {grants.length === 0 ? (
+          <EmptyState
+            title="No explicit project grants"
+            description="Workspace owners always have manage access. Add workspace members below to grant read, contribute, or manage access."
+            isCompact
+            headingLevel={3}
+          />
+        ) : (
+          <Table aria-label="Project access grants">
+            <TableHeader>
+              <TableRow>
+                <TableHeaderCell>Member</TableHeaderCell>
+                <TableHeaderCell>Access level</TableHeaderCell>
+                <TableHeaderCell>Granted by</TableHeaderCell>
+                <TableHeaderCell>Actions</TableHeaderCell>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {grants.map((grant) => (
+                <TableRow key={grant.humanId} data-project-access-for={grant.email}>
+                  <TableCell>
+                    <Text type="body" weight="semibold" color="primary">
+                      {grant.email}
+                    </Text>
+                  </TableCell>
+                  <TableCell>
+                    <Stack direction="horizontal" gap={1.5} vAlign="center" wrap="wrap">
+                      <Token
+                        label={grant.level}
+                        color={
+                          grant.level === "manage"
+                            ? "orange"
+                            : grant.level === "contribute"
+                              ? "blue"
+                              : "gray"
+                        }
+                        size="sm"
+                        data-access-level={grant.level}
+                      />
+                      <Selector
+                        label={`Change access level for ${grant.email}`}
+                        isLabelHidden
+                        id={`access-level-${grant.humanId}`}
+                        size="sm"
+                        variant="ghost"
+                        value={grant.level}
+                        isDisabled={saving || updatingHumanId !== undefined}
+                        onChange={(value) => {
+                          const parsed = ProjectAccessLevel.safeParse(value);
+                          if (parsed.success && parsed.data !== grant.level) {
+                            void onChangeLevel(grant, parsed.data);
+                          }
+                        }}
+                        options={[
+                          { value: "read", label: "Read" },
+                          { value: "contribute", label: "Contribute" },
+                          { value: "manage", label: "Manage" },
+                        ]}
+                      />
+                    </Stack>
+                  </TableCell>
+                  <TableCell>
+                    <Text type="supporting" color="secondary">
+                      {grant.grantedBy.email}
+                    </Text>
+                  </TableCell>
+                  <TableCell>
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => setConfirmRevoke(grant)}
+                      isDisabled={saving || updatingHumanId !== undefined}
+                      label="Revoke access"
+                      variant="destructive"
+                    />
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
         )}
-        <Button type="submit" isDisabled={saving} label="Grant access" variant="primary" />
-      </form>
+
+        <form onSubmit={(event) => void onGrant(event)}>
+          <Stack gap={3} hAlign="start">
+            <Stack direction="horizontal" gap={2} wrap="wrap" vAlign="end">
+              <TextField
+                label="Email"
+                id="access-email"
+                htmlName="email"
+                type="email"
+                value={email}
+                onChange={setEmail}
+                required
+                autoComplete="off"
+                placeholder="member@example.com"
+                width="min(100%, 20rem)"
+              />
+              <Selector
+                label="Access level"
+                id="access-level"
+                htmlName="level"
+                value={level}
+                onChange={(value) => {
+                  const next = ProjectAccessLevel.safeParse(value);
+                  if (next.success) setLevel(next.data);
+                }}
+                options={[
+                  { value: "read", label: "Read" },
+                  { value: "contribute", label: "Contribute" },
+                  { value: "manage", label: "Manage" },
+                ]}
+              />
+            </Stack>
+            {error !== undefined && (
+              <Banner
+                status="error"
+                role="alert"
+                title="Could not update access"
+                description={error}
+              />
+            )}
+            <Button
+              type="submit"
+              isDisabled={saving}
+              isLoading={saving}
+              label="Grant access"
+              variant="primary"
+            />
+          </Stack>
+        </form>
+      </Stack>
+
+      <AlertDialog
+        isOpen={confirmRevoke !== undefined}
+        onOpenChange={(open) => {
+          if (!open) setConfirmRevoke(undefined);
+        }}
+        title="Revoke project access?"
+        description={
+          confirmRevoke === undefined
+            ? "Revoke access?"
+            : `${confirmRevoke.email} will lose explicit ${confirmRevoke.level} access to this project.`
+        }
+        actionLabel="Revoke access"
+        actionVariant="destructive"
+        isActionLoading={confirmRevoke !== undefined && updatingHumanId === confirmRevoke.humanId}
+        onAction={() => {
+          if (confirmRevoke !== undefined) void onRevoke(confirmRevoke);
+        }}
+      />
     </Section>
   );
 }
@@ -606,16 +887,48 @@ function Activity({ projectId }: { projectId: string }) {
     );
   }
   return (
-    <ul className="row-list">
-      {activity.map((event) => (
-        <li key={event.id} data-activity-type={event.type} className="row-item">
-          <Text type="inherit" color="inherit">
-            <strong>{event.actor.displayName}</strong> {activityLabels[event.type]} “{event.summary}
-            ”
-          </Text>
-          <time dateTime={event.createdAt}>{event.createdAt}</time>
-        </li>
-      ))}
-    </ul>
+    <Section className="page-section" padding={3}>
+      <Table aria-label="Project activity">
+        <TableHeader>
+          <TableRow>
+            <TableHeaderCell>Activity</TableHeaderCell>
+            <TableHeaderCell>When</TableHeaderCell>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {activity.map((event) => {
+            const target =
+              event.issueId !== null ? (
+                <Link to="/issues/$issueId" params={{ issueId: event.issueId }}>
+                  {event.summary}
+                </Link>
+              ) : event.knowledgeEntryId !== null ? (
+                <Link to="/knowledge/$entryId" params={{ entryId: event.knowledgeEntryId }}>
+                  {event.summary}
+                </Link>
+              ) : (
+                <>“{event.summary}”</>
+              );
+
+            return (
+              <TableRow key={event.id} data-activity-type={event.type}>
+                <TableCell>
+                  <Text type="body" color="primary">
+                    <strong>{event.actor.displayName}</strong> {activityLabels[event.type]} {target}
+                  </Text>
+                </TableCell>
+                <TableCell>
+                  <Text type="supporting" color="secondary">
+                    <time dateTime={event.createdAt} title={formatFullDateTime(event.createdAt)}>
+                      {relativeTime(event.createdAt)}
+                    </time>
+                  </Text>
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </Section>
   );
 }

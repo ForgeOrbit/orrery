@@ -1,14 +1,27 @@
+import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
+import { Section } from "@astryxdesign/core/Section";
 import { Stack } from "@astryxdesign/core/Stack";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHeader,
+  TableHeaderCell,
+  TableRow,
+} from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
 import { useToast } from "@astryxdesign/core/Toast";
+import { Token } from "@astryxdesign/core/Token";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import {
   issueQuery,
   issuesQuery,
+  issueStatusLabels,
+  PriorityBadge,
   projectActivityQuery,
   projectQuery,
   projectTrashQuery,
@@ -18,6 +31,7 @@ import {
 } from "../features/projects/index.ts";
 import { Link } from "../lib/Link.tsx";
 import { PageHeader } from "../lib/PageHeader.tsx";
+import { formatFullDateTime, relativeTime } from "../lib/time.ts";
 
 export const Route = createFileRoute("/trash/$projectId")({
   loader: async ({ context, params }) => {
@@ -36,12 +50,17 @@ function ProjectTrashPage() {
   const toast = useToast();
   const { data: project } = useSuspenseQuery(projectQuery(projectId));
   const canManage = project.accessLevel === "manage";
-  const { data: trashed } = useQuery({ ...projectTrashQuery(projectId), enabled: canManage });
+  const {
+    data: trashed,
+    isPending,
+    isError,
+    refetch,
+  } = useQuery({ ...projectTrashQuery(projectId), enabled: canManage });
   const [error, setError] = useState<string>();
-  const [restoring, setRestoring] = useState(false);
+  const [restoringId, setRestoringId] = useState<string>();
 
-  async function onRestore(issueId: string) {
-    setRestoring(true);
+  async function onRestore(issueId: string, identifier: string) {
+    setRestoringId(issueId);
     setError(undefined);
     try {
       await restoreIssue(issueId);
@@ -52,13 +71,13 @@ function ProjectTrashPage() {
         queryClient.invalidateQueries({ queryKey: readyWorkQuery(projectId).queryKey }),
         queryClient.invalidateQueries({ queryKey: projectActivityQuery(projectId).queryKey }),
       ]);
-      toast({ body: "Issue restored." });
+      toast({ body: `Restored ${identifier}.` });
     } catch (cause) {
       const msg = cause instanceof Error ? cause.message : "Could not restore the issue.";
       setError(msg);
       toast({ body: msg, type: "error" });
     } finally {
-      setRestoring(false);
+      setRestoringId(undefined);
     }
   }
 
@@ -75,9 +94,7 @@ function ProjectTrashPage() {
         subtitle="Soft-deleted issues stay recoverable for 30 days."
       />
       {error !== undefined && (
-        <Text as="p" display="block" type="supporting" role="alert">
-          {error}
-        </Text>
+        <Banner status="error" role="alert" title="Could not restore issue" description={error} />
       )}
       {!canManage ? (
         <Stack className="empty-panel">
@@ -87,7 +104,27 @@ function ProjectTrashPage() {
             headingLevel={2}
           />
         </Stack>
-      ) : trashed === undefined || trashed.length === 0 ? (
+      ) : isPending ? (
+        <Text as="p" display="block" type="supporting" role="status">
+          Loading trashed issues…
+        </Text>
+      ) : isError ? (
+        <Banner
+          status="error"
+          role="alert"
+          title="Could not load trash"
+          description="Check your connection and try again."
+          endContent={
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              label="Retry"
+              onClick={() => void refetch()}
+            />
+          }
+        />
+      ) : trashed.length === 0 ? (
         <Stack className="empty-panel">
           <EmptyState
             title="No issues in the trash"
@@ -96,34 +133,65 @@ function ProjectTrashPage() {
           />
         </Stack>
       ) : (
-        <ul className="row-list">
-          {trashed.map((issue) => (
-            <li
-              key={issue.id}
-              data-trashed-issue-id={issue.id}
-              data-trashed-identifier={issue.identifier}
-              className="row-item"
-            >
-              <Stack direction="horizontal" className="row-item-main">
-                <Text type="inherit" color="inherit" className="issue-key">
-                  {issue.identifier}
-                </Text>
-                <Text type="inherit" color="inherit" className="row-item-title">
-                  {issue.title}
-                </Text>
-              </Stack>
-              <Button
-                type="button"
-                label={`Restore ${issue.identifier}`}
-                variant="secondary"
-                size="sm"
-                isDisabled={restoring}
-                data-restore-button
-                onClick={() => void onRestore(issue.id)}
-              />
-            </li>
-          ))}
-        </ul>
+        <Section className="page-section" padding={3}>
+          <Table aria-label="Trashed issues">
+            <TableHeader>
+              <TableRow>
+                <TableHeaderCell>Key</TableHeaderCell>
+                <TableHeaderCell>Issue</TableHeaderCell>
+                <TableHeaderCell>Status</TableHeaderCell>
+                <TableHeaderCell>Priority</TableHeaderCell>
+                <TableHeaderCell>Last updated</TableHeaderCell>
+                <TableHeaderCell>Action</TableHeaderCell>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {trashed.map((issue) => (
+                <TableRow
+                  key={issue.id}
+                  data-trashed-issue-id={issue.id}
+                  data-trashed-identifier={issue.identifier}
+                >
+                  <TableCell>
+                    <Text as="span" className="issue-key">
+                      {issue.identifier}
+                    </Text>
+                  </TableCell>
+                  <TableCell>
+                    <Text type="body" weight="semibold" color="primary">
+                      {issue.title}
+                    </Text>
+                  </TableCell>
+                  <TableCell>
+                    <Token label={issueStatusLabels[issue.status]} color="gray" size="sm" />
+                  </TableCell>
+                  <TableCell>
+                    <PriorityBadge priority={issue.priority} />
+                  </TableCell>
+                  <TableCell>
+                    <Text type="supporting" color="secondary">
+                      <time dateTime={issue.updatedAt} title={formatFullDateTime(issue.updatedAt)}>
+                        {relativeTime(issue.updatedAt)}
+                      </time>
+                    </Text>
+                  </TableCell>
+                  <TableCell>
+                    <Button
+                      type="button"
+                      label={`Restore ${issue.identifier}`}
+                      variant="secondary"
+                      size="sm"
+                      isDisabled={restoringId !== undefined}
+                      isLoading={restoringId === issue.id}
+                      data-restore-button
+                      onClick={() => void onRestore(issue.id, issue.identifier)}
+                    />
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Section>
       )}
     </main>
   );

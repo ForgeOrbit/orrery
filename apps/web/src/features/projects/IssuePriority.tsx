@@ -1,15 +1,16 @@
-import { Badge } from "@astryxdesign/core/Badge";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { Selector } from "@astryxdesign/core/Selector";
+import { Stack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
 import { useToast } from "@astryxdesign/core/Toast";
+import { Token } from "@astryxdesign/core/Token";
 import { ISSUE_SORT_STEP, IssuePriority, type Issue, type IssueDetail } from "@orrery/contract";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { updateIssue } from "./commands.ts";
 import { issueQuery, issuesQuery, projectActivityQuery } from "./queries.ts";
 
-const PRIORITY_LABELS: Record<IssuePriority, string> = {
+export const PRIORITY_LABELS: Record<IssuePriority, string> = {
   urgent: "Urgent",
   high: "High",
   medium: "Medium",
@@ -17,8 +18,23 @@ const PRIORITY_LABELS: Record<IssuePriority, string> = {
   none: "None",
 };
 
+const PRIORITY_COLORS: Record<IssuePriority, "red" | "orange" | "yellow" | "blue" | "gray"> = {
+  urgent: "red",
+  high: "orange",
+  medium: "yellow",
+  low: "blue",
+  none: "gray",
+};
+
 export function PriorityBadge({ priority }: { priority: IssuePriority }) {
-  return <Badge data-issue-priority={priority} label={PRIORITY_LABELS[priority]} />;
+  return (
+    <Token
+      data-issue-priority={priority}
+      label={PRIORITY_LABELS[priority]}
+      color={PRIORITY_COLORS[priority]}
+      size="sm"
+    />
+  );
 }
 
 function MoveUpIcon() {
@@ -73,11 +89,13 @@ export function IssuePriorityControls({
   issues,
   projectId,
   compact = false,
+  showReorder = true,
 }: {
   issue: Issue;
   issues: Issue[];
   projectId: string;
   compact?: boolean;
+  showReorder?: boolean;
 }) {
   const queryClient = useQueryClient();
   const toast = useToast();
@@ -119,7 +137,10 @@ export function IssuePriorityControls({
   }
 
   return (
-    <div
+    <Stack
+      direction="horizontal"
+      gap={1}
+      vAlign="center"
       className={
         compact ? "issue-order-controls issue-order-controls-compact" : "issue-order-controls"
       }
@@ -143,31 +164,33 @@ export function IssuePriorityControls({
           label: PRIORITY_LABELS[option],
         }))}
       />
-      <div className="issue-order-arrows">
-        <IconButton
-          type="button"
-          size="sm"
-          variant="ghost"
-          isDisabled={saving || !canMoveUp}
-          onClick={() => move("up")}
-          label="Move up"
-          icon={<MoveUpIcon />}
-        />
-        <IconButton
-          type="button"
-          size="sm"
-          variant="ghost"
-          isDisabled={saving || !canMoveDown}
-          onClick={() => move("down")}
-          label="Move down"
-          icon={<MoveDownIcon />}
-        />
-      </div>
+      {showReorder && (
+        <Stack direction="horizontal" gap={0.5} className="issue-order-arrows">
+          <IconButton
+            type="button"
+            size="sm"
+            variant="ghost"
+            isDisabled={saving || !canMoveUp}
+            onClick={() => move("up")}
+            label="Move up"
+            icon={<MoveUpIcon />}
+          />
+          <IconButton
+            type="button"
+            size="sm"
+            variant="ghost"
+            isDisabled={saving || !canMoveDown}
+            onClick={() => move("down")}
+            label="Move down"
+            icon={<MoveDownIcon />}
+          />
+        </Stack>
+      )}
       {error !== undefined && (
-        <Text type="inherit" color="inherit" role="alert">
+        <Text type="supporting" color="inherit" role="alert">
           {error}
         </Text>
       )}
-    </div>
+    </Stack>
   );
 }

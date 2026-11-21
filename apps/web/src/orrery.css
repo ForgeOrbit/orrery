@@ -1480,7 +1480,28 @@
   overflow-wrap: anywhere;
 }
 
-[data-issue-priority],
+.label-swatch {
+  inline-size: 1.5rem;
+  block-size: 1.5rem;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--swatch-color, var(--orrery-border));
+  cursor: pointer;
+  transition:
+    transform 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.label-swatch:hover {
+  transform: scale(1.08);
+}
+
+.label-swatch[data-active="true"] {
+  border-color: var(--orrery-surface);
+  box-shadow: 0 0 0 2px var(--orrery-accent);
+}
+
 [data-session-state],
 [data-session-status],
 [data-inspector-session-status],
@@ -1517,26 +1538,6 @@
   margin-inline-end: 0.3rem;
   border-radius: 50%;
   background: var(--orrery-accent);
-}
-
-[data-issue-priority="urgent"] {
-  color: var(--orrery-error);
-  background: var(--orrery-error-fill);
-}
-
-[data-issue-priority="high"] {
-  color: var(--orrery-attention-text);
-  background: var(--orrery-attention-fill);
-}
-
-[data-issue-priority="medium"] {
-  color: light-dark(#8a5a00, #f5c96a);
-  background: light-dark(#fef5e1, #382e1a);
-}
-
-[data-issue-priority="low"] {
-  color: light-dark(#2457a8, #8cb8ff);
-  background: light-dark(#e9f1fe, #1f2b40);
 }
 
 [data-session-state="active"],
@@ -2096,10 +2097,17 @@
   margin-block-end: 0;
 }
 
+.markdown-table-wrap {
+  inline-size: 100%;
+  max-inline-size: 100%;
+  overflow-x: auto;
+  margin-block: 0.65rem;
+}
+
 .markdown-body :where(table) {
   inline-size: 100%;
   border-collapse: collapse;
-  margin-block: 0.65rem;
+  margin-block: 0;
   font-size: 0.8125rem;
 }
 
@@ -2115,7 +2123,37 @@
 }
 
 .markdown-body :where(ul) {
-  padding-inline-start: 1.25rem;
+  list-style-type: disc;
+  padding-inline-start: 1.35rem;
+}
+
+.markdown-body :where(ol) {
+  list-style-type: decimal;
+  padding-inline-start: 1.5rem;
+}
+
+.markdown-body :where(li) {
+  margin-block: 0.2rem;
+}
+
+.markdown-body :where(blockquote) {
+  margin-inline: 0;
+  margin-block: 0.75rem;
+  padding: 0.5rem 0.85rem;
+  border-inline-start: 3px solid var(--orrery-accent);
+  border-radius: 0 var(--orrery-radius) var(--orrery-radius) 0;
+  background: var(--orrery-recessed);
+  color: var(--orrery-muted);
+}
+
+.markdown-body :where(blockquote > :last-child) {
+  margin-block-end: 0;
+}
+
+.markdown-body :where(hr) {
+  border: 0;
+  border-block-start: 1px solid var(--orrery-border);
+  margin-block: 1rem;
 }
 
 .markdown-body :where(li > input[type="checkbox"]) {
@@ -2131,6 +2169,12 @@
 .markdown-body :where(code) {
   font-family: var(--orrery-mono);
   font-size: 0.9em;
+}
+
+.markdown-body :where(:not(pre) > code) {
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  background: var(--orrery-recessed);
 }
 
 .issue-ref-link {

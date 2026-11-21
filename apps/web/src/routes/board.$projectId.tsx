@@ -1,17 +1,20 @@
-import { Heading } from "@astryxdesign/core/Heading";
-import { Text } from "@astryxdesign/core/Text";
 import { Avatar } from "@astryxdesign/core/Avatar";
 import { Badge } from "@astryxdesign/core/Badge";
+import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { Card } from "@astryxdesign/core/Card";
 import { Drawer, DrawerHeader } from "@astryxdesign/core/Drawer";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
+import { Heading } from "@astryxdesign/core/Heading";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Stack } from "@astryxdesign/core/Stack";
-import { ToggleButton } from "@astryxdesign/core/ToggleButton";
+import { Text } from "@astryxdesign/core/Text";
+import { TextInput } from "@astryxdesign/core/TextInput";
 import { useToast } from "@astryxdesign/core/Toast";
+import { ToggleButton } from "@astryxdesign/core/ToggleButton";
+import { Token } from "@astryxdesign/core/Token";
 import { type ActiveWorkSession, type Issue, IssuePriority, IssueStatus } from "@orrery/contract";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
@@ -24,6 +27,7 @@ import {
   issuesQuery,
   issueStatusLabels,
   LabelPill,
+  PRIORITY_LABELS,
   PriorityBadge,
   projectActivityQuery,
   projectLabelsQuery,
@@ -33,8 +37,8 @@ import {
   subtasksOf,
   updateIssue,
 } from "../features/projects/index.ts";
-import { workspaceQuery } from "../features/workspaces/index.ts";
 import { activeSessionsQuery, SessionInspectorDetails } from "../features/work-sessions/index.ts";
+import { workspaceQuery } from "../features/workspaces/index.ts";
 import { Link } from "../lib/Link.tsx";
 
 export const Route = createFileRoute("/board/$projectId")({
@@ -79,6 +83,7 @@ function BoardPage() {
   const [assigneeFilter, setAssigneeFilter] = useState<AssigneeFilter>("all");
   const [priorityFilter, setPriorityFilter] = useState<IssuePriority | "all">("all");
   const [labelFilter, setLabelFilter] = useState("all");
+  const [searchQuery, setSearchQuery] = useState("");
   const [panel, setPanel] = useState<BoardPanel>();
   const [panelOpen, setPanelOpen] = useState(false);
   const [createdIssue, setCreatedIssue] = useState<Issue>();
@@ -105,6 +110,7 @@ function BoardPage() {
     { id: "needs-input", label: "Needs input", count: needsInputCount },
     { id: "ready", label: "Ready to claim", count: readyIds.size },
   ];
+  const normalizedSearch = searchQuery.trim().toLowerCase();
   const visible = issues.filter((issue) => {
     if (filter === "needs-input" && !issue.needsInput) return false;
     if (filter === "ready" && !readyIds.has(issue.id)) return false;
@@ -115,6 +121,13 @@ function BoardPage() {
     if (assigneeFilter === "agent" && issue.assignee?.agentId == null) return false;
     if (priorityFilter !== "all" && issue.priority !== priorityFilter) return false;
     if (labelFilter !== "all" && !issue.labels.some((label) => label.id === labelFilter)) {
+      return false;
+    }
+    if (
+      normalizedSearch !== "" &&
+      !issue.title.toLowerCase().includes(normalizedSearch) &&
+      !issue.identifier.toLowerCase().includes(normalizedSearch)
+    ) {
       return false;
     }
     return true;
@@ -167,13 +180,15 @@ function BoardPage() {
     filter !== "all" ||
     assigneeFilter !== "all" ||
     priorityFilter !== "all" ||
-    labelFilter !== "all";
+    labelFilter !== "all" ||
+    normalizedSearch !== "";
 
   function clearFilters() {
     setFilter("all");
     setAssigneeFilter("all");
     setPriorityFilter("all");
     setLabelFilter("all");
+    setSearchQuery("");
   }
 
   return (
@@ -228,6 +243,16 @@ function BoardPage() {
             role="group"
             aria-label="Narrow issues"
           >
+            <TextInput
+              id="board-search"
+              label="Search issues"
+              isLabelHidden
+              size="sm"
+              width="12rem"
+              placeholder="Search issues…"
+              value={searchQuery}
+              onChange={setSearchQuery}
+            />
             <Selector
               label="Assignee"
               id="board-assignee-filter"
@@ -259,7 +284,7 @@ function BoardPage() {
                 { value: "all", label: "Any priority" },
                 ...IssuePriority.options.map((priority) => ({
                   value: priority,
-                  label: priority === "none" ? "None" : priority,
+                  label: PRIORITY_LABELS[priority],
                 })),
               ]}
             />
@@ -275,6 +300,15 @@ function BoardPage() {
                 ...labels.map((label) => ({ value: label.id, label: label.name })),
               ]}
             />
+            {hasActiveFilter && (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                label="Clear filters"
+                onClick={clearFilters}
+              />
+            )}
           </Stack>
           {sessionsByIssue.size > 0 && (
             <Text
@@ -292,142 +326,175 @@ function BoardPage() {
       </header>
 
       {createdIssue !== undefined && (
-        <Text
-          as="p"
-          display="block"
-          type="inherit"
-          color="inherit"
-          className="board-created"
+        <Banner
+          status="success"
           role="status"
-        >
-          Created{" "}
-          <Link to="/issues/$issueId" params={{ issueId: createdIssue.id }}>
-            {createdIssue.identifier}
-          </Link>
-        </Text>
+          isDismissable
+          onDismiss={() => setCreatedIssue(undefined)}
+          title={
+            <>
+              Created{" "}
+              <Link to="/issues/$issueId" params={{ issueId: createdIssue.id }}>
+                {createdIssue.identifier}
+              </Link>
+            </>
+          }
+        />
       )}
 
       {moveError !== undefined && (
-        <Text as="p" display="block" type="supporting" role="alert" data-board-move-error>
-          {moveError}
-        </Text>
+        <Banner
+          status="error"
+          role="alert"
+          data-board-move-error
+          title="Could not move issue"
+          description={moveError}
+        />
       )}
 
       {pendingClose !== undefined && (
-        <Stack direction="horizontal" role="alert" data-board-open-subtask-warning>
-          <Text as="p" display="block" type="supporting">
-            {pendingClose.issue.identifier} still has {pendingClose.openSubtaskCount} open{" "}
-            {pendingClose.openSubtaskCount === 1 ? "subtask" : "subtasks"}. Move to{" "}
-            {issueStatusLabels[pendingClose.status]} anyway?
-          </Text>
-          <Button
-            type="button"
-            label="Close anyway"
-            variant="secondary"
-            size="sm"
-            isDisabled={moving}
-            onClick={() => void performMove(pendingClose.issue, pendingClose.status)}
-          />
-          <Button
-            type="button"
-            label="Cancel"
-            variant="ghost"
-            size="sm"
-            isDisabled={moving}
-            onClick={() => setPendingClose(undefined)}
-          />
-        </Stack>
+        <Banner
+          status="warning"
+          role="alert"
+          data-board-open-subtask-warning
+          title={`${pendingClose.issue.identifier} still has ${pendingClose.openSubtaskCount} open ${pendingClose.openSubtaskCount === 1 ? "subtask" : "subtasks"}`}
+          description={`Move to ${issueStatusLabels[pendingClose.status]} anyway?`}
+          endContent={
+            <Stack direction="horizontal" gap={1}>
+              <Button
+                type="button"
+                label="Close anyway"
+                variant="secondary"
+                size="sm"
+                isDisabled={moving}
+                isLoading={moving}
+                onClick={() => void performMove(pendingClose.issue, pendingClose.status)}
+              />
+              <Button
+                type="button"
+                label="Cancel"
+                variant="ghost"
+                size="sm"
+                isDisabled={moving}
+                onClick={() => setPendingClose(undefined)}
+              />
+            </Stack>
+          }
+        />
       )}
 
-      {visible.length === 0 ? (
+      {issues.length === 0 ? (
         <Stack className="board-empty-state">
           <EmptyState
-            title={issues.length === 0 ? "No issues yet" : "No matching issues"}
+            title="No issues yet"
+            description="Create an issue to start tracking work across columns."
             icon={<Icon icon="viewColumns" size="lg" />}
             headingLevel={2}
             actions={
-              hasActiveFilter ? (
-                <Button label="Show all issues" onClick={clearFilters} />
+              canContribute ? (
+                <Button
+                  label="New issue"
+                  variant="primary"
+                  onClick={() => showPanel({ kind: "new-issue" })}
+                />
               ) : undefined
             }
           />
         </Stack>
       ) : (
-        <Stack
-          data-board
-          direction="horizontal"
-          tabIndex={0}
-          role="region"
-          aria-label="Issue board"
-        >
-          {BOARD_COLUMNS.map((status) => {
-            const lane = columns[status] ?? [];
-            const isDropTarget = dragOverStatus === status;
-            return (
-              <section
-                key={status}
-                data-board-column={issueStatusLabels[status]}
-                data-board-status={status}
-                data-drag-over={isDropTarget ? "true" : undefined}
-                className="board-column"
-                onDragOver={(event) => {
-                  if (!canContribute || moving) return;
-                  event.preventDefault();
-                  event.dataTransfer.dropEffect = "move";
-                  if (dragOverStatus !== status) setDragOverStatus(status);
-                }}
-                onDragLeave={(event) => {
-                  if (
-                    event.relatedTarget instanceof Node &&
-                    event.currentTarget.contains(event.relatedTarget)
-                  ) {
-                    return;
-                  }
-                  if (dragOverStatus === status) setDragOverStatus(undefined);
-                }}
-                onDrop={(event) => {
-                  event.preventDefault();
-                  setDragOverStatus(undefined);
-                  const droppedId = event.dataTransfer.getData("text/plain") || draggingIssueId;
-                  setDraggingIssueId(undefined);
-                  if (!canContribute || moving || !droppedId) return;
-                  const droppedIssue = issues.find((candidate) => candidate.id === droppedId);
-                  if (droppedIssue !== undefined) onMove(droppedIssue, status);
-                }}
-              >
-                <Heading level={2} color="inherit">
-                  {issueStatusLabels[status]} <Badge label={lane.length} />
-                </Heading>
-                <ul>
-                  {lane.map((issue) => {
-                    const subtasks = subtasksOf(issues, issue.id);
-                    return (
-                      <BoardCard
-                        key={issue.id}
-                        issue={issue}
-                        session={sessionsByIssue.get(issue.id)}
-                        ready={readyIds.has(issue.id)}
-                        subtaskCount={subtasks.length}
-                        completedSubtaskCount={completedSubtaskCount(subtasks)}
-                        canMove={canContribute && !moving}
-                        dragging={draggingIssueId === issue.id}
-                        onDragStart={() => setDraggingIssueId(issue.id)}
-                        onDragEnd={() => {
-                          setDraggingIssueId(undefined);
-                          setDragOverStatus(undefined);
-                        }}
-                        onMove={(next) => onMove(issue, next)}
-                        onInspect={(sessionId) =>
-                          showPanel({ kind: "session", issueId: issue.id, sessionId })
-                        }
-                      />
-                    );
-                  })}
-                </ul>
-              </section>
-            );
-          })}
-        </Stack>
+        <>
+          {visible.length === 0 && hasActiveFilter && (
+            <Banner
+              status="info"
+              title="No matching issues"
+              description="Try adjusting your search or active filters."
+              endContent={
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  label="Show all issues"
+                  onClick={clearFilters}
+                />
+              }
+            />
+          )}
+          <Stack
+            data-board
+            direction="horizontal"
+            tabIndex={0}
+            role="region"
+            aria-label="Issue board"
+          >
+            {BOARD_COLUMNS.map((status) => {
+              const lane = columns[status] ?? [];
+              const isDropTarget = dragOverStatus === status;
+              return (
+                <section
+                  key={status}
+                  data-board-column={issueStatusLabels[status]}
+                  data-board-status={status}
+                  data-drag-over={isDropTarget ? "true" : undefined}
+                  className="board-column"
+                  onDragOver={(event) => {
+                    if (!canContribute || moving) return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                    if (dragOverStatus !== status) setDragOverStatus(status);
+                  }}
+                  onDragLeave={(event) => {
+                    if (
+                      event.relatedTarget instanceof Node &&
+                      event.currentTarget.contains(event.relatedTarget)
+                    ) {
+                      return;
+                    }
+                    if (dragOverStatus === status) setDragOverStatus(undefined);
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    setDragOverStatus(undefined);
+                    const droppedId = event.dataTransfer.getData("text/plain") || draggingIssueId;
+                    setDraggingIssueId(undefined);
+                    if (!canContribute || moving || !droppedId) return;
+                    const droppedIssue = issues.find((candidate) => candidate.id === droppedId);
+                    if (droppedIssue !== undefined) onMove(droppedIssue, status);
+                  }}
+                >
+                  <Heading level={2} color="inherit">
+                    {issueStatusLabels[status]} <Badge label={lane.length} />
+                  </Heading>
+                  <ul>
+                    {lane.map((issue) => {
+                      const subtasks = subtasksOf(issues, issue.id);
+                      return (
+                        <BoardCard
+                          key={issue.id}
+                          issue={issue}
+                          session={sessionsByIssue.get(issue.id)}
+                          ready={readyIds.has(issue.id)}
+                          subtaskCount={subtasks.length}
+                          completedSubtaskCount={completedSubtaskCount(subtasks)}
+                          canMove={canContribute && !moving}
+                          dragging={draggingIssueId === issue.id}
+                          onDragStart={() => setDraggingIssueId(issue.id)}
+                          onDragEnd={() => {
+                            setDraggingIssueId(undefined);
+                            setDragOverStatus(undefined);
+                          }}
+                          onMove={(next) => onMove(issue, next)}
+                          onInspect={(sessionId) =>
+                            showPanel({ kind: "session", issueId: issue.id, sessionId })
+                          }
+                        />
+                      );
+                    })}
+                  </ul>
+                </section>
+              );
+            })}
+          </Stack>
+        </>
       )}
 
       <Drawer
@@ -467,9 +534,7 @@ function BoardPage() {
             {panel?.kind === "session" && (
               <>
                 {inspected === undefined ? (
-                  <Text as="p" display="block" type="inherit" color="inherit" role="alert">
-                    This issue is no longer available.
-                  </Text>
+                  <Banner status="error" role="alert" title="This issue is no longer available." />
                 ) : (
                   <>
                     <Link
@@ -524,7 +589,7 @@ function BoardCard({
 }) {
   const { data: blockers = [] } = useQuery({
     ...issueBlockedByQuery(issue.id),
-    refetchInterval: 4000,
+    refetchInterval: 15_000,
   });
   const state = issue.needsInput
     ? "needs-input"
@@ -585,13 +650,12 @@ function BoardCard({
               </Text>
             )}
             {blockers.length > 0 && (
-              <Text
-                type="inherit"
-                color="inherit"
+              <Token
+                label={`Blocked by ${blockers.length}`}
+                color="red"
+                size="sm"
                 data-blocked-by={blockers.map((blocker) => blocker.id).join(",")}
-              >
-                Blocked by {blockers.length}
-              </Text>
+              />
             )}
             {assignee !== null && (
               <Text type="inherit" color="inherit" className="board-assignee">
