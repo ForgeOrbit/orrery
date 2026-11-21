@@ -212,7 +212,10 @@ test("owner manages webhooks and inspects deliveries while non-owners do not see
     const secret = (await secretCode.innerText()).trim();
     expect(secret).toMatch(/^whsec_/);
     await recordSecret(secret);
-    await ownerPage.getByRole("button", { name: "Dismiss" }).click();
+    await ownerPage
+      .locator("[data-webhook-secret-banner]")
+      .getByRole("button", { name: "Dismiss", exact: true })
+      .click();
     await expect(secretCode).toHaveCount(0);
 
     const row = ownerPage.locator("[data-webhook-id]").first();
