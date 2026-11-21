@@ -36,6 +36,7 @@ const labels: Record<string, string> = {
   issue_closed: "closed issue",
   issue_reopened: "reopened issue",
   issue_stop_requested: "asked the agent to stop on issue",
+  issue_session_expired: "lost its claim lease on issue",
   issue_dependency_added: "added a blocker to issue",
   issue_dependency_removed: "removed a blocker from issue",
   issue_link_added: "linked on issue",

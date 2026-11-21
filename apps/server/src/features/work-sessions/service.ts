@@ -36,6 +36,7 @@ import {
 import { alias, type PgInsertValue } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
+import type { Logger } from "../../platform/log.ts";
 import {
   agents,
   humans,
@@ -49,6 +50,7 @@ import {
   workspaceMemberships,
   workspaces,
 } from "../../db/schema.ts";
+import type { NotifyActivity } from "../notifications/index.ts";
 import type { WorkActor } from "../projects/index.ts";
 import { decideReacquire, resumeDispositionFor, workSessionMachine } from "./state-machine.ts";
 
@@ -123,6 +125,10 @@ export interface SessionsDeps {
     | ((tx: DbTransaction, issueId: string) => Promise<Date | null>)
     | undefined;
   evaluateQuestionDeadline?: ((tx: DbTransaction, issueId: string) => Promise<void>) | undefined;
+  /** Due-question discovery stays in the inbox feature; work-sessions never queries questions. */
+  dueQuestionIssueIds?: (() => Promise<string[]>) | undefined;
+  notifyActivity?: NotifyActivity | undefined;
+  log?: Logger | undefined;
 }
 
 export type AgentActor = { kind: "agent"; identity: AgentIdentity };
@@ -178,6 +184,9 @@ export interface SessionsService {
   ): Promise<boolean>;
 
   issueHasLiveSession(tx: DbTransaction, issueId: string): Promise<boolean>;
+
+  /** Proactively evaluates overdue claim leases and question deadlines. */
+  sweep(): Promise<void>;
 }
 
 type SessionRow = typeof workSessions.$inferSelect;
@@ -432,7 +441,16 @@ export async function revertIssueToTodo(tx: DbTransaction, issueId: string): Pro
     .where(and(eq(issues.id, issueId), eq(issues.status, "in_progress")));
 }
 
-async function expireStale(tx: DbTransaction, issueId: string): Promise<void> {
+async function expireStale(
+  tx: DbTransaction,
+  issueId: string,
+  notify: NotifyActivity,
+): Promise<void> {
+  const [issue] = await tx
+    .select({ projectId: issues.projectId })
+    .from(issues)
+    .where(eq(issues.id, issueId))
+    .limit(1);
   const expired = await tx
     .update(workSessions)
     .set({
@@ -447,8 +465,29 @@ async function expireStale(tx: DbTransaction, issueId: string): Promise<void> {
         lte(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
       ),
     )
-    .returning({ id: workSessions.id });
+    .returning({ id: workSessions.id, agentId: workSessions.agentId });
 
+  if (expired.length > 0 && issue !== undefined) {
+    const activityId = randomUUID();
+    const summary = "Work session expired: the five-minute claim lease lapsed";
+    await tx.insert(projectActivity).values({
+      id: activityId,
+      projectId: issue.projectId,
+      issueId,
+      type: ProjectActivityType.enum.issue_session_expired,
+      actorAgentId: expired[0]!.agentId,
+      summary,
+      createdAt: sql`statement_timestamp()`,
+    });
+    await notify(tx, {
+      activityId,
+      projectId: issue.projectId,
+      issueId,
+      kind: "session_expired",
+      summary,
+      actorAgentId: expired[0]!.agentId,
+    });
+  }
   if (expired.length > 0) await revertIssueToTodo(tx, issueId);
 }
 
@@ -526,6 +565,7 @@ async function insertFreshSession(
   tx: DbTransaction,
   issueId: string,
   values: PgInsertValue<typeof workSessions>,
+  notify: NotifyActivity,
 ): Promise<SessionView | undefined> {
   for (let attempt = 0; attempt < 2; attempt++) {
     const [created] = await tx
@@ -534,7 +574,7 @@ async function insertFreshSession(
       .onConflictDoNothing()
       .returning(sessionColumns);
     if (created !== undefined) return created;
-    await expireStale(tx, issueId);
+    await expireStale(tx, issueId, notify);
   }
   return undefined;
 }
@@ -709,11 +749,17 @@ export function createSessionsService({
   listIssues,
   questionLeaseDeadline,
   evaluateQuestionDeadline,
+  dueQuestionIssueIds: dueQuestionIssueIdsDep,
+  notifyActivity: notifyActivityDep,
+  log,
 }: SessionsDeps): SessionsService {
   const leaseDeadline = questionLeaseDeadline ?? (async () => null);
   const checkDeadline = evaluateQuestionDeadline ?? (async () => {});
+  const dueQuestionIssueIds = dueQuestionIssueIdsDep ?? (async () => []);
+  const notifyActivity: NotifyActivity = notifyActivityDep ?? (async () => {});
 
-  const expireCommitted = (issueId: string) => db.transaction((tx) => expireStale(tx, issueId));
+  const expireCommitted = (issueId: string) =>
+    db.transaction((tx) => expireStale(tx, issueId, notifyActivity));
 
   const deadlineCommitted = async (issueId: string) => {
     if (evaluateQuestionDeadline === undefined) return;
@@ -755,7 +801,7 @@ export function createSessionsService({
         .orderBy(issues.id)
         .for("update");
 
-      for (const issueId of issueIds) await expireStale(tx, issueId);
+      for (const issueId of issueIds) await expireStale(tx, issueId, notifyActivity);
     });
   };
 
@@ -776,7 +822,7 @@ export function createSessionsService({
       await lockAgentWorkspaceAccess(tx, identity);
       const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
       const issue = await lockIssue(tx, issueId);
-      await expireStale(tx, issue.id);
+      await expireStale(tx, issue.id, notifyActivity);
 
       await checkDeadline(tx, issue.id);
       await requireAccess(
@@ -817,7 +863,7 @@ export function createSessionsService({
         await lockAgentWorkspaceAccess(tx, identity);
         const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
         const issue = await lockIssue(tx, input.issueId);
-        await expireStale(tx, issue.id);
+        await expireStale(tx, issue.id, notifyActivity);
         await checkDeadline(tx, issue.id);
 
         const [fresh] = await tx
@@ -846,17 +892,22 @@ export function createSessionsService({
 
         if (fresh?.status !== "todo") throw new SessionsError("issue_blocked");
 
-        const created = await insertFreshSession(tx, issue.id, {
-          id: randomUUID(),
-          agentId: identity.agentId,
-          runId: input.runId,
-          workspaceId: identity.workspaceId,
-          issueId: issue.id,
-          status: WorkSessionStatus.enum.active,
-          leaseExpiresAt: fiveMinutes,
-          createdAt: sql`statement_timestamp()`,
-          updatedAt: sql`statement_timestamp()`,
-        });
+        const created = await insertFreshSession(
+          tx,
+          issue.id,
+          {
+            id: randomUUID(),
+            agentId: identity.agentId,
+            runId: input.runId,
+            workspaceId: identity.workspaceId,
+            issueId: issue.id,
+            status: WorkSessionStatus.enum.active,
+            leaseExpiresAt: fiveMinutes,
+            createdAt: sql`statement_timestamp()`,
+            updatedAt: sql`statement_timestamp()`,
+          },
+          notifyActivity,
+        );
         if (created !== undefined) {
           await tx
             .update(issues)
@@ -956,8 +1007,9 @@ export function createSessionsService({
             updatedAt: sql`statement_timestamp()`,
           })
           .where(eq(issues.id, issue.id));
+        const activityId = randomUUID();
         await tx.insert(projectActivity).values({
-          id: randomUUID(),
+          id: activityId,
           projectId: issue.projectId,
           issueId: issue.id,
           type: done
@@ -967,6 +1019,16 @@ export function createSessionsService({
           summary: done ? "Work completed and issue closed" : "Work handed off for review",
           createdAt: sql`statement_timestamp()`,
         });
+        if (!done) {
+          await notifyActivity(tx, {
+            activityId,
+            projectId: issue.projectId,
+            issueId: issue.id,
+            kind: "handoff",
+            summary: "Work handed off for review",
+            actorAgentId: session.agentId,
+          });
+        }
         return toSession(updated);
       });
     },
@@ -1002,7 +1064,7 @@ export function createSessionsService({
           humanId,
           issueId,
         );
-        await expireStale(tx, issue.id);
+        await expireStale(tx, issue.id, notifyActivity);
 
         const [session] = await tx
           .select(sessionColumns)
@@ -1176,7 +1238,7 @@ export function createSessionsService({
         await lockAgentWorkspaceAccess(tx, identity);
         const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
         const issue = await lockIssue(tx, input.issueId);
-        await expireStale(tx, issue.id);
+        await expireStale(tx, issue.id, notifyActivity);
         await checkDeadline(tx, issue.id);
 
         const [fresh] = await tx
@@ -1222,20 +1284,25 @@ export function createSessionsService({
           throw new SessionsError("issue_blocked");
         }
 
-        const created = await insertFreshSession(tx, issue.id, {
-          id: randomUUID(),
-          agentId: identity.agentId,
-          runId: input.runId,
-          workspaceId: identity.workspaceId,
-          issueId: issue.id,
-          status: WorkSessionStatus.enum.active,
-          leaseExpiresAt: fiveMinutes,
-          progress: prior.progress,
-          progressUpdatedAt: prior.progressUpdatedAt,
+        const created = await insertFreshSession(
+          tx,
+          issue.id,
+          {
+            id: randomUUID(),
+            agentId: identity.agentId,
+            runId: input.runId,
+            workspaceId: identity.workspaceId,
+            issueId: issue.id,
+            status: WorkSessionStatus.enum.active,
+            leaseExpiresAt: fiveMinutes,
+            progress: prior.progress,
+            progressUpdatedAt: prior.progressUpdatedAt,
 
-          createdAt: sql`statement_timestamp()`,
-          updatedAt: sql`statement_timestamp()`,
-        });
+            createdAt: sql`statement_timestamp()`,
+            updatedAt: sql`statement_timestamp()`,
+          },
+          notifyActivity,
+        );
         if (created !== undefined) {
           await tx
             .update(issues)
@@ -1405,6 +1472,50 @@ export function createSessionsService({
       return ordered;
     },
 
+    async sweep() {
+      // Discovery is read-only and bounded; each issue is then settled in its own small
+      // transaction so one bad issue cannot roll back the whole sweep. Issues are visited
+      // in ascending id order, matching the global projects->issues lock order, and the
+      // issue row is locked before either transition runs.
+      const stale = await db.transaction(
+        async (tx) => {
+          const rows = await tx
+            .select({ issueId: workSessions.issueId })
+            .from(workSessions)
+            .innerJoin(issues, eq(workSessions.issueId, issues.id))
+            .where(
+              and(
+                eq(workSessions.status, WorkSessionStatus.enum.active),
+                lte(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
+                isNull(issues.deletedAt),
+              ),
+            )
+            .orderBy(workSessions.issueId)
+            .limit(100);
+          return [...new Set(rows.map((row) => row.issueId))];
+        },
+        { accessMode: "read only" },
+      );
+      const due = await dueQuestionIssueIds();
+      const issueIds = [...new Set([...stale, ...due])].toSorted();
+      for (const issueId of issueIds) {
+        try {
+          await db.transaction(async (tx) => {
+            await lockIssue(tx, issueId);
+            // A 1-hour require_human question pause releases the claim itself; running the
+            // deadline first avoids a spurious issue_session_expired for that clean pause.
+            await checkDeadline(tx, issueId);
+            await expireStale(tx, issueId, notifyActivity);
+          });
+        } catch (error) {
+          log?.warn("expiry sweep skipped an issue", {
+            issueId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    },
+
     async agentHoldsSession(tx, agentId, workspaceId, issueId) {
       const [row] = await tx
         .select({ id: workSessions.id })
@@ -1423,7 +1534,7 @@ export function createSessionsService({
     },
 
     async issueHasLiveSession(tx, issueId) {
-      await expireStale(tx, issueId);
+      await expireStale(tx, issueId, notifyActivity);
       return (await findActive(tx, issueId)) !== undefined;
     },
   };

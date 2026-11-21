@@ -79,6 +79,7 @@ const activityLabels: Record<ProjectActivityType, string> = {
   issue_question_follow_up: "added a follow-up to an authorized fallback on issue",
   issue_fallback_policy_override_changed: "changed the fallback policy override on issue",
   issue_stop_requested: "asked the agent to stop on issue",
+  issue_session_expired: "lost its claim lease on issue",
   project_label_created: "created a project label",
   project_label_edited: "edited a project label",
   project_label_deleted: "deleted a project label",

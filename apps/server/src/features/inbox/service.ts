@@ -22,6 +22,7 @@ import {
   workspaces,
 } from "../../db/schema.ts";
 import type { Logger } from "../../platform/log.ts";
+import type { NotifyActivity } from "../notifications/index.ts";
 import type { OutgoingMail } from "../settings/index.ts";
 import type { WorkActor } from "../projects/index.ts";
 import { decideQuestionAnswer, questionMachine } from "./state-machine.ts";
@@ -79,7 +80,10 @@ export interface InboxDeps {
 
   deliver: (mail: OutgoingMail) => Promise<void>;
   log: Logger;
+  notifyActivity?: NotifyActivity | undefined;
 }
+
+const noNotify: NotifyActivity = async () => {};
 
 export type AgentActor = { kind: "agent"; identity: AgentIdentity };
 
@@ -94,6 +98,7 @@ export interface InboxService {
 
   questionDeadline(tx: DbTransaction, issueId: string): Promise<Date | null>;
   evaluateDeadline(tx: DbTransaction, issueId: string): Promise<void>;
+  findDueQuestionIssueIds(): Promise<string[]>;
 }
 
 type QuestionRow = typeof questions.$inferSelect;
@@ -198,9 +203,11 @@ async function recordActivity(
     agentId?: string;
     humanId?: string;
   },
+  notify: NotifyActivity = noNotify,
 ) {
+  const activityId = randomUUID();
   await tx.insert(projectActivity).values({
-    id: randomUUID(),
+    id: activityId,
     projectId: input.projectId,
     type: input.type,
     issueId: input.issueId,
@@ -209,6 +216,17 @@ async function recordActivity(
     actorHumanId: input.humanId ?? null,
     createdAt: sql`statement_timestamp()`,
   });
+  if (input.type === "issue_question_asked" || input.type === "issue_question_paused") {
+    await notify(tx, {
+      activityId,
+      projectId: input.projectId,
+      issueId: input.issueId,
+      kind: "needs_input",
+      summary: input.summary,
+      actorAgentId: input.agentId ?? null,
+      actorHumanId: input.humanId ?? null,
+    });
+  }
 }
 
 async function storeFollowUp(
@@ -298,7 +316,11 @@ function requireAgent(actor: AgentActor | null): AgentIdentity {
   return actor.identity;
 }
 
-const evaluateDeadline: InboxService["evaluateDeadline"] = async (tx, issueId) => {
+const evaluateDeadline = async (
+  tx: DbTransaction,
+  issueId: string,
+  notify: NotifyActivity = noNotify,
+): Promise<void> => {
   const [due] = await tx
     .select({ id: questions.id })
     .from(questions)
@@ -331,13 +353,17 @@ const evaluateDeadline: InboxService["evaluateDeadline"] = async (tx, issueId) =
       .update(issues)
       .set({ needsInput: false, updatedAt: sql`statement_timestamp()` })
       .where(eq(issues.id, issueId));
-    await recordActivity(tx, {
-      projectId: used.projectId,
-      issueId,
-      type: "issue_question_fallback_used",
-      summary: `Authorized fallback used at the one-hour deadline: ${used.question}`,
-      agentId: used.agentId,
-    });
+    await recordActivity(
+      tx,
+      {
+        projectId: used.projectId,
+        issueId,
+        type: "issue_question_fallback_used",
+        summary: `Authorized fallback used at the one-hour deadline: ${used.question}`,
+        agentId: used.agentId,
+      },
+      notify,
+    );
     return;
   }
 
@@ -386,13 +412,17 @@ const evaluateDeadline: InboxService["evaluateDeadline"] = async (tx, issueId) =
     .update(issues)
     .set({ status: "todo", updatedAt: sql`statement_timestamp()` })
     .where(and(eq(issues.id, issueId), eq(issues.status, "in_progress")));
-  await recordActivity(tx, {
-    projectId: paused.projectId,
-    issueId,
-    type: "issue_question_paused",
-    summary: `Question paused at the one-hour deadline: ${paused.question}`,
-    agentId: paused.agentId,
-  });
+  await recordActivity(
+    tx,
+    {
+      projectId: paused.projectId,
+      issueId,
+      type: "issue_question_paused",
+      summary: `Question paused at the one-hour deadline: ${paused.question}`,
+      agentId: paused.agentId,
+    },
+    notify,
+  );
 };
 
 const questionDeadline: InboxService["questionDeadline"] = async (tx, issueId) => {
@@ -418,7 +448,7 @@ export function createInboxService(deps: InboxDeps): InboxService {
 
       const outcome = await db.transaction(async (tx) => {
         const issue = await lockIssue(tx, input.issueId);
-        await evaluateDeadline(tx, issue.id);
+        await evaluateDeadline(tx, issue.id, deps.notifyActivity);
         await requireAccess(
           tx,
           actor,
@@ -486,13 +516,17 @@ export function createInboxService(deps: InboxDeps): InboxService {
           .update(issues)
           .set({ needsInput: true, updatedAt: sql`statement_timestamp()` })
           .where(eq(issues.id, issue.id));
-        await recordActivity(tx, {
-          projectId: issue.projectId,
-          issueId: issue.id,
-          type: "issue_question_asked",
-          summary: `Question asked: ${input.question}`,
-          agentId: identity.agentId,
-        });
+        await recordActivity(
+          tx,
+          {
+            projectId: issue.projectId,
+            issueId: issue.id,
+            type: "issue_question_asked",
+            summary: `Question asked: ${input.question}`,
+            agentId: identity.agentId,
+          },
+          deps.notifyActivity,
+        );
         const [owner] = await tx
           .select({ email: humans.email, name: agents.name })
           .from(agents)
@@ -554,7 +588,7 @@ export function createInboxService(deps: InboxDeps): InboxService {
           "question_not_found",
         );
 
-        await evaluateDeadline(tx, issue.id);
+        await evaluateDeadline(tx, issue.id, deps.notifyActivity);
         const freshRow = async () => {
           const [fresh] = await tx
             .select()
@@ -604,7 +638,7 @@ export function createInboxService(deps: InboxDeps): InboxService {
         const [first] = await resolveAnswered();
         let answered = first;
         if (answered === undefined) {
-          await evaluateDeadline(tx, issue.id);
+          await evaluateDeadline(tx, issue.id, deps.notifyActivity);
           const retried = await freshRow();
           if (retried.status === "fallback_used") return toQuestion(await followUp());
           if (retried.status === "answered") throw new InboxError("question_resolved");
@@ -757,6 +791,28 @@ export function createInboxService(deps: InboxDeps): InboxService {
     },
 
     questionDeadline,
-    evaluateDeadline,
+    evaluateDeadline: (tx, issueId) => evaluateDeadline(tx, issueId, deps.notifyActivity),
+
+    async findDueQuestionIssueIds() {
+      return db.transaction(
+        async (tx) => {
+          const due = await tx
+            .select({ issueId: questions.issueId })
+            .from(questions)
+            .innerJoin(issues, eq(questions.issueId, issues.id))
+            .where(
+              and(
+                eq(questions.status, QuestionStatus.enum.open),
+                lte(questions.responseDeadlineAt, sql`statement_timestamp()`),
+                isNull(issues.deletedAt),
+              ),
+            )
+            .orderBy(questions.issueId)
+            .limit(100);
+          return [...new Set(due.map((row) => row.issueId))];
+        },
+        { accessMode: "read only" },
+      );
+    },
   };
 }
