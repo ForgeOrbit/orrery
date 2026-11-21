@@ -5,6 +5,7 @@ import { Stack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
 import type { RunChild, RunDetail, RunModelChange } from "@orrery/contract";
 import { useSuspenseQuery } from "@tanstack/react-query";
+import { HarnessBadge } from "../../lib/harness.tsx";
 import { workspaceRunsQuery } from "./queries.ts";
 
 const unknown = (value: string | null | undefined) => value ?? "unknown";
@@ -63,9 +64,8 @@ function RunItem({ run }: { run: RunDetail }) {
       <Text type="inherit" color="inherit" data-agent-name>
         {run.agentName}
       </Text>{" "}
-      · harness {unknown(run.harness)}
-      {run.harnessVersion !== null && <> {run.harnessVersion}</>} · model {unknown(run.model)} ·{" "}
-      {run.status}
+      · harness <HarnessBadge harness={run.harness} version={run.harnessVersion} empty="unknown" />{" "}
+      · model {unknown(run.model)} · {run.status}
       <Heading level={4} color="inherit">
         Model changes
       </Heading>

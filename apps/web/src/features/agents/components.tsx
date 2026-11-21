@@ -9,6 +9,7 @@ import { Stack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
 import { useToast } from "@astryxdesign/core/Toast";
 import { TextField } from "../../lib/fields.tsx";
+import { HarnessBadge } from "../../lib/harness.tsx";
 import { TelemetryInline } from "../../lib/telemetry.tsx";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { Link } from "../../lib/Link.tsx";
@@ -385,7 +386,7 @@ function ActiveSessions({
               Issue {session.issueId}
             </Link>{" "}
             <Text type="inherit" color="inherit">
-              harness: {run?.harness ?? "unknown"}
+              harness: <HarnessBadge harness={run?.harness} empty="unknown" />
             </Text>{" "}
             <Text type="inherit" color="inherit" data-session-model={run?.model ?? "unknown"}>
               model: {run?.model ?? "unknown"}

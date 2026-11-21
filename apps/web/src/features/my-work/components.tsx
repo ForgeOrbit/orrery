@@ -13,6 +13,7 @@ import {
 } from "@orrery/contract";
 import type { ReactNode } from "react";
 import { issueStatusLabels, PriorityBadge } from "../projects/index.ts";
+import { HarnessBadge } from "../../lib/harness.tsx";
 import { Link } from "../../lib/Link.tsx";
 import { ApiProblemError } from "../../lib/api.ts";
 
@@ -144,7 +145,8 @@ function ActiveSessionRow({ session }: { session: MyWorkActiveSession }) {
       description={
         <Text type="supporting" color="inherit">
           {session.workspaceName} · {session.projectName} · {session.agentName} · Harness{" "}
-          {session.harness ?? "unknown"} · Model {session.model ?? "unknown"}
+          <HarnessBadge harness={session.harness} empty="unknown" /> · Model{" "}
+          {session.model ?? "unknown"}
           {telemetry.length > 0 ? ` · ${telemetry.join(" · ")}` : ""}
         </Text>
       }
