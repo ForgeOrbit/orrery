@@ -165,13 +165,13 @@ async function askForInput() {
   });
   expect(ask.status()).toBe(201);
   const questionId = idOf(await ask.json(), "question");
-  return { issueId, questionId, questionText, secret };
+  return { projectId, issueId, questionId, questionText, secret };
 }
 
 test("emails the agent owner, refuses agent answerers and lets a human answer", async ({
   browser,
 }) => {
-  const { issueId, questionId, questionText, secret } = await askForInput();
+  const { projectId, issueId, questionId, questionText, secret } = await askForInput();
 
   await caughtQuestionEmail(api, questionText);
 
@@ -199,7 +199,23 @@ test("emails the agent owner, refuses agent answerers and lets a human answer", 
     await page.getByLabel("Password").fill(ADMIN_PASSWORD);
     await page.getByRole("button", { name: "Sign in" }).click();
     await expect(page.getByText(`Signed in as ${ADMIN_EMAIL}.`)).toBeVisible();
-    await page.goto("/inbox");
+    await page.goto(`/board/${projectId}`);
+    await expect(page.getByRole("heading", { level: 1, name: "Board", exact: true })).toBeVisible();
+    const lane = page.locator('[data-board-column="In progress"]');
+    const issueCard = lane.locator(`[data-board-issue-id="${issueId}"]`);
+    await expect(issueCard).toContainText("Needs input");
+    const filter = page.getByRole("button", { name: /Needs input/ });
+    await filter.click();
+    await expect(filter).toHaveAttribute("aria-pressed", "true");
+    const inspect = issueCard.getByRole("button", { name: "Inspect session" });
+    await inspect.click();
+    const sessionPreview = page.getByRole("dialog", { name: "Session preview" });
+    await expect(sessionPreview).toContainText(questionText);
+    await page.keyboard.press("Escape");
+    await expect(sessionPreview).toBeHidden();
+    await expect(inspect).toBeFocused();
+    await issueCard.getByRole("link", { name: "View question" }).click();
+    await expect(page.getByRole("link", { name: "View all questions" })).toBeVisible();
     const card = page.locator(`li[data-question-id="${questionId}"]`);
     await expect(card).toContainText(questionText);
     await card.getByRole("textbox", { name: "Answer" }).fill("Use the v2 endpoint");

@@ -1,3 +1,6 @@
+import { Text } from "@astryxdesign/core/Text";
+import { Selector } from "@astryxdesign/core/Selector";
+import { Button } from "@astryxdesign/core/Button";
 import { useQueryClient } from "@tanstack/react-query";
 import type { Assignee, Issue } from "@orrery/contract";
 import type { FormEvent } from "react";
@@ -48,34 +51,34 @@ export function AssigneeControl({
   }
 
   return (
-    <form
-      className="assignee-control"
-      onSubmit={(event) => void onSubmit(event)}
-      style={{ display: "inline" }}
-    >
-      <label htmlFor={`assignee-${issue.id}`}>Assignee</label>{" "}
-      <select
+    <form className="assignee-control" onSubmit={(event) => void onSubmit(event)}>
+      {" "}
+      <Selector
+        label="Assignee"
         id={`assignee-${issue.id}`}
         value={value}
-        disabled={!canContribute || saving}
-        onChange={(event) => setValue(event.target.value)}
-      >
-        <option value="">Unassigned</option>
-        {candidates.map((candidate) => (
-          <option key={candidate.value} value={candidate.value}>
-            {candidate.label}
-          </option>
-        ))}
-        {/* Keep the current assignee selectable even when it is not in the candidate list,
-            for example a session registered by another human on a non-owner's view. */}
-        {issue.assignee !== null && !candidates.some((c) => c.value === currentValue(issue)) && (
-          <option value={currentValue(issue)}>{currentLabel(issue)}</option>
-        )}
-      </select>{" "}
-      <button type="submit" disabled={!canContribute || saving}>
-        Save assignee
-      </button>
-      {error !== undefined && <span role="alert"> {error}</span>}
+        isDisabled={!canContribute || saving}
+        onChange={setValue}
+        options={[
+          { value: "", label: "Unassigned" },
+          ...candidates.map((candidate) => ({ value: candidate.value, label: candidate.label })),
+          ...(issue.assignee !== null && !candidates.some((c) => c.value === currentValue(issue))
+            ? [{ value: currentValue(issue), label: currentLabel(issue) }]
+            : []),
+        ]}
+      />{" "}
+      <Button
+        type="submit"
+        isDisabled={!canContribute || saving}
+        label="Save assignee"
+        variant="primary"
+      />
+      {error !== undefined && (
+        <Text type="inherit" color="inherit" role="alert">
+          {" "}
+          {error}
+        </Text>
+      )}
     </form>
   );
 }

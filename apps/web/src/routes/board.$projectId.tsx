@@ -1,28 +1,40 @@
+import { Heading } from "@astryxdesign/core/Heading";
+import { Text } from "@astryxdesign/core/Text";
+import { Avatar } from "@astryxdesign/core/Avatar";
+import { Badge } from "@astryxdesign/core/Badge";
+import { Button } from "@astryxdesign/core/Button";
+import { Card } from "@astryxdesign/core/Card";
+import { Drawer, DrawerHeader } from "@astryxdesign/core/Drawer";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
+import { Icon } from "@astryxdesign/core/Icon";
+import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
+import { Stack } from "@astryxdesign/core/Stack";
+import { ToggleButton } from "@astryxdesign/core/ToggleButton";
+import { type ActiveWorkSession, type Issue, IssueStatus } from "@orrery/contract";
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, Link } from "@tanstack/react-router";
-import type { ActiveWorkSession, Issue } from "@orrery/contract";
+import { createFileRoute } from "@tanstack/react-router";
+import { useState } from "react";
 import {
+  CreateIssueForm,
   issueBlockedByQuery,
   issuesQuery,
+  issueStatusLabels,
   PriorityBadge,
   projectQuery,
   readyWorkQuery,
   ResourceLoadError,
 } from "../features/projects/index.ts";
-import { activeSessionsQuery } from "../features/work-sessions/index.ts";
-
-// #84/#94: a project Kanban board over Orrery's fixed six-state workflow. Each column
-// maps to the issue's own status; Needs input is an orthogonal flag derived from questions
-// and takes precedence over the status column, and a live session keeps a card in
-// In progress. No effect: every value is derived during render.
-const COLUMNS = ["Backlog", "Todo", "In progress", "Needs input", "Review", "Done"] as const;
-type BoardColumn = (typeof COLUMNS)[number];
+import { workspaceQuery } from "../features/workspaces/index.ts";
+import { activeSessionsQuery, SessionInspectorDetails } from "../features/work-sessions/index.ts";
+import { Link } from "../lib/Link.tsx";
 
 export const Route = createFileRoute("/board/$projectId")({
   loader: async ({ context, params }) => {
     const project = await context.queryClient.ensureQueryData(projectQuery(params.projectId));
     await Promise.all([
+      context.queryClient.ensureQueryData(workspaceQuery(project.workspaceId)),
       context.queryClient.ensureQueryData(issuesQuery(project.id)),
+      context.queryClient.ensureQueryData(readyWorkQuery(project.id)),
       context.queryClient.ensureQueryData(activeSessionsQuery(project.workspaceId)),
     ]);
   },
@@ -30,121 +42,344 @@ export const Route = createFileRoute("/board/$projectId")({
   errorComponent: ({ error }) => <ResourceLoadError resource="board" error={error} />,
 });
 
+type BoardFilter = "all" | "needs-input" | "ready";
+type BoardPanel = { kind: "new-issue" } | { kind: "session"; issueId: string; sessionId: string };
+
 function BoardPage() {
   const { projectId } = Route.useParams();
   const { data: project } = useSuspenseQuery(projectQuery(projectId));
-  // Issues and live session badges are polled every 4s (design doc: 3-5s MVP polling).
+  const { data: workspace } = useSuspenseQuery(workspaceQuery(project.workspaceId));
   const { data: issues } = useSuspenseQuery({ ...issuesQuery(projectId), refetchInterval: 4000 });
   const { data: sessions } = useSuspenseQuery(activeSessionsQuery(project.workspaceId));
   const { data: ready } = useSuspenseQuery({ ...readyWorkQuery(projectId), refetchInterval: 4000 });
-  const readyIds = new Set(ready.map((issue) => issue.id));
+  const [filter, setFilter] = useState<BoardFilter>("all");
+  const [panel, setPanel] = useState<BoardPanel>();
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [createdIssue, setCreatedIssue] = useState<Issue>();
 
-  const grouped = new Map<BoardColumn, Issue[]>(COLUMNS.map((column) => [column, []]));
-  for (const issue of issues) {
-    const column = columnFor(issue, sessions);
-    grouped.get(column)?.push(issue);
+  const canContribute = project.accessLevel !== "read";
+  const readyIds = new Set(ready.map((issue) => issue.id));
+  const sessionsByIssue = new Map(
+    sessions
+      .filter((session) => session.projectId === project.id)
+      .map((session) => [session.issueId, session]),
+  );
+  const needsInputCount = issues.filter((issue) => issue.needsInput).length;
+  const filters: { id: BoardFilter; label: string; count: number }[] = [
+    { id: "all", label: "All issues", count: issues.length },
+    { id: "needs-input", label: "Needs input", count: needsInputCount },
+    { id: "ready", label: "Ready to claim", count: readyIds.size },
+  ];
+  const visible = issues.filter(
+    (issue) =>
+      filter === "all" || (filter === "needs-input" ? issue.needsInput : readyIds.has(issue.id)),
+  );
+  const columns = Object.groupBy(visible, (issue) => issue.status);
+  const inspected =
+    panel?.kind === "session" ? issues.find((issue) => issue.id === panel.issueId) : undefined;
+
+  function showPanel(next: BoardPanel) {
+    setPanel(next);
+    setPanelOpen(true);
   }
 
   return (
-    <main>
-      <p>
-        <Link to="/projects/$projectId" params={{ projectId }}>
-          Back to project
-        </Link>
-      </p>
-      <h1>{project.name} · Board</h1>
-      <p data-board-ready-count={ready.length}>
-        {ready.length} issue{ready.length === 1 ? "" : "s"} ready to claim
-      </p>
-      <div data-board style={{ display: "flex", gap: "1rem", alignItems: "flex-start" }}>
-        {COLUMNS.map((column) => (
-          <section
-            key={column}
-            data-board-column={column}
-            style={{ border: "1px solid #ccc", padding: "0.75rem", minWidth: "14rem" }}
+    <main className="board-page">
+      <header className="board-header">
+        <nav className="board-breadcrumbs" aria-label="Project location">
+          <Link to="/workspaces/$workspaceId" params={{ workspaceId: workspace.id }}>
+            {workspace.name}
+          </Link>
+          <Icon icon="chevronRight" size="xsm" />
+          <Link to="/projects/$projectId" params={{ projectId }}>
+            {project.name}
+          </Link>
+        </nav>
+        <Stack direction="horizontal" className="board-heading">
+          <Heading level={1} color="inherit">
+            Board
+          </Heading>
+          {canContribute && (
+            <Button
+              label="New issue"
+              variant="primary"
+              onClick={() => showPanel({ kind: "new-issue" })}
+            />
+          )}
+        </Stack>
+        <Stack direction="horizontal" className="board-toolbar">
+          <Stack
+            direction="horizontal"
+            className="board-filters"
+            role="group"
+            aria-label="Filter issues"
           >
-            <h2>{column}</h2>
-            <ul style={{ listStyle: "none", padding: 0 }}>
-              {(grouped.get(column) ?? []).map((issue) => (
-                <BoardCard
-                  key={issue.id}
-                  issue={issue}
-                  session={sessions.find((candidate) => candidate.issueId === issue.id)}
-                  ready={readyIds.has(issue.id)}
-                />
-              ))}
-            </ul>
-          </section>
-        ))}
-      </div>
+            {filters.map(({ id, label, count }) => (
+              <ToggleButton
+                key={id}
+                label={`${label} (${count})`}
+                isPressed={filter === id}
+                size="sm"
+                className="board-filter"
+                data-board-filter={id}
+                data-board-ready-count={id === "ready" ? count : undefined}
+                onPressedChange={(pressed) => setFilter(pressed ? id : "all")}
+              >
+                {label} <Badge label={count} />
+              </ToggleButton>
+            ))}
+          </Stack>
+          {sessionsByIssue.size > 0 && (
+            <Text
+              as="p"
+              display="block"
+              type="inherit"
+              color="inherit"
+              className="board-live"
+              data-active-sessions
+            >
+              {sessionsByIssue.size} active {sessionsByIssue.size === 1 ? "session" : "sessions"}
+            </Text>
+          )}
+        </Stack>
+      </header>
+
+      {createdIssue !== undefined && (
+        <Text
+          as="p"
+          display="block"
+          type="inherit"
+          color="inherit"
+          className="board-created"
+          role="status"
+        >
+          Created{" "}
+          <Link to="/issues/$issueId" params={{ issueId: createdIssue.id }}>
+            {project.key}-{createdIssue.number}
+          </Link>
+        </Text>
+      )}
+
+      {visible.length === 0 ? (
+        <Stack className="board-empty-state">
+          <EmptyState
+            title={issues.length === 0 ? "No issues yet" : "No matching issues"}
+            icon={<Icon icon="viewColumns" size="lg" />}
+            headingLevel={2}
+            actions={
+              filter !== "all" ? (
+                <Button label="Show all issues" onClick={() => setFilter("all")} />
+              ) : undefined
+            }
+          />
+        </Stack>
+      ) : (
+        <Stack
+          data-board
+          direction="horizontal"
+          tabIndex={0}
+          role="region"
+          aria-label="Issue board"
+        >
+          {IssueStatus.options.map((status) => {
+            const lane = columns[status] ?? [];
+            return (
+              <section
+                key={status}
+                data-board-column={issueStatusLabels[status]}
+                className="board-column"
+              >
+                <Heading level={2} color="inherit">
+                  {issueStatusLabels[status]} <Badge label={lane.length} />
+                </Heading>
+                <ul>
+                  {lane.map((issue) => (
+                    <BoardCard
+                      key={issue.id}
+                      issue={issue}
+                      projectKey={project.key}
+                      session={sessionsByIssue.get(issue.id)}
+                      ready={readyIds.has(issue.id)}
+                      onInspect={(sessionId) =>
+                        showPanel({ kind: "session", issueId: issue.id, sessionId })
+                      }
+                    />
+                  ))}
+                </ul>
+              </section>
+            );
+          })}
+        </Stack>
+      )}
+
+      <Drawer
+        isOpen={panelOpen}
+        onOpenChange={setPanelOpen}
+        purpose={panel?.kind === "new-issue" ? "form" : "info"}
+        label={panel?.kind === "new-issue" ? "New issue" : "Session preview"}
+        width="29rem"
+      >
+        <Layout
+          height="auto"
+          header={
+            <DrawerHeader
+              title={
+                panel?.kind === "new-issue" ? "New issue" : (inspected?.title ?? "Session preview")
+              }
+              subtitle={
+                inspected === undefined ? project.name : `${project.key}-${inspected.number}`
+              }
+              onOpenChange={setPanelOpen}
+              hasDivider
+            />
+          }
+        >
+          <LayoutContent>
+            {panel?.kind === "new-issue" && canContribute && (
+              <CreateIssueForm
+                key={project.id}
+                projectId={project.id}
+                onCreated={(issue) => {
+                  setCreatedIssue(issue);
+                  setFilter("all");
+                  setPanelOpen(false);
+                }}
+              />
+            )}
+            {panel?.kind === "session" && (
+              <>
+                {inspected === undefined ? (
+                  <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+                    This issue is no longer available.
+                  </Text>
+                ) : (
+                  <>
+                    <Link
+                      to="/issues/$issueId"
+                      params={{ issueId: panel.issueId }}
+                      search={{ inspector: true, session: panel.sessionId }}
+                    >
+                      Open issue
+                    </Link>
+                    <SessionInspectorDetails
+                      key={panel.sessionId}
+                      issueId={panel.issueId}
+                      canContribute={canContribute}
+                      open={panelOpen}
+                      initialSessionId={panel.sessionId}
+                    />
+                  </>
+                )}
+              </>
+            )}
+          </LayoutContent>
+        </Layout>
+      </Drawer>
     </main>
   );
 }
 
-function columnFor(issue: Issue, sessions: readonly ActiveWorkSession[]): BoardColumn {
-  if (issue.status === "done" || issue.status === "cancelled") return "Done";
-  if (issue.needsInput) return "Needs input";
-  if (issue.status === "in_progress" || sessions.some((session) => session.issueId === issue.id)) {
-    return "In progress";
-  }
-  if (issue.status === "review") return "Review";
-  if (issue.status === "backlog") return "Backlog";
-  return "Todo";
-}
-
 function BoardCard({
   issue,
+  projectKey,
   session,
   ready,
+  onInspect,
 }: {
   issue: Issue;
+  projectKey: string;
   session: ActiveWorkSession | undefined;
   ready: boolean;
+  onInspect: (sessionId: string) => void;
 }) {
-  const { data: blockers } = useQuery({
+  const { data: blockers = [] } = useQuery({
     ...issueBlockedByQuery(issue.id),
-    // A human marks an issue as an assignee hint or a blocker from its own page.
     refetchInterval: 4000,
   });
   const state = issue.needsInput
     ? "needs-input"
-    : session === undefined
-      ? null
-      : session.status === "active" && session.stopRequested
-        ? "stopping"
-        : session.status;
-
-  // The card itself carries the badge type so a browser check can read it from the
-  // board row, not from one of its nested display spans.
+    : session?.status === "active" && session.stopRequested
+      ? "stopping"
+      : session?.status;
+  const assignee = issue.assignee;
   const assigneeType =
-    issue.assignee === null ? "none" : issue.assignee.agentId !== undefined ? "agent" : "human";
+    assignee === null ? "none" : assignee.agentId !== undefined ? "agent" : "human";
+
   return (
-    <li
-      data-board-issue-id={issue.id}
-      data-ready={String(ready)}
-      data-assignee-type={assigneeType}
-      style={{ border: "1px solid #ddd", padding: "0.5rem", marginBottom: "0.5rem" }}
-    >
-      <Link to="/issues/$issueId" params={{ issueId: issue.id }}>
-        #{issue.number} {issue.title}
-      </Link>
-      <div>
-        <PriorityBadge priority={issue.priority} />{" "}
-        {issue.assignee === null ? (
-          <span>Unassigned</span>
-        ) : (
-          <span>
-            {assigneeType === "agent" ? "Agent" : "Human"} · {issue.assignee.displayName}
-          </span>
+    <li data-board-issue-id={issue.id} data-ready={String(ready)} data-assignee-type={assigneeType}>
+      <Card
+        className="board-card"
+        data-needs-input={issue.needsInput ? "true" : "false"}
+        padding={3}
+      >
+        <Link className="board-card-title" to="/issues/$issueId" params={{ issueId: issue.id }}>
+          <Text type="inherit" color="inherit" className="board-card-heading">
+            <Text type="inherit" color="inherit" className="issue-key">
+              {projectKey}-{issue.number}
+            </Text>
+            {issue.title}
+          </Text>
+        </Link>
+        {(issue.priority !== "none" ||
+          assignee !== null ||
+          state !== undefined ||
+          blockers.length > 0) && (
+          <Stack direction="horizontal" className="board-card-meta">
+            {issue.priority !== "none" && <PriorityBadge priority={issue.priority} />}
+            {state !== undefined && (
+              <Text type="inherit" color="inherit" data-session-state={state}>
+                {state === "needs-input" ? "Needs input" : state}
+              </Text>
+            )}
+            {blockers.length > 0 && (
+              <Text
+                type="inherit"
+                color="inherit"
+                data-blocked-by={blockers.map((blocker) => blocker.id).join(",")}
+              >
+                Blocked by {blockers.length}
+              </Text>
+            )}
+            {assignee !== null && (
+              <Text type="inherit" color="inherit" className="board-assignee">
+                <Avatar
+                  name={assignee.displayName}
+                  shape={assigneeType === "agent" ? "rounded" : "circle"}
+                  size="xsm"
+                  tooltip={false}
+                />
+                <Text type="inherit" color="inherit">
+                  {assignee.displayName}
+                </Text>
+              </Text>
+            )}
+          </Stack>
         )}
-      </div>
-      {(blockers ?? []).length > 0 && (
-        <span data-blocked-by={(blockers ?? []).map((blocker) => blocker.id).join(",")}>
-          {" "}
-          blocked by {(blockers ?? []).length}
-        </span>
-      )}
-      {state !== null && <span data-session-state={state}> {state}</span>}
+        {(issue.needsInput || session !== undefined) && (
+          <Stack direction="horizontal" className="board-card-actions">
+            {issue.needsInput && (
+              <Link
+                className="board-card-action"
+                to="/inbox"
+                search={{ issue: issue.id }}
+                color="accent"
+                hasUnderline
+              >
+                View question
+              </Link>
+            )}
+            {session !== undefined && (
+              <Button
+                className="board-card-action"
+                label="Inspect session"
+                variant="ghost"
+                size="sm"
+                onClick={() => onInspect(session.id)}
+              />
+            )}
+          </Stack>
+        )}
+      </Card>
     </li>
   );
 }

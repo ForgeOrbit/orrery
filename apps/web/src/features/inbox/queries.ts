@@ -8,3 +8,13 @@ export const inboxQuery = queryOptions({
   queryKey: ["inbox"],
   queryFn: async () => InboxResponse.parse(await getJson("/api/inbox", (value) => value)),
 });
+
+export const issueQuestionsQuery = (issueId: string) =>
+  queryOptions({
+    queryKey: ["issues", issueId, "questions"],
+    queryFn: () =>
+      getJson(`/api/issues/${encodeURIComponent(issueId)}/questions`, (value) =>
+        InboxResponse.parse(value),
+      ),
+    refetchInterval: 4000,
+  });

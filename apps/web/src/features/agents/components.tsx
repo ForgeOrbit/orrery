@@ -1,5 +1,13 @@
+import { Heading } from "@astryxdesign/core/Heading";
+import { Text } from "@astryxdesign/core/Text";
+import { Section } from "@astryxdesign/core/Section";
+import { Stack } from "@astryxdesign/core/Stack";
+import { Button } from "@astryxdesign/core/Button";
+import { TextField } from "../../lib/fields.tsx";
+import { Selector } from "@astryxdesign/core/Selector";
+import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link } from "../../lib/Link.tsx";
 import {
   AgentKeyValidity,
   ProjectAccessLevel,
@@ -100,21 +108,36 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
   }
 
   return (
-    <section>
-      <h2>Agents</h2>
+    <Section className="page-section" padding={0}>
+      <Heading level={2} color="inherit">
+        Agents
+      </Heading>
       {secret !== undefined && (
-        <div role="status" data-agent-secret>
-          <p>Copy this key now. It is shown once and cannot be recovered later.</p>
+        <Stack role="status" data-agent-secret>
+          <Text as="p" display="block" type="inherit" color="inherit">
+            Copy this key now. It is shown once and cannot be recovered later.
+          </Text>
           <code>{secret}</code>{" "}
-          <button type="button" onClick={() => setSecret(undefined)}>
-            Dismiss
-          </button>
-        </div>
+          <Button
+            type="button"
+            onClick={() => setSecret(undefined)}
+            label="Dismiss"
+            variant="secondary"
+          />
+        </Stack>
       )}
-      {error !== undefined && <p role="alert">{error}</p>}
-      <h3>Registered agents</h3>
+      {error !== undefined && (
+        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+          {error}
+        </Text>
+      )}
+      <Heading level={3} color="inherit">
+        Registered agents
+      </Heading>
       {agents.length === 0 ? (
-        <p>No agents yet. Register one below to issue a key.</p>
+        <Text as="p" display="block" type="inherit" color="inherit">
+          No agents yet. Register one below to issue a key.
+        </Text>
       ) : (
         <ul>
           {agents.map((agent) => (
@@ -124,7 +147,9 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
           ))}
         </ul>
       )}
-      <h3>Active work sessions</h3>
+      <Heading level={3} color="inherit">
+        Active work sessions
+      </Heading>
       <ActiveSessions workspaceId={workspaceId} projects={projects} runs={runs} />
       <RegisterAgentForm />
       {agents.length > 0 && (
@@ -135,9 +160,13 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
           onIssued={setSecret}
         />
       )}
-      <h3>Keys in this workspace</h3>
+      <Heading level={3} color="inherit">
+        Keys in this workspace
+      </Heading>
       {allKeys.size === 0 ? (
-        <p>No keys scoped to this workspace.</p>
+        <Text as="p" display="block" type="inherit" color="inherit">
+          No keys scoped to this workspace.
+        </Text>
       ) : (
         <ul>
           {[...allKeys.values()].map((key) => (
@@ -148,44 +177,47 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
             >
               {key.agentName} · {key.validity} ·{" "}
               {key.projects.map((grant) => grant.projectName).join(", ") || "no projects"}
-              {key.revokedAt !== null && <span data-key-status> · revoked</span>}
+              {key.revokedAt !== null && (
+                <Text type="inherit" color="inherit" data-key-status>
+                  {" "}
+                  · revoked
+                </Text>
+              )}
               {key.revokedAt !== null ? (
-                <button type="button" disabled>
-                  Revoked
-                </button>
+                <Button type="button" isDisabled label="Revoked" variant="secondary" />
               ) : ownIds.has(key.id) ? (
                 <>
-                  <button
+                  <Button
                     type="button"
-                    disabled={busyKey === key.id}
+                    isDisabled={busyKey === key.id}
                     onClick={() => void rotate(key)}
-                  >
-                    Rotate
-                  </button>{" "}
-                  <button
+                    label="Rotate"
+                    variant="secondary"
+                  />{" "}
+                  <Button
                     type="button"
-                    disabled={busyKey === key.id}
+                    isDisabled={busyKey === key.id}
                     onClick={() => void revoke(key, false)}
-                  >
-                    Revoke
-                  </button>
+                    label="Revoke"
+                    variant="destructive"
+                  />
                 </>
               ) : (
                 isOwner && (
-                  <button
+                  <Button
                     type="button"
-                    disabled={busyKey === key.id}
+                    isDisabled={busyKey === key.id}
                     onClick={() => void revoke(key, true)}
-                  >
-                    Revoke (owner)
-                  </button>
+                    label="Revoke (owner)"
+                    variant="destructive"
+                  />
                 )
               )}
             </li>
           ))}
         </ul>
       )}
-    </section>
+    </Section>
   );
 }
 
@@ -202,7 +234,12 @@ function ActiveSessions({
   runs: readonly RunDetail[];
 }) {
   const { data: sessions } = useSuspenseQuery(activeSessionsQuery(workspaceId));
-  if (sessions.length === 0) return <p>No active work sessions.</p>;
+  if (sessions.length === 0)
+    return (
+      <Text as="p" display="block" type="inherit" color="inherit">
+        No active work sessions.
+      </Text>
+    );
   const levels = new Map(projects.map((project) => [project.id, project.accessLevel]));
   const runById = new Map(runs.map((run) => [run.id, run]));
   return (
@@ -220,20 +257,24 @@ function ActiveSessions({
             <Link to="/issues/$issueId" params={{ issueId: session.issueId }}>
               Issue {session.issueId}
             </Link>{" "}
-            <span>harness: {run?.harness ?? "unknown"}</span>{" "}
-            <span data-session-model={run?.model ?? "unknown"}>
+            <Text type="inherit" color="inherit">
+              harness: {run?.harness ?? "unknown"}
+            </Text>{" "}
+            <Text type="inherit" color="inherit" data-session-model={run?.model ?? "unknown"}>
               model: {run?.model ?? "unknown"}
-            </span>{" "}
-            <span data-subagent-count={run?.children.length ?? 0}>
+            </Text>{" "}
+            <Text type="inherit" color="inherit" data-subagent-count={run?.children.length ?? 0}>
               subagents: {run?.children.length ?? 0}
-            </span>{" "}
-            <span data-run-heartbeat={run?.lastHeartbeatAt ?? ""}>
+            </Text>{" "}
+            <Text type="inherit" color="inherit" data-run-heartbeat={run?.lastHeartbeatAt ?? ""}>
               last run heartbeat: {run?.lastHeartbeatAt ?? "unknown"}
-            </span>{" "}
-            <span data-lease-expires-at={session.leaseExpiresAt}>
+            </Text>{" "}
+            <Text type="inherit" color="inherit" data-lease-expires-at={session.leaseExpiresAt}>
               lease until {session.leaseExpiresAt}
-            </span>{" "}
-            <span data-last-heartbeat={session.updatedAt}>last check-in {session.updatedAt}</span>{" "}
+            </Text>{" "}
+            <Text type="inherit" color="inherit" data-last-heartbeat={session.updatedAt}>
+              last check-in {session.updatedAt}
+            </Text>{" "}
             <SessionStatus
               issueId={session.issueId}
               projectId={session.projectId}
@@ -277,19 +318,21 @@ function RegisterAgentForm() {
 
   return (
     <form onSubmit={(event) => void onSubmit(event)}>
-      <label htmlFor="agent-name">Agent name</label>
-      <input
+      <TextField
+        label="Agent name"
         id="agent-name"
-        name="name"
+        htmlName="name"
         value={name}
-        onChange={(event) => setName(event.target.value)}
+        onChange={setName}
         required
         maxLength={120}
       />
-      {error !== undefined && <p role="alert">{error}</p>}
-      <button type="submit" disabled={submitting}>
-        Register agent
-      </button>
+      {error !== undefined && (
+        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+          {error}
+        </Text>
+      )}
+      <Button type="submit" isDisabled={submitting} label="Register agent" variant="primary" />
     </form>
   );
 }
@@ -348,67 +391,64 @@ function IssueKeyForm({
 
   return (
     <form onSubmit={(event) => void onSubmit(event)}>
-      <h3>Issue a key</h3>
-      <label htmlFor="key-agent">Agent</label>
-      <select id="key-agent" value={agentId} onChange={(event) => setAgentId(event.target.value)}>
-        {agents.map((agent) => (
-          <option key={agent.id} value={agent.id}>
-            {agent.name}
-          </option>
-        ))}
-      </select>
-      <label htmlFor="key-validity">Validity</label>
-      <select
+      <Heading level={3} color="inherit">
+        Issue a key
+      </Heading>
+
+      <Selector
+        label="Agent"
+        id="key-agent"
+        value={agentId}
+        onChange={setAgentId}
+        options={agents.map((agent) => ({ value: agent.id, label: agent.name }))}
+      />
+
+      <Selector
+        label="Validity"
         id="key-validity"
         value={validity}
-        onChange={(event) => setValidity(AgentKeyValidity.parse(event.target.value))}
-      >
-        {validityOptions.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
+        onChange={(value) => setValidity(AgentKeyValidity.parse(value))}
+        options={validityOptions.map((option) => ({ value: option.value, label: option.label }))}
+      />
       <fieldset>
         <legend>Project access</legend>
         {projects.map((project) => {
           const allowed = levelsUpTo(project.accessLevel);
           const current = selected[project.id] ?? "read";
           return (
-            <div key={project.id}>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={project.id in selected}
-                  onChange={(event) => toggle(project.id, event.target.checked)}
-                />{" "}
-                {project.name} (your access: {project.accessLevel})
-              </label>{" "}
-              <select
-                aria-label={`Level for ${project.name}`}
+            <Stack key={project.id}>
+              <CheckboxInput
+                label={`${project.name} (your access: ${project.accessLevel})`}
+                value={project.id in selected}
+                onChange={(checked) => toggle(project.id, checked)}
+              />{" "}
+              <Selector
+                label={`Level for ${project.name}`}
                 value={current}
-                disabled={!(project.id in selected)}
-                onChange={(event) =>
+                isDisabled={!(project.id in selected)}
+                onChange={(value) =>
                   setSelected((state) => ({
                     ...state,
-                    [project.id]: ProjectAccessLevel.parse(event.target.value),
+                    [project.id]: ProjectAccessLevel.parse(value),
                   }))
                 }
-              >
-                {allowed.map((level) => (
-                  <option key={level} value={level}>
-                    {level}
-                  </option>
-                ))}
-              </select>
-            </div>
+                options={allowed.map((level) => ({ value: level, label: level }))}
+              />
+            </Stack>
           );
         })}
       </fieldset>
-      {error !== undefined && <p role="alert">{error}</p>}
-      <button type="submit" disabled={submitting || agentId === ""}>
-        Issue key
-      </button>
+      {error !== undefined && (
+        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+          {error}
+        </Text>
+      )}
+      <Button
+        type="submit"
+        isDisabled={submitting || agentId === ""}
+        label="Issue key"
+        variant="primary"
+      />
     </form>
   );
 }

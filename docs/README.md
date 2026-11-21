@@ -41,6 +41,7 @@ Want to write or change a page? See [Writing the docs](./writing-docs.md).
 - [Projects and issues](./design/projects-and-issues.md)
 - [Agent API and sessions](./design/agent-api-and-sessions.md)
 - [Board, agents panel, inbox, and My work](./design/board-and-inbox.md)
+- [Orrery web UI](./design/web-ui.md)
 - [Harness compatibility proof](./design/harness-compatibility-proof.md)
 - [Bootstrap and instance settings](./adr/0001-bootstrap-and-instance-settings.md)
 - [Personal and shared workspaces](./adr/0002-personal-and-shared-workspaces.md)

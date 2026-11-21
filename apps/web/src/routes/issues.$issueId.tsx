@@ -1,5 +1,15 @@
+import { Heading } from "@astryxdesign/core/Heading";
+import { Text } from "@astryxdesign/core/Text";
+import { Section } from "@astryxdesign/core/Section";
+import { Link as AstryxLink } from "@astryxdesign/core/Link";
+import { Stack } from "@astryxdesign/core/Stack";
+import { Button } from "@astryxdesign/core/Button";
+import { Selector } from "@astryxdesign/core/Selector";
+import { TextAreaField } from "../lib/fields.tsx";
+import { TextField } from "../lib/fields.tsx";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
+import { Link } from "../lib/Link.tsx";
 import { type Issue, type IssueDetail, IssueLinkKind } from "@orrery/contract";
 import type { FormEvent } from "react";
 import { useState } from "react";
@@ -15,6 +25,7 @@ import {
   IssuePriorityControls,
   issueQuery,
   issuesQuery,
+  issueStatusLabels,
   projectActivityQuery,
   projectQuery,
   PriorityBadge,
@@ -112,101 +123,136 @@ function IssuePage() {
   const canContribute = project.accessLevel !== "read";
 
   return (
-    <main>
-      <p>
+    <main className="issue-page">
+      <Text as="p" display="block" type="inherit" color="inherit">
         <Link to="/projects/$projectId" params={{ projectId: issue.projectId }}>
           Back to project
         </Link>
-      </p>
-      <h1>{issue.title}</h1>
-      <p data-issue-status={issue.status}>
-        Issue #{issue.number} · <PriorityBadge priority={issue.priority} /> · {issue.status} ·
-        created by {issue.createdBy.displayName} · last edited by {issue.updatedBy.displayName}
-      </p>
-      <SessionStatus issueId={issue.id} projectId={issue.projectId} canContribute={canContribute} />
-      <SessionInspector
-        issueId={issue.id}
-        initialOpen={inspector}
-        initialSessionId={inspectorSession}
-      />
-      {canContribute && (
-        <AssigneeControl issue={issue} candidates={candidates} canContribute={canContribute} />
-      )}
-      {canContribute && (
-        <section>
-          <h2>Priority and order</h2>
-          <IssuePriorityControls issue={issue} issues={projectIssues} projectId={issue.projectId} />
-        </section>
-      )}
-      {issue.body === "" ? (
-        <p>No description.</p>
-      ) : (
-        <div data-issue-body style={{ whiteSpace: "pre-wrap" }}>
-          {issue.body}
-        </div>
-      )}
-      <Blockers
-        issueId={issue.id}
-        projectId={issue.projectId}
-        blockedBy={blockedBy}
-        blocking={blocking}
-        candidates={projectIssues}
-        canContribute={canContribute}
-      />
+      </Text>
+      <Heading level={1} color="inherit">
+        {issue.title}
+      </Heading>
+      <Text as="p" display="block" type="inherit" color="inherit" data-issue-status={issue.status}>
+        <Text type="inherit" color="inherit" className="issue-key">
+          {project.key}-{issue.number}
+        </Text>{" "}
+        · <PriorityBadge priority={issue.priority} /> · {issueStatusLabels[issue.status]} · created
+        by {issue.createdBy.displayName} · last edited by {issue.updatedBy.displayName}
+      </Text>
+      <Stack className="issue-layout">
+        <aside className="issue-inspector">
+          <SessionInspector
+            key={`${issue.id}:${inspector ?? false}:${inspectorSession ?? ""}`}
+            issueId={issue.id}
+            canContribute={canContribute}
+            initialOpen={inspector}
+            initialSessionId={inspectorSession}
+          />
+        </aside>
+        <Stack className="issue-primary">
+          {issue.body === "" ? (
+            <Text as="p" display="block" type="inherit" color="inherit">
+              No description.
+            </Text>
+          ) : (
+            <Stack data-issue-body style={{ whiteSpace: "pre-wrap" }}>
+              {issue.body}
+            </Stack>
+          )}
+          <SessionStatus
+            issueId={issue.id}
+            projectId={issue.projectId}
+            canContribute={canContribute}
+          />
+          {canContribute && (
+            <AssigneeControl issue={issue} candidates={candidates} canContribute={canContribute} />
+          )}
+          {canContribute && (
+            <Section className="page-section" padding={0}>
+              <Heading level={2} color="inherit">
+                Priority and order
+              </Heading>
+              <IssuePriorityControls
+                issue={issue}
+                issues={projectIssues}
+                projectId={issue.projectId}
+              />
+            </Section>
+          )}
+          <Blockers
+            issueId={issue.id}
+            projectId={issue.projectId}
+            blockedBy={blockedBy}
+            blocking={blocking}
+            candidates={projectIssues}
+            canContribute={canContribute}
+          />
 
-      {canContribute && (
-        <>
-          <IssueStatusButton issue={issue} />
-          <EditIssueForm key={issue.updatedAt} issue={issue} />
-        </>
-      )}
+          {canContribute && (
+            <>
+              <IssueStatusButton issue={issue} />
+              <EditIssueForm key={issue.updatedAt} issue={issue} />
+            </>
+          )}
 
-      <section>
-        <h2>Links</h2>
-        {issue.links.length === 0 ? (
-          <p>No links attached.</p>
-        ) : (
-          <ul>
-            {issue.links.map((link) => (
-              <li key={link.id} data-link-id={link.id}>
-                <span data-link-kind={link.kind}>{link.kind}</span>{" "}
-                <a href={link.url} target="_blank" rel="noopener noreferrer">
-                  {link.title}
-                </a>{" "}
-                — added by {link.createdBy.displayName}
-                {canContribute && (
-                  <LinkRemoveButton
-                    issueId={issue.id}
-                    projectId={issue.projectId}
-                    linkId={link.id}
-                  />
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-        {canContribute && <LinkForm issueId={issue.id} projectId={issue.projectId} />}
-      </section>
+          <Section className="page-section" padding={0}>
+            <Heading level={2} color="inherit">
+              Links
+            </Heading>
+            {issue.links.length === 0 ? (
+              <Text as="p" display="block" type="inherit" color="inherit">
+                No links attached.
+              </Text>
+            ) : (
+              <ul>
+                {issue.links.map((link) => (
+                  <li key={link.id} data-link-id={link.id}>
+                    <Text type="inherit" color="inherit" data-link-kind={link.kind}>
+                      {link.kind}
+                    </Text>{" "}
+                    <AstryxLink href={link.url} target="_blank" rel="noopener noreferrer">
+                      {link.title}
+                    </AstryxLink>{" "}
+                    — added by {link.createdBy.displayName}
+                    {canContribute && (
+                      <LinkRemoveButton
+                        issueId={issue.id}
+                        projectId={issue.projectId}
+                        linkId={link.id}
+                      />
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {canContribute && <LinkForm issueId={issue.id} projectId={issue.projectId} />}
+          </Section>
 
-      <section>
-        <h2>Comments</h2>
-        {comments.length === 0 ? (
-          <p>No comments yet.</p>
-        ) : (
-          <ul>
-            {comments.map((comment) => (
-              <li key={comment.id} data-comment-id={comment.id}>
-                <p>
-                  {comment.author.displayName} ·{" "}
-                  <time dateTime={comment.createdAt}>{comment.createdAt}</time>
-                </p>
-                <div style={{ whiteSpace: "pre-wrap" }}>{comment.body}</div>
-              </li>
-            ))}
-          </ul>
-        )}
-        {canContribute && <CommentForm issueId={issue.id} projectId={issue.projectId} />}
-      </section>
+          <Section className="page-section" padding={0}>
+            <Heading level={2} color="inherit">
+              Comments
+            </Heading>
+            {comments.length === 0 ? (
+              <Text as="p" display="block" type="inherit" color="inherit">
+                No comments yet.
+              </Text>
+            ) : (
+              <ul>
+                {comments.map((comment) => (
+                  <li key={comment.id} data-comment-id={comment.id}>
+                    <Text as="p" display="block" type="inherit" color="inherit">
+                      {comment.author.displayName} ·{" "}
+                      <time dateTime={comment.createdAt}>{comment.createdAt}</time>
+                    </Text>
+                    <Stack style={{ whiteSpace: "pre-wrap" }}>{comment.body}</Stack>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {canContribute && <CommentForm issueId={issue.id} projectId={issue.projectId} />}
+          </Section>
+        </Stack>
+      </Stack>
     </main>
   );
 }
@@ -278,11 +324,17 @@ function Blockers({
   );
 
   return (
-    <section>
-      <h2>Dependencies</h2>
-      <h3>Blocked by</h3>
+    <Section className="page-section" padding={0}>
+      <Heading level={2} color="inherit">
+        Dependencies
+      </Heading>
+      <Heading level={3} color="inherit">
+        Blocked by
+      </Heading>
       {blockedBy.length === 0 ? (
-        <p>Nothing blocks this issue.</p>
+        <Text as="p" display="block" type="inherit" color="inherit">
+          Nothing blocks this issue.
+        </Text>
       ) : (
         <ul>
           {blockedBy.map((blocker) => (
@@ -295,21 +347,25 @@ function Blockers({
                 ? ""
                 : " — not terminal, still blocking"}
               {canContribute && (
-                <button
+                <Button
                   type="button"
                   onClick={() => void onRemove(blocker.id)}
-                  disabled={submitting}
-                >
-                  Remove
-                </button>
+                  isDisabled={submitting}
+                  label="Remove"
+                  variant="destructive"
+                />
               )}
             </li>
           ))}
         </ul>
       )}
-      <h3>Blocking</h3>
+      <Heading level={3} color="inherit">
+        Blocking
+      </Heading>
       {blocking.length === 0 ? (
-        <p>This issue blocks nothing.</p>
+        <Text as="p" display="block" type="inherit" color="inherit">
+          This issue blocks nothing.
+        </Text>
       ) : (
         <ul>
           {blocking.map((dependant) => (
@@ -324,27 +380,33 @@ function Blockers({
       )}
       {canContribute && (
         <form onSubmit={(event) => void onAdd(event)}>
-          <label htmlFor="issue-blocker">Add a blocker</label>
-          <select
+          <Selector
+            label="Add a blocker"
             id="issue-blocker"
             value={selected}
-            onChange={(event) => setSelected(event.target.value)}
-            required
-          >
-            <option value="">Choose an issue…</option>
-            {options.map((option) => (
-              <option key={option.id} value={option.id}>
-                #{option.number} {option.title}
-              </option>
-            ))}
-          </select>
-          {error !== undefined && <p role="alert">{error}</p>}
-          <button type="submit" disabled={submitting || selected === ""}>
-            Add blocker
-          </button>
+            onChange={setSelected}
+            options={[
+              { value: "", label: "Choose an issue…" },
+              ...options.map((option) => ({
+                value: option.id,
+                label: `#${option.number} ${option.title}`,
+              })),
+            ]}
+          />
+          {error !== undefined && (
+            <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+              {error}
+            </Text>
+          )}
+          <Button
+            type="submit"
+            isDisabled={submitting || selected === ""}
+            label="Add blocker"
+            variant="primary"
+          />
         </form>
       )}
-    </section>
+    </Section>
   );
 }
 
@@ -380,12 +442,20 @@ function IssueStatusButton({ issue }: { issue: Issue }) {
   }
 
   return (
-    <section>
-      {error !== undefined && <p role="alert">{error}</p>}
-      <button type="button" onClick={() => void onToggle()} disabled={submitting}>
-        {next === "done" ? "Close issue" : "Reopen issue"}
-      </button>
-    </section>
+    <Section className="page-section" padding={0}>
+      {error !== undefined && (
+        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+          {error}
+        </Text>
+      )}
+      <Button
+        type="button"
+        onClick={() => void onToggle()}
+        isDisabled={submitting}
+        label={next === "done" ? "Close issue" : "Reopen issue"}
+        variant="secondary"
+      />
+    </Section>
   );
 }
 
@@ -395,8 +465,10 @@ function EditIssueForm({ issue }: { issue: Issue }) {
   const queryClient = useQueryClient();
 
   return (
-    <section>
-      <h2>Edit issue</h2>
+    <Section className="page-section" padding={0}>
+      <Heading level={2} color="inherit">
+        Edit issue
+      </Heading>
       <TitleBodyForm
         idPrefix="edit-issue"
         titleLabel="Title"
@@ -419,7 +491,7 @@ function EditIssueForm({ issue }: { issue: Issue }) {
           ]);
         }}
       />
-    </section>
+    </Section>
   );
 }
 
@@ -449,19 +521,21 @@ function CommentForm({ issueId, projectId }: { issueId: string; projectId: strin
 
   return (
     <form onSubmit={(event) => void onSubmit(event)}>
-      <label htmlFor="issue-comment">Comment</label>
-      <textarea
+      <TextAreaField
+        label="Comment"
         id="issue-comment"
-        name="body"
+        htmlName="body"
         value={body}
-        onChange={(event) => setBody(event.target.value)}
+        onChange={setBody}
         rows={4}
         required
       />
-      {error !== undefined && <p role="alert">{error}</p>}
-      <button type="submit" disabled={submitting}>
-        Add comment
-      </button>
+      {error !== undefined && (
+        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+          {error}
+        </Text>
+      )}
+      <Button type="submit" isDisabled={submitting} label="Add comment" variant="primary" />
     </form>
   );
 }
@@ -497,41 +571,46 @@ function LinkForm({ issueId, projectId }: { issueId: string; projectId: string }
   }
 
   return (
-    <form onSubmit={(event) => void onSubmit(event)}>
-      <label htmlFor="issue-link-url">URL</label>
-      <input
+    <form className="form-stack" onSubmit={(event) => void onSubmit(event)}>
+      <TextField
+        label="URL"
         id="issue-link-url"
-        name="url"
+        htmlName="url"
         type="url"
         value={url}
-        onChange={(event) => setUrl(event.target.value)}
+        onChange={setUrl}
         placeholder="https://…"
         required
       />
-      <label htmlFor="issue-link-title">Link label</label>
-      <input
+
+      <TextField
+        label="Link label"
         id="issue-link-title"
-        name="title"
+        htmlName="title"
         value={title}
-        onChange={(event) => setTitle(event.target.value)}
+        onChange={setTitle}
         required
       />
-      <label htmlFor="issue-link-kind">Kind</label>
-      <select
+
+      <Selector
+        label="Kind"
         id="issue-link-kind"
-        name="kind"
+        htmlName="kind"
         value={kind}
-        onChange={(event) => setKind(IssueLinkKind.parse(event.target.value))}
-      >
-        <option value="pr">PR</option>
-        <option value="commit">Commit</option>
-        <option value="doc">Doc</option>
-        <option value="link">Link</option>
-      </select>
-      {error !== undefined && <p role="alert">{error}</p>}
-      <button type="submit" disabled={submitting}>
-        Add link
-      </button>
+        onChange={(value) => setKind(IssueLinkKind.parse(value))}
+        options={[
+          { value: "pr", label: "PR" },
+          { value: "commit", label: "Commit" },
+          { value: "doc", label: "Doc" },
+          { value: "link", label: "Link" },
+        ]}
+      />
+      {error !== undefined && (
+        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+          {error}
+        </Text>
+      )}
+      <Button type="submit" isDisabled={submitting} label="Add link" variant="primary" />
     </form>
   );
 }
@@ -567,10 +646,18 @@ function LinkRemoveButton({
 
   return (
     <>
-      <button type="button" onClick={() => void onRemove()} disabled={submitting}>
-        Remove
-      </button>
-      {error !== undefined && <span role="alert">{error}</span>}
+      <Button
+        type="button"
+        onClick={() => void onRemove()}
+        isDisabled={submitting}
+        label="Remove"
+        variant="destructive"
+      />
+      {error !== undefined && (
+        <Text type="inherit" color="inherit" role="alert">
+          {error}
+        </Text>
+      )}
     </>
   );
 }

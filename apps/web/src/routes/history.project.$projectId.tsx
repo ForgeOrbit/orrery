@@ -1,5 +1,8 @@
+import { Heading } from "@astryxdesign/core/Heading";
+import { Text } from "@astryxdesign/core/Text";
 import { useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
+import { Link } from "../lib/Link.tsx";
 import { HistoryList, projectHistoryQuery } from "../features/history/index.ts";
 import { projectQuery, ResourceLoadError } from "../features/projects/index.ts";
 
@@ -21,13 +24,17 @@ function ProjectHistoryPage() {
 
   return (
     <main>
-      <p>
+      <Text as="p" display="block" type="inherit" color="inherit">
         <Link to="/projects/$projectId" params={{ projectId }}>
           Back to {project.name}
         </Link>
-      </p>
-      <h1>Project history</h1>
-      <p>{project.name}</p>
+      </Text>
+      <Heading level={1} color="inherit">
+        Project history
+      </Heading>
+      <Text as="p" display="block" type="inherit" color="inherit">
+        {project.name}
+      </Text>
       <HistoryList
         events={events}
         emptyMessage="No activity or access changes have been recorded in this project."

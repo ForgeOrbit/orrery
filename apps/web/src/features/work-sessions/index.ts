@@ -7,5 +7,5 @@ export {
   sessionQuery,
   sessionsQuery,
 } from "./queries.ts";
-export { SessionInspector } from "./SessionInspector.tsx";
+export { SessionInspector, SessionInspectorDetails } from "./SessionInspector.tsx";
 export { SessionStatus } from "./SessionStatus.tsx";

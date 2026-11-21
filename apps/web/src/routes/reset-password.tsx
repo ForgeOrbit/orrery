@@ -1,4 +1,9 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { Heading } from "@astryxdesign/core/Heading";
+import { Text } from "@astryxdesign/core/Text";
+import { TextField } from "../lib/fields.tsx";
+import { Button } from "@astryxdesign/core/Button";
+import { createFileRoute } from "@tanstack/react-router";
+import { Link } from "../lib/Link.tsx";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { confirmPasswordReset } from "../features/recovery/index.ts";
@@ -7,6 +12,7 @@ import { confirmPasswordReset } from "../features/recovery/index.ts";
 // is redeemed only by the POST the password form sends. A successful reset also signs
 // out the account's old browser sessions, so this page sends people back to sign in.
 export const Route = createFileRoute("/reset-password")({
+  staticData: { accessPage: true },
   validateSearch: (search: Record<string, unknown>) => ({
     token: typeof search.token === "string" ? search.token : "",
   }),
@@ -38,42 +44,57 @@ function ResetPasswordPage() {
   if (token === "") {
     return (
       <main>
-        <h1>Choose a new password</h1>
-        <p role="alert">This reset link is incomplete. Ask for a fresh reset link.</p>
-        <p>
+        <Heading level={1} color="inherit">
+          Choose a new password
+        </Heading>
+        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+          This reset link is incomplete. Ask for a fresh reset link.
+        </Text>
+        <Text as="p" display="block" type="inherit" color="inherit">
           <Link to="/forgot-password">Request a reset link</Link>
-        </p>
+        </Text>
       </main>
     );
   }
 
   return (
     <main>
-      <h1>Choose a new password</h1>
+      <Heading level={1} color="inherit">
+        Choose a new password
+      </Heading>
       {message !== undefined ? (
         <>
-          <p role="status">{message}</p>
-          <p>
+          <Text as="p" display="block" type="inherit" color="inherit" role="status">
+            {message}
+          </Text>
+          <Text as="p" display="block" type="inherit" color="inherit">
             <Link to="/signin">Sign in</Link>
-          </p>
+          </Text>
         </>
       ) : (
         <form onSubmit={(event) => void onSubmit(event)}>
-          <label htmlFor="reset-password">New password</label>
-          <input
+          <TextField
+            label="New password"
             id="reset-password"
-            name="password"
+            htmlName="password"
             type="password"
             value={password}
-            onChange={(event) => setPassword(event.target.value)}
+            onChange={setPassword}
             required
             minLength={8}
             autoComplete="new-password"
           />
-          {error !== undefined && <p role="alert">{error}</p>}
-          <button type="submit" disabled={submitting}>
-            Set new password
-          </button>
+          {error !== undefined && (
+            <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+              {error}
+            </Text>
+          )}
+          <Button
+            type="submit"
+            isDisabled={submitting}
+            label="Set new password"
+            variant="primary"
+          />
         </form>
       )}
     </main>

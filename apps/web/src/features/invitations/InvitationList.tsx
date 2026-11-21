@@ -1,3 +1,7 @@
+import { Heading } from "@astryxdesign/core/Heading";
+import { Text } from "@astryxdesign/core/Text";
+import { Section } from "@astryxdesign/core/Section";
+import { Button } from "@astryxdesign/core/Button";
 import type { InvitationSummary } from "@orrery/contract";
 
 // One invitation history list, shared by installation administration and a workspace's
@@ -67,12 +71,23 @@ export function InvitationList({
   onResend,
   onRevoke,
 }: InvitationListProps) {
-  if (invitations.length === 0) return <p>{emptyMessage}</p>;
+  if (invitations.length === 0)
+    return (
+      <Text as="p" display="block" type="inherit" color="inherit">
+        {emptyMessage}
+      </Text>
+    );
 
   return (
-    <section>
-      <h3>Invitation history</h3>
-      {error !== undefined && <p role="alert">{error}</p>}
+    <Section className="page-section" padding={0}>
+      <Heading level={3} color="inherit">
+        Invitation history
+      </Heading>
+      {error !== undefined && (
+        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+          {error}
+        </Text>
+      )}
       <ul>
         {invitations.map((invitation) => (
           <li
@@ -81,41 +96,48 @@ export function InvitationList({
             data-invitation-status={invitation.status}
             data-delivery-status={invitation.delivery.status ?? "unknown"}
           >
-            <p>
-              <strong>{invitation.email}</strong> <span>{statusLabels[invitation.status]}</span>
-            </p>
-            <p>
+            <Text as="p" display="block" type="inherit" color="inherit">
+              <strong>{invitation.email}</strong>{" "}
+              <Text type="inherit" color="inherit">
+                {statusLabels[invitation.status]}
+              </Text>
+            </Text>
+            <Text as="p" display="block" type="inherit" color="inherit">
               Invited by {invitation.invitedBy.email} to {targetLabel(invitation)}. Grants:{" "}
               {grantLabel(invitation)}.
-            </p>
-            <p>{deliveryLabel(invitation.delivery)}</p>
-            <p>{lifecycleTimes(invitation).join(" · ")}</p>
+            </Text>
+            <Text as="p" display="block" type="inherit" color="inherit">
+              {deliveryLabel(invitation.delivery)}
+            </Text>
+            <Text as="p" display="block" type="inherit" color="inherit">
+              {lifecycleTimes(invitation).join(" · ")}
+            </Text>
             {(onResend !== undefined || onRevoke !== undefined) && (
-              <p>
+              <Text as="p" display="block" type="inherit" color="inherit">
                 {(invitation.status === "pending" || invitation.status === "expired") &&
                   onResend !== undefined && (
-                    <button
+                    <Button
                       type="button"
                       onClick={() => void onResend(invitation)}
-                      disabled={busyId !== undefined}
-                    >
-                      Resend
-                    </button>
+                      isDisabled={busyId !== undefined}
+                      label="Resend"
+                      variant="secondary"
+                    />
                   )}{" "}
                 {invitation.status === "pending" && onRevoke !== undefined && (
-                  <button
+                  <Button
                     type="button"
                     onClick={() => void onRevoke(invitation)}
-                    disabled={busyId !== undefined}
-                  >
-                    Revoke
-                  </button>
+                    isDisabled={busyId !== undefined}
+                    label="Revoke"
+                    variant="destructive"
+                  />
                 )}
-              </p>
+              </Text>
             )}
           </li>
         ))}
       </ul>
-    </section>
+    </Section>
   );
 }

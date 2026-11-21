@@ -1,5 +1,11 @@
+import { Heading } from "@astryxdesign/core/Heading";
+import { Text } from "@astryxdesign/core/Text";
+import { Section } from "@astryxdesign/core/Section";
+import { Button } from "@astryxdesign/core/Button";
+import { TextField } from "../lib/fields.tsx";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { Link } from "../lib/Link.tsx";
 import { WorkspaceInvitationToken, type WorkspaceInvitationPreview } from "@orrery/contract";
 import type { FormEvent } from "react";
 import { useState } from "react";
@@ -19,6 +25,7 @@ import { ApiProblemError } from "../lib/api.ts";
 // (new account). A signed-in account whose address does not match the invitation is
 // refused in the page and again by the server.
 export const Route = createFileRoute("/workspace-invitation")({
+  staticData: { accessPage: true },
   validateSearch: (search: Record<string, unknown>) => ({
     token: typeof search.token === "string" ? search.token : "",
   }),
@@ -35,11 +42,15 @@ export const Route = createFileRoute("/workspace-invitation")({
 function InvalidInvitationLink() {
   return (
     <main>
-      <h1>Workspace invitation</h1>
-      <p role="alert">This invitation is invalid, expired, or already used.</p>
-      <p>
+      <Heading level={1} color="inherit">
+        Workspace invitation
+      </Heading>
+      <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+        This invitation is invalid, expired, or already used.
+      </Text>
+      <Text as="p" display="block" type="inherit" color="inherit">
         <Link to="/">Go to your workspaces</Link>
-      </p>
+      </Text>
     </main>
   );
 }
@@ -52,15 +63,17 @@ function InvitationLoadError({ error }: { error: unknown }) {
   const stale = error instanceof ApiProblemError && error.code === "invitation_scope_invalid";
   return (
     <main>
-      <h1>Workspace invitation</h1>
-      <p role="alert">
+      <Heading level={1} color="inherit">
+        Workspace invitation
+      </Heading>
+      <Text as="p" display="block" type="inherit" color="inherit" role="alert">
         {stale
           ? "An offered project is no longer in this workspace. Ask for a new invitation."
           : "Could not load this invitation. Check your connection and try again."}
-      </p>
-      <p>
+      </Text>
+      <Text as="p" display="block" type="inherit" color="inherit">
         <Link to="/">Go to your workspaces</Link>
-      </p>
+      </Text>
     </main>
   );
 }
@@ -70,8 +83,12 @@ function WorkspaceInvitationPage() {
   if (token === "") {
     return (
       <main>
-        <h1>Workspace invitation</h1>
-        <p role="alert">This invitation link is incomplete. Ask for a fresh invitation.</p>
+        <Heading level={1} color="inherit">
+          Workspace invitation
+        </Heading>
+        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+          This invitation link is incomplete. Ask for a fresh invitation.
+        </Text>
       </main>
     );
   }
@@ -90,17 +107,19 @@ function Invitation({ token }: { token: string }) {
   if (!session.signedIn) {
     return (
       <main>
-        <h1>Join {preview.workspaceName}</h1>
+        <Heading level={1} color="inherit">
+          Join {preview.workspaceName}
+        </Heading>
         <InvitationScope preview={preview} />
-        <p>
+        <Text as="p" display="block" type="inherit" color="inherit">
           Sign in with {preview.email} to join the workspace, or choose a password below if you are
           new.
-        </p>
-        <p>
+        </Text>
+        <Text as="p" display="block" type="inherit" color="inherit">
           <Link to="/signin" search={{ next: `/workspace-invitation?token=${token}` }}>
             Sign in
           </Link>
-        </p>
+        </Text>
         <NewAccountForm token={token} />
         <DeclineInvitation token={token} />
       </main>
@@ -110,15 +129,17 @@ function Invitation({ token }: { token: string }) {
   if (session.email !== preview.email) {
     return (
       <main>
-        <h1>Join {preview.workspaceName}</h1>
+        <Heading level={1} color="inherit">
+          Join {preview.workspaceName}
+        </Heading>
         <InvitationScope preview={preview} />
-        <p role="alert">
+        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
           This invitation was sent to {preview.email}, but you are signed in as {session.email}.
           Sign in with the invited account to accept it.
-        </p>
-        <p>
+        </Text>
+        <Text as="p" display="block" type="inherit" color="inherit">
           <Link to="/">Go to your workspaces</Link>
-        </p>
+        </Text>
       </main>
     );
   }
@@ -132,15 +153,19 @@ function Invitation({ token }: { token: string }) {
 function InvitationScope({ preview }: { preview: WorkspaceInvitationPreview }) {
   const projects = preview.grants.filter((grant) => grant.kind === "project_access");
   return (
-    <section>
-      <p>
+    <Section className="page-section" padding={0}>
+      <Text as="p" display="block" type="inherit" color="inherit">
         {preview.invitedByEmail} invited {preview.email} to <strong>{preview.workspaceName}</strong>
         .
-      </p>
-      <p>Offered access: workspace membership.</p>
+      </Text>
+      <Text as="p" display="block" type="inherit" color="inherit">
+        Offered access: workspace membership.
+      </Text>
       {projects.length > 0 && (
         <>
-          <p>Project access:</p>
+          <Text as="p" display="block" type="inherit" color="inherit">
+            Project access:
+          </Text>
           <ul>
             {projects.map((grant) => (
               <li key={grant.projectId} data-project-grant-id={grant.projectId}>
@@ -150,9 +175,13 @@ function InvitationScope({ preview }: { preview: WorkspaceInvitationPreview }) {
           </ul>
         </>
       )}
-      <p>Workspace membership alone does not grant project access.</p>
-      <p>This invitation expires {new Date(preview.expiresAt).toLocaleString()}.</p>
-    </section>
+      <Text as="p" display="block" type="inherit" color="inherit">
+        Workspace membership alone does not grant project access.
+      </Text>
+      <Text as="p" display="block" type="inherit" color="inherit">
+        This invitation expires {new Date(preview.expiresAt).toLocaleString()}.
+      </Text>
+    </Section>
   );
 }
 
@@ -178,20 +207,29 @@ function DeclineInvitation({ token }: { token: string }) {
 
   if (declined) {
     return (
-      <p role="status">
+      <Text as="p" display="block" type="inherit" color="inherit" role="status">
         You declined this invitation. The link no longer works.{" "}
         <Link to="/">Go to your workspaces</Link>
-      </p>
+      </Text>
     );
   }
 
   return (
-    <p>
-      <button type="button" onClick={() => void onDecline()} disabled={submitting}>
-        Decline invitation
-      </button>
-      {error !== undefined && <span role="alert"> {error}</span>}
-    </p>
+    <Text as="p" display="block" type="inherit" color="inherit">
+      <Button
+        type="button"
+        onClick={() => void onDecline()}
+        isDisabled={submitting}
+        label="Decline invitation"
+        variant="secondary"
+      />
+      {error !== undefined && (
+        <Text type="inherit" color="inherit" role="alert">
+          {" "}
+          {error}
+        </Text>
+      )}
+    </Text>
   );
 }
 
@@ -227,14 +265,28 @@ function AcceptInvitation({
 
   return (
     <main>
-      <h1>Join {preview.workspaceName}</h1>
+      <Heading level={1} color="inherit">
+        Join {preview.workspaceName}
+      </Heading>
       <InvitationScope preview={preview} />
-      <p>You are signed in as {preview.email}.</p>
-      <p>Accepting adds this shared workspace to your own workspace list.</p>
-      {error !== undefined && <p role="alert">{error}</p>}
-      <button type="button" onClick={() => void onAccept()} disabled={submitting}>
-        Accept invitation
-      </button>
+      <Text as="p" display="block" type="inherit" color="inherit">
+        You are signed in as {preview.email}.
+      </Text>
+      <Text as="p" display="block" type="inherit" color="inherit">
+        Accepting adds this shared workspace to your own workspace list.
+      </Text>
+      {error !== undefined && (
+        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+          {error}
+        </Text>
+      )}
+      <Button
+        type="button"
+        onClick={() => void onAccept()}
+        isDisabled={submitting}
+        label="Accept invitation"
+        variant="primary"
+      />
       <DeclineInvitation token={token} />
     </main>
   );
@@ -284,34 +336,45 @@ function NewAccountForm({ token }: { token: string }) {
 
   if (createdEmail !== undefined) {
     return (
-      <p role="status">
+      <Text as="p" display="block" type="inherit" color="inherit" role="status">
         Your account was created for {createdEmail}. <Link to="/signin">Sign in</Link> with the
         password you chose.
-      </p>
+      </Text>
     );
   }
 
   return (
-    <section>
-      <h2>New to Orrery?</h2>
-      <p>Choose a password to create your account and personal workspace.</p>
+    <Section className="page-section" padding={0}>
+      <Heading level={2} color="inherit">
+        New to Orrery?
+      </Heading>
+      <Text as="p" display="block" type="inherit" color="inherit">
+        Choose a password to create your account and personal workspace.
+      </Text>
       <form onSubmit={(event) => void onSubmit(event)}>
-        <label htmlFor="workspace-invitation-password">Password</label>
-        <input
+        <TextField
+          label="Password"
           id="workspace-invitation-password"
-          name="password"
+          htmlName="password"
           type="password"
           value={password}
-          onChange={(event) => setPassword(event.target.value)}
+          onChange={setPassword}
           required
           minLength={8}
           autoComplete="new-password"
         />
-        {error !== undefined && <p role="alert">{error}</p>}
-        <button type="submit" disabled={submitting}>
-          Create account and join
-        </button>
+        {error !== undefined && (
+          <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+            {error}
+          </Text>
+        )}
+        <Button
+          type="submit"
+          isDisabled={submitting}
+          label="Create account and join"
+          variant="primary"
+        />
       </form>
-    </section>
+    </Section>
   );
 }

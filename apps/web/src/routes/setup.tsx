@@ -1,12 +1,17 @@
+import { Heading } from "@astryxdesign/core/Heading";
+import { Text } from "@astryxdesign/core/Text";
+import { Button } from "@astryxdesign/core/Button";
 import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { createFirstAdministrator, setupStatusQuery } from "../features/accounts/index.ts";
+import { TextField } from "../lib/fields.tsx";
 
 // Initial setup: the installer creates the first system administrator, protected by the
 // deployment's bootstrap secret. The page only exists while setup is open.
 export const Route = createFileRoute("/setup")({
+  staticData: { accessPage: true },
   beforeLoad: async ({ context }) => {
     const status = await context.queryClient.fetchQuery(setupStatusQuery);
     if (status.setupComplete) throw redirect({ to: "/signin" });
@@ -25,6 +30,7 @@ function SetupPage() {
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (submitting) return;
     setSubmitting(true);
     setError(undefined);
     try {
@@ -42,45 +48,62 @@ function SetupPage() {
 
   return (
     <main>
-      <h1>Set up Orrery</h1>
-      <p>Create the first system administrator. This can be done only once.</p>
+      <Heading level={1} color="inherit">
+        Set up Orrery
+      </Heading>
+      <Text as="p" display="block" type="inherit" color="inherit">
+        Create the first system administrator for this installation. Setup runs once.
+      </Text>
       <form onSubmit={(event) => void onSubmit(event)}>
-        <label htmlFor="setup-secret">Setup secret</label>
-        <input
+        <TextField
+          label="Setup secret"
           id="setup-secret"
-          name="secret"
+          htmlName="secret"
+          description="Use the value of BOOTSTRAP_SECRET on your server."
           type="password"
           value={secret}
-          onChange={(event) => setSecret(event.target.value)}
+          onChange={setSecret}
           required
           autoComplete="off"
+          width="100%"
         />
-        <p>Supplied by the installer through the server's BOOTSTRAP_SECRET setting.</p>
-        <label htmlFor="setup-email">Email</label>
-        <input
+        <TextField
+          label="Email"
           id="setup-email"
-          name="email"
+          htmlName="email"
           type="email"
           value={email}
-          onChange={(event) => setEmail(event.target.value)}
+          onChange={setEmail}
           required
           autoComplete="username"
+          width="100%"
         />
-        <label htmlFor="setup-password">Password</label>
-        <input
+        <TextField
+          label="Password"
           id="setup-password"
-          name="password"
+          htmlName="password"
+          description="At least 8 characters."
           type="password"
           value={password}
-          onChange={(event) => setPassword(event.target.value)}
+          onChange={setPassword}
           required
           minLength={8}
           autoComplete="new-password"
+          width="100%"
         />
-        {error !== undefined && <p role="alert">{error}</p>}
-        <button type="submit" disabled={submitting}>
-          Create administrator
-        </button>
+        {error !== undefined && (
+          <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+            {error}
+          </Text>
+        )}
+        <Button
+          type="submit"
+          variant="primary"
+          size="lg"
+          width="100%"
+          label="Create administrator"
+          isLoading={submitting}
+        />
       </form>
     </main>
   );

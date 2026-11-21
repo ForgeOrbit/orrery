@@ -1,5 +1,14 @@
+import { Heading } from "@astryxdesign/core/Heading";
+import { Text } from "@astryxdesign/core/Text";
+import { Section } from "@astryxdesign/core/Section";
+import { Stack } from "@astryxdesign/core/Stack";
+import { TextField } from "../lib/fields.tsx";
+import { Button } from "@astryxdesign/core/Button";
+import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
+import { Selector } from "@astryxdesign/core/Selector";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { Link } from "../lib/Link.tsx";
 import {
   ProjectAccessLevel,
   workspaceCapabilities,
@@ -105,21 +114,23 @@ function WorkspacePage() {
 
   return (
     <main>
-      <p>
+      <Text as="p" display="block" type="inherit" color="inherit">
         <Link to="/">All workspaces</Link>
-      </p>
-      <h1>{workspace.name}</h1>
-      <p>
+      </Text>
+      <Heading level={1} color="inherit">
+        {workspace.name}
+      </Heading>
+      <Text as="p" display="block" type="inherit" color="inherit">
         {workspace.kind === "personal"
           ? "Personal workspace"
           : `Shared workspace · ${workspace.isOwner ? "Owner" : "Member"}`}
-      </p>
+      </Text>
       {(workspace.isOwner || workspace.canManageMemberPermissions) && (
-        <p>
+        <Text as="p" display="block" type="inherit" color="inherit">
           <Link to="/history/workspace/$workspaceId" params={{ workspaceId: workspace.id }}>
             View access history
           </Link>
-        </p>
+        </Text>
       )}
       <Projects
         workspaceId={workspace.id}
@@ -146,10 +157,14 @@ function WorkspacePage() {
 function Projects({ workspaceId, canCreate }: { workspaceId: string; canCreate: boolean }) {
   const { data: projects } = useSuspenseQuery(projectsQuery(workspaceId));
   return (
-    <section>
-      <h2>Projects</h2>
+    <Section className="page-section" padding={0}>
+      <Heading level={2} color="inherit">
+        Projects
+      </Heading>
       {projects.length === 0 ? (
-        <p>{canCreate ? "No projects yet." : "No projects have been shared with you yet."}</p>
+        <Text as="p" display="block" type="inherit" color="inherit">
+          {canCreate ? "No projects yet." : "No projects have been shared with you yet."}
+        </Text>
       ) : (
         <ul>
           {projects.map((project) => (
@@ -157,13 +172,15 @@ function Projects({ workspaceId, canCreate }: { workspaceId: string; canCreate: 
               <Link to="/projects/$projectId" params={{ projectId: project.id }}>
                 {project.name}
               </Link>{" "}
-              <span data-project-access-level={project.accessLevel}>{project.accessLevel}</span>
+              <Text type="inherit" color="inherit" data-project-access-level={project.accessLevel}>
+                {project.accessLevel}
+              </Text>
             </li>
           ))}
         </ul>
       )}
       {canCreate && <CreateProjectForm workspaceId={workspaceId} />}
-    </section>
+    </Section>
   );
 }
 
@@ -193,19 +210,21 @@ function CreateProjectForm({ workspaceId }: { workspaceId: string }) {
 
   return (
     <form onSubmit={(event) => void onSubmit(event)}>
-      <label htmlFor="project-name">Project name</label>
-      <input
+      <TextField
+        label="Project name"
         id="project-name"
-        name="name"
+        htmlName="name"
         value={name}
-        onChange={(event) => setName(event.target.value)}
+        onChange={setName}
         required
         maxLength={120}
       />
-      {error !== undefined && <p role="alert">{error}</p>}
-      <button type="submit" disabled={submitting}>
-        Create project
-      </button>
+      {error !== undefined && (
+        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+          {error}
+        </Text>
+      )}
+      <Button type="submit" isDisabled={submitting} label="Create project" variant="primary" />
     </form>
   );
 }
@@ -278,15 +297,26 @@ function WorkspaceMembers({
   }
 
   return (
-    <section>
-      <h2>Members</h2>
-      {error !== undefined && <p role="alert">{error}</p>}
+    <Section className="page-section" padding={0}>
+      <Heading level={2} color="inherit">
+        Members
+      </Heading>
+      {error !== undefined && (
+        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+          {error}
+        </Text>
+      )}
       <ul>
         {members.map((member) => (
           <li key={member.humanId} data-member-id={member.humanId}>
-            {member.email} <span>{member.isOwner ? "Owner" : "Member"}</span>{" "}
+            {member.email}{" "}
+            <Text type="inherit" color="inherit">
+              {member.isOwner ? "Owner" : "Member"}
+            </Text>{" "}
             {workspaceCapabilities.map((capability) => (
-              <span
+              <Text
+                type="inherit"
+                color="inherit"
                 key={capability}
                 data-capability={capability}
                 data-enabled={String(member[capability])}
@@ -294,42 +324,42 @@ function WorkspaceMembers({
                 {member[capability]
                   ? `Can ${capabilityLabels[capability].toLowerCase()}`
                   : `Cannot ${capabilityLabels[capability].toLowerCase()}`}{" "}
-              </span>
+              </Text>
             ))}
             {changeableCapabilities(workspace, member, ownEmail).map((capability) => (
-              <button
+              <Button
                 key={capability}
                 type="button"
                 data-capability-action={capability}
                 onClick={() => void onCapability(member.humanId, capability)}
-                disabled={updating !== undefined}
-              >
-                {member[capability] ? "Revoke" : "Grant"} {capabilityLabels[capability]}
-              </button>
+                isDisabled={updating !== undefined}
+                label={`${member[capability] ? "Revoke" : "Grant"} ${capabilityLabels[capability]}`}
+                variant="secondary"
+              />
             ))}{" "}
             {!member.isOwner && workspace.isOwner && (
-              <button
+              <Button
                 type="button"
                 onClick={() => void onAppoint(member.humanId)}
-                disabled={updating !== undefined}
-              >
-                Make owner
-              </button>
+                isDisabled={updating !== undefined}
+                label="Make owner"
+                variant="secondary"
+              />
             )}{" "}
             {mayRemove(workspace, member) && (
-              <button
+              <Button
                 type="button"
                 data-action="remove-member"
                 onClick={() => void onRemove(member.humanId)}
-                disabled={updating !== undefined}
-              >
-                Remove member
-              </button>
+                isDisabled={updating !== undefined}
+                label="Remove member"
+                variant="destructive"
+              />
             )}
           </li>
         ))}
       </ul>
-    </section>
+    </Section>
   );
 }
 
@@ -440,16 +470,18 @@ function InviteMemberForm({
   }
 
   return (
-    <section>
-      <h2>Invite someone to {workspace.name}</h2>
+    <Section className="page-section" padding={0}>
+      <Heading level={2} color="inherit">
+        Invite someone to {workspace.name}
+      </Heading>
       <form onSubmit={(event) => void onSubmit(event)}>
-        <label htmlFor="invite-email">Email</label>
-        <input
+        <TextField
+          label="Email"
           id="invite-email"
-          name="email"
+          htmlName="email"
           type="email"
           value={email}
-          onChange={(event) => setEmail(event.target.value)}
+          onChange={setEmail}
           required
           autoComplete="off"
         />
@@ -457,38 +489,40 @@ function InviteMemberForm({
           <fieldset>
             <legend>Project access (optional)</legend>
             {selectable.map((project) => (
-              <div key={project.id}>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={project.id in offered}
-                    onChange={(event) => toggleProject(project.id, event.target.checked)}
-                  />{" "}
-                  {project.name}
-                </label>{" "}
-                <label htmlFor={`invite-level-${project.id}`}>Level</label>
-                <select
+              <Stack key={project.id}>
+                <CheckboxInput
+                  label={project.name}
+                  value={project.id in offered}
+                  onChange={(checked) => toggleProject(project.id, checked)}
+                />{" "}
+                <Selector
+                  label="Level"
                   id={`invite-level-${project.id}`}
                   value={offered[project.id] ?? "read"}
-                  onChange={(event) =>
-                    setLevel(project.id, ProjectAccessLevel.parse(event.target.value))
-                  }
-                  disabled={!(project.id in offered)}
-                >
-                  <option value="read">Read</option>
-                  <option value="contribute">Contribute</option>
-                  <option value="manage">Manage</option>
-                </select>
-              </div>
+                  onChange={(value) => setLevel(project.id, ProjectAccessLevel.parse(value))}
+                  isDisabled={!(project.id in offered)}
+                  options={[
+                    { value: "read", label: "Read" },
+                    { value: "contribute", label: "Contribute" },
+                    { value: "manage", label: "Manage" },
+                  ]}
+                />
+              </Stack>
             ))}
           </fieldset>
         )}
-        {error !== undefined && <p role="alert">{error}</p>}
-        {invited !== undefined && <p role="status">Invitation sent to {invited}.</p>}
-        <button type="submit" disabled={submitting}>
-          Send invitation
-        </button>
+        {error !== undefined && (
+          <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+            {error}
+          </Text>
+        )}
+        {invited !== undefined && (
+          <Text as="p" display="block" type="inherit" color="inherit" role="status">
+            Invitation sent to {invited}.
+          </Text>
+        )}
+        <Button type="submit" isDisabled={submitting} label="Send invitation" variant="primary" />
       </form>
-    </section>
+    </Section>
   );
 }

@@ -1,3 +1,7 @@
+import { Text } from "@astryxdesign/core/Text";
+import { TextField } from "../../lib/fields.tsx";
+import { TextAreaField } from "../../lib/fields.tsx";
+import { Button } from "@astryxdesign/core/Button";
 import type { FormEvent } from "react";
 import { useState } from "react";
 
@@ -53,27 +57,30 @@ export function TitleBodyForm({
 
   return (
     <form onSubmit={(event) => void handleSubmit(event)}>
-      <label htmlFor={`${idPrefix}-title`}>{titleLabel}</label>
-      <input
+      <TextField
+        label={titleLabel}
         id={`${idPrefix}-title`}
-        name="title"
+        htmlName="title"
         value={title}
-        onChange={(event) => setTitle(event.target.value)}
+        onChange={setTitle}
         required
         maxLength={200}
       />
-      <label htmlFor={`${idPrefix}-body`}>{bodyLabel}</label>
-      <textarea
+
+      <TextAreaField
+        label={bodyLabel}
         id={`${idPrefix}-body`}
-        name="body"
+        htmlName="body"
         value={body}
-        onChange={(event) => setBody(event.target.value)}
+        onChange={setBody}
         rows={bodyRows}
       />
-      {error !== undefined && <p role="alert">{error}</p>}
-      <button type="submit" disabled={submitting}>
-        {submitLabel}
-      </button>
+      {error !== undefined && (
+        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+          {error}
+        </Text>
+      )}
+      <Button type="submit" isDisabled={submitting} label={submitLabel} variant="primary" />
     </form>
   );
 }

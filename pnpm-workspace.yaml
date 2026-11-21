@@ -5,6 +5,8 @@ packages:
 
 # Dependencies allowed to run install scripts. Everything else is blocked.
 allowBuilds:
+  "@astryxdesign/cli": false
+  "@astryxdesign/core": false
   esbuild: true
   lefthook: true
   cpu-features: false

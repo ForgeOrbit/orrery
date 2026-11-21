@@ -1,5 +1,10 @@
+import { Heading } from "@astryxdesign/core/Heading";
+import { Text } from "@astryxdesign/core/Text";
+import { Section } from "@astryxdesign/core/Section";
+import { Stack } from "@astryxdesign/core/Stack";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
+import { Link } from "../lib/Link.tsx";
 import type { KnowledgeEntry } from "@orrery/contract";
 import {
   knowledgeEntriesQuery,
@@ -31,22 +36,26 @@ function KnowledgePage() {
 
   return (
     <main>
-      <p>
+      <Text as="p" display="block" type="inherit" color="inherit">
         <Link to="/projects/$projectId" params={{ projectId: entry.projectId }}>
           Back to project
         </Link>
-      </p>
-      <h1>{entry.title}</h1>
-      <p>
+      </Text>
+      <Heading level={1} color="inherit">
+        {entry.title}
+      </Heading>
+      <Text as="p" display="block" type="inherit" color="inherit">
         Knowledge · created by {entry.createdBy.displayName} · last edited by{" "}
         {entry.updatedBy.displayName}
-      </p>
+      </Text>
       {entry.body === "" ? (
-        <p>No content yet.</p>
+        <Text as="p" display="block" type="inherit" color="inherit">
+          No content yet.
+        </Text>
       ) : (
-        <div data-knowledge-body style={{ whiteSpace: "pre-wrap" }}>
+        <Stack data-knowledge-body style={{ whiteSpace: "pre-wrap" }}>
           {entry.body}
-        </div>
+        </Stack>
       )}
       {canContribute && <EditKnowledgeForm key={entry.updatedAt} entry={entry} />}
     </main>
@@ -59,8 +68,10 @@ function EditKnowledgeForm({ entry }: { entry: KnowledgeEntry }) {
   const queryClient = useQueryClient();
 
   return (
-    <section>
-      <h2>Edit knowledge</h2>
+    <Section className="page-section" padding={0}>
+      <Heading level={2} color="inherit">
+        Edit knowledge
+      </Heading>
       <TitleBodyForm
         idPrefix="edit-knowledge"
         titleLabel="Title"
@@ -83,6 +94,6 @@ function EditKnowledgeForm({ entry }: { entry: KnowledgeEntry }) {
           ]);
         }}
       />
-    </section>
+    </Section>
   );
 }

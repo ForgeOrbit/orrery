@@ -1,5 +1,13 @@
+import { Heading } from "@astryxdesign/core/Heading";
+import { Text } from "@astryxdesign/core/Text";
+import { Section } from "@astryxdesign/core/Section";
+import { TextField } from "../lib/fields.tsx";
+import { Selector } from "@astryxdesign/core/Selector";
+import { Button } from "@astryxdesign/core/Button";
+import { NumberInput } from "@astryxdesign/core/NumberInput";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
+import { Link } from "../lib/Link.tsx";
 import {
   SmtpSecurity,
   type SmtpSettings as SmtpSettingsInput,
@@ -43,12 +51,16 @@ function SmtpSettingsPage() {
 
   return (
     <main>
-      <p>
+      <Text as="p" display="block" type="inherit" color="inherit">
         <Link to="/">Back to your workspaces</Link>
-      </p>
-      <h1>SMTP settings</h1>
+      </Text>
+      <Heading level={1} color="inherit">
+        SMTP settings
+      </Heading>
       {settings === null ? (
-        <p role="alert">SMTP settings are available to system administrators only.</p>
+        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+          SMTP settings are available to system administrators only.
+        </Text>
       ) : (
         <>
           <SmtpForm settings={settings} />
@@ -62,7 +74,8 @@ function SmtpSettingsPage() {
 function SmtpForm({ settings }: { settings: SmtpSettingsResponse }) {
   const queryClient = useQueryClient();
   const [host, setHost] = useState(settings.host ?? "");
-  const [port, setPort] = useState(settings.port?.toString() ?? "");
+  const [port, setPort] = useState(settings.port);
+  const [invalidPortEntry, setInvalidPortEntry] = useState(false);
   const [security, setSecurity] = useState<SmtpSecurity>(settings.security ?? "starttls");
   const [from, setFrom] = useState(settings.from ?? "");
   const [username, setUsername] = useState(settings.username ?? "");
@@ -73,13 +86,18 @@ function SmtpForm({ settings }: { settings: SmtpSettingsResponse }) {
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (invalidPortEntry || port === null || port < 1 || port > 65535) {
+      setStatus(undefined);
+      setError("Enter a port between 1 and 65535.");
+      return;
+    }
     setSaving(true);
     setStatus(undefined);
     setError(undefined);
     try {
       const input: SmtpSettingsInput = {
         host,
-        port: Number(port),
+        port,
         security,
         username: username === "" ? null : username,
         password: password === "" ? null : password,
@@ -97,91 +115,93 @@ function SmtpForm({ settings }: { settings: SmtpSettingsResponse }) {
   }
 
   return (
-    <section>
-      <h2>SMTP configuration</h2>
+    <Section className="page-section" padding={0}>
+      <Heading level={2} color="inherit">
+        SMTP configuration
+      </Heading>
       <form onSubmit={(event) => void onSubmit(event)}>
-        <label htmlFor="smtp-host">Host</label>
-        <input
+        <TextField
+          label="Host"
           id="smtp-host"
-          name="host"
+          htmlName="host"
           value={host}
-          onChange={(event) => setHost(event.target.value)}
+          onChange={setHost}
           required
           maxLength={255}
         />
 
-        <label htmlFor="smtp-port">Port</label>
-        <input
+        <NumberInput
+          label="Port"
           id="smtp-port"
-          name="port"
-          type="number"
-          min={1}
-          max={65535}
+          htmlName="port"
           value={port}
-          onChange={(event) => setPort(event.target.value)}
-          required
+          onChange={setPort}
+          onEntryErrorChange={(entry) => setInvalidPortEntry(entry !== null)}
+          isIntegerOnly
+          isRequired
         />
 
-        <label htmlFor="smtp-security">Security</label>
-        <select
+        <Selector
+          label="Security"
           id="smtp-security"
-          name="security"
+          htmlName="security"
           value={security}
-          onChange={(event) => {
-            const parsed = SmtpSecurity.safeParse(event.target.value);
+          onChange={(value) => {
+            const parsed = SmtpSecurity.safeParse(value);
             if (parsed.success) setSecurity(parsed.data);
           }}
-        >
-          {SECURITY_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
+          options={SECURITY_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
+        />
 
-        <label htmlFor="smtp-from">From address</label>
-        <input
+        <TextField
+          label="From address"
           id="smtp-from"
-          name="from"
+          htmlName="from"
           type="email"
           value={from}
-          onChange={(event) => setFrom(event.target.value)}
+          onChange={setFrom}
           required
         />
 
-        <label htmlFor="smtp-username">Username (optional)</label>
-        <input
+        <TextField
+          label="Username (optional)"
           id="smtp-username"
-          name="username"
+          htmlName="username"
           value={username}
-          onChange={(event) => setUsername(event.target.value)}
+          onChange={setUsername}
           maxLength={255}
         />
 
-        <label htmlFor="smtp-password">Password (optional)</label>
-        <input
+        <TextField
+          label="Password (optional)"
           id="smtp-password"
-          name="password"
+          htmlName="password"
           type="password"
           value={password}
-          onChange={(event) => setPassword(event.target.value)}
+          onChange={setPassword}
           maxLength={1024}
           autoComplete="new-password"
         />
         {settings.hasPassword && (
-          <p>
+          <Text as="p" display="block" type="inherit" color="inherit">
             A password is stored. Saving replaces the whole configuration, so re-enter it to keep
             it; leaving this field empty removes it.
-          </p>
+          </Text>
         )}
 
-        {status !== undefined && <p role="status">{status}</p>}
-        {error !== undefined && <p role="alert">{error}</p>}
-        <button type="submit" disabled={saving}>
-          Save SMTP settings
-        </button>
+        {status !== undefined && (
+          <Text as="p" display="block" type="inherit" color="inherit" role="status">
+            {status}
+          </Text>
+        )}
+        {error !== undefined && (
+          <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+            {error}
+          </Text>
+        )}
+        <Button type="submit" isDisabled={saving} label="Save SMTP settings" variant="primary" />
       </form>
-    </section>
+    </Section>
   );
 }
 
@@ -235,36 +255,56 @@ function TestAndVerification({
   }
 
   return (
-    <section>
-      <h2>Test email and verification</h2>
-      <p>
+    <Section className="page-section" padding={0}>
+      <Heading level={2} color="inherit">
+        Test email and verification
+      </Heading>
+      <Text as="p" display="block" type="inherit" color="inherit">
         {emailVerified
           ? "Your email address is verified."
           : "Your email address is not verified yet."}
-      </p>
-      <button type="button" onClick={() => void onSend()} disabled={sending || !configured}>
-        Send test email
-      </button>
-      {!configured && <p>Save your SMTP settings above before sending a test email.</p>}
-      {sendStatus !== undefined && <p role="status">{sendStatus}</p>}
-      {sendError !== undefined && <p role="alert">{sendError}</p>}
+      </Text>
+      <Button
+        type="button"
+        onClick={() => void onSend()}
+        isDisabled={sending || !configured}
+        label="Send test email"
+        variant="secondary"
+      />
+      {!configured && (
+        <Text as="p" display="block" type="inherit" color="inherit">
+          Save your SMTP settings above before sending a test email.
+        </Text>
+      )}
+      {sendStatus !== undefined && (
+        <Text as="p" display="block" type="inherit" color="inherit" role="status">
+          {sendStatus}
+        </Text>
+      )}
+      {sendError !== undefined && (
+        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+          {sendError}
+        </Text>
+      )}
       {!emailVerified && (
         <form onSubmit={(event) => void onVerify(event)}>
-          <label htmlFor="verify-token">Verification token from the test email</label>
-          <input
+          <TextField
+            label="Verification token from the test email"
             id="verify-token"
-            name="token"
+            htmlName="token"
             value={token}
-            onChange={(event) => setToken(event.target.value)}
+            onChange={setToken}
             required
             autoComplete="off"
           />
-          {verifyError !== undefined && <p role="alert">{verifyError}</p>}
-          <button type="submit" disabled={verifying}>
-            Verify email
-          </button>
+          {verifyError !== undefined && (
+            <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+              {verifyError}
+            </Text>
+          )}
+          <Button type="submit" isDisabled={verifying} label="Verify email" variant="primary" />
         </form>
       )}
-    </section>
+    </Section>
   );
 }
