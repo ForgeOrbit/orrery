@@ -63,7 +63,7 @@ function AccountPage() {
           </span>
         }
       />
-      <ProfileSection key={session.displayName ?? ""} initialDisplayName={session.displayName} />
+      <ProfileSection initialDisplayName={session.displayName} />
       <PasswordSection />
       <PreferencesSection />
       <SessionSection />
@@ -73,12 +73,14 @@ function AccountPage() {
 
 function ProfileSection({ initialDisplayName }: { initialDisplayName: string | null }) {
   const queryClient = useQueryClient();
-  const [displayName, setDisplayName] = useState(initialDisplayName ?? "");
+  const [draftDisplayName, setDraftDisplayName] = useState<string | null>(null);
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
+  const displayName = draftDisplayName ?? initialDisplayName ?? "";
 
   const mutation = useMutation({
     mutationFn: updateProfile,
     onSuccess: async () => {
+      setDraftDisplayName(null);
       setSavedMessage("Profile saved.");
       await queryClient.invalidateQueries({ queryKey: sessionQuery.queryKey });
     },
@@ -107,7 +109,7 @@ function ProfileSection({ initialDisplayName }: { initialDisplayName: string | n
           placeholder="Your name"
           value={displayName}
           onChange={(value) => {
-            setDisplayName(value);
+            setDraftDisplayName(value);
             setSavedMessage(null);
           }}
         />
