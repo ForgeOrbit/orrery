@@ -1813,6 +1813,25 @@
   font-size: 0.9em;
 }
 
+.issue-ref-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.05rem 0.35rem;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--orrery-accent) 12%, transparent);
+  color: var(--orrery-accent);
+  font-family: var(--orrery-mono);
+  font-size: 0.85em;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.issue-ref-link:hover {
+  background: color-mix(in srgb, var(--orrery-accent) 20%, transparent);
+  color: var(--orrery-accent-hover);
+  text-decoration: underline;
+}
+
 .markdown-body :where(del) {
   color: var(--orrery-muted);
 }
