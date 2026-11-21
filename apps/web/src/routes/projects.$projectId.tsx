@@ -131,15 +131,29 @@ function ProjectPage() {
         }
         actions={
           <>
-            <Link to="/board/$projectId" params={{ projectId: project.id }} data-board-link>
+            <Link
+              to="/board/$projectId"
+              params={{ projectId: project.id }}
+              color="inherit"
+              data-board-link
+            >
               Board
             </Link>
             {canManage && (
-              <Link to="/trash/$projectId" params={{ projectId: project.id }} data-trash-link>
+              <Link
+                to="/trash/$projectId"
+                params={{ projectId: project.id }}
+                color="inherit"
+                data-trash-link
+              >
                 Trash
               </Link>
             )}
-            <Link to="/history/project/$projectId" params={{ projectId: project.id }}>
+            <Link
+              to="/history/project/$projectId"
+              params={{ projectId: project.id }}
+              color="inherit"
+            >
               View history
             </Link>
             {canContribute && (

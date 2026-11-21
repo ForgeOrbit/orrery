@@ -245,8 +245,6 @@ function InstallationInvitations() {
           Installation administration
         </Heading>
         <Stack direction="horizontal" className="page-header-actions">
-          <Link to="/settings/smtp">Configure SMTP</Link>
-          <Link to="/history/installation">Installation history</Link>
           <Button
             type="button"
             label="Invite person"

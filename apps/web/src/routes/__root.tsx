@@ -12,6 +12,7 @@ import { useState } from "react";
 import mark from "../../../../assets/orrery-mark-dark.svg";
 import { defaultThemeSlug, themes } from "../astryx-themes.ts";
 import { sessionQuery } from "../features/accounts/index.ts";
+import { installationInvitationsQuery } from "../features/invitations/index.ts";
 import { workspacesQuery } from "../features/workspaces/index.ts";
 import { AppearancePicker } from "../lib/appearance.tsx";
 import { Link } from "../lib/Link.tsx";
@@ -196,8 +197,52 @@ function BrandHome() {
   );
 }
 
+function NavMailIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <rect
+        x="2"
+        y="3.2"
+        width="12"
+        height="9.6"
+        rx="1.4"
+        stroke="currentColor"
+        strokeWidth="1.35"
+      />
+      <path
+        d="m2.6 4.4 5.4 4.1 5.4-4.1"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function NavHistoryIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="8" cy="8" r="5.8" stroke="currentColor" strokeWidth="1.35" />
+      <path
+        d="M8 4.8V8l2.2 1.4"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function SidebarLinks({ onNavigate }: { onNavigate?: () => void }) {
+  const { data: session } = useQuery(sessionQuery);
   const { data: workspaces = [] } = useQuery(workspacesQuery);
+  const { data: adminInvitations } = useQuery({
+    ...installationInvitationsQuery,
+    enabled: session?.signedIn === true,
+  });
+  const isAdmin = adminInvitations !== undefined && adminInvitations !== null;
   const clickProp = onNavigate === undefined ? {} : { onClick: onNavigate };
 
   return (
@@ -243,6 +288,25 @@ function SidebarLinks({ onNavigate }: { onNavigate?: () => void }) {
               </span>
             </Link>
           ))}
+        </nav>
+      )}
+      {isAdmin && (
+        <nav className="app-nav workspace-nav" aria-label="Installation administration">
+          <Text as="p" display="block" type="inherit" color="inherit">
+            Admin
+          </Text>
+          <Link to="/settings/smtp" color="inherit" {...clickProp}>
+            <span className="nav-item-inner">
+              <NavMailIcon />
+              SMTP settings
+            </span>
+          </Link>
+          <Link to="/history/installation" color="inherit" {...clickProp}>
+            <span className="nav-item-inner">
+              <NavHistoryIcon />
+              Installation history
+            </span>
+          </Link>
         </nav>
       )}
     </>
