@@ -258,7 +258,9 @@ test("owner manages webhooks and inspects deliveries while non-owners do not see
     await expect(alertDialog).toBeVisible();
     await alertDialog.getByRole("button", { name: "Delete webhook" }).click();
     await expect(ownerPage.locator("[data-webhook-id]")).toHaveCount(0);
-    await expect(ownerPage.getByText("No outgoing webhooks yet")).toBeVisible();
+    await expect(
+      ownerPage.locator("#panel-webhooks").getByText("No outgoing webhooks yet"),
+    ).toBeVisible();
   } finally {
     for (const cookie of await ownerCtx.cookies()) await recordSecret(cookie.value);
     await ownerCtx.close();
