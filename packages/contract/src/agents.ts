@@ -55,6 +55,9 @@ export const AgentKey = z
     workspaceId: z.string(),
     createdByHumanId: z.string(),
     validity: AgentKeyValidity,
+    // Masked display hint (e.g. `orr_***********WAJo`) for identifying a key in lists;
+    // null only for legacy keys created before hints were recorded. Never a secret.
+    keyHint: z.string().nullable(),
     createdAt: Timestamp,
     expiresAt: Timestamp.nullable(),
     revokedAt: Timestamp.nullable(),

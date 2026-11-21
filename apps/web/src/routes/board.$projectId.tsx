@@ -86,6 +86,8 @@ function BoardPage() {
   const [createdIssue, setCreatedIssue] = useState<Issue>();
   const [moveError, setMoveError] = useState<string>();
   const [moving, setMoving] = useState(false);
+  const [draggingIssueId, setDraggingIssueId] = useState<string>();
+  const [dragOverStatus, setDragOverStatus] = useState<IssueStatus>();
   const [pendingClose, setPendingClose] = useState<{
     issue: Issue;
     status: IssueStatus;
@@ -362,12 +364,38 @@ function BoardPage() {
         >
           {BOARD_COLUMNS.map((status) => {
             const lane = columns[status] ?? [];
+            const isDropTarget = dragOverStatus === status;
             return (
               <section
                 key={status}
                 data-board-column={issueStatusLabels[status]}
                 data-board-status={status}
+                data-drag-over={isDropTarget ? "true" : undefined}
                 className="board-column"
+                onDragOver={(event) => {
+                  if (!canContribute || moving) return;
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                  if (dragOverStatus !== status) setDragOverStatus(status);
+                }}
+                onDragLeave={(event) => {
+                  if (
+                    event.relatedTarget instanceof Node &&
+                    event.currentTarget.contains(event.relatedTarget)
+                  ) {
+                    return;
+                  }
+                  if (dragOverStatus === status) setDragOverStatus(undefined);
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  setDragOverStatus(undefined);
+                  const droppedId = event.dataTransfer.getData("text/plain") || draggingIssueId;
+                  setDraggingIssueId(undefined);
+                  if (!canContribute || moving || !droppedId) return;
+                  const droppedIssue = issues.find((candidate) => candidate.id === droppedId);
+                  if (droppedIssue !== undefined) onMove(droppedIssue, status);
+                }}
               >
                 <Heading level={2} color="inherit">
                   {issueStatusLabels[status]} <Badge label={lane.length} />
@@ -384,6 +412,12 @@ function BoardPage() {
                         subtaskCount={subtasks.length}
                         completedSubtaskCount={completedSubtaskCount(subtasks)}
                         canMove={canContribute && !moving}
+                        dragging={draggingIssueId === issue.id}
+                        onDragStart={() => setDraggingIssueId(issue.id)}
+                        onDragEnd={() => {
+                          setDraggingIssueId(undefined);
+                          setDragOverStatus(undefined);
+                        }}
                         onMove={(next) => onMove(issue, next)}
                         onInspect={(sessionId) =>
                           showPanel({ kind: "session", issueId: issue.id, sessionId })
@@ -472,6 +506,9 @@ function BoardCard({
   subtaskCount,
   completedSubtaskCount: doneCount,
   canMove,
+  dragging,
+  onDragStart,
+  onDragEnd,
   onMove,
   onInspect,
 }: {
@@ -481,6 +518,9 @@ function BoardCard({
   subtaskCount: number;
   completedSubtaskCount: number;
   canMove: boolean;
+  dragging: boolean;
+  onDragStart: () => void;
+  onDragEnd: () => void;
   onMove: (status: IssueStatus) => void;
   onInspect: (sessionId: string) => void;
 }) {
@@ -502,10 +542,21 @@ function BoardCard({
       data-ready={String(ready)}
       data-assignee-type={assigneeType}
       data-priority={issue.priority}
+      draggable={canMove}
+      onDragStart={(event) => {
+        if (!canMove) return;
+        event.dataTransfer.setData("text/plain", issue.id);
+        event.dataTransfer.effectAllowed = "move";
+        onDragStart();
+      }}
+      onDragEnd={onDragEnd}
     >
       <Card
         className="board-card"
         data-needs-input={issue.needsInput ? "true" : "false"}
+        data-agent-working={state === "active" ? "true" : undefined}
+        data-draggable={canMove ? "true" : undefined}
+        data-dragging={dragging ? "true" : undefined}
         data-subtask-count={subtaskCount}
         data-completed-subtask-count={doneCount}
         padding={3}

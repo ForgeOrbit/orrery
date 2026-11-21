@@ -49,6 +49,7 @@ const VALIDITY_DAYS: Record<Exclude<AgentKeyValidity, "never">, number> = {
 // Keys are random bearer credentials with a recognizable prefix. Only their SHA-256 is
 // stored (platform/tokens.ts); the raw secret is returned once, when the key is issued.
 const newSecret = () => `orr_ak_${randomBytes(32).toString("base64url")}`;
+const keyHintFor = (secret: string) => `${secret.slice(0, 19)}...`;
 
 // Each key computes its own expiry when it is created, in database time. Rotation uses
 // the same helper as issuance, so a replacement's deadline is independent of the source
@@ -266,6 +267,7 @@ type KeyRow = {
   workspaceId: string;
   createdByHumanId: string;
   validity: AgentKeyValidity;
+  keyHint: string | null;
   createdAt: Date;
   expiresAt: Date | null;
   revokedAt: Date | null;
@@ -280,6 +282,7 @@ function keyRowColumns() {
     workspaceId: agentApiKeys.workspaceId,
     createdByHumanId: agentApiKeys.createdByHumanId,
     validity: agentApiKeys.validity,
+    keyHint: agentApiKeys.keyHint,
     createdAt: agentApiKeys.createdAt,
     expiresAt: agentApiKeys.expiresAt,
     revokedAt: agentApiKeys.revokedAt,
@@ -296,6 +299,7 @@ function toKey(row: KeyRow, grants: AgentKeyProject[]): AgentKey {
     workspaceId: row.workspaceId,
     createdByHumanId: row.createdByHumanId,
     validity: AgentKeyValidity.parse(row.validity),
+    keyHint: row.keyHint,
     createdAt: row.createdAt.toISOString(),
     expiresAt: row.expiresAt?.toISOString() ?? null,
     revokedAt: row.revokedAt?.toISOString() ?? null,
@@ -626,6 +630,7 @@ export function createAgentsService({
             createdByHumanId: actor.humanId,
             validity,
             tokenHash: tokenHash(secret),
+            keyHint: keyHintFor(secret),
             expiresAt: expiryFor(validity),
           })
           .returning(keyRowColumns());
@@ -753,6 +758,7 @@ export function createAgentsService({
             createdByHumanId: actor.humanId,
             validity,
             tokenHash: tokenHash(secret),
+            keyHint: keyHintFor(secret),
             expiresAt: expiryFor(validity),
             replacesKeyId: keyId,
           })

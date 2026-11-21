@@ -670,6 +670,7 @@ describe("workspace-scoped agent API keys", () => {
     expect(issued.key.validity).toBe("90");
     expect(issued.key.expiresAt).not.toBeNull();
     expect(issued.secret).toMatch(/^orr_ak_/);
+    expect(issued.key.keyHint).toBe(`${issued.secret.slice(0, 19)}...`);
 
     const me = await getJson(app, "/api/agents/me", undefined, issued.secret);
     expect(me.status).toBe(200);

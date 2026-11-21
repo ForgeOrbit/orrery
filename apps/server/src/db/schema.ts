@@ -687,6 +687,9 @@ export const agentApiKeys = pgTable(
       .references(() => humans.id),
     validity: text("validity").$type<AgentKeyValidity>().notNull(),
     tokenHash: text("token_hash").notNull().unique(),
+    // Non-secret display hint (e.g. `orr_***********WAJo`) so humans can identify which
+    // issued key matches a configured credential without ever storing or exposing the secret.
+    keyHint: text("key_hint"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
