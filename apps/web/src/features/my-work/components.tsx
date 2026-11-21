@@ -32,7 +32,7 @@ const currency = new Intl.NumberFormat(undefined, {
 
 export function MyWorkSections({ work }: { work: MyWorkResponse }) {
   return (
-    <Stack gap={4}>
+    <Stack className="section-stack">
       <MyWorkSection title="Assigned to me" section="assigned-issues">
         {work.assignedIssues.length === 0 ? (
           <EmptyState
@@ -97,7 +97,7 @@ function MyWorkSection({
   children: ReactNode;
 }) {
   return (
-    <Section data-my-work-section={section} padding={3}>
+    <Section className="page-section" data-my-work-section={section} padding={3}>
       <Heading level={2} color="inherit">
         {title}
       </Heading>

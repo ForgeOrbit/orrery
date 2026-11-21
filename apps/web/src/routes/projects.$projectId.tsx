@@ -11,7 +11,7 @@ import { Stack } from "@astryxdesign/core/Stack";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Text } from "@astryxdesign/core/Text";
 import { ProjectAccessLevel, type Project, type ProjectActivityType } from "@orrery/contract";
-import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import type { FormEvent } from "react";
 import { useState } from "react";
@@ -569,6 +569,7 @@ function CreateKnowledgeForm({
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { data: projectIssues = [] } = useQuery(issuesQuery(projectId));
 
   return (
     <TitleBodyForm
@@ -579,6 +580,7 @@ function CreateKnowledgeForm({
       submitLabel="Create knowledge"
       fallbackError="Could not create the entry."
       resetOnSuccess
+      mentionIssues={projectIssues}
       onSubmit={async ({ title, body }) => {
         const entry = await createKnowledgeEntry(projectId, { title, body });
         queryClient.setQueryData(knowledgeEntryQuery(entry.id).queryKey, entry);

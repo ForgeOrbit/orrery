@@ -1,9 +1,10 @@
-import { Text } from "@astryxdesign/core/Text";
-import { TextField } from "../../lib/fields.tsx";
-import { TextAreaField } from "../../lib/fields.tsx";
 import { Button } from "@astryxdesign/core/Button";
+import { Text } from "@astryxdesign/core/Text";
+import type { Issue } from "@orrery/contract";
 import type { FormEvent } from "react";
 import { useState } from "react";
+import { TextField } from "../../lib/fields.tsx";
+import { IssueMentionTextArea } from "./IssueMentionTextArea.tsx";
 
 export interface TitleBodyFormProps {
   idPrefix: string;
@@ -15,6 +16,7 @@ export interface TitleBodyFormProps {
   initialTitle?: string;
   initialBody?: string;
   resetOnSuccess?: boolean;
+  mentionIssues?: readonly Issue[];
   onSubmit: (values: { title: string; body: string }) => Promise<void>;
 }
 
@@ -31,6 +33,7 @@ export function TitleBodyForm({
   initialTitle = "",
   initialBody = "",
   resetOnSuccess = false,
+  mentionIssues,
   onSubmit,
 }: TitleBodyFormProps) {
   const [title, setTitle] = useState(initialTitle);
@@ -67,13 +70,14 @@ export function TitleBodyForm({
         maxLength={200}
       />
 
-      <TextAreaField
+      <IssueMentionTextArea
         label={bodyLabel}
         id={`${idPrefix}-body`}
         htmlName="body"
         value={body}
         onChange={setBody}
         rows={bodyRows}
+        {...(mentionIssues !== undefined ? { issues: mentionIssues } : {})}
       />
       {error !== undefined && (
         <Text as="p" display="block" type="inherit" color="inherit" role="alert">

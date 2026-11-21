@@ -1,6 +1,6 @@
 import { useToast } from "@astryxdesign/core/Toast";
 import type { Issue, IssueDetail } from "@orrery/contract";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { createIssue } from "./commands.ts";
 import { issueQuery, issuesQuery, projectActivityQuery, readyWorkQuery } from "./queries.ts";
@@ -16,6 +16,7 @@ export function CreateIssueForm({
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const toast = useToast();
+  const { data: projectIssues = [] } = useQuery(issuesQuery(projectId));
 
   return (
     <TitleBodyForm
@@ -26,6 +27,7 @@ export function CreateIssueForm({
       submitLabel="Create issue"
       fallbackError="Could not create the issue."
       resetOnSuccess
+      mentionIssues={projectIssues}
       onSubmit={async ({ title, body }) => {
         const issue = await createIssue(projectId, { title, body });
         // A new issue has no links yet; seed the detail cache the loader will read.

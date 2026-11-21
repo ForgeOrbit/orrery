@@ -3,7 +3,6 @@ import { Text } from "@astryxdesign/core/Text";
 import { useToast } from "@astryxdesign/core/Toast";
 import { Stack } from "@astryxdesign/core/Stack";
 import { Card } from "@astryxdesign/core/Card";
-import { TextAreaField } from "../lib/fields.tsx";
 import { Button } from "@astryxdesign/core/Button";
 import type { Question } from "@orrery/contract";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
@@ -19,7 +18,12 @@ import {
   issueQuestionsQuery,
   QuestionDetails,
 } from "../features/inbox/index.ts";
-import { issueQuery, projectQuery } from "../features/projects/index.ts";
+import {
+  IssueMentionTextArea,
+  issueQuery,
+  issuesQuery,
+  projectQuery,
+} from "../features/projects/index.ts";
 import { workspaceRunsQuery } from "../features/runs/index.ts";
 import { ApiProblemError } from "../lib/api.ts";
 
@@ -149,6 +153,7 @@ function QuestionCard({ question }: { question: Question }) {
 function AnswerForm({ question }: { question: Question }) {
   const queryClient = useQueryClient();
   const toast = useToast();
+  const { data: projectIssues = [] } = useQuery(issuesQuery(question.projectId));
   const [answer, setAnswer] = useState("");
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
@@ -186,13 +191,15 @@ function AnswerForm({ question }: { question: Question }) {
       onSubmit={(event) => void onSubmit(event)}
       aria-label={`Answer question ${question.id}`}
     >
-      <TextAreaField
+      <IssueMentionTextArea
         label="Answer"
         id={`answer-${question.id}`}
+        htmlName="answer"
         value={answer}
         onChange={setAnswer}
         rows={3}
         required
+        issues={projectIssues}
       />
       <Button type="submit" variant="primary" label="Answer question" isLoading={submitting} />
       {error !== undefined && (

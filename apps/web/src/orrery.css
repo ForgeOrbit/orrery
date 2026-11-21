@@ -402,6 +402,9 @@
 }
 
 .app-content > main {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
   inline-size: min(100%, 74rem);
   margin-inline: auto;
   padding: clamp(1.25rem, 3vw, 2rem) var(--gutter) 4rem;
@@ -411,7 +414,7 @@
   display: grid;
   gap: 0.5rem;
   padding-block-end: 1.15rem;
-  margin-block-end: 1.25rem;
+  margin-block-end: 0;
   border-block-end: 1px solid var(--orrery-border);
 }
 
@@ -541,8 +544,15 @@
   margin: 0;
 }
 
+.tab-panel,
+.section-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
 .tab-panel {
-  padding-block-start: 1.25rem;
+  padding-block-start: 1rem;
 }
 
 .entity-grid {
@@ -689,7 +699,7 @@
 
 .empty-panel {
   padding: 2rem 1.25rem;
-  border: 1px dashed var(--orrery-border);
+  border: 1px solid var(--orrery-border);
   border-radius: var(--orrery-panel-radius);
   background: color-mix(in srgb, var(--orrery-surface) 55%, transparent);
 }
@@ -705,16 +715,12 @@
 
 .app-content .page-section,
 .inbox-section {
-  margin-block: 0 1rem;
+  margin-block: 0;
   padding: clamp(1rem, 2vw, 1.25rem);
   border: 1px solid var(--orrery-border);
   border-radius: var(--orrery-panel-radius);
   background: var(--orrery-surface);
   min-inline-size: 0;
-}
-
-.tab-panel > .page-section:first-child {
-  margin-block-start: 0;
 }
 
 .app-content .page-section > :last-child,
@@ -1216,7 +1222,7 @@
   gap: 0.625rem;
   min-inline-size: 0;
   border: 1px solid var(--orrery-border);
-  border-radius: var(--orrery-radius);
+  border-radius: var(--orrery-panel-radius);
   background: var(--orrery-surface);
   transition:
     border-color 140ms ease,
@@ -1632,7 +1638,7 @@
 .comment-card {
   padding: 0.85rem 1rem;
   border: 1px solid var(--orrery-border);
-  border-radius: var(--orrery-radius);
+  border-radius: var(--orrery-panel-radius);
   background: color-mix(in srgb, var(--orrery-recessed) 45%, var(--orrery-surface));
 }
 
@@ -1655,6 +1661,51 @@
   margin-block-start: 1rem;
   padding-block-start: 1rem;
   border-block-start: 1px solid var(--orrery-border);
+}
+
+.mention-field-wrap {
+  position: relative;
+  inline-size: min(100%, 40rem);
+}
+
+.mention-popover {
+  position: absolute;
+  z-index: 30;
+  inset-inline: 0;
+  inset-block-start: calc(100% + 0.35rem);
+  margin: 0;
+  padding: 0.3rem;
+  list-style: none;
+  border: 1px solid var(--orrery-border);
+  border-radius: var(--orrery-panel-radius);
+  background: var(--orrery-surface);
+  box-shadow: 0 10px 28px -8px rgba(0, 0, 0, 0.32);
+  display: grid;
+  gap: 0.15rem;
+}
+
+.mention-option {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: var(--orrery-radius);
+  cursor: pointer;
+  font-size: 0.8125rem;
+}
+
+.mention-option-active {
+  background: color-mix(in srgb, var(--orrery-accent) 14%, var(--orrery-surface));
+}
+
+.mention-option-title {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--orrery-text);
+  font-weight: 500;
 }
 
 .issue-primary > .page-section,

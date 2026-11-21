@@ -26,6 +26,7 @@ import {
   issueBlockingQuery,
   issueCommentsQuery,
   IssueLabels,
+  IssueMentionTextArea,
   IssuePriorityControls,
   issueQuery,
   issuesQuery,
@@ -50,7 +51,7 @@ import {
   SessionStatus,
 } from "../features/work-sessions/index.ts";
 import { workspaceMembersQuery, workspaceQuery } from "../features/workspaces/index.ts";
-import { TextAreaField, TextField } from "../lib/fields.tsx";
+import { TextField } from "../lib/fields.tsx";
 import { Link } from "../lib/Link.tsx";
 import { Markdown } from "../lib/Markdown.tsx";
 import { PageHeader } from "../lib/PageHeader.tsx";
@@ -240,6 +241,16 @@ function IssuePage() {
     }
   }
 
+  async function onCopyLink() {
+    const url = `${window.location.origin}/issues/${issue.id}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      toast({ body: `Copied link to ${issue.identifier}.` });
+    } catch {
+      toast({ body: "Could not copy link to clipboard.", type: "error" });
+    }
+  }
+
   return (
     <main className="issue-page">
       <PageHeader
@@ -269,34 +280,43 @@ function IssuePage() {
           </>
         }
         actions={
-          canContribute ? (
-            <>
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                label="Edit"
-                onClick={() => setEditOpen(true)}
-              />
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                isDisabled={statusSubmitting}
-                label={toggleNextStatus === "done" ? "Close issue" : "Reopen issue"}
-                onClick={() => requestStatusChange(toggleNextStatus)}
-              />
-              <Button
-                type="button"
-                size="sm"
-                variant="destructive"
-                label="Move to Trash"
-                isDisabled={activeSession !== undefined || trashing}
-                data-trash-button
-                onClick={() => void onDelete()}
-              />
-            </>
-          ) : undefined
+          <>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              label="Copy link"
+              onClick={() => void onCopyLink()}
+            />
+            {canContribute && (
+              <>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  label="Edit"
+                  onClick={() => setEditOpen(true)}
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  isDisabled={statusSubmitting}
+                  label={toggleNextStatus === "done" ? "Close issue" : "Reopen issue"}
+                  onClick={() => requestStatusChange(toggleNextStatus)}
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="destructive"
+                  label="Move to Trash"
+                  isDisabled={activeSession !== undefined || trashing}
+                  data-trash-button
+                  onClick={() => void onDelete()}
+                />
+              </>
+            )}
+          </>
         }
       />
 
@@ -447,7 +467,9 @@ function IssuePage() {
                 ))}
               </ul>
             )}
-            {canContribute && <CommentForm issueId={issue.id} projectId={issue.projectId} />}
+            {canContribute && (
+              <CommentForm issueId={issue.id} projectId={issue.projectId} issues={projectIssues} />
+            )}
           </Section>
         </Stack>
 
@@ -538,6 +560,7 @@ function IssuePage() {
                 fallbackError="Could not save the issue."
                 initialTitle={issue.title}
                 initialBody={issue.body}
+                mentionIssues={projectIssues}
                 onSubmit={async ({ title, body }) => {
                   const updated = await updateIssue(issue.id, { title, body });
                   queryClient.setQueryData<IssueDetail>(issueQuery(issue.id).queryKey, (old) =>
@@ -745,7 +768,15 @@ function Blockers({
   );
 }
 
-function CommentForm({ issueId, projectId }: { issueId: string; projectId: string }) {
+function CommentForm({
+  issueId,
+  projectId,
+  issues,
+}: {
+  issueId: string;
+  projectId: string;
+  issues: Issue[];
+}) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const [body, setBody] = useState("");
@@ -773,14 +804,16 @@ function CommentForm({ issueId, projectId }: { issueId: string; projectId: strin
 
   return (
     <form className="comment-composer" onSubmit={(event) => void onSubmit(event)}>
-      <TextAreaField
+      <IssueMentionTextArea
         label="Comment"
         id="issue-comment"
         htmlName="body"
+        placeholder="Write a comment… Type # to reference an issue"
         value={body}
         onChange={setBody}
         rows={3}
         required
+        issues={issues}
       />
       {error !== undefined && (
         <Text as="p" display="block" type="inherit" color="inherit" role="alert">
