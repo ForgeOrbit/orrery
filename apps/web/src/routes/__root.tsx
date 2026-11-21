@@ -1,3 +1,4 @@
+import { Badge } from "@astryxdesign/core/Badge";
 import { Drawer, DrawerHeader } from "@astryxdesign/core/Drawer";
 import { Heading } from "@astryxdesign/core/Heading";
 import { IconButton } from "@astryxdesign/core/IconButton";
@@ -18,6 +19,7 @@ import markDark from "../../../../assets/orrery-mark-dark.svg";
 import markLight from "../../../../assets/orrery-mark.svg";
 import { sessionQuery, signOut } from "../features/accounts/index.ts";
 import { installationInvitationsQuery } from "../features/invitations/index.ts";
+import { notificationUnreadCountQuery } from "../features/notifications/index.ts";
 import { workspacesQuery } from "../features/workspaces/index.ts";
 import { AppearancePicker } from "../lib/appearance.tsx";
 import { Link } from "../lib/Link.tsx";
@@ -100,6 +102,25 @@ function NavInboxIcon() {
         stroke="currentColor"
         strokeWidth="1.35"
         strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function NavNotificationsIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M4 6.6a4 4 0 0 1 8 0c0 2.4.7 3.4 1.2 4H2.8C3.3 10 4 9 4 6.6Z"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M6.4 12.4a1.7 1.7 0 0 0 3.2 0"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
       />
     </svg>
   );
@@ -308,6 +329,10 @@ function SidebarLinks({ onNavigate }: { onNavigate?: () => void }) {
     ...installationInvitationsQuery,
     enabled: session?.signedIn === true,
   });
+  const { data: unreadNotifications } = useQuery({
+    ...notificationUnreadCountQuery,
+    enabled: session?.signedIn === true,
+  });
   const isAdmin = adminInvitations !== undefined && adminInvitations !== null;
   const clickProp = onNavigate === undefined ? {} : { onClick: onNavigate };
 
@@ -330,6 +355,30 @@ function SidebarLinks({ onNavigate }: { onNavigate?: () => void }) {
           <span className="nav-item-inner">
             <NavInboxIcon />
             Inbox
+          </span>
+        </Link>
+        <Link
+          to="/notifications"
+          search={{ unreadOnly: false }}
+          activeOptions={{ includeSearch: false }}
+          aria-label={
+            unreadNotifications !== undefined && unreadNotifications > 0
+              ? `Notifications, ${unreadNotifications} unread`
+              : "Notifications"
+          }
+          color="inherit"
+          data-notifications-link
+          {...clickProp}
+        >
+          <span className="nav-item-inner">
+            <NavNotificationsIcon />
+            Notifications
+            {unreadNotifications !== undefined && unreadNotifications > 0 && (
+              <Badge
+                label={unreadNotifications > 99 ? "99+" : unreadNotifications}
+                variant="orange"
+              />
+            )}
           </span>
         </Link>
       </nav>

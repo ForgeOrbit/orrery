@@ -9,7 +9,7 @@ Exhaustive finite-state model checking for Orrery's highest-stakes concurrency, 
 
 ## Sync Commit & Coverage Record
 
-- **Last verified commit:** `cba3e38` (all 35 models M1–M34 verified, adding #97 labels/subtasks, #98 Trash soft-delete/scrub, #99 My work, and #123 sweeper/notifications)
+- **Last verified commit:** `3c0a76c` (all 36 models M1–M35 verified, adding #124 outgoing webhooks outbox, transfer non-widening, SSRF DNS pinning & circuit breaker)
 - **Check whether a change touches verified code:**
   ```bash
   git diff --name-only cba3e38 -- \
@@ -81,10 +81,15 @@ Exhaustive finite-state model checking for Orrery's highest-stakes concurrency, 
     db/migrations/0038_subtask_and_label_invariants.sql \
     db/migrations/0039_cooing_alex_wilder.sql \
     db/migrations/0042_nosy_marauders.sql \
+    db/migrations/0043_round_demogoblin.sql \
     apps/server/src/features/my-work/service.ts \
     apps/server/src/features/my-work/rest.ts \
     apps/server/src/features/notifications/service.ts \
     apps/server/src/features/notifications/rest.ts \
+    apps/server/src/features/webhooks/service.ts \
+    apps/server/src/features/webhooks/rest.ts \
+    apps/server/src/features/webhooks/index.ts \
+    packages/contract/src/webhooks.ts \
     apps/server/src/features/deactivation/service.ts \
     apps/server/src/features/deactivation/rest.ts \
     apps/server/src/features/deactivation/index.ts \
@@ -160,6 +165,7 @@ We use a **zero-dependency Python 3 exhaustive BFS model checker** paired with s
 | **M32** | `projects/service.ts` (`deleteIssue`, `restoreIssue`, `listTrash`, `purgeExpiredTrash`), `work-sessions/service.ts` (`readyWork`), `db/schema.ts`, `0039` | Only humans may soft-delete unclaimed issues; soft-deleted issues leave ready work; Project managers restore only within 30 days in DB time; 30-day scrub clears content in place while retaining the tombstoned issue row. | Agents deleting/restoring issues, deleting active work sessions, trashed issues offered in ready work, restoring purged tombstones, or hard-deleting rows and breaking `project_activity` FKs. | Issue lifecycle (`live` → `trashed` → `purged`) × session × actor; all 5 `m32_*` guards proven sensitive by single-guard mutation. |
 | **M33** | `my-work/service.ts` (`get`), `my-work/rest.ts` | My work is human-session-only, refuses deactivated accounts, immediately excludes suspended memberships, revoked grants, terminal/trashed issues, and lapsed sessions, and restricts needs-input questions to Contribute/Manage projects. | Agent keys or deactivated accounts reading My work, revoked/suspended access leaking across workspaces, or Readers seeing actionable questions. | Caller/membership/grant/issue/session/question matrix; all 5 `m33_*` guards proven sensitive by single-guard mutation. |
 | **M34** | `notifications/service.ts`, `notifications/rest.ts`, `work-sessions/service.ts` (`sweep`), `work-sessions/index.ts`, `inbox/service.ts` (`findDueQuestionIssueIds`), `db/schema.ts`, `0042` | Notifications authenticate via `AgentAuthenticator` (`401` invalid/revoked, `403` valid agent), sweep per issue with deadline-before-lease ordering and overlap guard, enforce `UNIQUE(human_id, activity_id)` without denormalized `workspace_id`, live-filter access/transfers/Trash on all endpoints, preserve microsecond keyset cursors (`400 invalid_cursor`), and prune at 90/180 days. | Invalid bearer tokens returning `403`, single-tx sweeper AB-BA deadlocks or spurious `issue_session_expired` on `require_human` pauses, stale workspace refs after project transfer, sub-ms cursor skips, or unbounded retention. | Auth, sweep, access-change, Trash, cursor, and prune matrix; all 5 `m34_*` guards proven sensitive by single-guard mutation. |
+| **M35** | `webhooks/service.ts`, `webhooks/rest.ts`, `webhooks/index.ts`, `transfers/service.ts`, `work-sessions/service.ts`, `contract/webhooks.ts`, `db/schema.ts`, `0043` | Webhooks enforce owner-only RBAC and workspace-locked 20-cap, preserve explicit non-widening scope across project transfers (`webhook_projects` deleted without changing `all_projects`), encrypt `whsec_` secrets and sign metadata-only v1 payloads, enforce DNS-pinned SSRF protection (including dotted-quad IPv4-mapped IPv6 and Node 26 `options.all`) with bounded stream handling, enqueue once per activity in-tx with fresh status, and drain via `SKIP LOCKED` with disabled-hook cancellation, 10-failure auto-disable (excluding `webhook.test`), and 30-day pruning. | Non-owner/agent webhook access, transfer silently widening single-project webhooks, secret leakage, DNS rebinding or dotted-quad IPv6 SSRF bypass, truncated-response worker deadlock, duplicate `issue_review_handoff` deliveries, stale `issue_session_expired` status, or unbounded delivery tables. | RBAC, transfer, signing, SSRF, outbox, and circuit-breaker matrix; all 6 `m35_*` guards proven sensitive by single-guard mutation. |
 
 ## What Is Not Covered
 

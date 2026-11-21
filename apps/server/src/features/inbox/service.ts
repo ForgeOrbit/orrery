@@ -23,6 +23,7 @@ import {
 } from "../../db/schema.ts";
 import type { Logger } from "../../platform/log.ts";
 import type { NotifyActivity } from "../notifications/index.ts";
+import type { EnqueueWebhookActivity } from "../webhooks/index.ts";
 import type { OutgoingMail } from "../settings/index.ts";
 import type { WorkActor } from "../projects/index.ts";
 import { decideQuestionAnswer, questionMachine } from "./state-machine.ts";
@@ -81,9 +82,11 @@ export interface InboxDeps {
   deliver: (mail: OutgoingMail) => Promise<void>;
   log: Logger;
   notifyActivity?: NotifyActivity | undefined;
+  onActivity?: EnqueueWebhookActivity | undefined;
 }
 
 const noNotify: NotifyActivity = async () => {};
+const noEnqueue: EnqueueWebhookActivity = async () => {};
 
 export type AgentActor = { kind: "agent"; identity: AgentIdentity };
 
@@ -204,6 +207,7 @@ async function recordActivity(
     humanId?: string;
   },
   notify: NotifyActivity = noNotify,
+  onActivity: EnqueueWebhookActivity = noEnqueue,
 ) {
   const activityId = randomUUID();
   await tx.insert(projectActivity).values({
@@ -216,6 +220,7 @@ async function recordActivity(
     actorHumanId: input.humanId ?? null,
     createdAt: sql`statement_timestamp()`,
   });
+  await onActivity(tx, activityId);
   if (input.type === "issue_question_asked" || input.type === "issue_question_paused") {
     await notify(tx, {
       activityId,
@@ -238,6 +243,7 @@ async function storeFollowUp(
     answer: string;
     humanId: string;
   },
+  onActivity: EnqueueWebhookActivity = noEnqueue,
 ) {
   const [followed] = await tx
     .update(questions)
@@ -255,13 +261,18 @@ async function storeFollowUp(
     )
     .returning();
   if (followed === undefined) throw new InboxError("question_resolved");
-  await recordActivity(tx, {
-    projectId: input.projectId,
-    issueId: input.issueId,
-    type: "issue_question_follow_up",
-    summary: `Follow-up on an authorized fallback: ${input.answer}`,
-    humanId: input.humanId,
-  });
+  await recordActivity(
+    tx,
+    {
+      projectId: input.projectId,
+      issueId: input.issueId,
+      type: "issue_question_follow_up",
+      summary: `Follow-up on an authorized fallback: ${input.answer}`,
+      humanId: input.humanId,
+    },
+    noNotify,
+    onActivity,
+  );
   return followed;
 }
 
@@ -320,6 +331,7 @@ const evaluateDeadline = async (
   tx: DbTransaction,
   issueId: string,
   notify: NotifyActivity = noNotify,
+  onActivity: EnqueueWebhookActivity = noEnqueue,
 ): Promise<void> => {
   const [due] = await tx
     .select({ id: questions.id })
@@ -363,6 +375,7 @@ const evaluateDeadline = async (
         agentId: used.agentId,
       },
       notify,
+      onActivity,
     );
     return;
   }
@@ -422,6 +435,7 @@ const evaluateDeadline = async (
       agentId: paused.agentId,
     },
     notify,
+    onActivity,
   );
 };
 
@@ -448,7 +462,7 @@ export function createInboxService(deps: InboxDeps): InboxService {
 
       const outcome = await db.transaction(async (tx) => {
         const issue = await lockIssue(tx, input.issueId);
-        await evaluateDeadline(tx, issue.id, deps.notifyActivity);
+        await evaluateDeadline(tx, issue.id, deps.notifyActivity, deps.onActivity);
         await requireAccess(
           tx,
           actor,
@@ -526,6 +540,7 @@ export function createInboxService(deps: InboxDeps): InboxService {
             agentId: identity.agentId,
           },
           deps.notifyActivity,
+          deps.onActivity,
         );
         const [owner] = await tx
           .select({ email: humans.email, name: agents.name })
@@ -588,7 +603,7 @@ export function createInboxService(deps: InboxDeps): InboxService {
           "question_not_found",
         );
 
-        await evaluateDeadline(tx, issue.id, deps.notifyActivity);
+        await evaluateDeadline(tx, issue.id, deps.notifyActivity, deps.onActivity);
         const freshRow = async () => {
           const [fresh] = await tx
             .select()
@@ -600,13 +615,17 @@ export function createInboxService(deps: InboxDeps): InboxService {
           return fresh;
         };
         const followUp = () =>
-          storeFollowUp(tx, {
-            questionId,
-            projectId: issue.projectId,
-            issueId: issue.id,
-            answer,
-            humanId: actor.account.humanId,
-          });
+          storeFollowUp(
+            tx,
+            {
+              questionId,
+              projectId: issue.projectId,
+              issueId: issue.id,
+              answer,
+              humanId: actor.account.humanId,
+            },
+            deps.onActivity,
+          );
         const row = await freshRow();
         const answerAction = decideQuestionAnswer(row.status, row.followUp !== null);
         if (answerAction === "already_resolved") throw new InboxError("question_resolved");
@@ -638,7 +657,7 @@ export function createInboxService(deps: InboxDeps): InboxService {
         const [first] = await resolveAnswered();
         let answered = first;
         if (answered === undefined) {
-          await evaluateDeadline(tx, issue.id, deps.notifyActivity);
+          await evaluateDeadline(tx, issue.id, deps.notifyActivity, deps.onActivity);
           const retried = await freshRow();
           if (retried.status === "fallback_used") return toQuestion(await followUp());
           if (retried.status === "answered") throw new InboxError("question_resolved");
@@ -685,13 +704,18 @@ export function createInboxService(deps: InboxDeps): InboxService {
             .set({ status: "todo", updatedAt: sql`statement_timestamp()` })
             .where(and(eq(issues.id, issue.id), eq(issues.status, "in_progress")));
         }
-        await recordActivity(tx, {
-          projectId: issue.projectId,
-          issueId: issue.id,
-          type: "issue_question_answered",
-          summary: `Question answered: ${answer}`,
-          humanId: actor.account.humanId,
-        });
+        await recordActivity(
+          tx,
+          {
+            projectId: issue.projectId,
+            issueId: issue.id,
+            type: "issue_question_answered",
+            summary: `Question answered: ${answer}`,
+            humanId: actor.account.humanId,
+          },
+          noNotify,
+          deps.onActivity,
+        );
         return toQuestion(answered);
       });
     },
@@ -791,7 +815,8 @@ export function createInboxService(deps: InboxDeps): InboxService {
     },
 
     questionDeadline,
-    evaluateDeadline: (tx, issueId) => evaluateDeadline(tx, issueId, deps.notifyActivity),
+    evaluateDeadline: (tx, issueId) =>
+      evaluateDeadline(tx, issueId, deps.notifyActivity, deps.onActivity),
 
     async findDueQuestionIssueIds() {
       return db.transaction(

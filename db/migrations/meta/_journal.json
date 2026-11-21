@@ -302,6 +302,13 @@
       "when": 1795261149208,
       "tag": "0042_nosy_marauders",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1795266457982,
+      "tag": "0043_round_demogoblin",
+      "breakpoints": true
     }
   ]
 }

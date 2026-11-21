@@ -64,6 +64,7 @@ import {
   workspaces,
 } from "../../db/schema.ts";
 import type { SessionAccount } from "../accounts/index.ts";
+import type { EnqueueWebhookActivity } from "../webhooks/index.ts";
 
 export type ProjectsErrorKind =
   | "not_signed_in"
@@ -1304,9 +1305,14 @@ type RecordActivityInput =
       knowledgeEntryId: string;
     };
 
-async function recordActivity(tx: DbTransaction, input: RecordActivityInput) {
+async function insertActivityRow(
+  tx: DbTransaction,
+  input: RecordActivityInput,
+  onActivity: EnqueueWebhookActivity,
+) {
+  const activityId = randomUUID();
   await tx.insert(projectActivity).values({
-    id: randomUUID(),
+    id: activityId,
     projectId: input.projectId,
     type: input.type,
     actorHumanId: humanIdOf(input.actor),
@@ -1316,6 +1322,7 @@ async function recordActivity(tx: DbTransaction, input: RecordActivityInput) {
     ...("issueId" in input ? { issueId: input.issueId } : {}),
     ...("knowledgeEntryId" in input ? { knowledgeEntryId: input.knowledgeEntryId } : {}),
   });
+  await onActivity(tx, activityId);
 }
 
 async function recordAccessEvent(
@@ -1509,6 +1516,7 @@ export interface ProjectsDeps {
   issueSessionGate?: IssueSessionGate;
 
   evaluateQuestionDeadline?: ((tx: DbTransaction, issueId: string) => Promise<void>) | undefined;
+  onActivity?: EnqueueWebhookActivity | undefined;
 }
 
 async function freezeDueQuestions(
@@ -1660,7 +1668,11 @@ export function createProjectsService({
   sessionGate,
   issueSessionGate = async () => false,
   evaluateQuestionDeadline,
+  onActivity = async () => {},
 }: ProjectsDeps): ProjectsService {
+  const recordActivity = (tx: DbTransaction, input: RecordActivityInput) =>
+    insertActivityRow(tx, input, onActivity);
+
   async function readIssues(
     actor: WorkActor,
     projectId: string,

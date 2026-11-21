@@ -542,7 +542,7 @@ def extract_code_facts() -> dict[str, Any]:
             ]
         )
     )
-    record_activity_fn = slice_between(proj_src, "async function recordActivity(", "async function recordAccessEvent(")
+    record_activity_fn = slice_between(proj_src, "async function insertActivityRow(", "async function recordAccessEvent(")
     m12_agent_actor = (
         "actorHumanId: humanIdOf(input.actor)" in record_activity_fn
         and "actorAgentId: agentIdOf(input.actor)" in record_activity_fn
@@ -2367,7 +2367,11 @@ def extract_code_facts() -> dict[str, Any]:
     mig_0042 = read_text("db/migrations/0042_nosy_marauders.sql")
     notif_src = read_text("apps/server/src/features/notifications/service.ts")
     notif_rest = read_text("apps/server/src/features/notifications/rest.ts")
-    notif_table = slice_between(schema_src, "export const notifications = pgTable(", None)
+    notif_table = slice_between(
+        schema_src,
+        "export const notifications = pgTable(",
+        "export const webhooks = pgTable(",
+    )
     notif_readable_fn = slice_between(notif_src, "const readableAccess =", "export function createNotificationsService")
     notif_create_fn = slice_between(notif_src, "const createForActivity: NotifyActivity =", "const notificationColumns =")
     notif_list_fn = slice_between(notif_src, "async list(actor, input = {})", "async markRead(")
@@ -2420,6 +2424,102 @@ def extract_code_facts() -> dict[str, Any]:
         and 'throw new NotificationsError("invalid_cursor")' in notif_src
         and "interval '90 days'" in notif_prune_fn
         and "interval '180 days'" in notif_prune_fn
+    )
+
+    # M35 (#124): workspace-scoped outgoing webhooks, transactional outbox, SSRF DNS pinning & circuit breaker.
+    mig_0043 = read_text("db/migrations/0043_round_demogoblin.sql")
+    wh_src = read_text("apps/server/src/features/webhooks/service.ts")
+    wh_rest = read_text("apps/server/src/features/webhooks/rest.ts")
+    wh_index = read_text("apps/server/src/features/webhooks/index.ts")
+    wh_contract = read_text("packages/contract/src/webhooks.ts")
+    wh_tables = slice_between(schema_src, "export const webhooks = pgTable(", None)
+    wh_require_owner = slice_between(wh_src, "async function requireOwner(", "export function createWebhooksService(")
+    wh_enqueue = slice_between(wh_src, "const enqueueForActivity: EnqueueWebhookActivity =", "const attempt =")
+    wh_attempt = slice_between(wh_src, "const attempt =", "const finalize =")
+    wh_finalize = slice_between(wh_src, "const finalize =", "return {")
+    wh_create = slice_between(wh_src, "async create(actor, workspaceId, input)", "async update(")
+    wh_update = slice_between(wh_src, "async update(actor, workspaceId, webhookId, input)", "async rotateSecret(")
+    wh_rotate = slice_between(wh_src, "async rotateSecret(actor, workspaceId, webhookId)", "async remove(")
+    wh_drain = slice_between(wh_src, "async drain()", "async prune(")
+    wh_prune = slice_between(wh_src, "async prune()", "\n  };\n}")
+    wh_http = slice_between(wh_src, "async function performHttpDelivery(", "async function runWithConcurrency<T>(")
+    tr_accept = slice_between(tr_src, "async function acceptInTransaction(", "export function createTransfersService(")
+    ws_expire = slice_between(sess_src, "async function expireStale(", "const fiveMinutes =")
+    ws_create_svc = slice_between(sess_src, "export function createSessionsService(", "const expireCommitted =")
+    rotate_assert_at = wh_rotate.find("assertWebhookInWorkspace(tx, workspaceId, webhookId)")
+    rotate_key_at = wh_rotate.find("encryptionKey === undefined")
+    expire_revert_at = ws_expire.find("revertIssueToTodo(tx, issueId)")
+    expire_on_act_at = ws_expire.find("await onActivity(tx, activityId)")
+
+    m35_owner_rbac_and_cap = (
+        "await authenticate(c.req.raw)" in wh_rest
+        and "isAgentError(error)" in wh_rest
+        and 'throw new WebhooksError("agents_cannot_manage_webhooks")' in wh_require_owner
+        and 'throw new WebhooksError("not_workspace_member")' in wh_require_owner
+        and 'throw new WebhooksError("not_workspace_owner")' in wh_require_owner
+        and '.for("update")' in wh_require_owner
+        and "requireOwner(tx, actor, workspaceId, true)" in wh_create
+        and 'throw new WebhooksError("webhook_limit_reached")' in wh_create
+        and 'throw new WebhooksError("invalid_webhook_scope")' in wh_create
+    )
+    m35_explicit_scope_and_transfer_non_widening = (
+        "all_projects" in wh_tables
+        and "all_events" in wh_tables
+        and "all_projects" in mig_0043
+        and "webhook_projects" in mig_0043
+        and "eq(webhooks.allProjects, true)" in wh_enqueue
+        and "exists(" in wh_enqueue
+        and "eq(webhooks.allEvents, true)" in wh_enqueue
+        and ".delete(webhookProjects)" in tr_accept
+        and "allProjects" not in tr_accept
+    )
+    m35_secret_encryption_and_signing = (
+        "whsec_" in wh_create
+        and "encryptSecret(encryptionKey, signingSecret)" in wh_create
+        and "encryptSecret(encryptionKey, signingSecret)" in wh_rotate
+        and rotate_assert_at >= 0
+        and rotate_key_at > rotate_assert_at
+        and "decryptSecret(encryptionKey, hook.secretEncrypted)" in wh_attempt
+        and '"webhook_secret_unreadable"' in wh_attempt
+        and 'createHmac("sha256", secret)' in wh_http
+        and '"x-orrery-signature-256"' in wh_http
+        and 'parsed.username === ""' in wh_contract
+        and 'parsed.password === ""' in wh_contract
+    )
+    m35_ssrf_dns_pinned = (
+        'url.protocol !== "https:"' in wh_attempt
+        and "isBlockedAddress(" in wh_src
+        and "parseIpv6SegmentList(" in wh_src
+        and "embeddedIpv4Blocked(" in wh_src
+        and "if (options.all)" in wh_http
+        and "agent: false" in wh_http
+        and 'response.on("close"' in wh_http
+        and 'response.on("error"' in wh_http
+        and "MAX_RESPONSE_BYTES" in wh_http
+    )
+    m35_atomic_outbox_and_single_enqueue = (
+        "webhook_deliveries_webhook_activity" in wh_tables
+        and "webhook_deliveries_webhook_activity" in mig_0043
+        and "webhook_deliveries_test_activity" in mig_0043
+        and "webhook_deliveries_delivering_lock" in mig_0043
+        and ".onConflictDoNothing()" in wh_enqueue
+        and expire_revert_at >= 0
+        and expire_on_act_at > expire_revert_at
+        and "onActivity(tx, input.activityId)" not in ws_create_svc
+    )
+    m35_worker_skip_locked_and_circuit_breaker = (
+        '.for("update", { skipLocked: true })' in wh_drain
+        and "lte(webhookDeliveries.lockedUntil" in wh_drain
+        and '"webhook_disabled"' in wh_attempt
+        and "skipCircuitBreaker: true" in wh_attempt
+        and "consecutiveFailures: 0" in wh_finalize
+        and 'delivery.event === "webhook.test"' in wh_finalize
+        and "AUTO_DISABLE_AFTER_FAILURES" in wh_finalize
+        and '"consecutive_failures"' in wh_finalize
+        and "else if (existing.enabled)" in wh_update
+        and "interval '30 days'" in wh_prune
+        and "rerun = true" in wh_index
+        and "if (pruning) return;" in wh_index
     )
 
     return {
@@ -2803,6 +2903,12 @@ def extract_code_facts() -> dict[str, Any]:
         "m34_atomic_idempotent_schema": m34_atomic_idempotent_schema,
         "m34_live_access_non_enum": m34_live_access_non_enum,
         "m34_lossless_cursor_and_prune": m34_lossless_cursor_and_prune,
+        "m35_owner_rbac_and_cap": m35_owner_rbac_and_cap,
+        "m35_explicit_scope_and_transfer_non_widening": m35_explicit_scope_and_transfer_non_widening,
+        "m35_secret_encryption_and_signing": m35_secret_encryption_and_signing,
+        "m35_ssrf_dns_pinned": m35_ssrf_dns_pinned,
+        "m35_atomic_outbox_and_single_enqueue": m35_atomic_outbox_and_single_enqueue,
+        "m35_worker_skip_locked_and_circuit_breaker": m35_worker_skip_locked_and_circuit_breaker,
     }
 
 
@@ -7332,6 +7438,91 @@ def check_m34(facts: dict[str, bool]) -> CheckResult:
     )
 
 
+def check_m35(facts: dict[str, bool]) -> CheckResult:
+    g = {
+        "m35_owner_rbac_and_cap": facts["m35_owner_rbac_and_cap"],
+        "m35_explicit_scope_and_transfer_non_widening": facts["m35_explicit_scope_and_transfer_non_widening"],
+        "m35_secret_encryption_and_signing": facts["m35_secret_encryption_and_signing"],
+        "m35_ssrf_dns_pinned": facts["m35_ssrf_dns_pinned"],
+        "m35_atomic_outbox_and_single_enqueue": facts["m35_atomic_outbox_and_single_enqueue"],
+        "m35_worker_skip_locked_and_circuit_breaker": facts["m35_worker_skip_locked_and_circuit_breaker"],
+    }
+
+    # State: (transferred, disabled, delivered_once, violations)
+    init = (False, False, False, frozenset())
+
+    def probe_rbac_and_cap(state):
+        tr, dis, dlv, v = state
+        if not g["m35_owner_rbac_and_cap"]:
+            return (tr, dis, dlv, v | {"non_owner_or_cap_bypass"})
+        return state
+
+    def transfer_project(state):
+        tr, dis, dlv, v = state
+        if not g["m35_explicit_scope_and_transfer_non_widening"]:
+            return (True, dis, dlv, v | {"transfer_widened_webhook_scope"})
+        return (True, dis, dlv, v)
+
+    def create_rotate_and_sign(state):
+        tr, dis, dlv, v = state
+        if not g["m35_secret_encryption_and_signing"]:
+            return (tr, dis, dlv, v | {"secret_encryption_or_signing_broken"})
+        return state
+
+    def ssrf_and_pinned_connect(state):
+        tr, dis, dlv, v = state
+        if not g["m35_ssrf_dns_pinned"]:
+            return (tr, dis, dlv, v | {"ssrf_or_dns_pinning_broken"})
+        return state
+
+    def enqueue_activity(state):
+        tr, dis, dlv, v = state
+        if not g["m35_atomic_outbox_and_single_enqueue"]:
+            return (tr, dis, True, v | {"duplicate_enqueue_or_stale_status"})
+        return (tr, dis, True, v)
+
+    def drain_and_circuit_breaker(state):
+        tr, dis, dlv, v = state
+        if not g["m35_worker_skip_locked_and_circuit_breaker"]:
+            return (tr, True, dlv, v | {"worker_lock_or_circuit_breaker_broken"})
+        return (tr, True, dlv, v)
+
+    actions = [
+        ("non-owner / agent / concurrent cap probe", probe_rbac_and_cap),
+        ("single-project webhook transferred out of workspace", transfer_project),
+        ("create, rotate secret, and sign metadata-only envelope", create_rotate_and_sign),
+        ("deliver with DNS-pinned SSRF guard and bounded stream handling", ssrf_and_pinned_connect),
+        ("review handoff and session expiry enqueue in activity tx", enqueue_activity),
+        ("SKIP LOCKED outbox drain, disable guard, circuit breaker, and 30d prune", drain_and_circuit_breaker),
+    ]
+
+    def inv(state):
+        v = state[-1]
+        if v:
+            return False, f"webhooks invariant broken: {sorted(v)[0]}"
+        return True, ""
+
+    return bfs_check(
+        "M35",
+        "Outgoing Webhooks Outbox, Transfer Scope, SSRF DNS Pinning & Circuit Breaker (#124)",
+        "Webhooks enforce owner-only RBAC and workspace-locked 20-cap, preserve explicit non-widening scope across project transfers, encrypt whsec_ secrets and sign metadata-only v1 payloads, enforce DNS-pinned SSRF protection with bounded stream handling, enqueue once per activity in-tx with fresh status, and drain via SKIP LOCKED with disabled-hook cancellation, 10-failure auto-disable (excluding webhook.test), and 30-day pruning",
+        "safety",
+        init,
+        lambda s: [(lbl, fn(s)) for lbl, fn in actions],
+        inv,
+        [
+            "apps/server/src/features/webhooks/service.ts",
+            "apps/server/src/features/webhooks/rest.ts",
+            "apps/server/src/features/webhooks/index.ts",
+            "apps/server/src/features/transfers/service.ts",
+            "apps/server/src/features/work-sessions/service.ts",
+            "packages/contract/src/webhooks.ts",
+            "apps/server/src/db/schema.ts",
+            "db/migrations/0043_round_demogoblin.sql",
+        ],
+    )
+
+
 def main() -> None:
     facts = extract_code_facts()
     results = [
@@ -7370,6 +7561,7 @@ def main() -> None:
         check_m32(facts),
         check_m33(facts),
         check_m34(facts),
+        check_m35(facts),
     ]
 
     if "--json" in sys.argv:

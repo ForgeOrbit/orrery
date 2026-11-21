@@ -91,13 +91,17 @@ proxies to `orrery:8080`, and stores certificate state in the `caddy-data` and `
 volumes. Plain `docker compose up -d` does not start Caddy. If you already run a reverse proxy, skip
 this profile and point it at port 8080 instead.
 
-## Planned: `ORRERY_WEBHOOK_ALLOW_PRIVATE_URLS`
+## `ORRERY_WEBHOOK_ALLOW_PRIVATE_URLS`
 
-> **Planned — not available yet.** Outgoing webhooks are designed in
-> [ADR-0007](../adr/0007-outgoing-webhooks-outbox-and-security.md) and
-> [Release polish](../design/release-polish.md), but are not built or mounted in the current image.
-> Do not set this variable expecting any effect today. When webhooks ship, it will be an explicit
-> opt-in that permits private/LAN receiver URLs and `http://`, bypassing the default-deny SSRF guard.
+Outgoing webhooks (see [ADR-0007](../adr/0007-outgoing-webhooks-outbox-and-security.md)) are
+delivered only to public `https://` addresses by default. The delivery worker resolves DNS and
+rejects loopback, private, link-local, cloud-metadata and IPv6 local addresses, and it pins the
+validated IP at connect time so a DNS rebind cannot redirect a delivery.
+
+Set `ORRERY_WEBHOOK_ALLOW_PRIVATE_URLS=true` in `.env` only when the receiver is an internal LAN
+service. This is an explicit, installation-wide opt-in: it permits private IPs and also allows
+`http://` URLs. Restart Orrery after changing it. Webhook management itself is limited to
+workspace owners and needs `ORRERY_ENCRYPTION_KEY` to generate signing secrets.
 
 ## Upgrading
 

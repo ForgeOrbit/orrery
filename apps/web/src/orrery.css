@@ -765,6 +765,33 @@
   background: color-mix(in srgb, var(--orrery-surface) 55%, transparent);
 }
 
+.notification-filters a {
+  padding: 0.3rem 0.6rem;
+  border: 1px solid transparent;
+  border-radius: var(--orrery-radius);
+  background: transparent;
+  color: var(--orrery-muted);
+  font-weight: 560;
+  text-decoration: none;
+}
+
+.notification-filters a:hover {
+  background: var(--orrery-surface);
+  border-color: var(--orrery-border);
+  color: var(--orrery-text);
+}
+
+.notification-filters a[aria-current="page"] {
+  background: color-mix(in srgb, var(--orrery-accent) 12%, var(--orrery-surface));
+  border-color: color-mix(in srgb, var(--orrery-accent) 28%, transparent);
+  color: var(--orrery-accent);
+}
+
+.notification-row[data-unread="true"] {
+  background: color-mix(in srgb, var(--orrery-accent) 7%, transparent);
+  border-inline-start: 0.2rem solid var(--orrery-accent);
+}
+
 .app-content > :not(main) {
   margin: var(--gutter);
 }

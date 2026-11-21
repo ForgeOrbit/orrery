@@ -19,6 +19,7 @@ import { createRunsFeature, runsRoutes } from "./runs/index.ts";
 import { createSettingsFeature, settingsRoutes } from "./settings/index.ts";
 import { createSystemFeature, systemRoutes } from "./system/index.ts";
 import { createTransfersFeature, transfersRoutes } from "./transfers/index.ts";
+import { createWebhooksFeature, webhooksRoutes } from "./webhooks/index.ts";
 import { createSessionsFeature, sessionsRoutes } from "./work-sessions/index.ts";
 import { createWorkspacesFeature, workspacesRoutes } from "./workspaces/index.ts";
 
@@ -43,6 +44,15 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     if (authenticateAgent === undefined) throw new Error("agent authenticator is not wired");
     return authenticateAgent(request);
   };
+
+  const webhooks = createWebhooksFeature({
+    db: database.db,
+    sessionReader: accounts.sessionReader,
+    authenticate: agentAuthenticator,
+    encryptionKey: config.ORRERY_ENCRYPTION_KEY,
+    allowPrivateUrls: config.ORRERY_WEBHOOK_ALLOW_PRIVATE_URLS,
+    log,
+  });
 
   let sessionGate: WorkSessionGate | undefined;
   const workSessionGate: WorkSessionGate = (tx, agentId, workspaceId, issueId) => {
@@ -80,6 +90,7 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     issueSessionGate,
 
     evaluateQuestionDeadline: evaluateDeadline,
+    onActivity: webhooks.enqueueForActivity,
     log,
   });
   const agents = createAgentsFeature({
@@ -113,6 +124,7 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     evaluateQuestionDeadline: evaluateDeadline,
     dueQuestionIssueIds: sweepDueQuestions,
     notifyActivity: notifications.notifyActivity,
+    onActivity: webhooks.enqueueForActivity,
     log,
   });
   sessionGate = (tx, agentId, workspaceId, issueId) =>
@@ -130,6 +142,7 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     deliver: settings.deliver,
     log,
     notifyActivity: notifications.notifyActivity,
+    onActivity: webhooks.enqueueForActivity,
   });
   questionLeaseDeadline = (tx, issueId) => inbox.questionDeadline(tx, issueId);
   questionEvaluateDeadline = (tx, issueId) => inbox.evaluateDeadline(tx, issueId);
@@ -189,6 +202,7 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     }),
     projects,
     agents,
+    webhooks,
 
     createHistoryFeature({
       db: database.db,
@@ -239,4 +253,5 @@ export const routes = [
   ...notificationsRoutes,
   ...myWorkRoutes,
   ...transfersRoutes,
+  ...webhooksRoutes,
 ];

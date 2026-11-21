@@ -18,6 +18,8 @@ import {
   projectTransferAuthorizations,
   projects,
   questions,
+  webhookProjects,
+  webhooks,
   workSessions,
   workspaceEvents,
   workspaceInvitationGrants,
@@ -638,6 +640,19 @@ async function acceptInTransaction(
 
   await tx.delete(projectAccessGrants).where(eq(projectAccessGrants.projectId, auth.projectId));
   await tx.delete(agentApiKeyProjects).where(eq(agentApiKeyProjects.projectId, auth.projectId));
+  // Keep the source workspace's webhook scopes from widening: remove the transferred
+  // project from their explicit project lists but leave all_projects untouched.
+  await tx
+    .delete(webhookProjects)
+    .where(
+      and(
+        eq(webhookProjects.projectId, auth.projectId),
+        inArray(
+          webhookProjects.webhookId,
+          tx.select({ id: webhooks.id }).from(webhooks).where(eq(webhooks.workspaceId, source.id)),
+        ),
+      ),
+    );
   const pendingOffers = await tx
     .select({ id: workspaceInvitations.id })
     .from(workspaceInvitationGrants)

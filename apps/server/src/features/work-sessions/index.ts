@@ -47,6 +47,7 @@ export function createSessionsFeature(deps: SessionsFeatureDeps): SessionsFeatur
     evaluateQuestionDeadline: deps.evaluateQuestionDeadline,
     dueQuestionIssueIds: deps.dueQuestionIssueIds,
     notifyActivity: deps.notifyActivity,
+    onActivity: deps.onActivity,
     log: deps.log,
   });
   return {
