@@ -206,6 +206,9 @@ export interface SessionsService {
     workspaceId: string,
     issueId: string,
   ): Promise<boolean>;
+  // #98: the trash seam. Materialize any lapsed lease inside the caller's already
+  // issue-locked transaction, then answer whether any live session holds the issue.
+  issueHasLiveSession(tx: DbTransaction, issueId: string): Promise<boolean>;
 }
 
 type SessionRow = typeof workSessions.$inferSelect;
@@ -499,7 +502,10 @@ async function lockIssue(tx: DbTransaction, issueId: string) {
       assigneeId: issues.assigneeId,
     })
     .from(issues)
-    .where(eq(issues.id, issueId))
+    // #98: a trashed issue is not claimable or writable through any session path. It is
+    // already gone from the board, so lockIssue is the single gate for claim, reacquire,
+    // renewal, progress, completion and stop.
+    .where(and(eq(issues.id, issueId), isNull(issues.deletedAt)))
     .limit(1)
     .for("update");
   if (row === undefined) throw new SessionsError("issue_not_found");
@@ -1586,6 +1592,7 @@ export function createSessionsService({
               .where(
                 and(
                   eq(issueDependencies.issueId, issues.id),
+                  isNull(blockerIssue.deletedAt),
                   notInArray(blockerIssue.status, ["done", "cancelled"]),
                 ),
               ),
@@ -1596,6 +1603,7 @@ export function createSessionsService({
           // that list, so REST and MCP ready work share one deterministic order (#84).
           const conditions = [
             eq(issues.projectId, projectId),
+            isNull(issues.deletedAt),
             eq(issues.status, "todo"),
             eq(issues.needsInput, false),
             isNull(workSessions.id),
@@ -1640,6 +1648,14 @@ export function createSessionsService({
         )
         .limit(1);
       return row !== undefined;
+    },
+
+    async issueHasLiveSession(tx, issueId) {
+      // Called under the caller's issue row lock: first materialize a lease that has
+      // lapsed in database time (returning the issue to todo through the same transition
+      // every other session ending uses), then decide whether a *live* claim remains.
+      await expireStale(tx, issueId);
+      return (await findActive(tx, issueId)) !== undefined;
     },
   };
 }

@@ -3973,6 +3973,8 @@
             "issue_label_added",
             "issue_label_removed",
             "issue_parent_changed",
+            "issue_deleted",
+            "issue_restored",
             "knowledge_created",
             "knowledge_edited"
           ]

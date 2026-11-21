@@ -75,6 +75,8 @@ const activityLabels: Record<ProjectActivityType, string> = {
   issue_label_added: "labelled issue",
   issue_label_removed: "unlabelled issue",
   issue_parent_changed: "changed the parent of issue",
+  issue_deleted: "moved issue to trash",
+  issue_restored: "restored issue from trash",
   knowledge_created: "created knowledge",
   knowledge_edited: "edited knowledge",
 };

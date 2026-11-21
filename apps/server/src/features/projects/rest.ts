@@ -293,6 +293,65 @@ const getIssue = createRoute({
   },
 });
 
+// #98: trash routes. There is deliberately no MCP counterpart — agents cannot delete or
+// restore issues, and every project-work REST route below still authenticates a bearer key
+// only so the service can refuse it with the same 403 a human gate would produce.
+const deleteIssue = createRoute({
+  method: "delete",
+  path: "/api/issues/{issueId}",
+  summary: "Move an issue to the project's trash",
+  description:
+    "Human Contribute or Manage only. Agents cannot delete issues. A soft-deleted issue leaves the board, ready work and blocker checks immediately and can be restored by a Project manager within 30 days. An issue with a live work session cannot be trashed; a lapsed lease is expired first. Trashing records issue_deleted in the project activity in the same transaction.",
+  request: { params: issueParams },
+  responses: {
+    204: { description: "The issue was moved to trash" },
+    400: problem("The issue id is invalid"),
+    401: problem("Not signed in as a human"),
+    403: problem("Read access cannot delete issues, and agents cannot delete issues"),
+    404: problem("No active issue with this id is accessible to the caller"),
+    409: problem("The issue has an active work session"),
+  },
+});
+
+const restoreIssue = createRoute({
+  method: "post",
+  path: "/api/issues/{issueId}/restore",
+  summary: "Restore a trashed issue",
+  description:
+    "Human Manage (Project manager) only. Restores an issue from trash within 30 days, clearing its deletion metadata and recording issue_restored in the project activity in the same transaction. An already purged tombstone, or one past the 30-day boundary in database time, answers 409. Agents and members below Manage answer 403; non-members answer 404.",
+  request: { params: issueParams },
+  responses: {
+    200: {
+      description: "The restored issue",
+      content: { "application/json": { schema: Issue } },
+    },
+    400: problem("The issue id is invalid"),
+    401: problem("Not signed in as a human"),
+    403: problem("Only a Project manager can restore a trashed issue"),
+    404: problem("No issue with this id is accessible to the caller"),
+    409: problem("The issue has already been purged"),
+  },
+});
+
+const listTrash = createRoute({
+  method: "get",
+  path: "/api/projects/{projectId}/trash",
+  summary: "The project's recoverable trashed issues",
+  description:
+    "Manage only. Lists soft-deleted issues that have not been purged, so a Project manager can decide what to restore. Purged tombstones never appear here. An agent key is rejected exactly like a human without Manage.",
+  request: { params: projectParams },
+  responses: {
+    200: {
+      description: "The recoverable trashed issues",
+      content: { "application/json": { schema: IssuesResponse } },
+    },
+    400: problem("The project id is invalid"),
+    401: problem("Not signed in"),
+    403: problem("Only a Project manager can read the trash"),
+    404: problem("No project with this id is accessible to the caller"),
+  },
+});
+
 const updateIssue = createRoute({
   method: "patch",
   path: "/api/issues/{issueId}",
@@ -788,6 +847,9 @@ export const routes = [
   listIssues,
   createIssue,
   getIssue,
+  deleteIssue,
+  restoreIssue,
+  listTrash,
   updateIssue,
   listLabels,
   createLabel,
@@ -837,6 +899,9 @@ const statusFor = {
   self_parent: 400,
   cross_project_parent: 400,
   subtask_depth_exceeded: 409,
+  agents_cannot_delete_issues: 403,
+  issue_active_session_exists: 409,
+  issue_purged: 409,
 } as const satisfies Record<ProjectsErrorKind, number>;
 
 function isKind<K extends readonly ProjectsErrorKind[]>(
@@ -872,6 +937,24 @@ const issueWriteKinds = [
   "self_parent",
   "cross_project_parent",
   "subtask_depth_exceeded",
+] as const;
+// #98: delete is the only human-write route where an agent must get a precise 403; every
+// other fenced failure is a conflict with a live session.
+const issueDeleteKinds = [
+  ...issueReadKinds,
+  "insufficient_project_access",
+  "agents_cannot_delete_issues",
+  "issue_active_session_exists",
+] as const;
+const issueRestoreKinds = [
+  ...issueReadKinds,
+  "insufficient_project_access",
+  "issue_purged",
+] as const;
+const trashListKinds = [
+  "not_signed_in",
+  "project_not_found",
+  "insufficient_project_access",
 ] as const;
 // Creating an issue can name a parent, so it can answer with a missing or invalid parent.
 const issueCreateKinds = [
@@ -1073,6 +1156,34 @@ export function createProjectsRest(
       return c.json(await service.getIssue(await workActor(c), issueId), 200);
     } catch (error) {
       return failure(c, error, issueReadKinds);
+    }
+  });
+
+  app.openapi(deleteIssue, async (c) => {
+    try {
+      const { issueId } = c.req.valid("param");
+      await service.deleteIssue(await workActor(c), issueId);
+      return c.body(null, 204);
+    } catch (error) {
+      return failure(c, error, issueDeleteKinds);
+    }
+  });
+
+  app.openapi(restoreIssue, async (c) => {
+    try {
+      const { issueId } = c.req.valid("param");
+      return c.json(await service.restoreIssue(await workActor(c), issueId), 200);
+    } catch (error) {
+      return failure(c, error, issueRestoreKinds);
+    }
+  });
+
+  app.openapi(listTrash, async (c) => {
+    try {
+      const { projectId } = c.req.valid("param");
+      return c.json(await service.listTrash(await workActor(c), projectId), 200);
+    } catch (error) {
+      return failure(c, error, trashListKinds);
     }
   });
 

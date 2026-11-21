@@ -111,6 +111,10 @@ export const ProjectActivityType = z
     "issue_label_added",
     "issue_label_removed",
     "issue_parent_changed",
+    // #98: trash lifecycle events. Both carry the issue as their target, so the prefix
+    // keeps project_activity_target_matches_type consistent with every other issue event.
+    "issue_deleted",
+    "issue_restored",
     "knowledge_created",
     "knowledge_edited",
   ])

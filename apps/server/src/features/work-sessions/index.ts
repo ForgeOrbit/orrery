@@ -30,6 +30,8 @@ export interface SessionsFeature extends Feature {
     workspaceId: string,
     issueId: string,
   ): Promise<boolean>;
+  // #98: the trash gate projects borrows to refuse a delete of a claimed issue.
+  issueHasLiveSession(tx: DbTransaction, issueId: string): Promise<boolean>;
   // Workspaces borrows this to end a departing member's agents' claims inside the same
   // removal transaction, under the same issue locks renewals use.
   releaseMemberWorkSessions(tx: DbTransaction, workspaceId: string, humanId: string): Promise<void>;
@@ -51,6 +53,7 @@ export function createSessionsFeature(deps: SessionsFeatureDeps): SessionsFeatur
     service,
     agentHoldsSession: (tx, agentId, workspaceId, issueId) =>
       service.agentHoldsSession(tx, agentId, workspaceId, issueId),
+    issueHasLiveSession: (tx, issueId) => service.issueHasLiveSession(tx, issueId),
     releaseMemberWorkSessions,
   };
 }

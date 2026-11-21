@@ -96,7 +96,12 @@ export type ProjectsErrorKind =
   | "label_exists"
   | "self_parent"
   | "cross_project_parent"
-  | "subtask_depth_exceeded";
+  | "subtask_depth_exceeded"
+  // #98: trash lifecycle. Only humans may delete issues, an issue with a live claim
+  // cannot be trashed, and a scrubbed tombstone can never be restored.
+  | "agents_cannot_delete_issues"
+  | "issue_active_session_exists"
+  | "issue_purged";
 
 const messages = {
   not_signed_in: "Not signed in.",
@@ -124,6 +129,10 @@ const messages = {
   cross_project_parent: "A subtask and its parent must belong to the same project.",
   subtask_depth_exceeded:
     "Maximum subtask depth is one: a subtask cannot have children, and an issue with subtasks cannot become a subtask.",
+  agents_cannot_delete_issues: "Agents cannot delete issues; only a human can.",
+  issue_active_session_exists:
+    "This issue has an active work session; stop or release it before deleting the issue.",
+  issue_purged: "This issue's trash window has ended and it can no longer be restored.",
 } as const satisfies Record<ProjectsErrorKind, string>;
 
 const ACCESS_RANK: Record<ProjectAccessLevel, number> = {
@@ -475,6 +484,10 @@ const issueColumns = {
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
   closedAt: issues.closedAt,
+  // #98: carried by every issue read so restore can apply the 30-day boundary without a
+  // second lookup; the DTO itself deliberately does not expose trash state.
+  deletedAt: issues.deletedAt,
+  purgedAt: issues.purgedAt,
   createdByHumanId: issues.createdByHumanId,
   createdByEmail: issueCreator.email,
   createdByDeactivatedAt: issueCreator.deactivatedAt,
@@ -606,6 +619,8 @@ type IssueRow = {
   createdAt: Date;
   updatedAt: Date;
   closedAt: Date | null;
+  deletedAt: Date | null;
+  purgedAt: Date | null;
   createdByHumanId: string | null;
   createdByEmail: string | null;
   createdByDeactivatedAt: Date | null;
@@ -1019,11 +1034,15 @@ async function requireProject(
   };
 }
 
+// #98: every ordinary read excludes trashed issues. Only the trash reader and the restore
+// writer opt in with includeDeleted; a caller that cannot see an active issue gets the same
+// 404 for a trashed one, so the trash window cannot be probed through the issue API.
 async function requireIssue(
   tx: DbTransaction,
   issueId: string,
   actor: WorkActor,
   required: ProjectAccessLevel,
+  includeDeleted = false,
 ) {
   const membershipMatch = humanIdMatch(actor, "membership");
   const grantMatch = humanIdMatch(actor, "grant");
@@ -1057,7 +1076,11 @@ async function requireIssue(
       and(eq(workspaceMemberships.workspaceId, projects.workspaceId), membershipMatch),
     )
     .leftJoin(projectAccessGrants, and(eq(projectAccessGrants.projectId, projects.id), grantMatch))
-    .where(eq(issues.id, issueId))
+    .where(
+      includeDeleted
+        ? eq(issues.id, issueId)
+        : and(eq(issues.id, issueId), isNull(issues.deletedAt)),
+    )
     .limit(1);
 
   if (row === undefined) throw new ProjectsError("issue_not_found");
@@ -1351,7 +1374,9 @@ type RecordActivityInput =
         | "issue_link_removed"
         | "issue_label_added"
         | "issue_label_removed"
-        | "issue_parent_changed";
+        | "issue_parent_changed"
+        | "issue_deleted"
+        | "issue_restored";
       actor: WorkActor;
       summary: string;
       issueId: string;
@@ -1580,9 +1605,16 @@ export type WorkSessionGate = (
   issueId: string,
 ) => Promise<boolean>;
 
+// #98: the work-sessions feature's narrow seam for trash writes. It materializes any
+// lapsed lease in the caller's already issue-locked transaction and answers whether a live
+// work session still holds the issue. Projects never opens a second transaction or grows a
+// second definition of "live".
+export type IssueSessionGate = (tx: DbTransaction, issueId: string) => Promise<boolean>;
+
 export interface ProjectsDeps {
   db: PostgresJsDatabase;
   sessionGate: WorkSessionGate;
+  issueSessionGate?: IssueSessionGate;
   // The inbox's deadline evaluation on the caller's already locked transaction. Optional
   // for standalone construction; the feature registry wires it in production. A policy
   // change calls it first so an already-due question cannot be re-projected under a new
@@ -1673,6 +1705,14 @@ export interface ProjectsService {
   ): Promise<Map<string, ProjectAccessLevel | null>>;
   listIssues(actor: WorkActor | null, projectId: string): Promise<Issue[]>;
   getIssue(actor: WorkActor | null, issueId: string): Promise<IssueDetail>;
+  // #98: trash lifecycle. Delete is human Contribute/Manage only and never available to
+  // agents; restore is human Manage only; the trash listing is Manage only. The sweep has
+  // no actor — it is a system task, but is exposed here so the exact database-time boundary
+  // can be driven by real-Postgres tests.
+  deleteIssue(actor: WorkActor | null, issueId: string): Promise<void>;
+  restoreIssue(actor: WorkActor | null, issueId: string): Promise<Issue>;
+  listTrash(actor: WorkActor | null, projectId: string): Promise<Issue[]>;
+  purgeExpiredTrash(): Promise<number>;
   createIssue(
     actor: WorkActor | null,
     projectId: string,
@@ -1740,15 +1780,27 @@ export interface ProjectsService {
 export function createProjectsService({
   db,
   sessionGate,
+  issueSessionGate = async () => false,
   evaluateQuestionDeadline,
 }: ProjectsDeps): ProjectsService {
   // The one issue listing, borrowed by the blocked_by readers so a relation resolves to the
   // same Issue shape every other listing returns. Dependency edges live in one project, so
   // listing by that project and selecting the related ids keeps both reads in one place.
-  async function readIssues(actor: WorkActor, projectId: string): Promise<Issue[]> {
+  async function readIssues(
+    actor: WorkActor,
+    projectId: string,
+    scope: "active" | "trash" = "active",
+  ): Promise<Issue[]> {
     return db.transaction(
       async (tx) => {
-        await requireProject(tx, projectId, actor, ProjectAccessLevel.enum.read);
+        // Listing trash is a project-manager operation; an ordinary issue listing only
+        // needs Read. The higher gate keeps trashed titles out of a contributor's view.
+        await requireProject(
+          tx,
+          projectId,
+          actor,
+          scope === "trash" ? ProjectAccessLevel.enum.manage : ProjectAccessLevel.enum.read,
+        );
         const rows = await tx
           .select({ ...issueColumns, projectFallbackPolicy: projects.fallbackPolicy })
           .from(issues)
@@ -1765,7 +1817,15 @@ export function createProjectsService({
             assigneeAgent,
             and(eq(assigneeAgent.id, issues.assigneeId), eq(issues.assigneeType, "agent")),
           )
-          .where(eq(issues.projectId, projectId))
+          .where(
+            scope === "trash"
+              ? and(
+                  eq(issues.projectId, projectId),
+                  isNotNull(issues.deletedAt),
+                  isNull(issues.purgedAt),
+                )
+              : and(eq(issues.projectId, projectId), isNull(issues.deletedAt)),
+          )
           .orderBy(...issueBoardOrder);
         const labels = await loadLabelsForIssues(
           tx,
@@ -2332,6 +2392,152 @@ export function createProjectsService({
         },
         { accessMode: "read only" },
       );
+    },
+
+    async deleteIssue(actorArg, issueId) {
+      const actor = requireActor(actorArg);
+      // Agents never get a delete tool and never pass this gate: a bearer key cannot
+      // trash an issue even when its project level is Manage.
+      if (actor.kind !== "human") throw new ProjectsError("agents_cannot_delete_issues");
+      return db.transaction(async (tx) => {
+        // Authorize and locate through the ordinary read gate first: an already trashed
+        // issue answers 404, and no lock is held while the access joins run.
+        await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
+        await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .limit(1)
+          .for("update");
+        // A lapsed lease is materialized and an active live claim blocks the delete. Both
+        // decisions run under the issue lock in database time, matching work sessions.
+        if (await issueSessionGate(tx, issueId)) {
+          throw new ProjectsError("issue_active_session_exists");
+        }
+        const current = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
+        await tx
+          .update(issues)
+          .set({
+            deletedAt: sql`statement_timestamp()`,
+            deletedByHumanId: actor.account.humanId,
+            updatedAt: sql`statement_timestamp()`,
+          })
+          .where(eq(issues.id, issueId));
+        await recordActivity(tx, {
+          projectId: current.projectId,
+          type: "issue_deleted",
+          actor,
+          issueId,
+          summary: current.title,
+        });
+      });
+    },
+
+    async restoreIssue(actorArg, issueId) {
+      const actor = requireActor(actorArg);
+      // Restore is the Project manager's decision. An agent has no such authority, and a
+      // human below Manage answers 403 through requireIssue's level gate below.
+      if (actor.kind !== "human") throw new ProjectsError("insufficient_project_access");
+      return db.transaction(async (tx) => {
+        await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.manage, true);
+        await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .limit(1)
+          .for("update");
+        const current = await requireIssue(
+          tx,
+          issueId,
+          actor,
+          ProjectAccessLevel.enum.manage,
+          true,
+        );
+        if (current.deletedAt === null) throw new ProjectsError("issue_not_found");
+        // Both the purged flag and the raw database-time boundary refuse a restore: the
+        // sweep may not have run yet, but a 30-day-old tombstone is already final.
+        const [expired] = await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.id, issueId),
+              sql`${issues.deletedAt} <= statement_timestamp() - interval '30 days'`,
+            ),
+          )
+          .limit(1);
+        if (current.purgedAt !== null || expired !== undefined) {
+          throw new ProjectsError("issue_purged");
+        }
+        await tx
+          .update(issues)
+          .set({
+            deletedAt: null,
+            deletedByHumanId: null,
+            updatedAt: sql`statement_timestamp()`,
+          })
+          .where(eq(issues.id, issueId));
+        await recordActivity(tx, {
+          projectId: current.projectId,
+          type: "issue_restored",
+          actor,
+          issueId,
+          summary: current.title,
+        });
+        return toIssue(current, await loadIssueLabels(tx, issueId));
+      });
+    },
+
+    async listTrash(actorArg, projectId) {
+      const actor = requireActor(actorArg);
+      // "Project manager" is a human role (GLOSSARY): an agent key never reads trash,
+      // even when its level is Manage, before any project scope is revealed.
+      if (actor.kind !== "human") throw new ProjectsError("insufficient_project_access");
+      return readIssues(actor, projectId, "trash");
+    },
+
+    async purgeExpiredTrash() {
+      // A system sweep has no actor. Everything runs in one transaction so a tombstone is
+      // never seen half scrubbed, and the issues row itself is never deleted: project
+      // activity's issue FK and the project's ORR-N numbering stay intact.
+      return db.transaction(async (tx) => {
+        const expired = await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(
+            and(
+              isNotNull(issues.deletedAt),
+              isNull(issues.purgedAt),
+              sql`${issues.deletedAt} <= statement_timestamp() - interval '30 days'`,
+            ),
+          )
+          .orderBy(issues.id);
+        for (const row of expired) {
+          await tx.delete(issueComments).where(eq(issueComments.issueId, row.id));
+          await tx.delete(issueLinks).where(eq(issueLinks.issueId, row.id));
+          await tx.delete(issueLabels).where(eq(issueLabels.issueId, row.id));
+          await tx
+            .delete(issueDependencies)
+            .where(
+              or(
+                eq(issueDependencies.issueId, row.id),
+                eq(issueDependencies.blockedByIssueId, row.id),
+              ),
+            );
+          await tx
+            .update(issues)
+            .set({
+              title: "[deleted]",
+              body: "",
+              parentIssueId: null,
+              assigneeType: null,
+              assigneeId: null,
+              purgedAt: sql`statement_timestamp()`,
+            })
+            .where(eq(issues.id, row.id));
+        }
+        return expired.length;
+      });
     },
 
     // The project row is updated before the issue is inserted: the row lock serializes

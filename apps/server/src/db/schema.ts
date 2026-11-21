@@ -890,6 +890,12 @@ export const issues = pgTable(
     // here for self-parenting; same-project and depth-1 need other rows, so a trigger (in a
     // custom migration) enforces them for writers that bypass the service as well.
     parentIssueId: text("parent_issue_id").references((): AnyPgColumn => issues.id),
+    // #98: trash lifecycle. A soft-deleted issue keeps its row (and number) so project
+    // activity and ORR-N references never break. The two delete columns are always written
+    // together; purged_at is set only after a soft delete and marks a scrubbed tombstone.
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deletedByHumanId: text("deleted_by_human_id").references(() => humans.id),
+    purgedAt: timestamp("purged_at", { withTimezone: true }),
   },
   (t) => [
     // Exactly one author/editor identity: a human or an agent.
@@ -942,6 +948,13 @@ export const issues = pgTable(
     check(
       "issues_no_self_parent",
       sql`${t.parentIssueId} is null or ${t.parentIssueId} <> ${t.id}`,
+    ),
+    // #98: a soft delete is one fact — the deleter and the deletion time are written
+    // together — and a tombstone can only be scrubbed after it has been deleted.
+    check("issues_deleted_pair", sql`(${t.deletedAt} is null) = (${t.deletedByHumanId} is null)`),
+    check(
+      "issues_purged_requires_deleted",
+      sql`${t.purgedAt} is null or ${t.deletedAt} is not null`,
     ),
     // Subtasks are listed with their parent's board; the index serves that lookup.
     index("issues_parent").on(t.projectId, t.parentIssueId),
