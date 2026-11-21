@@ -58,7 +58,12 @@ function Children({ workers }: { workers: readonly RunChild[] }) {
 
 function RunItem({ run }: { run: RunDetail }) {
   return (
-    <li data-run-id={run.id} data-harness={unknown(run.harness)} data-model={unknown(run.model)}>
+    <li
+      className="run-item"
+      data-run-id={run.id}
+      data-harness={unknown(run.harness)}
+      data-model={unknown(run.model)}
+    >
       <strong data-run-label>Run {run.id}</strong> · agent{" "}
       <Text type="inherit" color="inherit" data-agent-name>
         {run.agentName}

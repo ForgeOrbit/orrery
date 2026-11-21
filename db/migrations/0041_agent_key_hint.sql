@@ -1,0 +1,1 @@
+ALTER TABLE "agent_api_keys" ADD COLUMN "key_hint" text;

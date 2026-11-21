@@ -7,6 +7,7 @@ import { Section } from "@astryxdesign/core/Section";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Stack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
+import { useToast } from "@astryxdesign/core/Toast";
 import { TextField } from "../../lib/fields.tsx";
 import { TelemetryInline } from "../../lib/telemetry.tsx";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
@@ -65,11 +66,26 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
   // disabled for ordinary members, whose view stays their own keys.
   const workspaceKeys = useQuery({ ...workspaceAgentKeysQuery(workspaceId), enabled: isOwner });
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [secret, setSecret] = useState<string>();
+  const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string>();
   const [busyKey, setBusyKey] = useState<string>();
   const [registerOpen, setRegisterOpen] = useState(false);
   const [issueKeyOpen, setIssueKeyOpen] = useState(false);
+
+  async function copySecret(value: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      toast({ body: "API key copied to clipboard." });
+    } catch {
+      toast({
+        body: "Could not access the clipboard. Select and copy the key manually.",
+        type: "error",
+      });
+    }
+  }
 
   const ownIds = new Set(mine.map((key) => key.id));
   const allKeys = new Map<string, AgentKey>();
@@ -84,6 +100,7 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
       // those grants by the human's current access and returns a fresh one-time secret.
       const replacement = await rotateAgentKey(key.id);
       setSecret(replacement.secret);
+      setCopied(false);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not rotate the key.");
     } finally {
@@ -120,15 +137,27 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
             <Text as="p" display="block" type="inherit" color="inherit">
               Copy this key now. It is shown once and cannot be recovered later.
             </Text>
-            <Stack direction="horizontal" className="page-header-actions">
-              <code>{secret}</code>
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => setSecret(undefined)}
-                label="Dismiss"
-                variant="secondary"
-              />
+            <Stack direction="horizontal" className="secret-reveal-row">
+              <code className="secret-reveal-code">{secret}</code>
+              <Stack direction="horizontal" className="page-header-actions">
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void copySecret(secret)}
+                  label={copied ? "Copied" : "Copy"}
+                  variant="primary"
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => {
+                    setSecret(undefined);
+                    setCopied(false);
+                  }}
+                  label="Dismiss"
+                  variant="secondary"
+                />
+              </Stack>
             </Stack>
           </Stack>
         </Section>
@@ -210,6 +239,19 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
                   <Text type="inherit" color="inherit" className="row-item-title">
                     {key.agentName}
                   </Text>
+                  {key.keyHint !== null ? (
+                    <code className="agent-key-hint" data-agent-key-hint>
+                      {key.keyHint}
+                    </code>
+                  ) : (
+                    <span
+                      className="agent-key-hint"
+                      data-agent-key-hint-legacy
+                      title="Issued before key previews were stored (only the SHA-256 hash exists). Rotate or issue a new key to show its prefix preview."
+                    >
+                      legacy · {key.id.slice(0, 8)}
+                    </span>
+                  )}
                   <span className="meta-pill">{key.validity}</span>
                   <Text type="supporting">
                     {key.projects.map((grant) => grant.projectName).join(", ") || "no projects"}
@@ -309,6 +351,7 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
                 workspaceId={workspaceId}
                 onIssued={(value) => {
                   setSecret(value);
+                  setCopied(false);
                   setIssueKeyOpen(false);
                 }}
               />

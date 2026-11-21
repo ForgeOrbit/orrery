@@ -288,6 +288,13 @@
       "when": 1795244877730,
       "tag": "0040_tough_centennial",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1795254383070,
+      "tag": "0041_agent_key_hint",
+      "breakpoints": true
     }
   ]
 }
