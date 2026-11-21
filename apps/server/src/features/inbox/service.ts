@@ -170,7 +170,10 @@ async function lockIssue(tx: DbTransaction, issueId: string) {
       status: issues.status,
     })
     .from(issues)
-    .where(eq(issues.id, issueId))
+    // #98: a trashed issue has no inbox: its questions are no longer actionable and must
+    // not block or reappear after the sweep. This is the same read gate every question
+    // writer passes through under the issue row lock.
+    .where(and(eq(issues.id, issueId), isNull(issues.deletedAt)))
     .limit(1)
     .for("update");
   if (row === undefined) throw new InboxError("issue_not_found");
@@ -750,7 +753,8 @@ export function createInboxService(deps: InboxDeps): InboxService {
             const candidates = await tx
               .selectDistinct({ projectId: questions.projectId })
               .from(questions)
-              .where(eq(questions.workspaceId, workspaceId));
+              .innerJoin(issues, eq(issues.id, questions.issueId))
+              .where(and(eq(questions.workspaceId, workspaceId), isNull(issues.deletedAt)));
             const projectIds = candidates.map((row) => row.projectId);
             if (projectIds.length === 0) continue;
             const ceiling = await deps.projectAccessCeiling(tx, workspaceId, humanId, projectIds);
@@ -766,8 +770,13 @@ export function createInboxService(deps: InboxDeps): InboxService {
             const rows = await tx
               .select(questionColumns)
               .from(questions)
+              .innerJoin(issues, eq(issues.id, questions.issueId))
               .where(
-                and(eq(questions.workspaceId, workspaceId), inArray(questions.projectId, readable)),
+                and(
+                  eq(questions.workspaceId, workspaceId),
+                  inArray(questions.projectId, readable),
+                  isNull(issues.deletedAt),
+                ),
               )
               .orderBy(desc(questions.createdAt))
               .limit(200);
@@ -787,7 +796,7 @@ export function createInboxService(deps: InboxDeps): InboxService {
           const [issue] = await tx
             .select({ projectId: issues.projectId })
             .from(issues)
-            .where(eq(issues.id, issueId))
+            .where(and(eq(issues.id, issueId), isNull(issues.deletedAt)))
             .limit(1);
           if (issue === undefined) throw new InboxError("issue_not_found");
           await requireAccess(

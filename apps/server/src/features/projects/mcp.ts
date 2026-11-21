@@ -35,6 +35,9 @@ const sortOrder = (value: unknown): number | undefined =>
 // A missing field leaves assignment untouched; an explicit null clears it.
 const assignee = (value: unknown): AssigneeShape | null | undefined =>
   value === undefined ? undefined : value === null ? null : Assignee.parse(value);
+// A missing field leaves a parent untouched; an explicit null clears it.
+const parentIssueId = (value: unknown): string | null | undefined =>
+  value === undefined ? undefined : value === null ? null : str(value, "parentIssueId");
 
 export function createProjectsMcp(service: ProjectsService, authenticate: AgentAuthenticator) {
   const strategies: Record<string, Strategy> = {
@@ -57,6 +60,7 @@ export function createProjectsMcp(service: ProjectsService, authenticate: AgentA
         status: args.status === undefined ? undefined : IssueStatus.parse(args.status),
         priority: priority(args.priority),
         sortOrder: sortOrder(args.sortOrder),
+        parentIssueId: parentIssueId(args.parentIssueId),
       }),
     }),
     update_issue: async (actor, args) => ({
@@ -67,7 +71,41 @@ export function createProjectsMcp(service: ProjectsService, authenticate: AgentA
         priority: priority(args.priority),
         sortOrder: sortOrder(args.sortOrder),
         assignee: assignee(args.assignee),
+        parentIssueId: parentIssueId(args.parentIssueId),
       }),
+    }),
+    list_labels: async (actor, args) => ({
+      labels: await service.listLabels(actor, str(args.projectId, "projectId")),
+    }),
+    create_label: async (actor, args) => ({
+      label: await service.createLabel(actor, str(args.projectId, "projectId"), {
+        name: str(args.name, "name"),
+        color: str(args.color, "color"),
+      }),
+    }),
+    update_label: async (actor, args) => ({
+      label: await service.updateLabel(actor, str(args.labelId, "labelId"), {
+        name: args.name === undefined ? undefined : str(args.name, "name"),
+        color: args.color === undefined ? undefined : str(args.color, "color"),
+      }),
+    }),
+    delete_label: async (actor, args) => {
+      await service.deleteLabel(actor, str(args.labelId, "labelId"));
+      return { removed: true as const };
+    },
+    attach_issue_label: async (actor, args) => ({
+      issue: await service.attachLabel(
+        actor,
+        str(args.issueId, "issueId"),
+        str(args.labelId, "labelId"),
+      ),
+    }),
+    detach_issue_label: async (actor, args) => ({
+      issue: await service.detachLabel(
+        actor,
+        str(args.issueId, "issueId"),
+        str(args.labelId, "labelId"),
+      ),
     }),
     add_blocked_by: async (actor, args) => ({
       dependency: await service.addBlockedBy(actor, str(args.issueId, "issueId"), {

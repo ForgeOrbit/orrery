@@ -421,6 +421,18 @@
             },
             "effectiveFallbackPolicy": {
               "$ref": "#/$defs/FallbackPolicy"
+            },
+            "parentIssueId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "labels": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ProjectLabel"
+              }
             }
           },
           "required": [
@@ -441,7 +453,9 @@
             "createdBy",
             "updatedBy",
             "fallbackPolicyOverride",
-            "effectiveFallbackPolicy"
+            "effectiveFallbackPolicy",
+            "parentIssueId",
+            "labels"
           ],
           "additionalProperties": false
         },
@@ -548,6 +562,46 @@
             "require_human",
             "fallback_allowed"
           ]
+        },
+        "ProjectLabel": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "color": {
+              "$ref": "#/$defs/LabelColor"
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updatedAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "createdBy": {
+              "$ref": "#/$defs/Actor"
+            }
+          },
+          "required": [
+            "id",
+            "projectId",
+            "name",
+            "color",
+            "createdAt",
+            "updatedAt",
+            "createdBy"
+          ],
+          "additionalProperties": false
+        },
+        "LabelColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
         }
       }
     }
@@ -649,6 +703,18 @@
             "effectiveFallbackPolicy": {
               "$ref": "#/$defs/FallbackPolicy"
             },
+            "parentIssueId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "labels": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ProjectLabel"
+              }
+            },
             "links": {
               "type": "array",
               "items": {
@@ -675,6 +741,8 @@
             "updatedBy",
             "fallbackPolicyOverride",
             "effectiveFallbackPolicy",
+            "parentIssueId",
+            "labels",
             "links"
           ],
           "additionalProperties": false
@@ -783,6 +851,46 @@
             "fallback_allowed"
           ]
         },
+        "ProjectLabel": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "color": {
+              "$ref": "#/$defs/LabelColor"
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updatedAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "createdBy": {
+              "$ref": "#/$defs/Actor"
+            }
+          },
+          "required": [
+            "id",
+            "projectId",
+            "name",
+            "color",
+            "createdAt",
+            "updatedAt",
+            "createdBy"
+          ],
+          "additionalProperties": false
+        },
+        "LabelColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
+        },
         "IssueLink": {
           "type": "object",
           "properties": {
@@ -859,6 +967,18 @@
         },
         "sortOrder": {
           "$ref": "#/$defs/IssueSortOrder"
+        },
+        "parentIssueId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "projectId": {
           "type": "string",
@@ -980,6 +1100,18 @@
             },
             "effectiveFallbackPolicy": {
               "$ref": "#/$defs/FallbackPolicy"
+            },
+            "parentIssueId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "labels": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ProjectLabel"
+              }
             }
           },
           "required": [
@@ -1000,7 +1132,9 @@
             "createdBy",
             "updatedBy",
             "fallbackPolicyOverride",
-            "effectiveFallbackPolicy"
+            "effectiveFallbackPolicy",
+            "parentIssueId",
+            "labels"
           ],
           "additionalProperties": false
         },
@@ -1107,6 +1241,46 @@
             "require_human",
             "fallback_allowed"
           ]
+        },
+        "ProjectLabel": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "color": {
+              "$ref": "#/$defs/LabelColor"
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updatedAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "createdBy": {
+              "$ref": "#/$defs/Actor"
+            }
+          },
+          "required": [
+            "id",
+            "projectId",
+            "name",
+            "color",
+            "createdAt",
+            "updatedAt",
+            "createdBy"
+          ],
+          "additionalProperties": false
+        },
+        "LabelColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
         }
       }
     }
@@ -1139,6 +1313,18 @@
           "anyOf": [
             {
               "$ref": "#/$defs/Assignee"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parentIssueId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
             },
             {
               "type": "null"
@@ -1289,6 +1475,18 @@
             },
             "effectiveFallbackPolicy": {
               "$ref": "#/$defs/FallbackPolicy"
+            },
+            "parentIssueId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "labels": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ProjectLabel"
+              }
             }
           },
           "required": [
@@ -1309,7 +1507,9 @@
             "createdBy",
             "updatedBy",
             "fallbackPolicyOverride",
-            "effectiveFallbackPolicy"
+            "effectiveFallbackPolicy",
+            "parentIssueId",
+            "labels"
           ],
           "additionalProperties": false
         },
@@ -1416,6 +1616,1070 @@
             "require_human",
             "fallback_allowed"
           ]
+        },
+        "ProjectLabel": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "color": {
+              "$ref": "#/$defs/LabelColor"
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updatedAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "createdBy": {
+              "$ref": "#/$defs/Actor"
+            }
+          },
+          "required": [
+            "id",
+            "projectId",
+            "name",
+            "color",
+            "createdAt",
+            "updatedAt",
+            "createdBy"
+          ],
+          "additionalProperties": false
+        },
+        "LabelColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
+        }
+      }
+    }
+  },
+  {
+    "name": "list_labels",
+    "description": "List the project-scoped labels in an in-scope project, with their names and hex colors. Needs Read access.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The project id"
+        }
+      },
+      "required": [
+        "projectId"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "labels": {
+          "$ref": "#/$defs/ProjectLabelsResponse"
+        }
+      },
+      "required": [
+        "labels"
+      ],
+      "additionalProperties": false,
+      "$defs": {
+        "ProjectLabelsResponse": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ProjectLabel"
+          }
+        },
+        "ProjectLabel": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "color": {
+              "$ref": "#/$defs/LabelColor"
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updatedAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "createdBy": {
+              "$ref": "#/$defs/Actor"
+            }
+          },
+          "required": [
+            "id",
+            "projectId",
+            "name",
+            "color",
+            "createdAt",
+            "updatedAt",
+            "createdBy"
+          ],
+          "additionalProperties": false
+        },
+        "LabelColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        },
+        "Actor": {
+          "type": "object",
+          "properties": {
+            "humanId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "email": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Email"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "agentId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "agentName": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "displayName": {
+              "type": "string"
+            },
+            "deactivated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "displayName"
+          ],
+          "additionalProperties": false
+        },
+        "Email": {
+          "type": "string",
+          "format": "email",
+          "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        }
+      }
+    }
+  },
+  {
+    "name": "create_label",
+    "description": "Create a project-scoped label with a name and six-digit hex color. Names are unique per project ignoring case. Requires Contribute access on the key and its human owner.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 50
+        },
+        "color": {
+          "$ref": "#/$defs/LabelColor"
+        },
+        "projectId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The project id"
+        }
+      },
+      "required": [
+        "name",
+        "color",
+        "projectId"
+      ],
+      "additionalProperties": false,
+      "$defs": {
+        "LabelColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
+        }
+      }
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "label": {
+          "$ref": "#/$defs/ProjectLabel"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "additionalProperties": false,
+      "$defs": {
+        "ProjectLabel": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "color": {
+              "$ref": "#/$defs/LabelColor"
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updatedAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "createdBy": {
+              "$ref": "#/$defs/Actor"
+            }
+          },
+          "required": [
+            "id",
+            "projectId",
+            "name",
+            "color",
+            "createdAt",
+            "updatedAt",
+            "createdBy"
+          ],
+          "additionalProperties": false
+        },
+        "LabelColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        },
+        "Actor": {
+          "type": "object",
+          "properties": {
+            "humanId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "email": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Email"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "agentId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "agentName": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "displayName": {
+              "type": "string"
+            },
+            "deactivated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "displayName"
+          ],
+          "additionalProperties": false
+        },
+        "Email": {
+          "type": "string",
+          "format": "email",
+          "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        }
+      }
+    }
+  },
+  {
+    "name": "update_label",
+    "description": "Rename a project label or change its hex color; omitted fields stay unchanged. The new name must stay unique per project ignoring case. Requires Contribute access.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 50
+        },
+        "color": {
+          "$ref": "#/$defs/LabelColor"
+        },
+        "labelId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The label id"
+        }
+      },
+      "required": [
+        "labelId"
+      ],
+      "additionalProperties": false,
+      "$defs": {
+        "LabelColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
+        }
+      }
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "label": {
+          "$ref": "#/$defs/ProjectLabel"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "additionalProperties": false,
+      "$defs": {
+        "ProjectLabel": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "color": {
+              "$ref": "#/$defs/LabelColor"
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updatedAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "createdBy": {
+              "$ref": "#/$defs/Actor"
+            }
+          },
+          "required": [
+            "id",
+            "projectId",
+            "name",
+            "color",
+            "createdAt",
+            "updatedAt",
+            "createdBy"
+          ],
+          "additionalProperties": false
+        },
+        "LabelColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        },
+        "Actor": {
+          "type": "object",
+          "properties": {
+            "humanId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "email": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Email"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "agentId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "agentName": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "displayName": {
+              "type": "string"
+            },
+            "deactivated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "displayName"
+          ],
+          "additionalProperties": false
+        },
+        "Email": {
+          "type": "string",
+          "format": "email",
+          "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        }
+      }
+    }
+  },
+  {
+    "name": "delete_label",
+    "description": "Delete a project label and detach it from every issue. Requires Contribute access.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "labelId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The label id"
+        }
+      },
+      "required": [
+        "labelId"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "removed": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "removed"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "attach_issue_label",
+    "description": "Attach a label from the issue's own project to an issue. Attaching an already attached label is a no-op. Returns the issue with its labels. Requires Contribute access.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "issueId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The issue id"
+        },
+        "labelId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The label id"
+        }
+      },
+      "required": [
+        "issueId",
+        "labelId"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "issue": {
+          "$ref": "#/$defs/Issue"
+        }
+      },
+      "required": [
+        "issue"
+      ],
+      "additionalProperties": false,
+      "$defs": {
+        "Issue": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "number": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "identifier": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/$defs/IssueStatus"
+            },
+            "priority": {
+              "$ref": "#/$defs/IssuePriority"
+            },
+            "sortOrder": {
+              "$ref": "#/$defs/IssueSortOrder"
+            },
+            "needsInput": {
+              "type": "boolean"
+            },
+            "assignee": {
+              "$ref": "#/$defs/IssueAssignee"
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updatedAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "closedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "createdBy": {
+              "$ref": "#/$defs/Actor"
+            },
+            "updatedBy": {
+              "$ref": "#/$defs/Actor"
+            },
+            "fallbackPolicyOverride": {
+              "$ref": "#/$defs/FallbackPolicyOverride"
+            },
+            "effectiveFallbackPolicy": {
+              "$ref": "#/$defs/FallbackPolicy"
+            },
+            "parentIssueId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "labels": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ProjectLabel"
+              }
+            }
+          },
+          "required": [
+            "id",
+            "projectId",
+            "number",
+            "identifier",
+            "title",
+            "body",
+            "status",
+            "priority",
+            "sortOrder",
+            "needsInput",
+            "assignee",
+            "createdAt",
+            "updatedAt",
+            "closedAt",
+            "createdBy",
+            "updatedBy",
+            "fallbackPolicyOverride",
+            "effectiveFallbackPolicy",
+            "parentIssueId",
+            "labels"
+          ],
+          "additionalProperties": false
+        },
+        "IssueStatus": {
+          "type": "string",
+          "enum": [
+            "backlog",
+            "todo",
+            "in_progress",
+            "review",
+            "done",
+            "cancelled"
+          ]
+        },
+        "IssuePriority": {
+          "type": "string",
+          "enum": [
+            "urgent",
+            "high",
+            "medium",
+            "low",
+            "none"
+          ]
+        },
+        "IssueSortOrder": {
+          "type": "number"
+        },
+        "IssueAssignee": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "Actor": {
+          "type": "object",
+          "properties": {
+            "humanId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "email": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Email"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "agentId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "agentName": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "displayName": {
+              "type": "string"
+            },
+            "deactivated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "displayName"
+          ],
+          "additionalProperties": false
+        },
+        "Email": {
+          "type": "string",
+          "format": "email",
+          "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        },
+        "FallbackPolicyOverride": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FallbackPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "FallbackPolicy": {
+          "type": "string",
+          "enum": [
+            "require_human",
+            "fallback_allowed"
+          ]
+        },
+        "ProjectLabel": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "color": {
+              "$ref": "#/$defs/LabelColor"
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updatedAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "createdBy": {
+              "$ref": "#/$defs/Actor"
+            }
+          },
+          "required": [
+            "id",
+            "projectId",
+            "name",
+            "color",
+            "createdAt",
+            "updatedAt",
+            "createdBy"
+          ],
+          "additionalProperties": false
+        },
+        "LabelColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
+        }
+      }
+    }
+  },
+  {
+    "name": "detach_issue_label",
+    "description": "Detach a label from an issue; detaching a label that is not attached is a no-op. Returns the issue with its labels. Requires Contribute access.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "issueId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The issue id"
+        },
+        "labelId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The label id"
+        }
+      },
+      "required": [
+        "issueId",
+        "labelId"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "issue": {
+          "$ref": "#/$defs/Issue"
+        }
+      },
+      "required": [
+        "issue"
+      ],
+      "additionalProperties": false,
+      "$defs": {
+        "Issue": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "number": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "identifier": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/$defs/IssueStatus"
+            },
+            "priority": {
+              "$ref": "#/$defs/IssuePriority"
+            },
+            "sortOrder": {
+              "$ref": "#/$defs/IssueSortOrder"
+            },
+            "needsInput": {
+              "type": "boolean"
+            },
+            "assignee": {
+              "$ref": "#/$defs/IssueAssignee"
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updatedAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "closedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "createdBy": {
+              "$ref": "#/$defs/Actor"
+            },
+            "updatedBy": {
+              "$ref": "#/$defs/Actor"
+            },
+            "fallbackPolicyOverride": {
+              "$ref": "#/$defs/FallbackPolicyOverride"
+            },
+            "effectiveFallbackPolicy": {
+              "$ref": "#/$defs/FallbackPolicy"
+            },
+            "parentIssueId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "labels": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ProjectLabel"
+              }
+            }
+          },
+          "required": [
+            "id",
+            "projectId",
+            "number",
+            "identifier",
+            "title",
+            "body",
+            "status",
+            "priority",
+            "sortOrder",
+            "needsInput",
+            "assignee",
+            "createdAt",
+            "updatedAt",
+            "closedAt",
+            "createdBy",
+            "updatedBy",
+            "fallbackPolicyOverride",
+            "effectiveFallbackPolicy",
+            "parentIssueId",
+            "labels"
+          ],
+          "additionalProperties": false
+        },
+        "IssueStatus": {
+          "type": "string",
+          "enum": [
+            "backlog",
+            "todo",
+            "in_progress",
+            "review",
+            "done",
+            "cancelled"
+          ]
+        },
+        "IssuePriority": {
+          "type": "string",
+          "enum": [
+            "urgent",
+            "high",
+            "medium",
+            "low",
+            "none"
+          ]
+        },
+        "IssueSortOrder": {
+          "type": "number"
+        },
+        "IssueAssignee": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "Actor": {
+          "type": "object",
+          "properties": {
+            "humanId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "email": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Email"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "agentId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "agentName": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "displayName": {
+              "type": "string"
+            },
+            "deactivated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "displayName"
+          ],
+          "additionalProperties": false
+        },
+        "Email": {
+          "type": "string",
+          "format": "email",
+          "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        },
+        "Timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        },
+        "FallbackPolicyOverride": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FallbackPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "FallbackPolicy": {
+          "type": "string",
+          "enum": [
+            "require_human",
+            "fallback_allowed"
+          ]
+        },
+        "ProjectLabel": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "color": {
+              "$ref": "#/$defs/LabelColor"
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updatedAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "createdBy": {
+              "$ref": "#/$defs/Actor"
+            }
+          },
+          "required": [
+            "id",
+            "projectId",
+            "name",
+            "color",
+            "createdAt",
+            "updatedAt",
+            "createdBy"
+          ],
+          "additionalProperties": false
+        },
+        "LabelColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
         }
       }
     }
@@ -1678,6 +2942,18 @@
             },
             "effectiveFallbackPolicy": {
               "$ref": "#/$defs/FallbackPolicy"
+            },
+            "parentIssueId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "labels": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ProjectLabel"
+              }
             }
           },
           "required": [
@@ -1698,7 +2974,9 @@
             "createdBy",
             "updatedBy",
             "fallbackPolicyOverride",
-            "effectiveFallbackPolicy"
+            "effectiveFallbackPolicy",
+            "parentIssueId",
+            "labels"
           ],
           "additionalProperties": false
         },
@@ -1805,6 +3083,46 @@
             "require_human",
             "fallback_allowed"
           ]
+        },
+        "ProjectLabel": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "color": {
+              "$ref": "#/$defs/LabelColor"
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updatedAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "createdBy": {
+              "$ref": "#/$defs/Actor"
+            }
+          },
+          "required": [
+            "id",
+            "projectId",
+            "name",
+            "color",
+            "createdAt",
+            "updatedAt",
+            "createdBy"
+          ],
+          "additionalProperties": false
+        },
+        "LabelColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
         }
       }
     }
@@ -1911,6 +3229,18 @@
             },
             "effectiveFallbackPolicy": {
               "$ref": "#/$defs/FallbackPolicy"
+            },
+            "parentIssueId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "labels": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ProjectLabel"
+              }
             }
           },
           "required": [
@@ -1931,7 +3261,9 @@
             "createdBy",
             "updatedBy",
             "fallbackPolicyOverride",
-            "effectiveFallbackPolicy"
+            "effectiveFallbackPolicy",
+            "parentIssueId",
+            "labels"
           ],
           "additionalProperties": false
         },
@@ -2038,6 +3370,46 @@
             "require_human",
             "fallback_allowed"
           ]
+        },
+        "ProjectLabel": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "color": {
+              "$ref": "#/$defs/LabelColor"
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updatedAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "createdBy": {
+              "$ref": "#/$defs/Actor"
+            }
+          },
+          "required": [
+            "id",
+            "projectId",
+            "name",
+            "color",
+            "createdAt",
+            "updatedAt",
+            "createdBy"
+          ],
+          "additionalProperties": false
+        },
+        "LabelColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
         }
       }
     }
@@ -2595,6 +3967,14 @@
             "issue_question_follow_up",
             "issue_fallback_policy_override_changed",
             "issue_stop_requested",
+            "project_label_created",
+            "project_label_edited",
+            "project_label_deleted",
+            "issue_label_added",
+            "issue_label_removed",
+            "issue_parent_changed",
+            "issue_deleted",
+            "issue_restored",
             "knowledge_created",
             "knowledge_edited"
           ]
@@ -5058,6 +6438,18 @@
             },
             "effectiveFallbackPolicy": {
               "$ref": "#/$defs/FallbackPolicy"
+            },
+            "parentIssueId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "labels": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ProjectLabel"
+              }
             }
           },
           "required": [
@@ -5078,7 +6470,9 @@
             "createdBy",
             "updatedBy",
             "fallbackPolicyOverride",
-            "effectiveFallbackPolicy"
+            "effectiveFallbackPolicy",
+            "parentIssueId",
+            "labels"
           ],
           "additionalProperties": false
         },
@@ -5185,6 +6579,46 @@
             "require_human",
             "fallback_allowed"
           ]
+        },
+        "ProjectLabel": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "color": {
+              "$ref": "#/$defs/LabelColor"
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "updatedAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "createdBy": {
+              "$ref": "#/$defs/Actor"
+            }
+          },
+          "required": [
+            "id",
+            "projectId",
+            "name",
+            "color",
+            "createdAt",
+            "updatedAt",
+            "createdBy"
+          ],
+          "additionalProperties": false
+        },
+        "LabelColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
         }
       }
     }

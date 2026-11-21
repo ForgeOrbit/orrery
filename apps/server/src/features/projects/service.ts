@@ -16,6 +16,7 @@ import {
   type CreateIssueLinkRequest,
   type CreateIssueRequest,
   type CreateKnowledgeEntryRequest,
+  type CreateProjectLabelRequest,
   type CreateProjectRequest,
   type Issue,
   type IssueComment,
@@ -29,11 +30,13 @@ import {
   type ProjectAccessGrant,
   type ProjectActivity,
   type ProjectActivityType,
+  type ProjectLabel,
   type SetIssueFallbackPolicyRequest,
   type SetProjectAccessRequest,
   type SetProjectFallbackPolicyRequest,
   type UpdateIssueRequest,
   type UpdateKnowledgeEntryRequest,
+  type UpdateProjectLabelRequest,
   type UpdateProjectRequest,
 } from "@orrery/contract";
 import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
@@ -47,12 +50,14 @@ import {
   humans,
   issueComments,
   issueDependencies,
+  issueLabels,
   issueLinks,
   issues,
   knowledgeEntries,
   projectAccessEvents,
   projectAccessGrants,
   projectActivity,
+  projectLabels,
   projects,
   questions,
   workspaceMemberships,
@@ -86,7 +91,17 @@ export type ProjectsErrorKind =
   | "dependency_cycle"
   | "assignee_not_found"
   | "project_key_taken"
-  | "project_key_immutable";
+  | "project_key_immutable"
+  | "label_not_found"
+  | "label_exists"
+  | "self_parent"
+  | "cross_project_parent"
+  | "subtask_depth_exceeded"
+  // #98: trash lifecycle. Only humans may delete issues, an issue with a live claim
+  // cannot be trashed, and a scrubbed tombstone can never be restored.
+  | "agents_cannot_delete_issues"
+  | "issue_active_session_exists"
+  | "issue_purged";
 
 const messages = {
   not_signed_in: "Not signed in.",
@@ -108,6 +123,16 @@ const messages = {
   assignee_not_found: "No active member or registered agent in this workspace has that id.",
   project_key_taken: "Another project in this workspace already uses that key.",
   project_key_immutable: "A project's key cannot be changed after it is created.",
+  label_not_found: "This label does not exist on the project.",
+  label_exists: "A label with that name already exists in this project.",
+  self_parent: "An issue cannot be its own parent.",
+  cross_project_parent: "A subtask and its parent must belong to the same project.",
+  subtask_depth_exceeded:
+    "Maximum subtask depth is one: a subtask cannot have children, and an issue with subtasks cannot become a subtask.",
+  agents_cannot_delete_issues: "Agents cannot delete issues; only a human can.",
+  issue_active_session_exists:
+    "This issue has an active work session; stop or release it before deleting the issue.",
+  issue_purged: "This issue's trash window has ended and it can no longer be restored.",
 } as const satisfies Record<ProjectsErrorKind, string>;
 
 const ACCESS_RANK: Record<ProjectAccessLevel, number> = {
@@ -115,6 +140,10 @@ const ACCESS_RANK: Record<ProjectAccessLevel, number> = {
   contribute: 2,
   manage: 3,
 };
+
+// #98: one database-time boundary for the whole trash lifecycle. Restore refusal, trash
+// listing and the sweep all use it, so an item never appears recoverable past its window.
+const THIRTY_DAYS_AGO = sql`statement_timestamp() - interval '30 days'`;
 
 // #95: derive a valid key from a project name — the first letter of each alphabetic
 // word, uppercased. A name with no letters falls back to PRJ; a one-letter name is
@@ -394,6 +423,7 @@ const knowledgeCreator = alias(humans, "knowledge_creator");
 const knowledgeEditor = alias(humans, "knowledge_editor");
 const activityActor = alias(humans, "activity_actor");
 const accessGrantor = alias(humans, "access_grantor");
+const labelCreator = alias(humans, "label_creator");
 // Agent aliases mirror the human aliases above; a row's actor column decides which one
 // carries the identity. Left joins keep agent-authored rows in the same query.
 const issueAgentCreator = alias(agents, "issue_agent_creator");
@@ -407,6 +437,7 @@ const linkAgentCreator = alias(agents, "link_agent_creator");
 const knowledgeAgentCreator = alias(agents, "knowledge_agent_creator");
 const knowledgeAgentEditor = alias(agents, "knowledge_agent_editor");
 const activityAgentActor = alias(agents, "activity_agent_actor");
+const labelAgentCreator = alias(agents, "label_agent_creator");
 // A dependency edge keeps who added it; both aliases are needed to render that actor.
 const dependencyHumanCreator = alias(humans, "dependency_human_creator");
 const dependencyAgentCreator = alias(agents, "dependency_agent_creator");
@@ -447,6 +478,7 @@ const issueColumns = {
   priority: issues.priority,
   sortOrder: issues.sortOrder,
   needsInput: issues.needsInput,
+  parentIssueId: issues.parentIssueId,
   assigneeType: issues.assigneeType,
   assigneeId: issues.assigneeId,
   assigneeHumanEmail: assigneeHuman.email,
@@ -456,6 +488,10 @@ const issueColumns = {
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
   closedAt: issues.closedAt,
+  // #98: carried by every issue read so restore can apply the 30-day boundary without a
+  // second lookup; the DTO itself deliberately does not expose trash state.
+  deletedAt: issues.deletedAt,
+  purgedAt: issues.purgedAt,
   createdByHumanId: issues.createdByHumanId,
   createdByEmail: issueCreator.email,
   createdByDeactivatedAt: issueCreator.deactivatedAt,
@@ -575,6 +611,7 @@ type IssueRow = {
   priority: IssuePriority;
   sortOrder: number;
   needsInput: boolean;
+  parentIssueId: string | null;
   assigneeType: AssigneeType | null;
   assigneeId: string | null;
   assigneeHumanEmail: string | null;
@@ -586,6 +623,8 @@ type IssueRow = {
   createdAt: Date;
   updatedAt: Date;
   closedAt: Date | null;
+  deletedAt: Date | null;
+  purgedAt: Date | null;
   createdByHumanId: string | null;
   createdByEmail: string | null;
   createdByDeactivatedAt: Date | null;
@@ -706,7 +745,7 @@ function toProjectGrant(row: ProjectGrantRow): ProjectAccessGrant {
   };
 }
 
-function toIssue(row: IssueRow): Issue {
+function toIssue(row: IssueRow, labels: ProjectLabel[] = []): Issue {
   return {
     id: row.id,
     projectId: row.projectId,
@@ -724,6 +763,8 @@ function toIssue(row: IssueRow): Issue {
     closedAt: row.closedAt?.toISOString() ?? null,
     fallbackPolicyOverride: row.fallbackPolicyOverride,
     effectiveFallbackPolicy: row.fallbackPolicyOverride ?? row.projectFallbackPolicy,
+    parentIssueId: row.parentIssueId,
+    labels,
     createdBy: actorFromRow(
       row.createdByHumanId,
       row.createdByEmail,
@@ -746,6 +787,52 @@ function toIssueDependency(row: IssueDependencyRow): IssueDependency {
     issueId: row.issueId,
     blockedByIssueId: row.blockedByIssueId,
     createdAt: row.createdAt.toISOString(),
+    createdBy: actorFromRow(
+      row.createdByHumanId,
+      row.createdByEmail,
+      row.createdByAgentId,
+      row.createdByAgentName,
+      row.createdByDeactivatedAt,
+    ),
+  };
+}
+
+type LabelRow = {
+  id: string;
+  projectId: string;
+  name: string;
+  color: string;
+  createdAt: Date;
+  updatedAt: Date;
+  createdByHumanId: string | null;
+  createdByEmail: string | null;
+  createdByDeactivatedAt: Date | null;
+  createdByAgentId: string | null;
+  createdByAgentName: string | null;
+};
+
+const labelColumns = {
+  id: projectLabels.id,
+  projectId: projectLabels.projectId,
+  name: projectLabels.name,
+  color: projectLabels.color,
+  createdAt: projectLabels.createdAt,
+  updatedAt: projectLabels.updatedAt,
+  createdByHumanId: projectLabels.createdByHumanId,
+  createdByEmail: labelCreator.email,
+  createdByDeactivatedAt: labelCreator.deactivatedAt,
+  createdByAgentId: projectLabels.createdByAgentId,
+  createdByAgentName: labelAgentCreator.name,
+};
+
+function toProjectLabel(row: LabelRow): ProjectLabel {
+  return {
+    id: row.id,
+    projectId: row.projectId,
+    name: row.name,
+    color: row.color,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
     createdBy: actorFromRow(
       row.createdByHumanId,
       row.createdByEmail,
@@ -951,11 +1038,15 @@ async function requireProject(
   };
 }
 
+// #98: every ordinary read excludes trashed issues. Only the trash reader and the restore
+// writer opt in with includeDeleted; a caller that cannot see an active issue gets the same
+// 404 for a trashed one, so the trash window cannot be probed through the issue API.
 async function requireIssue(
   tx: DbTransaction,
   issueId: string,
   actor: WorkActor,
   required: ProjectAccessLevel,
+  includeDeleted = false,
 ) {
   const membershipMatch = humanIdMatch(actor, "membership");
   const grantMatch = humanIdMatch(actor, "grant");
@@ -989,11 +1080,152 @@ async function requireIssue(
       and(eq(workspaceMemberships.workspaceId, projects.workspaceId), membershipMatch),
     )
     .leftJoin(projectAccessGrants, and(eq(projectAccessGrants.projectId, projects.id), grantMatch))
-    .where(eq(issues.id, issueId))
+    .where(
+      includeDeleted
+        ? eq(issues.id, issueId)
+        : and(eq(issues.id, issueId), isNull(issues.deletedAt)),
+    )
     .limit(1);
 
   if (row === undefined) throw new ProjectsError("issue_not_found");
   return { ...row, accessLevel: requireLevel(row, actor, required, "issue_not_found") };
+}
+
+// #97: the labels of several issues in one query, so listing a board never pays one query
+// per card. The grouped map is keyed by issue id and ordered by label name then id.
+async function loadLabelsForIssues(
+  tx: DbTransaction,
+  issueIds: readonly string[],
+): Promise<Map<string, ProjectLabel[]>> {
+  const grouped = new Map<string, ProjectLabel[]>();
+  if (issueIds.length === 0) return grouped;
+  const rows = await tx
+    .select({ issueId: issueLabels.issueId, ...labelColumns })
+    .from(issueLabels)
+    .innerJoin(projectLabels, eq(projectLabels.id, issueLabels.labelId))
+    .leftJoin(labelCreator, eq(labelCreator.id, projectLabels.createdByHumanId))
+    .leftJoin(labelAgentCreator, eq(labelAgentCreator.id, projectLabels.createdByAgentId))
+    .where(inArray(issueLabels.issueId, [...issueIds]))
+    .orderBy(projectLabels.name, projectLabels.id);
+  for (const row of rows) {
+    const list = grouped.get(row.issueId) ?? [];
+    list.push(toProjectLabel(row));
+    grouped.set(row.issueId, list);
+  }
+  return grouped;
+}
+
+async function loadIssueLabels(tx: DbTransaction, issueId: string): Promise<ProjectLabel[]> {
+  const grouped = await loadLabelsForIssues(tx, [issueId]);
+  return grouped.get(issueId) ?? [];
+}
+
+// A label and the caller's effective access to its project, resolved by the same gates as
+// every other project object. No access answers exactly like a missing label.
+async function requireLabel(
+  tx: DbTransaction,
+  labelId: string,
+  actor: WorkActor,
+  required: ProjectAccessLevel,
+) {
+  const membershipMatch = humanIdMatch(actor, "membership");
+  const grantMatch = humanIdMatch(actor, "grant");
+  const [row] = await tx
+    .select({
+      ...labelColumns,
+      workspaceKind: workspaces.kind,
+      personalOwnerHumanId: workspaces.personalOwnerHumanId,
+      membershipIsOwner: workspaceMemberships.isOwner,
+      grantLevel: projectAccessGrants.level,
+      workspaceId: projects.workspaceId,
+    })
+    .from(projectLabels)
+    .innerJoin(projects, eq(projects.id, projectLabels.projectId))
+    .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
+    .leftJoin(labelCreator, eq(labelCreator.id, projectLabels.createdByHumanId))
+    .leftJoin(labelAgentCreator, eq(labelAgentCreator.id, projectLabels.createdByAgentId))
+    .leftJoin(
+      workspaceMemberships,
+      and(eq(workspaceMemberships.workspaceId, projects.workspaceId), membershipMatch),
+    )
+    .leftJoin(projectAccessGrants, and(eq(projectAccessGrants.projectId, projects.id), grantMatch))
+    .where(eq(projectLabels.id, labelId))
+    .limit(1);
+
+  if (row === undefined) throw new ProjectsError("label_not_found");
+  const facts = {
+    workspaceKind: WorkspaceKind.parse(row.workspaceKind),
+    personalOwnerHumanId: row.personalOwnerHumanId,
+    membershipIsOwner: row.membershipIsOwner,
+    grantLevel: row.grantLevel === null ? null : ProjectAccessLevel.parse(row.grantLevel),
+    projectId: row.projectId,
+    workspaceId: row.workspaceId,
+  };
+  return { ...row, ...facts, accessLevel: requireLevel(facts, actor, required, "label_not_found") };
+}
+
+// #97: resolve the parent through the SAME read gate as every other issue lookup, BEFORE
+// touching any row lock. An issue outside the caller's readable projects answers 404, so a
+// parent id cannot probe another workspace for existence; only a parent the caller can read
+// earns the more precise cross_project_parent answer. Callers re-check the rules under the
+// locks in validateParent before writing.
+async function requireParent(
+  tx: DbTransaction,
+  parentIssueId: string,
+  projectId: string,
+  issueId: string,
+  actor: WorkActor,
+) {
+  if (issueId === parentIssueId) throw new ProjectsError("self_parent");
+  const parent = await requireIssue(tx, parentIssueId, actor, ProjectAccessLevel.enum.read);
+  if (parent.projectId !== projectId) throw new ProjectsError("cross_project_parent");
+  if (parent.parentIssueId !== null) throw new ProjectsError("subtask_depth_exceeded");
+  return parent;
+}
+
+// #97: lock the project row first (global projects -> issues order) and then the issue and
+// its would-be parent in ascending id order, so two concurrent reparentings cannot both
+// read an old tree and commit a second level. The database trigger repeats the check under
+// the same locks for writers that bypass this service.
+async function lockSubtaskWrite(
+  tx: DbTransaction,
+  projectId: string,
+  issueId: string,
+  parentIssueId: string,
+) {
+  await lockProjectForMutation(tx, projectId);
+  await tx
+    .select({ id: issues.id })
+    .from(issues)
+    .where(inArray(issues.id, [issueId, parentIssueId].toSorted()))
+    .orderBy(issues.id)
+    .for("update");
+}
+
+// #97: all three subtree rules in one place, called under lockSubtaskWrite's locks.
+async function validateParent(
+  tx: DbTransaction,
+  projectId: string,
+  issueId: string,
+  parentIssueId: string,
+): Promise<void> {
+  if (issueId === parentIssueId) throw new ProjectsError("self_parent");
+  const [parent] = await tx
+    .select({ projectId: issues.projectId, parentIssueId: issues.parentIssueId })
+    .from(issues)
+    // #98: a trashed or purged issue is not a parent. It answers 404 like any issue that
+    // is no longer active, so an active issue can never point at a future tombstone.
+    .where(and(eq(issues.id, parentIssueId), isNull(issues.deletedAt)))
+    .limit(1);
+  if (parent === undefined) throw new ProjectsError("issue_not_found");
+  if (parent.projectId !== projectId) throw new ProjectsError("cross_project_parent");
+  if (parent.parentIssueId !== null) throw new ProjectsError("subtask_depth_exceeded");
+  const [child] = await tx
+    .select({ id: issues.id })
+    .from(issues)
+    .where(eq(issues.parentIssueId, issueId))
+    .limit(1);
+  if (child !== undefined) throw new ProjectsError("subtask_depth_exceeded");
 }
 
 // #84: resolve and validate an assignee in the caller's transaction. The locks are taken
@@ -1123,7 +1355,13 @@ async function requireKnowledge(
 type RecordActivityInput =
   | {
       projectId: string;
-      type: "project_created" | "project_renamed" | "project_fallback_policy_changed";
+      type:
+        | "project_created"
+        | "project_renamed"
+        | "project_fallback_policy_changed"
+        | "project_label_created"
+        | "project_label_edited"
+        | "project_label_deleted";
       actor: WorkActor;
       summary: string;
     }
@@ -1139,7 +1377,12 @@ type RecordActivityInput =
         | "issue_dependency_added"
         | "issue_dependency_removed"
         | "issue_link_added"
-        | "issue_link_removed";
+        | "issue_link_removed"
+        | "issue_label_added"
+        | "issue_label_removed"
+        | "issue_parent_changed"
+        | "issue_deleted"
+        | "issue_restored";
       actor: WorkActor;
       summary: string;
       issueId: string;
@@ -1368,9 +1611,16 @@ export type WorkSessionGate = (
   issueId: string,
 ) => Promise<boolean>;
 
+// #98: the work-sessions feature's narrow seam for trash writes. It materializes any
+// lapsed lease in the caller's already issue-locked transaction and answers whether a live
+// work session still holds the issue. Projects never opens a second transaction or grows a
+// second definition of "live".
+export type IssueSessionGate = (tx: DbTransaction, issueId: string) => Promise<boolean>;
+
 export interface ProjectsDeps {
   db: PostgresJsDatabase;
   sessionGate: WorkSessionGate;
+  issueSessionGate?: IssueSessionGate;
   // The inbox's deadline evaluation on the caller's already locked transaction. Optional
   // for standalone construction; the feature registry wires it in production. A policy
   // change calls it first so an already-due question cannot be re-projected under a new
@@ -1461,12 +1711,37 @@ export interface ProjectsService {
   ): Promise<Map<string, ProjectAccessLevel | null>>;
   listIssues(actor: WorkActor | null, projectId: string): Promise<Issue[]>;
   getIssue(actor: WorkActor | null, issueId: string): Promise<IssueDetail>;
+  // #98: trash lifecycle. Delete is human Contribute/Manage only and never available to
+  // agents; restore is human Manage only; the trash listing is Manage only. The sweep has
+  // no actor — it is a system task, but is exposed here so the exact database-time boundary
+  // can be driven by real-Postgres tests.
+  deleteIssue(actor: WorkActor | null, issueId: string): Promise<void>;
+  restoreIssue(actor: WorkActor | null, issueId: string): Promise<Issue>;
+  listTrash(actor: WorkActor | null, projectId: string): Promise<Issue[]>;
+  purgeExpiredTrash(): Promise<number>;
   createIssue(
     actor: WorkActor | null,
     projectId: string,
     input: CreateIssueRequest,
   ): Promise<Issue>;
   updateIssue(actor: WorkActor | null, issueId: string, input: UpdateIssueRequest): Promise<Issue>;
+  // Project-scoped labels (#97). Creating, editing, deleting and attaching need Contribute;
+  // listing needs Read. Attaching and detaching answer with the whole issue so a caller can
+  // see its labels in the same shape every issue reader returns.
+  listLabels(actor: WorkActor | null, projectId: string): Promise<ProjectLabel[]>;
+  createLabel(
+    actor: WorkActor | null,
+    projectId: string,
+    input: CreateProjectLabelRequest,
+  ): Promise<ProjectLabel>;
+  updateLabel(
+    actor: WorkActor | null,
+    labelId: string,
+    input: UpdateProjectLabelRequest,
+  ): Promise<ProjectLabel>;
+  deleteLabel(actor: WorkActor | null, labelId: string): Promise<void>;
+  attachLabel(actor: WorkActor | null, issueId: string, labelId: string): Promise<Issue>;
+  detachLabel(actor: WorkActor | null, issueId: string, labelId: string): Promise<Issue>;
   // Directed blocked_by edges (#86). Modifying an edge needs Contribute; either direction
   // can be listed with Read. Both issues must be in the same project.
   addBlockedBy(
@@ -1511,15 +1786,27 @@ export interface ProjectsService {
 export function createProjectsService({
   db,
   sessionGate,
+  issueSessionGate = async () => false,
   evaluateQuestionDeadline,
 }: ProjectsDeps): ProjectsService {
   // The one issue listing, borrowed by the blocked_by readers so a relation resolves to the
   // same Issue shape every other listing returns. Dependency edges live in one project, so
   // listing by that project and selecting the related ids keeps both reads in one place.
-  async function readIssues(actor: WorkActor, projectId: string): Promise<Issue[]> {
+  async function readIssues(
+    actor: WorkActor,
+    projectId: string,
+    scope: "active" | "trash" = "active",
+  ): Promise<Issue[]> {
     return db.transaction(
       async (tx) => {
-        await requireProject(tx, projectId, actor, ProjectAccessLevel.enum.read);
+        // Listing trash is a project-manager operation; an ordinary issue listing only
+        // needs Read. The higher gate keeps trashed titles out of a contributor's view.
+        await requireProject(
+          tx,
+          projectId,
+          actor,
+          scope === "trash" ? ProjectAccessLevel.enum.manage : ProjectAccessLevel.enum.read,
+        );
         const rows = await tx
           .select({ ...issueColumns, projectFallbackPolicy: projects.fallbackPolicy })
           .from(issues)
@@ -1536,9 +1823,24 @@ export function createProjectsService({
             assigneeAgent,
             and(eq(assigneeAgent.id, issues.assigneeId), eq(issues.assigneeType, "agent")),
           )
-          .where(eq(issues.projectId, projectId))
+          .where(
+            scope === "trash"
+              ? and(
+                  eq(issues.projectId, projectId),
+                  isNotNull(issues.deletedAt),
+                  isNull(issues.purgedAt),
+                  // An un-swept item past its window is effectively purged: showing it
+                  // here would offer a restore that can only fail with issue_purged.
+                  gt(issues.deletedAt, THIRTY_DAYS_AGO),
+                )
+              : and(eq(issues.projectId, projectId), isNull(issues.deletedAt)),
+          )
           .orderBy(...issueBoardOrder);
-        return rows.map(toIssue);
+        const labels = await loadLabelsForIssues(
+          tx,
+          rows.map((row) => row.id),
+        );
+        return rows.map((row) => toIssue(row, labels.get(row.id) ?? []));
       },
       { accessMode: "read only" },
     );
@@ -1776,6 +2078,7 @@ export function createProjectsService({
           .where(
             and(
               eq(issues.projectId, projectId),
+              isNull(issues.deletedAt),
               eq(questions.status, "open"),
               lte(questions.responseDeadlineAt, sql`statement_timestamp()`),
             ),
@@ -1834,7 +2137,9 @@ export function createProjectsService({
         if (loosens && !projectAccessAtLeast(current.accessLevel, ProjectAccessLevel.enum.manage)) {
           throw new ProjectsError("insufficient_project_access");
         }
-        if (current.fallbackPolicyOverride === override) return toIssue(current);
+        if (current.fallbackPolicyOverride === override) {
+          return toIssue(current, await loadIssueLabels(tx, issueId));
+        }
         const [updated] = await tx
           .update(issues)
           .set({
@@ -1851,7 +2156,10 @@ export function createProjectsService({
           issueId,
           summary: `Fallback policy override ${override === null ? "cleared" : `set to ${override}`}`,
         });
-        return toIssue({ ...current, fallbackPolicyOverride: updated.fallbackPolicyOverride });
+        return toIssue(
+          { ...current, fallbackPolicyOverride: updated.fallbackPolicyOverride },
+          await loadIssueLabels(tx, issueId),
+        );
       });
     },
 
@@ -2089,10 +2397,167 @@ export function createProjectsService({
       return db.transaction(
         async (tx) => {
           const issue = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.read);
-          return { ...toIssue(issue), links: await loadIssueLinks(tx, issueId) };
+          const labels = await loadIssueLabels(tx, issueId);
+          return { ...toIssue(issue, labels), links: await loadIssueLinks(tx, issueId) };
         },
         { accessMode: "read only" },
       );
+    },
+
+    async deleteIssue(actorArg, issueId) {
+      const actor = requireActor(actorArg);
+      // Agents never get a delete tool and never pass this gate: a bearer key cannot
+      // trash an issue even when its project level is Manage.
+      if (actor.kind !== "human") throw new ProjectsError("agents_cannot_delete_issues");
+      return db.transaction(async (tx) => {
+        // Authorize and locate through the ordinary read gate first: an already trashed
+        // issue answers 404, and no lock is held while the access joins run.
+        await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
+        await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .limit(1)
+          .for("update");
+        // A lapsed lease is materialized and an active live claim blocks the delete. Both
+        // decisions run under the issue lock in database time, matching work sessions.
+        if (await issueSessionGate(tx, issueId)) {
+          throw new ProjectsError("issue_active_session_exists");
+        }
+        const current = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
+        await tx
+          .update(issues)
+          .set({
+            deletedAt: sql`statement_timestamp()`,
+            deletedByHumanId: actor.account.humanId,
+            updatedAt: sql`statement_timestamp()`,
+          })
+          .where(eq(issues.id, issueId));
+        await recordActivity(tx, {
+          projectId: current.projectId,
+          type: "issue_deleted",
+          actor,
+          issueId,
+          summary: current.title,
+        });
+      });
+    },
+
+    async restoreIssue(actorArg, issueId) {
+      const actor = requireActor(actorArg);
+      // Restore is the Project manager's decision. An agent has no such authority, and a
+      // human below Manage answers 403 through requireIssue's level gate below.
+      if (actor.kind !== "human") throw new ProjectsError("insufficient_project_access");
+      return db.transaction(async (tx) => {
+        await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.manage, true);
+        await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .limit(1)
+          .for("update");
+        const current = await requireIssue(
+          tx,
+          issueId,
+          actor,
+          ProjectAccessLevel.enum.manage,
+          true,
+        );
+        if (current.deletedAt === null) throw new ProjectsError("issue_not_found");
+        // Both the purged flag and the raw database-time boundary refuse a restore: the
+        // sweep may not have run yet, but a 30-day-old tombstone is already final.
+        const [expired] = await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), sql`${issues.deletedAt} <= ${THIRTY_DAYS_AGO}`))
+          .limit(1);
+        if (current.purgedAt !== null || expired !== undefined) {
+          throw new ProjectsError("issue_purged");
+        }
+        const [restored] = await tx
+          .update(issues)
+          .set({
+            deletedAt: null,
+            deletedByHumanId: null,
+            updatedAt: sql`statement_timestamp()`,
+          })
+          .where(eq(issues.id, issueId))
+          .returning({ updatedAt: issues.updatedAt });
+        if (restored === undefined) throw new ProjectsError("issue_not_found");
+        await recordActivity(tx, {
+          projectId: current.projectId,
+          type: "issue_restored",
+          actor,
+          issueId,
+          summary: current.title,
+        });
+        return toIssue(
+          { ...current, updatedAt: restored.updatedAt },
+          await loadIssueLabels(tx, issueId),
+        );
+      });
+    },
+
+    async listTrash(actorArg, projectId) {
+      const actor = requireActor(actorArg);
+      // "Project manager" is a human role (GLOSSARY): an agent key never reads trash,
+      // even when its level is Manage, before any project scope is revealed.
+      if (actor.kind !== "human") throw new ProjectsError("insufficient_project_access");
+      return readIssues(actor, projectId, "trash");
+    },
+
+    async purgeExpiredTrash() {
+      // A system sweep has no actor. Everything runs in one transaction so a tombstone is
+      // never seen half scrubbed, and the issues row itself is never deleted: project
+      // activity's issue FK and the project's ORR-N numbering stay intact.
+      return db.transaction(async (tx) => {
+        const expired = await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(
+            and(
+              isNotNull(issues.deletedAt),
+              isNull(issues.purgedAt),
+              sql`${issues.deletedAt} <= ${THIRTY_DAYS_AGO}`,
+            ),
+          )
+          .orderBy(issues.id);
+        const expiredIds = expired.map((row) => row.id);
+        for (const row of expired) {
+          await tx.delete(issueComments).where(eq(issueComments.issueId, row.id));
+          await tx.delete(issueLinks).where(eq(issueLinks.issueId, row.id));
+          await tx.delete(issueLabels).where(eq(issueLabels.issueId, row.id));
+          await tx
+            .delete(issueDependencies)
+            .where(
+              or(
+                eq(issueDependencies.issueId, row.id),
+                eq(issueDependencies.blockedByIssueId, row.id),
+              ),
+            );
+          await tx
+            .update(issues)
+            .set({
+              title: "[deleted]",
+              body: "",
+              parentIssueId: null,
+              assigneeType: null,
+              assigneeId: null,
+              purgedAt: sql`statement_timestamp()`,
+            })
+            .where(eq(issues.id, row.id));
+        }
+        // A live subtask must never keep pointing at a scrubbed [deleted] tombstone. Clear
+        // the link in the same transaction; the child stays a full, independently claimable
+        // issue, and the tombstone row it pointed at is not removed.
+        if (expiredIds.length > 0) {
+          await tx
+            .update(issues)
+            .set({ parentIssueId: null })
+            .where(inArray(issues.parentIssueId, expiredIds));
+        }
+        return expired.length;
+      });
     },
 
     // The project row is updated before the issue is inserted: the row lock serializes
@@ -2118,12 +2583,23 @@ export function createProjectsService({
         // triage staging area. A terminal status at creation still gets closed_at so the
         // database invariant holds, even though callers normally reach it via a transition.
         const status = input.status ?? IssueStatus.enum.todo;
+        const parentIssueId = input.parentIssueId ?? null;
+        if (parentIssueId !== null) {
+          // Resolve and authorize the target BEFORE locking it: an unreadable parent must
+          // answer 404 rather than reveal itself as a cross-project conflict.
+          await requireParent(tx, parentIssueId, projectId, id, actor);
+          // The counter update above already holds the project row. Lock the parent issue
+          // too, then validate every subtree rule under that lock.
+          await lockSubtaskWrite(tx, projectId, id, parentIssueId);
+          await validateParent(tx, projectId, id, parentIssueId);
+        }
         const [created] = await tx
           .insert(issues)
           .values({
             id,
             projectId,
             number: counter.number,
+            parentIssueId,
             title: input.title,
             body: input.body ?? "",
             status,
@@ -2171,6 +2647,8 @@ export function createProjectsService({
           sortOrder: created.sortOrder,
           needsInput: false,
           assignee: null,
+          parentIssueId,
+          labels: [],
           createdAt: created.createdAt.toISOString(),
           updatedAt: created.updatedAt.toISOString(),
           closedAt: created.closedAt === null ? null : created.closedAt.toISOString(),
@@ -2192,7 +2670,7 @@ export function createProjectsService({
       const target = await db.transaction(
         async (tx) => {
           const issue = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
-          return { workspaceId: issue.workspaceId };
+          return { workspaceId: issue.workspaceId, projectId: issue.projectId };
         },
         { accessMode: "read only" },
       );
@@ -2205,8 +2683,30 @@ export function createProjectsService({
             : await validateAssignee(tx, target.workspaceId, input.assignee);
         // Serialize concurrent updates to the same issue so two PATCHes cannot lose
         // each other's changes or diverge the activity feed from the issue's status.
-        await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issueId)).for("update");
+        // #97: setting a parent also locks the project row first and both issue rows in
+        // ascending id order, matching the global projects -> issues lock order so two
+        // reparentings cannot race past the depth check.
+        const requestedParent = input.parentIssueId;
+        if (requestedParent !== undefined && requestedParent !== null) {
+          // The read gate runs first, so a parent in a workspace the caller cannot read
+          // answers 404 and its row is never locked.
+          await requireParent(tx, requestedParent, target.projectId, issueId, actor);
+          await lockSubtaskWrite(tx, target.projectId, issueId, requestedParent);
+        } else {
+          await tx
+            .select({ id: issues.id })
+            .from(issues)
+            .where(eq(issues.id, issueId))
+            .for("update");
+        }
         const current = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
+        let parentChanged = false;
+        if (requestedParent !== undefined && requestedParent !== null) {
+          await validateParent(tx, current.projectId, issueId, requestedParent);
+          parentChanged = requestedParent !== current.parentIssueId;
+        } else if (requestedParent === null) {
+          parentChanged = current.parentIssueId !== null;
+        }
         // #84: the access precheck and the assignee validation ran in separate committed
         // transactions. A project transfer that committed between them may have moved the
         // issue to another workspace; recheck under the issue lock so a source-workspace
@@ -2251,9 +2751,10 @@ export function createProjectsService({
           !statusChanged &&
           !priorityChanged &&
           !orderChanged &&
-          !assigneeChanged
+          !assigneeChanged &&
+          !parentChanged
         ) {
-          return toIssue(current);
+          return toIssue(current, await loadIssueLabels(tx, issueId));
         }
 
         const terminalNow = isTerminalIssueStatus(status);
@@ -2275,6 +2776,8 @@ export function createProjectsService({
             sortOrder,
             assigneeType,
             assigneeId,
+            // Omitting the field keeps the current parent; an explicit null clears it.
+            parentIssueId: requestedParent === undefined ? current.parentIssueId : requestedParent,
             updatedByHumanId: humanIdOf(actor),
             updatedByAgentId: agentIdOf(actor),
             updatedAt: sql`statement_timestamp()`,
@@ -2311,6 +2814,15 @@ export function createProjectsService({
             summary: title,
           });
         }
+        if (parentChanged) {
+          await recordActivity(tx, {
+            projectId: current.projectId,
+            type: "issue_parent_changed",
+            actor,
+            issueId,
+            summary: title,
+          });
+        }
         return {
           id: current.id,
           projectId: current.projectId,
@@ -2327,6 +2839,8 @@ export function createProjectsService({
               ? null
               : resolvedAssignee
             : assigneeFromRow(current),
+          parentIssueId: requestedParent === undefined ? current.parentIssueId : requestedParent,
+          labels: await loadIssueLabels(tx, issueId),
           createdAt: current.createdAt.toISOString(),
           updatedAt: updated.updatedAt.toISOString(),
           closedAt: updated.closedAt === null ? null : updated.closedAt.toISOString(),
@@ -2813,6 +3327,228 @@ export function createProjectsService({
           ),
           updatedBy: actorForWrite(actor),
         };
+      });
+    },
+
+    // --- Project-scoped labels (#97) -------------------------------------------------
+    // A label is project metadata, like a comment or a knowledge entry: creating or
+    // attaching it needs Contribute, listing needs Read, and no live work session fences it.
+
+    async listLabels(actorArg, projectId) {
+      const actor = requireActor(actorArg);
+      return db.transaction(
+        async (tx) => {
+          await requireProject(tx, projectId, actor, ProjectAccessLevel.enum.read);
+          const rows = await tx
+            .select(labelColumns)
+            .from(projectLabels)
+            .leftJoin(labelCreator, eq(labelCreator.id, projectLabels.createdByHumanId))
+            .leftJoin(labelAgentCreator, eq(labelAgentCreator.id, projectLabels.createdByAgentId))
+            .where(eq(projectLabels.projectId, projectId))
+            .orderBy(projectLabels.name, projectLabels.id);
+          return rows.map(toProjectLabel);
+        },
+        { accessMode: "read only" },
+      );
+    },
+
+    async createLabel(actorArg, projectId, input) {
+      const actor = requireActor(actorArg);
+      return db.transaction(async (tx) => {
+        await requireProject(tx, projectId, actor, ProjectAccessLevel.enum.contribute);
+        // A friendly check gives a stable code even before the expression index is reached;
+        // the index and the catch below decide a race between two concurrent creators.
+        const [existing] = await tx
+          .select({ id: projectLabels.id })
+          .from(projectLabels)
+          .where(
+            and(
+              eq(projectLabels.projectId, projectId),
+              sql`lower(${projectLabels.name}) = lower(${input.name})`,
+            ),
+          )
+          .limit(1);
+        if (existing !== undefined) throw new ProjectsError("label_exists");
+        const id = randomUUID();
+        let created:
+          | {
+              id: string;
+              projectId: string;
+              name: string;
+              color: string;
+              createdAt: Date;
+              updatedAt: Date;
+            }
+          | undefined;
+        try {
+          [created] = await tx
+            .insert(projectLabels)
+            .values({
+              id,
+              projectId,
+              name: input.name,
+              color: input.color,
+              createdByHumanId: humanIdOf(actor),
+              createdByAgentId: agentIdOf(actor),
+              createdAt: sql`statement_timestamp()`,
+              updatedAt: sql`statement_timestamp()`,
+            })
+            .returning({
+              id: projectLabels.id,
+              projectId: projectLabels.projectId,
+              name: projectLabels.name,
+              color: projectLabels.color,
+              createdAt: projectLabels.createdAt,
+              updatedAt: projectLabels.updatedAt,
+            });
+        } catch (error) {
+          if (uniqueConstraintName(error) === "one_label_name_per_project") {
+            throw new ProjectsError("label_exists");
+          }
+          throw error;
+        }
+        if (created === undefined) throw new Error("the label was not created");
+        await recordActivity(tx, {
+          projectId,
+          type: "project_label_created",
+          actor,
+          summary: created.name,
+        });
+        return {
+          id: created.id,
+          projectId: created.projectId,
+          name: created.name,
+          color: created.color,
+          createdAt: created.createdAt.toISOString(),
+          updatedAt: created.updatedAt.toISOString(),
+          createdBy: actorForWrite(actor),
+        };
+      });
+    },
+
+    async updateLabel(actorArg, labelId, input) {
+      const actor = requireActor(actorArg);
+      return db.transaction(async (tx) => {
+        await tx
+          .select({ id: projectLabels.id })
+          .from(projectLabels)
+          .where(eq(projectLabels.id, labelId))
+          .for("update");
+        const current = await requireLabel(tx, labelId, actor, ProjectAccessLevel.enum.contribute);
+        const name = input.name ?? current.name;
+        const color = input.color ?? current.color;
+        if (name === current.name && color === current.color) return toProjectLabel(current);
+        let updated: { updatedAt: Date } | undefined;
+        try {
+          [updated] = await tx
+            .update(projectLabels)
+            .set({
+              name,
+              color,
+              updatedAt: sql`statement_timestamp()`,
+            })
+            .where(eq(projectLabels.id, labelId))
+            .returning({ updatedAt: projectLabels.updatedAt });
+        } catch (error) {
+          if (uniqueConstraintName(error) === "one_label_name_per_project") {
+            throw new ProjectsError("label_exists");
+          }
+          throw error;
+        }
+        if (updated === undefined) throw new ProjectsError("label_not_found");
+        await recordActivity(tx, {
+          projectId: current.projectId,
+          type: "project_label_edited",
+          actor,
+          summary: name,
+        });
+        return {
+          ...toProjectLabel(current),
+          name,
+          color,
+          updatedAt: updated.updatedAt.toISOString(),
+        };
+      });
+    },
+
+    async deleteLabel(actorArg, labelId) {
+      const actor = requireActor(actorArg);
+      return db.transaction(async (tx) => {
+        const current = await requireLabel(tx, labelId, actor, ProjectAccessLevel.enum.contribute);
+        // The DELETE's row count is the commit decision: a concurrent delete that won the
+        // race leaves nothing for this transaction, so it must not write a second event.
+        const deleted = await tx
+          .delete(projectLabels)
+          .where(eq(projectLabels.id, labelId))
+          .returning({ id: projectLabels.id });
+        if (deleted.length === 0) throw new ProjectsError("label_not_found");
+        await recordActivity(tx, {
+          projectId: current.projectId,
+          type: "project_label_deleted",
+          actor,
+          summary: current.name,
+        });
+      });
+    },
+
+    // A label on a foreign project answers exactly like a missing one: the caller is
+    // already authorized on the issue's project and learns nothing about the other.
+    async attachLabel(actorArg, issueId, labelId) {
+      const actor = requireActor(actorArg);
+      return db.transaction(async (tx) => {
+        const issue = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
+        const [label] = await tx
+          .select({ projectId: projectLabels.projectId, name: projectLabels.name })
+          .from(projectLabels)
+          .where(eq(projectLabels.id, labelId))
+          .limit(1);
+        if (label === undefined || label.projectId !== issue.projectId) {
+          throw new ProjectsError("label_not_found");
+        }
+        const inserted = await tx
+          .insert(issueLabels)
+          .values({ issueId, labelId })
+          .onConflictDoNothing()
+          .returning({ labelId: issueLabels.labelId });
+        if (inserted.length > 0) {
+          await recordActivity(tx, {
+            projectId: issue.projectId,
+            type: "issue_label_added",
+            actor,
+            issueId,
+            summary: `${issue.title} labelled ${label.name}`,
+          });
+        }
+        return { ...toIssue(issue, await loadIssueLabels(tx, issueId)) };
+      });
+    },
+
+    async detachLabel(actorArg, issueId, labelId) {
+      const actor = requireActor(actorArg);
+      return db.transaction(async (tx) => {
+        const issue = await requireIssue(tx, issueId, actor, ProjectAccessLevel.enum.contribute);
+        const [label] = await tx
+          .select({ projectId: projectLabels.projectId, name: projectLabels.name })
+          .from(projectLabels)
+          .where(eq(projectLabels.id, labelId))
+          .limit(1);
+        if (label === undefined || label.projectId !== issue.projectId) {
+          throw new ProjectsError("label_not_found");
+        }
+        const removed = await tx
+          .delete(issueLabels)
+          .where(and(eq(issueLabels.issueId, issueId), eq(issueLabels.labelId, labelId)))
+          .returning({ labelId: issueLabels.labelId });
+        if (removed.length > 0) {
+          await recordActivity(tx, {
+            projectId: issue.projectId,
+            type: "issue_label_removed",
+            actor,
+            issueId,
+            summary: `${issue.title} unlabelled ${label.name}`,
+          });
+        }
+        return { ...toIssue(issue, await loadIssueLabels(tx, issueId)) };
       });
     },
   };

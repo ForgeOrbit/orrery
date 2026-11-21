@@ -1,6 +1,7 @@
 // Public interface of the projects feature. Other code imports only this file.
 import type { ProjectAccessLevel } from "@orrery/contract";
 import type { Feature } from "../../platform/feature.ts";
+import type { Logger } from "../../platform/log.ts";
 import type { DbTransaction } from "../../platform/db.ts";
 import type { SessionReader } from "../accounts/index.ts";
 import type { AgentAuthenticator } from "../agents/index.ts";
@@ -16,7 +17,7 @@ import { createProjectsRest, routes } from "./rest.ts";
 export { routes as projectsRoutes };
 export { projectAccessAtLeast } from "./service.ts";
 export { ProjectsError } from "./service.ts";
-export type { ProjectsErrorKind, WorkActor, WorkSessionGate } from "./service.ts";
+export type { IssueSessionGate, ProjectsErrorKind, WorkActor, WorkSessionGate } from "./service.ts";
 
 export type ProjectsDepsWithAccounts = ProjectsDeps & {
   sessionReader: SessionReader;
@@ -26,6 +27,9 @@ export type ProjectsDepsWithAccounts = ProjectsDeps & {
   // The work-sessions feature fences agent issue edits on a live session. Late-bound in
   // features/index.ts so the two features need not import each other.
   sessionGate: WorkSessionGate;
+  // The same feature's trash gate: expire a lapsed lease, then report a live claim.
+  issueSessionGate?: ProjectsDeps["issueSessionGate"];
+  log?: Logger;
 };
 
 // The feature also exposes the access cleanup a workspace membership removal needs. It
@@ -35,6 +39,10 @@ export interface ProjectsFeature extends Feature {
   // The service is internal to this feature but exposed for same-project feature tests;
   // the type is deliberately not re-exported from this index.
   service: ProjectsService;
+  // #98: the 30-day tombstone sweep, exposed for real-Postgres tests that drive the
+  // database-time boundary directly instead of waiting a month.
+  purgeExpiredTrash(): Promise<number>;
+  startBackgroundTasks(): void;
   revokeMemberProjectAccess(
     tx: DbTransaction,
     workspaceId: string,
@@ -67,6 +75,20 @@ export function createProjectsFeature(deps: ProjectsDepsWithAccounts): ProjectsF
     // The project-work tools belong to this feature: they call its own service and only
     // borrow an authenticator from agents, not the agents service itself.
     registerTools: createProjectsMcp(service, deps.agentAuthenticator),
+    purgeExpiredTrash: () => service.purgeExpiredTrash(),
+    startBackgroundTasks: () => {
+      // An unref'd hourly timer keeps the process alive only while it is serving; the
+      // sweep itself is one transaction and is safe to run concurrently with requests.
+      const timer = setInterval(
+        () => {
+          void service.purgeExpiredTrash().catch((error: unknown) => {
+            deps.log?.warn("trash purge sweep failed", { error: String(error) });
+          });
+        },
+        60 * 60 * 1000,
+      );
+      timer.unref();
+    },
     revokeMemberProjectAccess: (tx, workspaceId, humanId, actorHumanId) =>
       service.revokeMemberProjectAccess(tx, workspaceId, humanId, actorHumanId),
     applyInvitationGrants: (tx, workspaceId, humanId, grantedByHumanId, offered) =>

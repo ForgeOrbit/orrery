@@ -1,9 +1,9 @@
 # Orrery docs
 
-> **Orrery is in its design phase.** There is no product code yet, so there is nothing to install
-> or configure. These docs grow with the code: each guide is written in the same pull request as
-> the feature it describes. Until then, the plan lives in the
-> [MVP overview](https://github.com/forge-orbit/orrery/issues/8).
+> **Status:** the MVP is runnable today — M0, M1 and the core of M2–M4 ship in the product. The
+> [Shared vault (M5, #6)](https://github.com/forge-orbit/orrery/issues/6) and
+> [Release polish (M6, #7)](https://github.com/forge-orbit/orrery/issues/7) are next. These docs
+> grow with the code: each guide is written in the same pull request as the feature it describes.
 
 Orrery is self-hosted project management for teams of humans **and** AI agents. Agents such as
 Claude Code, Codex and Cursor run on each team member's machine, connect to your Orrery server over

@@ -103,6 +103,18 @@ export const ProjectActivityType = z
     "issue_question_follow_up",
     "issue_fallback_policy_override_changed",
     "issue_stop_requested",
+    // #97: label metadata changes are project events; attaching, detaching and reparenting
+    // are issue events, so the prefix keeps each event's target column consistent.
+    "project_label_created",
+    "project_label_edited",
+    "project_label_deleted",
+    "issue_label_added",
+    "issue_label_removed",
+    "issue_parent_changed",
+    // #98: trash lifecycle events. Both carry the issue as their target, so the prefix
+    // keeps project_activity_target_matches_type consistent with every other issue event.
+    "issue_deleted",
+    "issue_restored",
     "knowledge_created",
     "knowledge_edited",
   ])
@@ -232,6 +244,51 @@ export const ProjectAccessEventType = z
   .meta({ id: "ProjectAccessEventType" });
 export type ProjectAccessEventType = z.infer<typeof ProjectAccessEventType>;
 
+// A project-scoped label (#97). Names are unique per project ignoring case; the service and
+// the database's expression index both enforce that. A color is a six-digit hex value so a
+// client can render a consistent badge without parsing arbitrary CSS.
+export const LabelColor = z
+  .string()
+  .regex(/^#[0-9a-fA-F]{6}$/, "Use a six-digit hex color such as #ff0000.")
+  .meta({ id: "LabelColor" });
+export type LabelColor = z.infer<typeof LabelColor>;
+
+export const ProjectLabel = z
+  .object({
+    id: z.string(),
+    projectId: z.string(),
+    name: z.string(),
+    color: LabelColor,
+    createdAt: Timestamp,
+    updatedAt: Timestamp,
+    createdBy: Actor,
+  })
+  .meta({ id: "ProjectLabel" });
+export type ProjectLabel = z.infer<typeof ProjectLabel>;
+
+export const ProjectLabelsResponse = z
+  .array(ProjectLabel)
+  .meta({ id: "ProjectLabelsResponse" });
+export type ProjectLabelsResponse = z.infer<typeof ProjectLabelsResponse>;
+
+export const CreateProjectLabelRequest = z
+  .object({
+    name: z.string().trim().min(1, "Name the label.").max(50),
+    color: LabelColor,
+  })
+  .meta({ id: "CreateProjectLabelRequest" });
+export type CreateProjectLabelRequest = z.infer<typeof CreateProjectLabelRequest>;
+
+// Both fields are optional so a partial edit can change just one; a request that changes
+// nothing answers with the label unchanged and records no activity.
+export const UpdateProjectLabelRequest = z
+  .object({
+    name: z.string().trim().min(1, "Name the label.").max(50).optional(),
+    color: LabelColor.optional(),
+  })
+  .meta({ id: "UpdateProjectLabelRequest" });
+export type UpdateProjectLabelRequest = z.infer<typeof UpdateProjectLabelRequest>;
+
 // An issue as its readers see it. `number` is the project-local issue number (1, 2, …),
 // not a global identity; the id is the stable one. `identifier` is the human-readable
 // `<PROJECT_KEY>-<NUMBER>` form (#95) carried alongside them; `closedAt` is set exactly
@@ -262,6 +319,11 @@ export const Issue = z
     // means "use the project's policy"; effectiveFallbackPolicy is never null.
     fallbackPolicyOverride: FallbackPolicyOverride,
     effectiveFallbackPolicy: FallbackPolicy,
+    // #97: an optional one-level parent in the same project, and the project-scoped labels
+    // attached to this issue (empty when none). A subtask is a full, claimable issue; its
+    // parent is never an ordering edge — only blocked_by is.
+    parentIssueId: z.string().nullable(),
+    labels: z.array(ProjectLabel),
   })
   .meta({ id: "Issue" });
 export type Issue = z.infer<typeof Issue>;
@@ -331,6 +393,9 @@ export const CreateIssueRequest = z
     status: IssueStatus.optional(),
     priority: IssuePriority.optional(),
     sortOrder: IssueSortOrder.optional(),
+    // #97: create a subtask directly. The service resolves the parent in this project and
+    // refuses a self-parent, a foreign parent, or a parent that already has one.
+    parentIssueId: z.string().trim().min(1).max(200).nullable().optional(),
   })
   .meta({ id: "CreateIssueRequest" });
 export type CreateIssueRequest = z.infer<typeof CreateIssueRequest>;
@@ -348,6 +413,8 @@ export const UpdateIssueRequest = z
     // Set or clear assignment (#84). Omitting the field leaves it unchanged; an explicit
     // null clears it. Only Contribute and Manage may change it, just like other issue edits.
     assignee: Assignee.nullable().optional(),
+    // #97: set or clear the one-level parent; omitting the field leaves it unchanged.
+    parentIssueId: z.string().trim().min(1).max(200).nullable().optional(),
   })
   .meta({ id: "UpdateIssueRequest" });
 export type UpdateIssueRequest = z.infer<typeof UpdateIssueRequest>;

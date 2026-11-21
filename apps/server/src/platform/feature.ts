@@ -11,4 +11,7 @@ export interface Feature {
   // passed in so a tool adapter can read its Authorization header; the platform never
   // interprets credentials or imports a feature to do it.
   registerTools?: (server: McpServer, request: Request) => void;
+  // An optional recurring maintenance task (for example #98's 30-day trash sweep). The
+  // platform starts it once at boot; the feature owns the work and its error handling.
+  startBackgroundTasks?: () => void;
 }

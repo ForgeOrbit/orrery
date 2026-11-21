@@ -8,10 +8,11 @@ import { createAccountsFeature, accountsRoutes } from "./accounts/index.ts";
 import { createAgentsFeature, agentsRoutes, revokeMemberWorkspaceKeys } from "./agents/index.ts";
 import { createDeactivationFeature, deactivationRoutes } from "./deactivation/index.ts";
 import type { AgentAuthenticator } from "./agents/index.ts";
-import type { WorkSessionGate } from "./projects/index.ts";
+import type { IssueSessionGate, WorkSessionGate } from "./projects/index.ts";
 import { createHistoryFeature, historyRoutes } from "./history/index.ts";
 import { createInboxFeature, inboxRoutes } from "./inbox/index.ts";
 import { createInvitationsFeature, invitationsRoutes } from "./invitations/index.ts";
+import { createMyWorkFeature, myWorkRoutes } from "./my-work/index.ts";
 import { createOwnershipFeature, ownershipRoutes } from "./ownership/index.ts";
 import { createProjectsFeature, projectAccessAtLeast, projectsRoutes } from "./projects/index.ts";
 import { createRecoveryFeature, recoveryRoutes } from "./recovery/index.ts";
@@ -56,6 +57,11 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     if (sessionGate === undefined) throw new Error("work session gate is not wired");
     return sessionGate(tx, agentId, workspaceId, issueId);
   };
+  let trashSessionGate: IssueSessionGate | undefined;
+  const issueSessionGate: IssueSessionGate = (tx, issueId) => {
+    if (trashSessionGate === undefined) throw new Error("trash session gate is not wired");
+    return trashSessionGate(tx, issueId);
+  };
   // Work sessions borrow the question deadline and the atomic deadline evaluation from
   // the inbox feature on its already issue-locked transaction, so a check-in cannot renew a
   // claim past the one-hour deadline. Both seams are filled once the inbox is built.
@@ -76,9 +82,11 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     sessionReader: accounts.sessionReader,
     agentAuthenticator,
     sessionGate: workSessionGate,
+    issueSessionGate,
     // A policy change freezes already-due questions through the same inbox seam a
     // check-in uses; the closure is live by the time any request reaches a policy route.
     evaluateQuestionDeadline: evaluateDeadline,
+    log,
   });
   const agents = createAgentsFeature({
     db: database.db,
@@ -103,6 +111,9 @@ export function createFeatures(database: Database, config: Config, log: Logger):
   });
   sessionGate = (tx, agentId, workspaceId, issueId) =>
     sessions.agentHoldsSession(tx, agentId, workspaceId, issueId);
+  // #98: the trash delete gate is the same live-claim decision, late-bound for the same
+  // reason — projects is built before work sessions but only needs this one function.
+  trashSessionGate = (tx, issueId) => sessions.issueHasLiveSession(tx, issueId);
   // The inbox is built after work sessions (it reuses the same agent session gate) and
   // fills the two deadline seams the sessions service calls on its locked transaction.
   const inbox = createInboxFeature({
@@ -195,6 +206,15 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     }),
     sessions,
     inbox,
+    // My work is one human-only read over the same access resolver projects lends every
+    // feature. It never authenticates an agent key and writes nothing.
+    createMyWorkFeature({
+      db: database.db,
+      sessionReader: accounts.sessionReader,
+      projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
+        projects.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
+      projectAccessAtLeast,
+    }),
     // Transfer rechecks source and destination authority in one transaction. It borrows
     // only the human session reader; no agent key or MCP tool performs an ownership move.
     createTransfersFeature({
@@ -220,5 +240,6 @@ export const routes = [
   ...runsRoutes,
   ...sessionsRoutes,
   ...inboxRoutes,
+  ...myWorkRoutes,
   ...transfersRoutes,
 ];

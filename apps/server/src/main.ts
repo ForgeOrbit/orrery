@@ -26,8 +26,12 @@ for (const warning of [
   log.warn(warning);
 }
 
+const features = createFeatures(database, config, log);
+// #98: start each feature's recurring maintenance (the 30-day trash sweep) once at boot.
+for (const feature of features) feature.startBackgroundTasks?.();
+
 const app = createApp({
-  features: createFeatures(database, config, log),
+  features,
   publicUrl: config.PUBLIC_URL,
   webDist: config.WEB_DIST,
   log,
