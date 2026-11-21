@@ -847,4 +847,34 @@ describe("notifications", () => {
       notificationsService.list(humanActor(f.owner), { cursor: "not-a-base64-cursor" }),
     ).rejects.toMatchObject({ kind: "invalid_cursor" });
   });
+
+  it("preserves sub-millisecond ordering across keyset pages without skipping same-millisecond rows", async () => {
+    const f = await bootstrap();
+    for (let index = 0; index < 2; index++) {
+      const issue = await newIssue(f);
+      await claim(f, issue.id);
+      await sessions.stop({ kind: "agent", identity: f.identity }, issue.id, "review");
+    }
+    const existing = await notificationsService.list(humanActor(f.owner));
+    expect(existing.items).toHaveLength(2);
+    const [firstId, secondId] = existing.items.map((item) => item.id);
+    // Two notifications in the exact same millisecond, differing only in microseconds.
+    await database.db.execute(
+      sql`update notifications set created_at = '2026-11-21T12:00:00.123456Z'::timestamptz where id = ${firstId!}`,
+    );
+    await database.db.execute(
+      sql`update notifications set created_at = '2026-11-21T12:00:00.123100Z'::timestamptz where id = ${secondId!}`,
+    );
+
+    const page1 = await notificationsService.list(humanActor(f.owner), { limit: 1 });
+    expect(page1.items.map((item) => item.id)).toEqual([firstId]);
+    expect(page1.nextCursor).not.toBeNull();
+
+    const page2 = await notificationsService.list(humanActor(f.owner), {
+      limit: 1,
+      cursor: page1.nextCursor,
+    });
+    expect(page2.items.map((item) => item.id)).toEqual([secondId]);
+    expect(page2.nextCursor).toBeNull();
+  });
 });

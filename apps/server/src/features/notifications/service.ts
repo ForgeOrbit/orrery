@@ -85,11 +85,10 @@ export interface NotificationsService {
 const Cursor = z.object({ createdAt: z.iso.datetime(), id: z.string().min(1) });
 type Cursor = z.infer<typeof Cursor>;
 
-const encodeCursor = (row: { createdAt: Date; id: string }): string =>
-  Buffer.from(
-    JSON.stringify({ createdAt: row.createdAt.toISOString(), id: row.id }),
-    "utf8",
-  ).toString("base64url");
+const encodeCursor = (row: { createdAtCursor: string; id: string }): string =>
+  Buffer.from(JSON.stringify({ createdAt: row.createdAtCursor, id: row.id }), "utf8").toString(
+    "base64url",
+  );
 
 function decodeCursor(value: string): Cursor {
   try {
@@ -230,6 +229,7 @@ export function createNotificationsService(deps: NotificationsDeps): Notificatio
     summary: notifications.summary,
     readAt: notifications.readAt,
     createdAt: notifications.createdAt,
+    createdAtCursor: sql<string>`to_char(${notifications.createdAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
     projectId: projects.id,
     projectKey: projects.key,
     projectName: projects.name,
