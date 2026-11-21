@@ -72,6 +72,7 @@ test("board, badges, labels, subtasks, trash and restore work in the browser", a
   );
 
   // Project label CRUD, done in the browser.
+  await page.getByRole("tab", { name: /Labels/ }).click();
   await page.getByLabel("New label name").fill("UI triage");
   await page.getByLabel("New label color").fill("#123abc");
   await page.getByRole("button", { name: "Create label" }).click();
@@ -92,6 +93,7 @@ test("board, badges, labels, subtasks, trash and restore work in the browser", a
   await expect(page.locator('[data-label-name="Renamed label"]')).toHaveCount(0);
 
   // Attach the label on the issue detail; both the header badge and the pills show it.
+  await page.getByRole("tab", { name: /Issues/ }).click();
   await page.locator(`[data-issue-id="${parentId}"] a`).first().click();
   await expect(page.locator("[data-issue-identifier]").first()).toHaveText(identifier);
   await page.getByRole("combobox", { name: "Attach label" }).click();

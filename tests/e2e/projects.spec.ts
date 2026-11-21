@@ -219,11 +219,13 @@ test("runs the complete cycle in the browser", async ({ page }) => {
 
   // A personal project, created from the workspace page.
   await page.goto(`/workspaces/${personalWorkspaceId}`);
+  await page.getByRole("button", { name: "New project" }).click();
   await page.getByLabel("Project name").fill("Browser Project");
   await page.getByRole("button", { name: "Create project" }).click();
   await expect(page.getByRole("heading", { name: "Browser Project" })).toBeVisible();
 
   // An issue, created from the project page.
+  await page.getByRole("button", { name: "New issue" }).first().click();
   await page.getByLabel("Issue title").fill("Browser issue");
   await page.getByLabel("Description").fill("Created in the browser.");
   await page.getByRole("button", { name: "Create issue" }).click();
@@ -252,24 +254,25 @@ test("runs the complete cycle in the browser", async ({ page }) => {
 
   // A basic Markdown knowledge entry, then an edit.
   await page.getByRole("link", { name: "Back to project" }).click();
+  await page.getByRole("tab", { name: /Knowledge/ }).click();
+  await page.getByRole("button", { name: "New document" }).first().click();
   await page.getByLabel("Knowledge title").fill("Browser knowledge");
   await page.getByLabel("Markdown").fill("# Notes\n\nCreated in the browser.");
   await page.getByRole("button", { name: "Create knowledge" }).click();
   await expect(page.getByRole("heading", { name: "Browser knowledge" })).toBeVisible();
-  await expect(page.locator("[data-knowledge-body]")).toHaveText(
-    "# Notes\n\nCreated in the browser.",
-  );
+  await expect(page.locator("[data-knowledge-body]")).toContainText("Notes");
+  await expect(page.locator("[data-knowledge-body]")).toContainText("Created in the browser.");
 
   await page.getByLabel("Title").fill("Browser knowledge edited");
   await page.getByLabel("Markdown").fill("## Edited\n\nStill **Markdown**.");
   await page.getByRole("button", { name: "Save knowledge" }).click();
   await expect(page.getByRole("heading", { name: "Browser knowledge edited" })).toBeVisible();
-  await expect(page.locator("[data-knowledge-body]")).toHaveText(
-    "## Edited\n\nStill **Markdown**.",
-  );
+  await expect(page.locator("[data-knowledge-body]")).toContainText("Edited");
+  await expect(page.locator("[data-knowledge-body]")).toContainText("Still Markdown.");
 
   // The project's activity records the cycle, attributed to the administrator.
   await page.getByRole("link", { name: "Back to project" }).click();
+  await page.getByRole("tab", { name: "Activity" }).click();
   for (const type of [
     "issue_created",
     "issue_edited",

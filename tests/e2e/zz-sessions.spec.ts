@@ -332,6 +332,7 @@ test("clicking Stop agent in the browser transitions the session badge to stoppi
 
     // The agents view lists only live sessions and shows the same stopping badge.
     await page.goto(`/workspaces/${workspaceId}`);
+    await page.getByRole("tab", { name: /Agents/ }).click();
     const agentsBadge = page.locator(
       `[data-agent-session-id][data-issue-id="${issueId}"] [data-session-status]`,
     );
@@ -740,6 +741,7 @@ test("the board and agents panel show assignment, live session state and the sid
     await expect(card).toContainText(agentName);
 
     await page.goto(`/workspaces/${workspaceId}`);
+    await page.getByRole("tab", { name: /Agents/ }).click();
     const sessionRow = page.locator(`[data-agent-session-id][data-issue-id="${issueId}"]`);
     await expect(sessionRow).toHaveAttribute("data-session-harness", "codex");
     await expect(sessionRow.locator("[data-sidecar-link]")).toBeVisible();

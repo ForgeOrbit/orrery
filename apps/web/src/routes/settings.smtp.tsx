@@ -8,6 +8,7 @@ import { NumberInput } from "@astryxdesign/core/NumberInput";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { Link } from "../lib/Link.tsx";
+import { PageHeader } from "../lib/PageHeader.tsx";
 import {
   SmtpSecurity,
   type SmtpSettings as SmtpSettingsInput,
@@ -51,12 +52,15 @@ function SmtpSettingsPage() {
 
   return (
     <main>
-      <Text as="p" display="block" type="inherit" color="inherit">
-        <Link to="/">Back to your workspaces</Link>
-      </Text>
-      <Heading level={1} color="inherit">
-        SMTP settings
-      </Heading>
+      <PageHeader
+        breadcrumbs={[
+          <Link key="home" to="/">
+            Back to your workspaces
+          </Link>,
+        ]}
+        title="SMTP settings"
+        subtitle="Configure outgoing email delivery and verify administrator email."
+      />
       {settings === null ? (
         <Text as="p" display="block" type="inherit" color="inherit" role="alert">
           SMTP settings are available to system administrators only.

@@ -304,6 +304,7 @@ test("grants access in the browser and shows Read without mutation controls", as
 
   // The owner grants the colleague Contribute through the project page.
   await page.goto(`/projects/${projectId}`);
+  await page.getByRole("tab", { name: "Settings" }).click();
   await page.getByLabel("Email").fill(COLLEAGUE_EMAIL);
   await page.getByRole("combobox", { name: "Access level" }).click();
   await page.getByRole("option", { name: "Contribute", exact: true }).click();
@@ -314,6 +315,7 @@ test("grants access in the browser and shows Read without mutation controls", as
 
   // The owner also toggles the workspace capability in the member directory.
   await page.goto(`/workspaces/${workspaceId}`);
+  await page.getByRole("tab", { name: "Members" }).click();
   const memberRow = page.locator(`li[data-member-id="${memberHumanId}"]`);
   await expect(memberRow).toContainText("Can create projects");
   await memberRow.getByRole("button", { name: "Revoke Create projects" }).click();

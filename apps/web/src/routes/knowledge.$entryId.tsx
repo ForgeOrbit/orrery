@@ -5,6 +5,8 @@ import { Stack } from "@astryxdesign/core/Stack";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { Link } from "../lib/Link.tsx";
+import { Markdown } from "../lib/Markdown.tsx";
+import { PageHeader } from "../lib/PageHeader.tsx";
 import type { KnowledgeEntry } from "@orrery/contract";
 import {
   knowledgeEntriesQuery,
@@ -36,25 +38,23 @@ function KnowledgePage() {
 
   return (
     <main>
-      <Text as="p" display="block" type="inherit" color="inherit">
-        <Link to="/projects/$projectId" params={{ projectId: entry.projectId }}>
-          Back to project
-        </Link>
-      </Text>
-      <Heading level={1} color="inherit">
-        {entry.title}
-      </Heading>
-      <Text as="p" display="block" type="inherit" color="inherit">
-        Knowledge · created by {entry.createdBy.displayName} · last edited by{" "}
-        {entry.updatedBy.displayName}
-      </Text>
+      <PageHeader
+        breadcrumbs={[
+          <Link key="project" to="/projects/$projectId" params={{ projectId: entry.projectId }}>
+            Back to project
+          </Link>,
+        ]}
+        title={entry.title}
+        badge="Knowledge"
+        subtitle={`Created by ${entry.createdBy.displayName} · last edited by ${entry.updatedBy.displayName}`}
+      />
       {entry.body === "" ? (
-        <Text as="p" display="block" type="inherit" color="inherit">
+        <Text as="p" display="block" type="supporting">
           No content yet.
         </Text>
       ) : (
-        <Stack data-knowledge-body style={{ whiteSpace: "pre-wrap" }}>
-          {entry.body}
+        <Stack data-knowledge-body className="page-section">
+          <Markdown>{entry.body}</Markdown>
         </Stack>
       )}
       {canContribute && <EditKnowledgeForm key={entry.updatedAt} entry={entry} />}
