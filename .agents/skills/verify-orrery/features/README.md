@@ -1,20 +1,20 @@
 # Orrery verification map
 
-The maintained source for verifying Orrery's user-facing behavior. Read this index, then use the matching feature file as the recipe. Orrery is an early scaffold, so the map covers only what exists; add a file when a feature lands (`/maintain-verification-skill`).
+The maintained source for verifying Orrery's user-facing behavior. Read this index, then use the matching feature file as the recipe. Keep this map in sync as features land (`/maintain-verification-skill`).
 
 ## Baseline preconditions
 
-- Instance started by this run with `scripts/orrery-verify.sh up` (see `../SKILL.md`), fresh database, no seed data (there is none yet).
+- Instance started by this run with `scripts/orrery-verify.sh up` (see `../SKILL.md`), fresh database, no seed data.
 - For `/setup`, `BOOTSTRAP_SECRET` (at least 32 characters) was set on the `up` command. For a stored SMTP password, `ORRERY_ENCRYPTION_KEY` was set too.
-- For the mail features (settings, invitations), `scripts/mailpit.sh up $RUN_DIR` started the catcher; use the printed `MAILPIT_SMTP` and `MAILPIT_HTTP`.
+- For the mail features (settings, invitations, password recovery, needs-input email), `scripts/mailpit.sh up $RUN_DIR` started the catcher; use the printed `MAILPIT_SMTP` and `MAILPIT_HTTP`.
 - `scripts/orrery-verify.sh doctor $RUN_DIR` exits 0.
 - Never drive an instance this run did not start (another Orrery may be on :8080).
-- All commands run outside the Bash sandbox.
+- Run `up`, drives, and `down` outside any sandbox that blocks Docker or tears down background child processes between commands (if your runner terminates background processes on command exit, run `up`, the drive, and `down` in one shell command with `trap ... EXIT`).
 
 ## Driving conventions
 
 - Start every recipe from `SK=.agents/skills/verify-orrery/scripts`, `. $RUN_DIR/env` (sets `URL` and `CONTAINER`), and for mail features `. $RUN_DIR/mailpit.env` (sets `MAILPIT_SMTP` and `MAILPIT_HTTP`).
-- Browser: `node $SK/browse.mjs $RUN_DIR <path> ...` with ARIA roles and visible text, never coordinates. Forms: `--fill "Label=value"` then `--click-button "Name"`. Expected failures: `--allow-http 401` (signed-out pages), `--allow-http 500 --allow-http 503 --allow-console ZodError` (the database-down reload). Name evidence with `--slug`.
+- Browser: `node $SK/browse.mjs $RUN_DIR <path> ...` with ARIA roles and visible text, never coordinates. Forms: `--fill "Label=value"` then `--click-button "Name"`. Expected failures: `--allow-http 401` (signed-out session checks), `--allow-http 500 --allow-http 503 --allow-console ZodError` (database-down reload). Name evidence with `--slug`.
 - HTTP: `curl` against `$URL` exactly as printed by `up` (host `localhost`).
 - Mail: read caught messages at `http://127.0.0.1:$MAILPIT_HTTP/api/v1/messages`; SMTP settings point at `127.0.0.1:$MAILPIT_SMTP`.
 - Save every artifact to `$RUN_DIR/evidence/` and name the feature ID in the file name.
@@ -27,27 +27,15 @@ The maintained source for verifying Orrery's user-facing behavior. Read this ind
 
 ## Features
 
-- [Bootstrap and sign-in](./accounts.md): creating the first administrator at `/setup`
-  with the deployment secret, first sign-in, the session route, and setup staying closed.
-- [Home status page](./home-status.md): `/` in its fresh, signed-out, signed-in and
-  database-down states, the workspace list, navigation, and the not-found page.
-- [Health endpoints](./health.md): `/healthz` liveness and `/readyz` database readiness,
-  including the degraded state and recovery.
-- [MCP endpoint](./mcp.md): the agent connection at `/mcp`: handshake, Host-header
-  protection, and the empty tool list.
-- [Installation invitations](./invitations.md): an administrator invites an address,
-  Mailpit catches the link, the invitee registers through `/register` and gets a
-  personal workspace, and the token is single-use.
-- [SMTP settings and email verification](./settings.md): an administrator saves the
-  installation's SMTP relay, sends a test email, verifies their address with the
-  token, and repairs a broken relay.
-- [Workspaces](./workspaces.md): the signed-in home lists the caller's personal and
-  shared workspaces, owners manage members and the Create projects capability, and each
-  person sees only their own.
-- [Workspace-scoped agent API keys](./agents.md): registering an agent, issuing a
-  one-workspace bearer key with the human-access ceiling, resolving the agent over REST,
-  refusing cross-workspace/expired/revoked keys, and secret-free owner revocation.
-- [Projects, issues, knowledge, and project access](./projects.md): a project's full issue
-  cycle (create, edit, comment, close, reopen), basic Markdown knowledge, the attributed
-  activity feed, shared-project Read/Contribute/Manage levels, access grants, and the
-  direct-request denials.
+- [Bootstrap, sign-in, account profile, and password recovery](./accounts.md): `/setup`, `/signin`, `/account` (`displayName`, password change, sign-out), `/forgot-password`, `/reset-password`, and `recovery-cli.ts`.
+- [Home, navigation shell, and error pages](./home-status.md): `/` signed-out redirects (`/setup` / `/signin`), signed-in Astryx `Workspaces` dashboard and sidebar (`Workspaces`, `My work`, `Inbox`, `Admin`), `Server: unreachable`, and `Page not found`.
+- [Health endpoints](./health.md): `/healthz` liveness and `/readyz` database readiness, including degraded state and recovery.
+- [MCP endpoint](./mcp.md): stateless Streamable HTTP `/mcp` with Host-header guard, 39 registered tools across projects/runs/work-sessions/inbox, and Bearer agent-key authentication.
+- [Installation and workspace invitations](./invitations.md): admin invitation list/send/resend/revoke on `/`, Mailpit delivery, `/register?token=…` registration and decline, and cross-link to `/workspace-invitation?token=…`.
+- [SMTP settings and email verification](./settings.md): `/settings/smtp` UI and REST, Admin sidebar nav, encrypted SMTP password (`v1:` prefix), clickable `?token=` verification email, and relay repair.
+- [Workspaces, transfers, and ownership recovery](./workspaces.md): shared workspaces, `Projects`/`Agents`/`Runs`/`Members` tabs, drawers, delegated capabilities, voluntary leave, project transfers, and admin ownership recovery.
+- [Agents, API keys, rotation, and runs](./agents.md): agent registration, workspace-scoped keys with `keyHint` previews, overlapping key rotation, owner/self revocation, `Agents` workspace tab, and `runs` hook/MCP check-in.
+- [Projects, six-state board, labels, subtasks, links, dependencies, knowledge, and Trash](./projects.md): `KEY-N` identifiers, six-state workflow, GFM + Mermaid rendering, labels, 1-level subtasks, typed links, acyclic dependencies, 30-day Trash delete/restore, and access levels.
+- [Work sessions and Needs-input inbox](./work-sessions-and-inbox.md): five-minute claim leases, `ready_work`, renew/progress/stop/resume/reacquire, stop requests, ephemeral `v1` session activities, token/cost telemetry, and 1-hour `Needs input` questions + fallback policy (`/inbox`).
+- [My work and in-app notifications](./my-work-and-notifications.md): cross-workspace `/my-work` (`GET /api/my-work`) and human-only `/api/notifications` (proactive sweeper, `handoff`/`needs_input`/`session_expired`, keyset pagination, mark-read, mark-all-read).
+- [History and account deactivation](./history-and-admin.md): scoped audit logs (`/history/installation`, `/history/workspace/$workspaceId`, `/history/project/$projectId`) and admin account deactivation/reactivation.

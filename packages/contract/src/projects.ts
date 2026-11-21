@@ -103,6 +103,7 @@ export const ProjectActivityType = z
     "issue_question_follow_up",
     "issue_fallback_policy_override_changed",
     "issue_stop_requested",
+    "issue_session_expired",
     
     
     "project_label_created",

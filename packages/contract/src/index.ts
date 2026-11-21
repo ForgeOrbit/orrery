@@ -9,6 +9,7 @@ export * from "./history.ts";
 export * from "./invitations.ts";
 export * from "./mcp-tools.ts";
 export * from "./my-work.ts";
+export * from "./notifications.ts";
 export * from "./ownership.ts";
 export * from "./projects.ts";
 export * from "./questions.ts";

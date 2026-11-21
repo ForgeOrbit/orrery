@@ -48,8 +48,9 @@ def slice_between(text: str, start_marker: str, end_marker: str | None = None) -
     sub = text[idx:]
     if end_marker is not None:
         end_idx = sub.find(end_marker, len(start_marker))
-        if end_idx != -1:
-            return sub[:end_idx]
+        if end_idx == -1:
+            return ""
+        return sub[:end_idx]
     return sub
 
 
@@ -81,7 +82,7 @@ def extract_code_facts() -> dict[str, Any]:
     m1_db_trigger = "ensure_shared_workspace_has_owner()" in mig_0007
 
     # M2a: Replacing a failed, still-live invitation revokes it rather than expiring it.
-    invite_fn = slice_between(ws_src, "async invite(", "    // Every invitation in this workspace")
+    invite_fn = slice_between(ws_src, "async invite(", "async invitations(account, workspaceId)")
     revoke_failed = slice_between(invite_fn, "status: InvitationStatus.enum.revoked", "await tx.insert(workspaceInvitations)")
     m2a_supersedes_failed = (
         "InvitationDelivery.enum.failed" in revoke_failed
@@ -209,7 +210,7 @@ def extract_code_facts() -> dict[str, Any]:
         )
 
     members_fn = slice_between(ws_src, "async members(account, workspaceId) {", "async create(account, input) {")
-    get_fn = slice_between(ws_src, "async get(account, workspaceId) {", "// The member directory")
+    get_fn = slice_between(ws_src, "async get(account, workspaceId) {", "async members(account, workspaceId) {")
     invitations_fn = slice_between(ws_src, "async invitations(account, workspaceId) {", "async resendInvitation(")
     resend_fn = slice_between(ws_src, "async resendInvitation(", "async revokeInvitation(")
     revoke_fn = slice_between(ws_src, "async revokeInvitation(", "async declineInvitation(")
@@ -242,7 +243,7 @@ def extract_code_facts() -> dict[str, Any]:
     # M8: Project access grants and creation serialize with workspace membership writes
     create_project_fn = slice_between(proj_src, "async createProject(", "async updateProject(")
     set_access_fn = slice_between(proj_src, "async setProjectAccess(", "async removeProjectAccess(")
-    remove_access_fn = slice_between(proj_src, "async removeProjectAccess(", "async revokeMemberProjectAccess(")
+    remove_access_fn = slice_between(proj_src, "async removeProjectAccess(", "revokeMemberProjectAccess(tx,")
     m8_access_serialized = (
         "lockWorkspaceOwnershipWrites(tx)" in create_project_fn
         and "lockWorkspaceOwnershipWrites(tx)" in set_access_fn
@@ -297,7 +298,7 @@ def extract_code_facts() -> dict[str, Any]:
     # address look live: inviterStillAuthorized checks the offered scope before its owner
     # early-return, so a fresh invite supersedes the dead offer instead of 409-ing.
     still_live_fn = slice_between(
-        ws_src, "async function inviterStillAuthorized(", "// The listing projection"
+        ws_src, "async function inviterStillAuthorized(", "function toWorkspace("
     )
     scope_check = still_live_fn.find("await offeredProjectsInWorkspace(tx, workspaceId, offered)")
     owner_return = still_live_fn.find("if (inviter.isOwner) return true")
@@ -316,7 +317,7 @@ def extract_code_facts() -> dict[str, Any]:
     revoke_fn = slice_between(ws_src, "async revokeInvitation(", "async declineInvitation(")
     redeem_fn = slice_between(ws_src, "async function redeemWorkspaceInvitation(", "async function requireRecipientNotMember(")
     require_project_manage_fn = slice_between(ws_src, "async function requireProjectManageScope(", "async function requireVerifiedInviter(")
-    still_authorized_fn = slice_between(ws_src, "async function requireInviterStillAuthorized(", "// The listing projection")
+    still_authorized_fn = slice_between(ws_src, "async function requireInviterStillAuthorized(", "async function loadManagedProjectIds(")
     m10_owner_only_manager = bool(
         re.search(
             r'if \(requested\.canManageMemberPermissions !== undefined\) \{\s*throw new WorkspacesError\("not_workspace_owner"\)',
@@ -418,12 +419,12 @@ def extract_code_facts() -> dict[str, Any]:
     issue_fn = slice_between(ag_src, "async issueKey(", "async listKeys(")
     revoke_own_fn = slice_between(ag_src, "async function revokeInTransaction(", "export async function revokeMemberWorkspaceKeys(")
     revoke_member_fn = slice_between(
-        ag_src, "export async function revokeMemberWorkspaceKeys(", "// Bearer resolution inside one transaction"
+        ag_src, "export async function revokeMemberWorkspaceKeys(", "async function resolveKeyInTransaction("
     )
     authenticate_fn = slice_between(ag_src, "async authenticate(", "  };")
     record_fn = slice_between(ag_src, "async function recordEvent(", "type KeyRow")
     owner_fn = slice_between(ag_src, "async ownerRevokeKey(", "async authenticate(")
-    events_table = slice_between(ag_schema, "export const agentKeyEvents = pgTable(", "// An issue in a project.")
+    events_table = slice_between(ag_schema, "export const agentKeyEvents = pgTable(", "export const runs = pgTable(")
     mig_0018 = read_text("db/migrations/0018_agent_key_project_scope.sql")
 
     # Removal revokes the member's workspace keys in the removal's own transaction, with
@@ -469,7 +470,7 @@ def extract_code_facts() -> dict[str, Any]:
     expiry_block = slice_between(
         resolve_fn,
         "if (AgentKeyValidity.parse(row.key.validity) !== AgentKeyValidity.enum.never)",
-        "// A key is scoped",
+        "if (target?.workspaceId !== undefined",
     )
     m11_never_skips_expiry_only = (
         "gt(agentApiKeys.expiresAt" in expiry_block
@@ -541,7 +542,7 @@ def extract_code_facts() -> dict[str, Any]:
             ]
         )
     )
-    record_activity_fn = slice_between(proj_src, "async function recordActivity(", "// One project access-change event")
+    record_activity_fn = slice_between(proj_src, "async function recordActivity(", "async function recordAccessEvent(")
     m12_agent_actor = (
         "actorHumanId: humanIdOf(input.actor)" in record_activity_fn
         and "actorAgentId: agentIdOf(input.actor)" in record_activity_fn
@@ -660,8 +661,8 @@ def extract_code_facts() -> dict[str, Any]:
     run_rest_src = read_text("apps/server/src/features/runs/rest.ts")
     run_contract_src = read_text("packages/contract/src/runs.ts")
     mig_0019 = read_text("db/migrations/0019_perpetual_wallop.sql")
-    runs_table = slice_between(ag_schema, "export const runs = pgTable(", "// Model values observed")
-    children_table = slice_between(ag_schema, "export const runChildren = pgTable(", "// An issue in a project.")
+    runs_table = slice_between(ag_schema, "export const runs = pgTable(", "export const runModelChanges = pgTable(")
+    children_table = slice_between(ag_schema, "export const runChildren = pgTable(", "export const issues = pgTable(")
     report_fn = slice_between(run_src, "async report(identity, input)", "async listWorkspaceRuns(")
     list_runs_fn = slice_between(run_src, "async listWorkspaceRuns(", "  };\n}")
     child_fn = slice_between(run_src, "async function recordChild(", "export function createRunsService")
@@ -778,8 +779,8 @@ def extract_code_facts() -> dict[str, Any]:
     rec_confirm_fn = slice_between(rec_src, "async confirmReset(token, password)", "async localRecover(email, password)")
     rec_local_fn = slice_between(rec_src, "async localRecover(email, password)", "}")
     rec_change_fn = slice_between(rec_src, "async function changePasswordAndSignOut(", "export function createRecoveryService")
-    rec_tokens_table = slice_between(schema_src := read_text("apps/server/src/db/schema.ts"), "export const passwordResetTokens = pgTable(", "// Recovery and password-reset events")
-    rec_events_table = slice_between(schema_src, "export const accountRecoveryEvents = pgTable(", "// An invitation (issue #23)")
+    rec_tokens_table = slice_between(schema_src := read_text("apps/server/src/db/schema.ts"), "export const passwordResetTokens = pgTable(", "export const accountRecoveryEventTypes =")
+    rec_events_table = slice_between(schema_src, "export const accountRecoveryEvents = pgTable(", "export const invitations = pgTable(")
     rec_token_insert = slice_between(rec_request_fn, ".insert(passwordResetTokens)", "try {")
 
     m15_token_hash_only = (
@@ -864,7 +865,7 @@ def extract_code_facts() -> dict[str, Any]:
     source_select = slice_between(rotate_fn, "const [source] = await tx", ".limit(1)")
     rotate_insert = slice_between(rotate_fn, ".insert(agentApiKeys)", ".returning(")
     rotate_route = slice_between(ag_rest, "const rotateKey = createRoute(", "const listKeys = createRoute(")
-    keys_table = slice_between(ag_schema, "export const agentApiKeys = pgTable(", "// The selected projects a key may act on")
+    keys_table = slice_between(ag_schema, "export const agentApiKeys = pgTable(", "export const agentApiKeyProjects = pgTable(")
 
     m16_serialized = "await lockWorkspaceOwnershipWrites(tx)" in rotate_prelude
     m16_source_ownership = (
@@ -936,10 +937,10 @@ def extract_code_facts() -> dict[str, Any]:
     sess_mcp_src = read_text("apps/server/src/features/work-sessions/mcp.ts")
     sess_index_src = read_text("apps/server/src/features/work-sessions/index.ts")
     mig_0021 = read_text("db/migrations/0022_spooky_barracuda.sql")
-    lock_issue_fn = slice_between(sess_src, "async function lockIssue(", "// Lazy expiry")
+    lock_issue_fn = slice_between(sess_src, "async function lockIssue(", "export async function revertIssueToTodo(")
     expire_fn = slice_between(sess_src, "async function expireStale(", "const fiveMinutes")
-    claim_fn = slice_between(sess_src, "async claim(actor, input)", "async renew(actor, issueId)")
-    renew_fn = slice_between(sess_src, "async renew(actor, issueId)", "async progress(actor, issueId, summary)")
+    claim_fn = slice_between(sess_src, "async claim(actor, input)", "async renew(actor, issueId")
+    renew_fn = slice_between(sess_src, "async renew(actor, issueId", "async progress(actor, issueId")
     # #83 made this helper generic so activity appends can return the inserted row while
     # the lease-taking writes still return a WorkSession. Accept either spelling of the
     # declaration as the extraction anchor; the guards below are unchanged.
@@ -957,7 +958,7 @@ def extract_code_facts() -> dict[str, Any]:
     ready_fn = slice_between(sess_src, "async readyWork(actorArg, projectId", "async agentHoldsSession(")
     gate_fn = slice_between(sess_src, "async agentHoldsSession(", "};\n}")
     update_issue_fn = slice_between(proj_src, "async updateIssue(actorArg, issueId, input)", "async listComments(")
-    work_sessions_table = slice_between(schema_src, "export const workSessions = pgTable(", "// A basic Markdown knowledge entry")
+    work_sessions_table = slice_between(schema_src, "export const workSessions = pgTable(", "export const workSessionActivities = pgTable(")
 
     m17_unique_index = (
         "one_active_work_session_per_issue" in mig_0021
@@ -1048,8 +1049,10 @@ def extract_code_facts() -> dict[str, Any]:
         and "expireCommitted(" not in resume_fn
         and "expireStale(" not in resume_fn
     )
+    sess_state_machine_src = read_text("apps/server/src/features/work-sessions/state-machine.ts")
     m18_resume_db_time = (
-        '"expired"' in resume_fn
+        "resumeDispositionFor(effective)" in resume_fn
+        and 'if (effective === "expired") return "expired";' in sess_state_machine_src
         and "effectiveStatus" in session_columns_fn
         and "statement_timestamp()" in session_columns_fn
     )
@@ -1136,7 +1139,7 @@ def extract_code_facts() -> dict[str, Any]:
     leave_fn = slice_between(ws_src, "async leaveWorkspace(", "  };\n}")
     release_fn = slice_between(sess_src, "export async function releaseMemberWorkSessions(", "\n}\n")
     require_access_fn = slice_between(sess_src, "function requireAccessArgs(", "export function createSessionsService(")
-    lock_access_fn = slice_between(sess_src, "async function lockAgentWorkspaceAccess(", "// Workspace removal/leave ends")
+    lock_access_fn = slice_between(sess_src, "async function lockAgentWorkspaceAccess(", "export async function releaseMemberWorkSessions(")
     workspace_event_types = slice_between(schema_src, "export const workspaceEventTypes = [", "] as const;")
 
     m18_release_in_remove = (
@@ -1213,7 +1216,7 @@ def extract_code_facts() -> dict[str, Any]:
     q_contract = read_text("packages/contract/src/questions.ts")
     q_migration = read_text("db/migrations/0024_white_rage.sql")
     index_src = read_text("apps/server/src/features/index.ts")
-    q_lock_fn = slice_between(q_src, "async function lockIssue(", "// Record the question")
+    q_lock_fn = slice_between(q_src, "async function lockIssue(", "async function effectiveFallbackPolicy(")
     q_ask_fn = slice_between(q_src, "async ask(actorArg, input)", "async answer(actorArg")
     q_answer_fn = slice_between(q_src, "async answer(actorArg", "async list(actorArg")
     q_eval_fn = slice_between(q_src, "const evaluateDeadline", "const questionDeadline")
@@ -1294,7 +1297,7 @@ def extract_code_facts() -> dict[str, Any]:
     # The follow-up guards added after review: consistent lock order, non-enumeration,
     # workspace-scoped reads, DB-time effective status, ask scope, the boundary guard and
     # an MCP read tool for the answer.
-    sess_deadline_fn = slice_between(sess_src, "const deadlineCommitted", "// Renew, progress")
+    sess_deadline_fn = slice_between(sess_src, "const deadlineCommitted", "const expireCommittedForProject =")
     q_columns_fn = slice_between(q_src, "const questionColumns = {", "const iso")
     q_require_fn = slice_between(q_src, "async function requireAccess(", "function requireAgent")
     q_list_fn = slice_between(q_src, "async list(actorArg)", "async issueHistory(actorArg")
@@ -1554,7 +1557,7 @@ def extract_code_facts() -> dict[str, Any]:
     account_by_id_fn = slice_between(deact_src, "async function accountById(", "async function lockOwnershipWrites")
     lock_agent_fn = slice_between(sess_src, "async function lockAgentWorkspaceAccess(", "export async function releaseMemberWorkSessions")
     can_use_fn = slice_between(ag_src, "async function humanCanUseWorkspace(", "async function requireWorkspaceOwner")
-    accept_fn_m22 = slice_between(ws_src, "async acceptInvitation(", "    // A new address:")
+    accept_fn_m22 = slice_between(ws_src, "async acceptInvitation(", "async registerThroughInvitation(")
     reset_request_fn = slice_between(rec_src, "async requestReset(email)", "    async confirmReset(token, password)")
     local_recover_fn = slice_between(rec_src, "async localRecover(email, password)", "\n  };\n}")
     reg_install_fn = slice_between(inv_src, "async registerInstallation(input)", "\n  };\n}")
@@ -1563,9 +1566,15 @@ def extract_code_facts() -> dict[str, Any]:
         '.for("update")' in deact_fn
         and "workspaceMemberships.id" in deact_fn
     )
+    deact_suspend_at = deact_fn.find(".update(workspaceMemberships)")
+    deact_revoke_grants_at = deact_fn.find(".delete(projectAccessGrants)")
+    deact_release_claims_at = deact_fn.find(".update(workSessions)")
     m22_lock_order = (
-        deact_fn.find("Suspend each shared membership") < deact_fn.find("Release every active claim")
-        and deact_fn.find("Revoke every project access grant") < deact_fn.find("Release every active claim")
+        deact_suspend_at >= 0
+        and deact_revoke_grants_at >= 0
+        and deact_release_claims_at >= 0
+        and deact_suspend_at < deact_release_claims_at
+        and deact_revoke_grants_at < deact_release_claims_at
     )
     m22_claim_account_lock = (
         ".for(\"key share\")" in lock_agent_fn
@@ -1592,12 +1601,12 @@ def extract_code_facts() -> dict[str, Any]:
     schema_src = read_text("apps/server/src/db/schema.ts")
     mig_0026 = read_text("db/migrations/0028_fast_puck.sql")
     m23_project_fn = slice_between(
-        proj_src, "async setProjectFallbackPolicy(", "// An issue override may only tighten"
+        proj_src, "async setProjectFallbackPolicy(", "async setIssueFallbackPolicyOverride("
     )
     m23_issue_fn = slice_between(
         proj_src,
         "async setIssueFallbackPolicyOverride(",
-        "// The explicit grants a project manager sees",
+        "async listProjectAccess(",
     )
     m23_proj_route_fn = slice_between(
         pj_rest, "app.openapi(setProjectFallbackPolicy,", "app.openapi(listProjectAccess,"
@@ -1610,16 +1619,16 @@ def extract_code_facts() -> dict[str, Any]:
         q_src, "const questionDeadline", "export function createInboxService"
     )
     m23_policy_fn = slice_between(
-        q_src, "async function effectiveFallbackPolicy(", "// Record the question"
+        q_src, "async function effectiveFallbackPolicy(", "async function recordActivity("
     )
     m23_fallback_branch = slice_between(
         m23_eval_fn, "if (effectivePolicy === FallbackPolicy.enum.fallback_allowed) {", "const [paused]"
     )
     m23_pause_branch = slice_between(m23_eval_fn, "const [paused]", "\n};")
     m23_follow_fn = slice_between(
-        q_src, "// A late answer to an authorized fallback", "function humanIdOf"
+        q_src, "async function storeFollowUp(", "function humanIdOf"
     )
-    m23_to_question_fn = slice_between(q_src, "function toQuestion", "// Lock the issue first")
+    m23_to_question_fn = slice_between(q_src, "function toQuestion", "async function lockIssue(")
     m23_answer_fn = slice_between(q_src, "async answer(actorArg", "async list(actorArg")
     m23_columns_fn = slice_between(q_src, "const questionColumns = {", "const iso")
     m23_sess_renew_fn = slice_between(
@@ -1881,7 +1890,7 @@ def extract_code_facts() -> dict[str, Any]:
     access_events_table = slice_between(
         ag_schema,
         "export const projectAccessEvents = pgTable(",
-        "// An agent is a worker identity",
+        "export const agents = pgTable(",
     )
     mig_0026 = read_text("db/migrations/0029_numerous_clint_barton.sql")
     m24_shared_source = (
@@ -2170,7 +2179,7 @@ def extract_code_facts() -> dict[str, Any]:
     own_rest = read_text("apps/server/src/features/ownership/rest.ts")
     own_contract = read_text("packages/contract/src/ownership.ts")
     recover_fn = slice_between(own_src, "async recoverOwnership(", "\n  };\n}")
-    directory_fn = slice_between(own_src, "async directory(", "    // One transaction.")
+    directory_fn = slice_between(own_src, "async directory(", "async recoverOwnership(")
     admin_fn = slice_between(own_src, "async function requireActiveAdministrator(", "async function lockOwnershipWrites")
     notify_fn = slice_between(own_src, "async function notifyMembers(", "export function createOwnershipService")
     directory_schema = slice_between(own_contract, "export const InstallationWorkspace = z", "export type InstallationWorkspace =")
@@ -2247,6 +2256,171 @@ def extract_code_facts() -> dict[str, Any]:
         and "insert(workspaceMemberships)" not in recover_fn
     )
     m25_no_key_revival = "agentApiKeys" not in recover_fn and "agentApiKeys" not in notify_fn
+
+    # M31 (#97): project-scoped labels and one-level subtask invariants.
+    mig_0038 = read_text("db/migrations/0038_subtask_and_label_invariants.sql")
+    validate_parent_fn = slice_between(proj_src, "async function validateParent(", "async function validateAssignee(")
+    attach_label_fn = slice_between(proj_src, "async attachLabel(actorArg, issueId, labelId)", "async detachLabel(")
+    m31_no_self_parent = (
+        "issueId === parentIssueId" in validate_parent_fn
+        and "issues_no_self_parent" in schema_src
+        and "NEW.parent_issue_id = NEW.id" in mig_0038
+    )
+    m31_same_project_parent = (
+        "parent.projectId !== projectId" in validate_parent_fn
+        and "parent_project <> NEW.project_id" in mig_0038
+        and "NEW.project_id <> OLD.project_id" in mig_0038
+    )
+    m31_depth_one = (
+        "parent.parentIssueId !== null" in validate_parent_fn
+        and "eq(issues.parentIssueId, issueId)" in validate_parent_fn
+        and "parent_parent IS NOT NULL" in mig_0038
+        and "EXISTS (SELECT 1 FROM issues WHERE parent_issue_id = NEW.id)" in mig_0038
+    )
+    m31_trigger_lock_order = (
+        "IF NEW.id < NEW.parent_issue_id THEN" in mig_0038
+        and "FOR UPDATE;" in mig_0038
+    )
+    m31_label_same_project = (
+        "label.projectId !== issue.projectId" in attach_label_fn
+        and "issue_labels_same_project" in mig_0038
+        and "issue_project IS DISTINCT FROM label_project" in mig_0038
+    )
+    m31_label_schema_guards = (
+        "one_label_name_per_project" in schema_src
+        and "lower(${t.name})" in schema_src
+        and "project_labels_color" in schema_src
+    )
+
+    # M32 (#98): human-only soft-delete Trash, Project manager restore, and 30-day scrub.
+    mig_0039 = read_text("db/migrations/0039_cooing_alex_wilder.sql")
+    delete_issue_fn = slice_between(proj_src, "async deleteIssue(actorArg, issueId)", "async restoreIssue(")
+    restore_issue_fn = slice_between(proj_src, "async restoreIssue(actorArg, issueId)", "async listTrash(")
+    list_trash_fn = slice_between(proj_src, "async listTrash(actorArg, projectId)", "async purgeExpiredTrash(")
+    purge_trash_fn = slice_between(proj_src, "async purgeExpiredTrash()", "async createIssue(")
+    m32_human_only_delete = (
+        'actor.kind !== "human"' in delete_issue_fn
+        and "agents_cannot_delete_issues" in delete_issue_fn
+        and 'actor.kind !== "human"' in restore_issue_fn
+        and 'actor.kind !== "human"' in list_trash_fn
+    )
+    m32_active_session_guard = (
+        '.for("update")' in delete_issue_fn
+        and "issueSessionGate(tx, issueId)" in delete_issue_fn
+        and "issue_active_session_exists" in delete_issue_fn
+    )
+    m32_manage_restore_db_window = (
+        "ProjectAccessLevel.enum.manage" in restore_issue_fn
+        and '.for("update")' in restore_issue_fn
+        and "current.purgedAt !== null || expired !== undefined" in restore_issue_fn
+        and "issue_purged" in restore_issue_fn
+        and "THIRTY_DAYS_AGO" in restore_issue_fn
+    )
+    m32_scrub_preserves_tombstone = (
+        "delete(issueComments)" in purge_trash_fn
+        and "delete(issueLinks)" in purge_trash_fn
+        and "delete(issueLabels)" in purge_trash_fn
+        and "delete(issueDependencies)" in purge_trash_fn
+        and 'title: "[deleted]"' in purge_trash_fn
+        and 'body: ""' in purge_trash_fn
+        and "purgedAt: sql`statement_timestamp()`" in purge_trash_fn
+        and "delete(issues)" not in purge_trash_fn
+    )
+    m32_schema_and_read_exclusion = (
+        "issues_deleted_pair" in schema_src
+        and "issues_purged_requires_deleted" in schema_src
+        and "issues_deleted_pair" in mig_0039
+        and "issues_purged_requires_deleted" in mig_0039
+        and "isNull(issues.deletedAt)" in ready_fn
+    )
+
+    # M33 (#99): cross-workspace My work access boundaries.
+    my_work_src = read_text("apps/server/src/features/my-work/service.ts")
+    my_work_rest = read_text("apps/server/src/features/my-work/rest.ts")
+    m33_human_session_only = (
+        "sessionReader(c)" in my_work_rest
+        and "agentAuthenticator" not in my_work_rest
+        and 'throw new MyWorkError("not_signed_in")' in my_work_src
+    )
+    m33_deactivated_refused = (
+        "human.deactivatedAt !== null" in my_work_src
+        and 'throw new MyWorkError("human_deactivated")' in my_work_src
+    )
+    m33_live_membership_and_ceiling = (
+        "isNull(workspaceMemberships.suspendedAt)" in my_work_src
+        and "projectAccessCeiling(" in my_work_src
+        and "ProjectAccessLevel.enum.read" in my_work_src
+        and "ProjectAccessLevel.enum.contribute" in my_work_src
+    )
+    m33_assigned_and_session_filters = (
+        "isNull(issues.deletedAt)" in my_work_src
+        and "notInArray(issues.status, [...TERMINAL_ISSUE_STATUSES])" in my_work_src
+        and "gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`)" in my_work_src
+    )
+    m33_questions_db_time_contribute = (
+        "inArray(questions.projectId, [...actionable])" in my_work_src
+        and "effectiveQuestionStatus" in my_work_src
+        and "statement_timestamp()" in my_work_src
+    )
+
+    # M34 (#123): proactive expiry sweeper, issue_session_expired, and in-app notifications.
+    mig_0042 = read_text("db/migrations/0042_nosy_marauders.sql")
+    notif_src = read_text("apps/server/src/features/notifications/service.ts")
+    notif_rest = read_text("apps/server/src/features/notifications/rest.ts")
+    notif_table = slice_between(schema_src, "export const notifications = pgTable(", None)
+    notif_readable_fn = slice_between(notif_src, "const readableAccess =", "export function createNotificationsService")
+    notif_create_fn = slice_between(notif_src, "const createForActivity: NotifyActivity =", "const notificationColumns =")
+    notif_list_fn = slice_between(notif_src, "async list(actor, input = {})", "async markRead(")
+    notif_mark_read_fn = slice_between(notif_src, "async markRead(actor, notificationId)", "async markAllRead(")
+    notif_mark_all_fn = slice_between(notif_src, "async markAllRead(actor)", "async prune(")
+    notif_prune_fn = slice_between(notif_src, "async prune()", "\n  };\n}")
+    sess_sweep_fn = slice_between(sess_src, "async sweep()", "async agentHoldsSession(")
+    q_due_ids_fn = slice_between(q_src, "async findDueQuestionIssueIds()", "\n  };\n}")
+    sweep_check_at = sess_sweep_fn.find("await checkDeadline(tx, issueId)")
+    sweep_expire_at = sess_sweep_fn.find("await expireStale(tx, issueId")
+    m34_auth_boundary = (
+        "await authenticate(c.req.raw)" in notif_rest
+        and "isAgentError(error)" in notif_rest
+        and "authorization" not in notif_rest
+        and 'actor.kind === "agent"' in notif_src
+        and 'throw new NotificationsError("agents_cannot_use_notifications")' in notif_src
+        and 'throw new NotificationsError("not_signed_in")' in notif_src
+    )
+    m34_per_issue_sweep_order = (
+        "QuestionStatus.enum.open" in q_due_ids_fn
+        and ".from(questions)" not in sess_src
+        and "for (const issueId of issueIds)" in sess_sweep_fn
+        and "await db.transaction(async (tx) =>" in sess_sweep_fn
+        and sweep_check_at >= 0
+        and sweep_expire_at >= 0
+        and sweep_check_at < sweep_expire_at
+        and "if (sweeping) return;" in sess_index_src
+    )
+    m34_atomic_idempotent_schema = (
+        "one_notification_per_human_and_activity" in notif_table
+        and "one_notification_per_human_and_activity" in mig_0042
+        and "notifications_human_unread" in mig_0042
+        and "workspace_id" not in notif_table
+        and ".onConflictDoNothing()" in notif_create_fn
+        and "issue_session_expired" in mig_0042
+    )
+    m34_live_access_non_enum = (
+        "${workspaces.id} = ${projects.workspaceId}" in notif_readable_fn
+        and "${workspaceMemberships.suspendedAt} is null" in notif_readable_fn
+        and all(
+            "callerIsActive(tx, humanId)" in fn
+            and "readableAccess(humanId)" in fn
+            and "isNull(issues.deletedAt)" in fn
+            for fn in (notif_list_fn, notif_mark_read_fn, notif_mark_all_fn)
+        )
+    )
+    m34_lossless_cursor_and_prune = (
+        "YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"" in notif_src
+        and "decodeCursor(" in notif_list_fn
+        and 'throw new NotificationsError("invalid_cursor")' in notif_src
+        and "interval '90 days'" in notif_prune_fn
+        and "interval '180 days'" in notif_prune_fn
+    )
 
     return {
         "m1_serialized": m1_lock_in_service and m1_last_owner_check and m1_db_advisory_lock and m1_db_trigger,
@@ -2608,6 +2782,27 @@ def extract_code_facts() -> dict[str, Any]:
         "m30_revert_on_end": m30_revert_on_end,
         "m30_pause_and_lapsed_answer_revert": m30_pause_and_lapsed_answer_revert,
         "m30_completion_outcomes": m30_completion_outcomes,
+        "m31_no_self_parent": m31_no_self_parent,
+        "m31_same_project_parent": m31_same_project_parent,
+        "m31_depth_one": m31_depth_one,
+        "m31_trigger_lock_order": m31_trigger_lock_order,
+        "m31_label_same_project": m31_label_same_project,
+        "m31_label_schema_guards": m31_label_schema_guards,
+        "m32_human_only_delete": m32_human_only_delete,
+        "m32_active_session_guard": m32_active_session_guard,
+        "m32_manage_restore_db_window": m32_manage_restore_db_window,
+        "m32_scrub_preserves_tombstone": m32_scrub_preserves_tombstone,
+        "m32_schema_and_read_exclusion": m32_schema_and_read_exclusion,
+        "m33_human_session_only": m33_human_session_only,
+        "m33_deactivated_refused": m33_deactivated_refused,
+        "m33_live_membership_and_ceiling": m33_live_membership_and_ceiling,
+        "m33_assigned_and_session_filters": m33_assigned_and_session_filters,
+        "m33_questions_db_time_contribute": m33_questions_db_time_contribute,
+        "m34_auth_boundary": m34_auth_boundary,
+        "m34_per_issue_sweep_order": m34_per_issue_sweep_order,
+        "m34_atomic_idempotent_schema": m34_atomic_idempotent_schema,
+        "m34_live_access_non_enum": m34_live_access_non_enum,
+        "m34_lossless_cursor_and_prune": m34_lossless_cursor_and_prune,
     }
 
 
@@ -6793,6 +6988,350 @@ def check_m30(facts: dict[str, bool]) -> CheckResult:
     )
 
 
+def check_m31(facts: dict[str, bool]) -> CheckResult:
+    g = {
+        "m31_no_self_parent": facts["m31_no_self_parent"],
+        "m31_same_project_parent": facts["m31_same_project_parent"],
+        "m31_depth_one": facts["m31_depth_one"],
+        "m31_trigger_lock_order": facts["m31_trigger_lock_order"],
+        "m31_label_same_project": facts["m31_label_same_project"],
+        "m31_label_schema_guards": facts["m31_label_schema_guards"],
+    }
+
+    # Issues i1 (p1), i2 (p1), i3 (p2); label L1 (p1).
+    # State: (p_i1, p_i2, p_i3, l1_on_i3, violations)
+    init = (None, None, None, False, frozenset())
+
+    def set_parent(issue: str, parent: str, same_proj: bool):
+        def step(state):
+            p1, p2, p3, l1_i3, v = state
+            parents = {"i1": p1, "i2": p2, "i3": p3}
+            if issue == parent:
+                if not g["m31_no_self_parent"]:
+                    parents[issue] = parent
+                    return (parents["i1"], parents["i2"], parents["i3"], l1_i3, v | {"self_parent"})
+                return state
+            if not same_proj:
+                if not g["m31_same_project_parent"]:
+                    parents[issue] = parent
+                    return (parents["i1"], parents["i2"], parents["i3"], l1_i3, v | {"cross_project_parent"})
+                return state
+            has_child = any(p == issue for p in parents.values())
+            parent_is_subtask = parents[parent] is not None
+            if (has_child or parent_is_subtask) and not g["m31_depth_one"]:
+                parents[issue] = parent
+                return (parents["i1"], parents["i2"], parents["i3"], l1_i3, v | {"depth_exceeded"})
+            if has_child or parent_is_subtask:
+                return state
+            if not g["m31_trigger_lock_order"]:
+                return (p1, p2, p3, l1_i3, v | {"concurrent_depth_race"})
+            parents[issue] = parent
+            return (parents["i1"], parents["i2"], parents["i3"], l1_i3, v)
+        return step
+
+    def attach_cross_label(state):
+        p1, p2, p3, l1_i3, v = state
+        if not g["m31_label_same_project"]:
+            return (p1, p2, p3, True, v | {"cross_project_label"})
+        if not g["m31_label_schema_guards"]:
+            return (p1, p2, p3, l1_i3, v | {"label_schema_weakened"})
+        return state
+
+    actions = [
+        ("i1 self-parent", set_parent("i1", "i1", True)),
+        ("i2 becomes subtask of i1 (same project)", set_parent("i2", "i1", True)),
+        ("i1 becomes subtask of i2 (parent becomes subtask)", set_parent("i1", "i2", True)),
+        ("i3 becomes subtask of i1 (cross project)", set_parent("i3", "i1", False)),
+        ("attach p1 label to p2 issue i3", attach_cross_label),
+    ]
+
+    def inv(state):
+        p1, p2, p3, l1_i3, v = state
+        if v:
+            return False, f"labels/subtasks invariant broken: {sorted(v)[0]}"
+        if l1_i3:
+            return False, "labels/subtasks invariant broken: cross_project_label"
+        if p3 is not None:
+            return False, "labels/subtasks invariant broken: cross_project_parent"
+        parents = {"i1": p1, "i2": p2, "i3": p3}
+        for child, par in parents.items():
+            if par == child:
+                return False, "labels/subtasks invariant broken: self_parent"
+            if par is not None and parents.get(par) is not None:
+                return False, "labels/subtasks invariant broken: depth_exceeded"
+        return True, ""
+
+    return bfs_check(
+        "M31",
+        "Project-Scoped Labels & One-Level Subtasks (#97)",
+        "Subtasks stay strictly one level deep in the same project with no self-parent and lock-ordered trigger checks, and labels attach only within their own project under case-insensitive unique name and hex color constraints",
+        "safety",
+        init,
+        lambda s: [(lbl, fn(s)) for lbl, fn in actions],
+        inv,
+        [
+            "apps/server/src/features/projects/service.ts",
+            "apps/server/src/db/schema.ts",
+            "db/migrations/0038_subtask_and_label_invariants.sql",
+        ],
+    )
+
+
+def check_m32(facts: dict[str, bool]) -> CheckResult:
+    g = {
+        "m32_human_only_delete": facts["m32_human_only_delete"],
+        "m32_active_session_guard": facts["m32_active_session_guard"],
+        "m32_manage_restore_db_window": facts["m32_manage_restore_db_window"],
+        "m32_scrub_preserves_tombstone": facts["m32_scrub_preserves_tombstone"],
+        "m32_schema_and_read_exclusion": facts["m32_schema_and_read_exclusion"],
+    }
+
+    # State: (lifecycle, has_session, ready_visible, row_exists, content_present, violations)
+    # lifecycle: "live" | "trashed_fresh" | "trashed_expired" | "purged"
+    init = ("live", True, False, True, True, frozenset())
+
+    def end_session(state):
+        lc, sess, ready, exists, content, v = state
+        if lc == "live" and sess:
+            return ("live", False, True, exists, content, v)
+        return state
+
+    def agent_delete(state):
+        lc, sess, ready, exists, content, v = state
+        if lc == "live" and not g["m32_human_only_delete"]:
+            return ("trashed_fresh", False, False, exists, content, v | {"agent_deleted_issue"})
+        return state
+
+    def human_delete(state):
+        lc, sess, ready, exists, content, v = state
+        if lc != "live":
+            return state
+        if sess:
+            if not g["m32_active_session_guard"]:
+                return ("trashed_fresh", True, False, exists, content, v | {"deleted_with_active_session"})
+            return state
+        next_ready = False if g["m32_schema_and_read_exclusion"] else True
+        return ("trashed_fresh", False, next_ready, exists, content, v)
+
+    def advance_30_days(state):
+        lc, sess, ready, exists, content, v = state
+        if lc == "trashed_fresh":
+            return ("trashed_expired", sess, ready, exists, content, v)
+        return state
+
+    def manage_restore(state):
+        lc, sess, ready, exists, content, v = state
+        if lc == "trashed_fresh":
+            return ("live", False, True, exists, content, v)
+        if lc in ("trashed_expired", "purged"):
+            if not g["m32_manage_restore_db_window"]:
+                return ("live", False, True, exists, content, v | {"restored_past_30d_or_purged"})
+            return state
+        return state
+
+    def purge_sweep(state):
+        lc, sess, ready, exists, content, v = state
+        if lc == "trashed_expired":
+            if not g["m32_scrub_preserves_tombstone"]:
+                return ("purged", False, False, False, False, v | {"hard_deleted_or_unscrubbed"})
+            return ("purged", False, False, True, False, v)
+        return state
+
+    actions = [
+        ("active work session ends", end_session),
+        ("agent attempts deleteIssue", agent_delete),
+        ("human Contribute attempts deleteIssue", human_delete),
+        ("30 days pass in DB time", advance_30_days),
+        ("Project manager attempts restoreIssue", manage_restore),
+        ("purgeExpiredTrash sweep runs", purge_sweep),
+    ]
+
+    def inv(state):
+        lc, sess, ready, exists, content, v = state
+        if v:
+            return False, f"trash invariant broken: {sorted(v)[0]}"
+        if not exists:
+            return False, "trash invariant broken: tombstone_row_hard_deleted"
+        if lc != "live" and ready:
+            return False, "trash invariant broken: trashed_issue_in_ready_work"
+        if lc == "purged" and content:
+            return False, "trash invariant broken: purged_content_not_scrubbed"
+        return True, ""
+
+    return bfs_check(
+        "M32",
+        "Soft-Delete Trash, Restore & 30-Day Tombstone Scrubbing (#98)",
+        "Only humans may soft-delete unclaimed issues; soft-deleted issues leave ready work; Project managers restore only within 30 days in DB time; 30-day scrub clears content in place while retaining the tombstoned issue row",
+        "safety",
+        init,
+        lambda s: [(lbl, fn(s)) for lbl, fn in actions],
+        inv,
+        [
+            "apps/server/src/features/projects/service.ts",
+            "apps/server/src/features/work-sessions/service.ts",
+            "apps/server/src/db/schema.ts",
+            "db/migrations/0039_cooing_alex_wilder.sql",
+        ],
+    )
+
+
+def check_m33(facts: dict[str, bool]) -> CheckResult:
+    g = {
+        "m33_human_session_only": facts["m33_human_session_only"],
+        "m33_deactivated_refused": facts["m33_deactivated_refused"],
+        "m33_live_membership_and_ceiling": facts["m33_live_membership_and_ceiling"],
+        "m33_assigned_and_session_filters": facts["m33_assigned_and_session_filters"],
+        "m33_questions_db_time_contribute": facts["m33_questions_db_time_contribute"],
+    }
+
+    # State: (caller_active, member_active, grant, issue_open, session_live, q_open, violations)
+    init = (True, True, "contribute", True, True, True, frozenset())
+
+    def probe_agent(state):
+        ca, ma, gr, io, sl, qo, v = state
+        if not g["m33_human_session_only"]:
+            return (ca, ma, gr, io, sl, qo, v | {"agent_read_my_work"})
+        return state
+
+    def deactivate(state):
+        ca, ma, gr, io, sl, qo, v = state
+        return (False, ma, gr, io, sl, qo, v)
+
+    def suspend_member(state):
+        ca, ma, gr, io, sl, qo, v = state
+        return (ca, False, gr, io, sl, qo, v)
+
+    def downgrade_read(state):
+        ca, ma, gr, io, sl, qo, v = state
+        return (ca, ma, "read", io, sl, qo, v)
+
+    def close_or_trash_issue(state):
+        ca, ma, gr, io, sl, qo, v = state
+        return (ca, ma, gr, False, False, False, v)
+
+    def query_my_work(state):
+        ca, ma, gr, io, sl, qo, v = state
+        if not ca and not g["m33_deactivated_refused"]:
+            return (ca, ma, gr, io, sl, qo, v | {"deactivated_caller_served"})
+        if not ma and not g["m33_live_membership_and_ceiling"]:
+            return (ca, ma, gr, io, sl, qo, v | {"suspended_member_leaked"})
+        if not io and not g["m33_assigned_and_session_filters"]:
+            return (ca, ma, gr, io, sl, qo, v | {"terminal_or_trashed_leaked"})
+        if gr == "read" and qo and not g["m33_questions_db_time_contribute"]:
+            return (ca, ma, gr, io, sl, qo, v | {"reader_saw_actionable_question"})
+        return state
+
+    actions = [
+        ("agent key probes /api/my-work", probe_agent),
+        ("human account deactivated", deactivate),
+        ("workspace membership suspended", suspend_member),
+        ("project grant downgraded to Read", downgrade_read),
+        ("issue closed or moved to Trash", close_or_trash_issue),
+        ("caller queries /api/my-work", query_my_work),
+    ]
+
+    def inv(state):
+        v = state[-1]
+        if v:
+            return False, f"my-work invariant broken: {sorted(v)[0]}"
+        return True, ""
+
+    return bfs_check(
+        "M33",
+        "Cross-Workspace My Work Access Boundaries (#99)",
+        "My work is human-session-only, refuses deactivated accounts, immediately excludes suspended memberships, revoked grants, terminal/trashed issues and lapsed sessions, and restricts needs-input questions to Contribute/Manage projects",
+        "safety",
+        init,
+        lambda s: [(lbl, fn(s)) for lbl, fn in actions],
+        inv,
+        [
+            "apps/server/src/features/my-work/service.ts",
+            "apps/server/src/features/my-work/rest.ts",
+        ],
+    )
+
+
+def check_m34(facts: dict[str, bool]) -> CheckResult:
+    g = {
+        "m34_auth_boundary": facts["m34_auth_boundary"],
+        "m34_per_issue_sweep_order": facts["m34_per_issue_sweep_order"],
+        "m34_atomic_idempotent_schema": facts["m34_atomic_idempotent_schema"],
+        "m34_live_access_non_enum": facts["m34_live_access_non_enum"],
+        "m34_lossless_cursor_and_prune": facts["m34_lossless_cursor_and_prune"],
+    }
+
+    # State: (swept, access_live, trashed, cursor_ok, violations)
+    init = (False, True, False, True, frozenset())
+
+    def probe_auth(state):
+        sw, acc, tr, cok, v = state
+        if not g["m34_auth_boundary"]:
+            return (sw, acc, tr, cok, v | {"invalid_bearer_not_401_or_rest_logic"})
+        return state
+
+    def run_sweep(state):
+        sw, acc, tr, cok, v = state
+        if not g["m34_per_issue_sweep_order"]:
+            return (True, acc, tr, cok, v | {"sweep_deadlock_or_spurious_expiry"})
+        if not g["m34_atomic_idempotent_schema"]:
+            return (True, acc, tr, cok, v | {"duplicate_or_denormalized_notification"})
+        return (True, acc, tr, cok, v)
+
+    def revoke_or_transfer(state):
+        sw, acc, tr, cok, v = state
+        return (sw, False, tr, cok, v)
+
+    def trash_issue(state):
+        sw, acc, tr, cok, v = state
+        return (sw, acc, True, cok, v)
+
+    def read_or_mark(state):
+        sw, acc, tr, cok, v = state
+        if (not acc or tr) and not g["m34_live_access_non_enum"]:
+            return (sw, acc, tr, cok, v | {"inaccessible_notification_leaked"})
+        return state
+
+    def paginate_and_prune(state):
+        sw, acc, tr, cok, v = state
+        if not g["m34_lossless_cursor_and_prune"]:
+            return (sw, acc, tr, False, v | {"cursor_truncation_or_missing_prune"})
+        return state
+
+    actions = [
+        ("invalid bearer / agent key probes notifications", probe_auth),
+        ("proactive 60s sweeper settles due question & lapsed lease", run_sweep),
+        ("project access revoked or project transferred", revoke_or_transfer),
+        ("issue moved to Trash", trash_issue),
+        ("human calls list / markRead / markAllRead", read_or_mark),
+        ("sub-millisecond keyset pagination and 90/180d prune", paginate_and_prune),
+    ]
+
+    def inv(state):
+        v = state[-1]
+        if v:
+            return False, f"notifications invariant broken: {sorted(v)[0]}"
+        return True, ""
+
+    return bfs_check(
+        "M34",
+        "Proactive Expiry Sweeper & In-App Notifications (#123)",
+        "Notifications authenticate through AgentAuthenticator (401 invalid, 403 agent), sweep per issue with deadline-before-lease ordering and overlap guard, enforce UNIQUE(human_id, activity_id) without denormalized workspace_id, live-filter access/transfers/Trash on all endpoints, preserve microsecond keyset cursors, and prune at 90/180 days",
+        "safety",
+        init,
+        lambda s: [(lbl, fn(s)) for lbl, fn in actions],
+        inv,
+        [
+            "apps/server/src/features/notifications/service.ts",
+            "apps/server/src/features/notifications/rest.ts",
+            "apps/server/src/features/work-sessions/service.ts",
+            "apps/server/src/features/work-sessions/index.ts",
+            "apps/server/src/features/inbox/service.ts",
+            "apps/server/src/db/schema.ts",
+            "db/migrations/0042_nosy_marauders.sql",
+        ],
+    )
+
+
 def main() -> None:
     facts = extract_code_facts()
     results = [
@@ -6827,6 +7366,10 @@ def main() -> None:
         check_m28(facts),
         check_m29(facts),
         check_m30(facts),
+        check_m31(facts),
+        check_m32(facts),
+        check_m33(facts),
+        check_m34(facts),
     ]
 
     if "--json" in sys.argv:

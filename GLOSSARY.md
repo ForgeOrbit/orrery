@@ -95,3 +95,11 @@ _Avoid_: Close, release
 **Trash**:
 The 30-day recovery period for soft-deleted items before their content is scrubbed while preserving activity history and identifiers.
 _Avoid_: Hard delete, archive
+
+**Notification**:
+An in-app alert delivered to a human for a project activity event that needs their attention, tracked with a read state and filtered by live project access.
+_Avoid_: Email, inbox item, toast
+
+**Webhook**:
+A workspace-scoped HTTP subscription owned by a workspace owner that sends signed event payloads to an external URL when matching project activity occurs.
+_Avoid_: Integration, hook, callback

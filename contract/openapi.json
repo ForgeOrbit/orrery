@@ -2305,6 +2305,7 @@
           "issue_question_follow_up",
           "issue_fallback_policy_override_changed",
           "issue_stop_requested",
+          "issue_session_expired",
           "project_label_created",
           "project_label_edited",
           "project_label_deleted",
@@ -3596,6 +3597,133 @@
         },
         "required": [
           "answer"
+        ]
+      },
+      "NotificationsResponse": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Notification"
+            }
+          },
+          "unreadCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "unreadCount",
+          "nextCursor"
+        ]
+      },
+      "Notification": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/NotificationKind"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "readAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "project": {
+            "$ref": "#/components/schemas/NotificationProject"
+          },
+          "issue": {
+            "$ref": "#/components/schemas/NotificationIssue"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "summary",
+          "readAt",
+          "createdAt",
+          "project",
+          "issue"
+        ]
+      },
+      "NotificationKind": {
+        "type": "string",
+        "enum": [
+          "handoff",
+          "needs_input",
+          "session_expired"
+        ]
+      },
+      "NotificationProject": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "workspaceId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "name",
+          "workspaceId"
+        ]
+      },
+      "NotificationIssue": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer"
+          },
+          "identifier": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "identifier",
+          "title"
+        ]
+      },
+      "MarkAllReadResponse": {
+        "type": "object",
+        "properties": {
+          "markedCount": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "markedCount"
         ]
       },
       "MyWorkResponse": {
@@ -11331,6 +11459,189 @@
           },
           "404": {
             "description": "No such issue is in scope for the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/notifications": {
+      "get": {
+        "summary": "The signed-in human's in-app notifications",
+        "description": "Notifications for project activity that needs the caller's attention. Items for revoked projects, suspended memberships, deactivated humans and trashed issues are filtered out immediately, as is the unread count. Agent keys are rejected.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "required": false,
+            "name": "unreadOnly",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of notifications and the caller's total unread count",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The query or the pagination cursor is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the agent key is invalid or revoked",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Agent keys cannot read notifications",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/notifications/{notificationId}/read": {
+      "post": {
+        "summary": "Mark one notification read",
+        "description": "Idempotently sets the notification's read time. A notification the caller does not own or can no longer access answers exactly like a missing one.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "notificationId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The notification is read"
+          },
+          "400": {
+            "description": "The notification id is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the agent key is invalid or revoked",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Agent keys cannot read notifications",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such notification is accessible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/notifications/read-all": {
+      "post": {
+        "summary": "Mark every accessible notification read",
+        "description": "Marks all currently accessible unread notifications for the caller read and reports how many changed.",
+        "responses": {
+          "200": {
+            "description": "The number of notifications marked read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarkAllReadResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the agent key is invalid or revoked",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Agent keys cannot read notifications",
             "content": {
               "application/problem+json": {
                 "schema": {
