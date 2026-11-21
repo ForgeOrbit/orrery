@@ -10,8 +10,22 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { expect, request, test, type APIRequestContext } from "@playwright/test";
 import { ADMIN_EMAIL, ADMIN_PASSWORD, recordSecret } from "./admin.ts";
 
-const baseUrl = process.env.ORRERY_URL;
-if (!baseUrl) throw new Error("Set ORRERY_URL to a running Orrery");
+const configuredUrl = process.env.ORRERY_URL;
+if (!configuredUrl) throw new Error("Set ORRERY_URL to a running Orrery");
+const baseUrl: string = configuredUrl;
+
+const mailpit = process.env.MAILPIT_URL ?? "http://localhost:8025";
+const SMTP = {
+  host: "mailpit",
+  port: 1025,
+  security: "none",
+  username: null,
+  password: null,
+  from: "orrery@orrery.test",
+} as const;
+const TEAM = `Trash Team ${randomUUID()}`;
+const MEMBER_EMAIL = `trash.member.${randomUUID()}@orrery.test`;
+const MEMBER_PASSWORD = "trash-member-password";
 
 const field = (value: unknown, key: string): unknown =>
   typeof value === "object" && value !== null ? Reflect.get(value, key) : undefined;
@@ -90,6 +104,71 @@ async function agentKey(projectId: string, workspaceId: string): Promise<string>
   return secret;
 }
 
+async function invitationToken(): Promise<string | undefined> {
+  const list = await api.get(`${mailpit}/api/v1/messages`);
+  const messages = field(await list.json(), "messages");
+  if (!Array.isArray(messages)) return undefined;
+  for (const message of messages) {
+    if (field(message, "Subject") !== "Your Orrery workspace invitation") continue;
+    const id = field(message, "ID");
+    if (typeof id !== "string") continue;
+    const detail = await api.get(`${mailpit}/api/v1/message/${id}`);
+    const caught: unknown = await detail.json();
+    const text = field(caught, "Text");
+    if (typeof text !== "string" || !text.includes(`"${TEAM}"`)) continue;
+    if (!text.includes(MEMBER_EMAIL)) continue;
+    const token = text.match(/\/workspace-invitation\?token=([A-Za-z0-9_-]+)/)?.[1];
+    if (token !== undefined) return token;
+  }
+  return undefined;
+}
+
+// A shared project with a Contribute member, so restore's Manage-only gate can be proved
+// over HTTP with a real second human rather than only at the service seam.
+async function sharedContributeProject(): Promise<{
+  member: APIRequestContext;
+  project: { id: string; workspaceId: string };
+}> {
+  await api.put("/api/settings/smtp", { data: SMTP });
+  const created = await api.post("/api/workspaces", { data: { name: TEAM } });
+  expect(created.status()).toBe(201);
+  const teamId = idOf(await created.json(), "workspace");
+  const invited = await api.post(`/api/workspaces/${teamId}/invitations`, {
+    data: { email: MEMBER_EMAIL },
+  });
+  expect(invited.status()).toBe(201);
+  await expect.poll(invitationToken, { timeout: 15_000 }).toBeTruthy();
+  const token = await invitationToken();
+  if (token === undefined) throw new Error("the catcher never received the invitation");
+  await recordSecret(token);
+  await recordSecret(MEMBER_PASSWORD);
+  const registration = await request.newContext({ baseURL: baseUrl });
+  try {
+    const accepted = await registration.post("/api/workspace-invitations/registration", {
+      data: { token, password: MEMBER_PASSWORD },
+    });
+    expect(accepted.status()).toBe(200);
+  } finally {
+    await registration.dispose();
+  }
+  const member = await request.newContext({ baseURL: baseUrl });
+  const login = await member.post("/api/auth/login", {
+    data: { email: MEMBER_EMAIL, password: MEMBER_PASSWORD },
+  });
+  expect(login.status()).toBe(200);
+
+  const projectRes = await api.post(`/api/workspaces/${teamId}/projects`, {
+    data: { name: "Shared Trash Project", key: "TRMT" },
+  });
+  expect(projectRes.status()).toBe(201);
+  const projectId = idOf(await projectRes.json(), "project");
+  const grant = await api.patch(`/api/projects/${projectId}/access`, {
+    data: { email: MEMBER_EMAIL, level: "contribute" },
+  });
+  expect(grant.status()).toBe(200);
+  return { member, project: { id: projectId, workspaceId: teamId } };
+}
+
 test("REST soft-deletes into trash, then restores with the audit events", async () => {
   const project = await createProject("TRSH");
   const issueId = await createIssue(project.id, "Mistaken issue");
@@ -123,17 +202,18 @@ test("REST soft-deletes into trash, then restores with the audit events", async 
   expect(types).toContain("issue_restored");
 });
 
-test("agents get 403 on delete and no trash tool, and a claimed issue is 409", async () => {
+test("agents get 403 on delete, no trash tool, and trashed issues vanish from ready work", async () => {
   const project = await createProject("TRSM");
   const secret = await agentKey(project.id, project.workspaceId);
-  const issueId = await createIssue(project.id, "Agent-protected issue");
+  const blockerId = await createIssue(project.id, "Agent-protected issue");
+  const dependentId = await createIssue(project.id, "Dependent issue");
 
   const agentApi = await request.newContext({
     baseURL: baseUrl,
     extraHTTPHeaders: { authorization: `Bearer ${secret}` },
   });
   try {
-    const removed = await agentApi.delete(`/api/issues/${issueId}`);
+    const removed = await agentApi.delete(`/api/issues/${blockerId}`);
     expect(removed.status()).toBe(403);
     expect(await removed.json()).toMatchObject({
       code: "agents_cannot_delete_issues",
@@ -141,23 +221,59 @@ test("agents get 403 on delete and no trash tool, and a claimed issue is 409", a
     });
     const trash = await agentApi.get(`/api/projects/${project.id}/trash`);
     expect(trash.status()).toBe(403);
-    const restore = await agentApi.post(`/api/issues/${issueId}/restore`);
+    const restore = await agentApi.post(`/api/issues/${blockerId}/restore`);
     expect(restore.status()).toBe(403);
   } finally {
     await agentApi.dispose();
   }
 
+  const depends = await api.post(`/api/issues/${dependentId}/blocked-by`, {
+    data: { blockedByIssueId: blockerId },
+  });
+  expect(depends.status()).toBe(201);
+
   const client = await connect(secret);
   try {
     const names = (await client.listTools()).tools.map((tool) => tool.name);
     expect(names.some((name) => /delete_issue|restore_issue|trash/.test(name))).toBe(false);
-    const hidden = await call(client, "get_issue", { issueId });
+
+    // The active issue is visible before the delete and hidden afterwards over MCP.
+    const visible = await call(client, "get_issue", { issueId: blockerId });
+    expect(visible.isError).toBe(false);
+    expect(field(visible.data.issue, "id")).toBe(blockerId);
+    const blockedBefore = await call(client, "list_blocked_by", { issueId: dependentId });
+    expect(asArray(blockedBefore.data.issues).map((issue) => field(issue, "id"))).toContain(
+      blockerId,
+    );
+    const readyBefore = await call(client, "ready_work", { projectId: project.id });
+    expect(asArray(readyBefore.data.issues).map((issue) => field(issue, "id"))).not.toContain(
+      dependentId,
+    );
+
+    const removed = await api.delete(`/api/issues/${blockerId}`);
+    expect(removed.status()).toBe(204);
+
+    const hidden = await call(client, "get_issue", { issueId: blockerId });
     expect(hidden.isError).toBe(true);
+    expect(hidden.data).toMatchObject({ code: "issue_not_found" });
+    const blockedAfter = await call(client, "list_blocked_by", { issueId: dependentId });
+    expect(asArray(blockedAfter.data.issues).map((issue) => field(issue, "id"))).not.toContain(
+      blockerId,
+    );
+    const readyAfter = await call(client, "ready_work", { projectId: project.id });
+    const readyIds = asArray(readyAfter.data.issues).map((issue) => field(issue, "id"));
+    expect(readyIds).toContain(dependentId);
+    expect(readyIds).not.toContain(blockerId);
   } finally {
     await client.close();
   }
+});
 
-  // A live work session fences the human delete with a 409 until it ends.
+test("a live work session fences delete, and a non-Manager human cannot restore", async () => {
+  const { member, project } = await sharedContributeProject();
+  const secret = await agentKey(project.id, project.workspaceId);
+  const claimedId = await createIssue(project.id, "Claimed issue");
+
   const claimClient = await connect(secret);
   try {
     const run = await call(claimClient, "orrery_run_checkin", {
@@ -165,9 +281,9 @@ test("agents get 403 on delete and no trash tool, and a claimed issue is 409", a
       runKey: { harness: "codex", nativeSessionId: randomUUID() },
     });
     const runId = requiredText(field(run.data, "runId"), "the run id");
-    const claimed = await call(claimClient, "claim_issue", { issueId, runId });
+    const claimed = await call(claimClient, "claim_issue", { issueId: claimedId, runId });
     expect(claimed.isError).toBe(false);
-    const conflict = await api.delete(`/api/issues/${issueId}`);
+    const conflict = await api.delete(`/api/issues/${claimedId}`);
     expect(conflict.status()).toBe(409);
     expect(await conflict.json()).toMatchObject({
       code: "issue_active_session_exists",
@@ -175,5 +291,22 @@ test("agents get 403 on delete and no trash tool, and a claimed issue is 409", a
     });
   } finally {
     await claimClient.close();
+  }
+
+  // A Contribute member of a shared workspace may delete but may not restore.
+  const memberIssue = await createIssue(project.id, "Member trash issue");
+  try {
+    const removed = await api.delete(`/api/issues/${memberIssue}`);
+    expect(removed.status()).toBe(204);
+    const refused = await member.post(`/api/issues/${memberIssue}/restore`);
+    expect(refused.status()).toBe(403);
+    expect(await refused.json()).toMatchObject({
+      code: "insufficient_project_access",
+      status: 403,
+    });
+    const hiddenTrash = await member.get(`/api/projects/${project.id}/trash`);
+    expect(hiddenTrash.status()).toBe(403);
+  } finally {
+    await member.dispose();
   }
 });

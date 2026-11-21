@@ -27,6 +27,7 @@ import { createLogger } from "../../platform/log.ts";
 import { migrate } from "../../platform/migrate.ts";
 import { tokenHash } from "../../platform/tokens.ts";
 import { createAccountsFeature } from "../accounts/index.ts";
+import { InboxError, createInboxFeature } from "../inbox/index.ts";
 import { SessionsError, createSessionsFeature } from "../work-sessions/index.ts";
 import { createProjectsFeature } from "./index.ts";
 import {
@@ -61,6 +62,7 @@ afterEach(async () => {
   await database.db.transaction(async (tx) => {
     await tx.execute(sql`delete from project_activity`);
     await tx.execute(sql`delete from work_session_activities`);
+    await tx.execute(sql`delete from questions`);
     await tx.execute(sql`delete from work_sessions`);
     await tx.execute(sql`delete from runs`);
     await tx.execute(sql`delete from agent_api_keys`);
@@ -233,13 +235,36 @@ async function insertLiveSession(f: Fixture, issueId: string, lease: "live" | "l
         ? sql`statement_timestamp() + interval '5 minutes'`
         : sql`statement_timestamp() - interval '1 minute'`,
   });
+  return { agentId, runId };
+}
+
+function identityForAgent(f: Fixture, agentId: string): AgentIdentity {
+  return {
+    agentId,
+    name: "Worker",
+    humanId: f.humanId,
+    keyId: randomUUID(),
+    workspaceId: f.workspaceId,
+    validity: "never",
+    projects: [
+      {
+        projectId: f.projectId,
+        projectName: "Trash project",
+        level: ProjectAccessLevel.enum.contribute,
+      },
+    ],
+  } satisfies AgentIdentity;
 }
 
 async function kindOf(promise: Promise<unknown>): Promise<string | undefined> {
   return promise.then(
     () => undefined,
     (error: unknown) =>
-      error instanceof ProjectsError || error instanceof SessionsError ? error.kind : undefined,
+      error instanceof ProjectsError ||
+      error instanceof SessionsError ||
+      error instanceof InboxError
+        ? error.kind
+        : undefined,
   );
 }
 
@@ -445,6 +470,10 @@ describe("issue trash", () => {
     );
     expect(await service.purgeExpiredTrash()).toBe(0);
     expect((await service.restoreIssue(manager, old.id)).id).toBe(old.id);
+    const liveChild = await service.createIssue(manager, f.projectId, {
+      title: "Live child of a future tombstone",
+      parentIssueId: old.id,
+    });
 
     await database.db.execute(
       sql`update issues set deleted_at = statement_timestamp() - interval '31 days', deleted_by_human_id = ${f.humanId} where id = ${old.id}`,
@@ -463,6 +492,8 @@ describe("issue trash", () => {
     expect(tombstone.assigneeId).toBeNull();
     expect(tombstone.purgedAt).not.toBeNull();
     expect(tombstone.number).toBe(old.number);
+    const child = first(await database.db.select().from(issues).where(eq(issues.id, liveChild.id)));
+    expect(child.parentIssueId).toBeNull();
 
     expect(
       await database.db.select().from(issueComments).where(eq(issueComments.issueId, old.id)),
@@ -484,6 +515,87 @@ describe("issue trash", () => {
     expect(activity.some((event) => event.issueId === old.id)).toBe(true);
     expect(await kindOf(service.restoreIssue(manager, old.id))).toBe("issue_purged");
     expect(await service.listTrash(manager, f.projectId)).toHaveLength(0);
+  });
+
+  it("excludes trashed issues from the inbox, subtrees, and the trash window", async () => {
+    const f = await seed();
+    const service = makeService();
+    const manager = humanActor(f.humanId);
+    const inbox = createInboxFeature({
+      db: database.db,
+      projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
+        projectAccessCeilingInTransaction(tx, workspaceId, humanId, projectIds),
+      projectAccessAtLeast,
+      deliver: async () => {},
+      log: silentLogger,
+      sessionReader: async () => null,
+      authenticate: async () => null,
+    }).service;
+
+    const questionIssue = await createIssue(service, manager, f.projectId);
+    const { agentId, runId } = await insertLiveSession(f, questionIssue.id);
+    await database.db.execute(
+      sql`update issues set status = 'in_progress' where id = ${questionIssue.id}`,
+    );
+    const question = await inbox.ask(
+      { kind: "agent", identity: identityForAgent(f, agentId) },
+      {
+        issueId: questionIssue.id,
+        runId,
+        question: "Which way?",
+        proposedFallback: "keep going",
+      },
+    );
+    expect((await inbox.list(manager)).map((q) => q.id)).toContain(question.id);
+    // Release the question's claim first: a delete refuses a live work session.
+    await database.db.execute(
+      sql`update work_sessions set lease_expires_at = statement_timestamp() - interval '1 minute' where issue_id = ${questionIssue.id}`,
+    );
+    await service.deleteIssue(manager, questionIssue.id);
+    expect((await inbox.list(manager)).map((q) => q.id)).not.toContain(question.id);
+    expect(await kindOf(inbox.issueHistory(manager, questionIssue.id))).toBe("issue_not_found");
+    expect(
+      await kindOf(
+        inbox.ask(
+          { kind: "agent", identity: identityForAgent(f, agentId) },
+          {
+            issueId: questionIssue.id,
+            runId,
+            question: "Still there?",
+            proposedFallback: "stop",
+          },
+        ),
+      ),
+    ).toBe("issue_not_found");
+
+    const parent = await createIssue(service, manager, f.projectId);
+    const child = await service.createIssue(manager, f.projectId, {
+      title: "Child",
+      parentIssueId: parent.id,
+    });
+    expect(child.parentIssueId).toBe(parent.id);
+    await service.deleteIssue(manager, parent.id);
+    expect(
+      await kindOf(
+        service.createIssue(manager, f.projectId, {
+          title: "New child of trash",
+          parentIssueId: parent.id,
+        }),
+      ),
+    ).toBe("issue_not_found");
+    expect(await kindOf(service.updateIssue(manager, child.id, { parentIssueId: parent.id }))).toBe(
+      "issue_not_found",
+    );
+
+    const stale = await createIssue(service, manager, f.projectId);
+    await service.deleteIssue(manager, stale.id);
+    await database.db.execute(
+      sql`update issues set deleted_at = statement_timestamp() - interval '31 days', deleted_by_human_id = ${f.humanId} where id = ${stale.id}`,
+    );
+    expect((await service.listTrash(manager, f.projectId)).map((i) => i.id)).not.toContain(
+      stale.id,
+    );
+    expect(await kindOf(service.restoreIssue(manager, stale.id))).toBe("issue_purged");
   });
 
   it("refuses every write and every claim on a trashed issue", async () => {

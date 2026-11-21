@@ -141,6 +141,10 @@ const ACCESS_RANK: Record<ProjectAccessLevel, number> = {
   manage: 3,
 };
 
+// #98: one database-time boundary for the whole trash lifecycle. Restore refusal, trash
+// listing and the sweep all use it, so an item never appears recoverable past its window.
+const THIRTY_DAYS_AGO = sql`statement_timestamp() - interval '30 days'`;
+
 // #95: derive a valid key from a project name — the first letter of each alphabetic
 // word, uppercased. A name with no letters falls back to PRJ; a one-letter name is
 // padded so the result always matches ^[A-Z][A-Z0-9]{1,9}$.
@@ -1209,7 +1213,9 @@ async function validateParent(
   const [parent] = await tx
     .select({ projectId: issues.projectId, parentIssueId: issues.parentIssueId })
     .from(issues)
-    .where(eq(issues.id, parentIssueId))
+    // #98: a trashed or purged issue is not a parent. It answers 404 like any issue that
+    // is no longer active, so an active issue can never point at a future tombstone.
+    .where(and(eq(issues.id, parentIssueId), isNull(issues.deletedAt)))
     .limit(1);
   if (parent === undefined) throw new ProjectsError("issue_not_found");
   if (parent.projectId !== projectId) throw new ProjectsError("cross_project_parent");
@@ -1823,6 +1829,9 @@ export function createProjectsService({
                   eq(issues.projectId, projectId),
                   isNotNull(issues.deletedAt),
                   isNull(issues.purgedAt),
+                  // An un-swept item past its window is effectively purged: showing it
+                  // here would offer a restore that can only fail with issue_purged.
+                  gt(issues.deletedAt, THIRTY_DAYS_AGO),
                 )
               : and(eq(issues.projectId, projectId), isNull(issues.deletedAt)),
           )
@@ -2069,6 +2078,7 @@ export function createProjectsService({
           .where(
             and(
               eq(issues.projectId, projectId),
+              isNull(issues.deletedAt),
               eq(questions.status, "open"),
               lte(questions.responseDeadlineAt, sql`statement_timestamp()`),
             ),
@@ -2459,24 +2469,21 @@ export function createProjectsService({
         const [expired] = await tx
           .select({ id: issues.id })
           .from(issues)
-          .where(
-            and(
-              eq(issues.id, issueId),
-              sql`${issues.deletedAt} <= statement_timestamp() - interval '30 days'`,
-            ),
-          )
+          .where(and(eq(issues.id, issueId), sql`${issues.deletedAt} <= ${THIRTY_DAYS_AGO}`))
           .limit(1);
         if (current.purgedAt !== null || expired !== undefined) {
           throw new ProjectsError("issue_purged");
         }
-        await tx
+        const [restored] = await tx
           .update(issues)
           .set({
             deletedAt: null,
             deletedByHumanId: null,
             updatedAt: sql`statement_timestamp()`,
           })
-          .where(eq(issues.id, issueId));
+          .where(eq(issues.id, issueId))
+          .returning({ updatedAt: issues.updatedAt });
+        if (restored === undefined) throw new ProjectsError("issue_not_found");
         await recordActivity(tx, {
           projectId: current.projectId,
           type: "issue_restored",
@@ -2484,7 +2491,10 @@ export function createProjectsService({
           issueId,
           summary: current.title,
         });
-        return toIssue(current, await loadIssueLabels(tx, issueId));
+        return toIssue(
+          { ...current, updatedAt: restored.updatedAt },
+          await loadIssueLabels(tx, issueId),
+        );
       });
     },
 
@@ -2508,10 +2518,11 @@ export function createProjectsService({
             and(
               isNotNull(issues.deletedAt),
               isNull(issues.purgedAt),
-              sql`${issues.deletedAt} <= statement_timestamp() - interval '30 days'`,
+              sql`${issues.deletedAt} <= ${THIRTY_DAYS_AGO}`,
             ),
           )
           .orderBy(issues.id);
+        const expiredIds = expired.map((row) => row.id);
         for (const row of expired) {
           await tx.delete(issueComments).where(eq(issueComments.issueId, row.id));
           await tx.delete(issueLinks).where(eq(issueLinks.issueId, row.id));
@@ -2535,6 +2546,15 @@ export function createProjectsService({
               purgedAt: sql`statement_timestamp()`,
             })
             .where(eq(issues.id, row.id));
+        }
+        // A live subtask must never keep pointing at a scrubbed [deleted] tombstone. Clear
+        // the link in the same transaction; the child stays a full, independently claimable
+        // issue, and the tombstone row it pointed at is not removed.
+        if (expiredIds.length > 0) {
+          await tx
+            .update(issues)
+            .set({ parentIssueId: null })
+            .where(inArray(issues.parentIssueId, expiredIds));
         }
         return expired.length;
       });

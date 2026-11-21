@@ -781,7 +781,8 @@ async function requireActivityReadAccess(
   const [issue] = await tx
     .select({ projectId: issues.projectId })
     .from(issues)
-    .where(eq(issues.id, issueId))
+    // #98: a trashed issue is gone from every session read path, not just every write.
+    .where(and(eq(issues.id, issueId), isNull(issues.deletedAt)))
     .limit(1);
   if (issue === undefined) throw new SessionsError("issue_not_found");
   const [project] = await tx
@@ -1323,7 +1324,7 @@ export function createSessionsService({
           const [issue] = await tx
             .select({ projectId: issues.projectId })
             .from(issues)
-            .where(eq(issues.id, input.issueId))
+            .where(and(eq(issues.id, input.issueId), isNull(issues.deletedAt)))
             .limit(1);
           if (issue === undefined) throw new SessionsError("issue_not_found");
           await requireAccess(
@@ -1465,7 +1466,7 @@ export function createSessionsService({
           const [issue] = await tx
             .select({ projectId: issues.projectId })
             .from(issues)
-            .where(eq(issues.id, issueId))
+            .where(and(eq(issues.id, issueId), isNull(issues.deletedAt)))
             .limit(1);
           if (issue === undefined) throw new SessionsError("issue_not_found");
           await requireAccess(
@@ -1495,7 +1496,7 @@ export function createSessionsService({
           const [issue] = await tx
             .select({ projectId: issues.projectId })
             .from(issues)
-            .where(eq(issues.id, issueId))
+            .where(and(eq(issues.id, issueId), isNull(issues.deletedAt)))
             .limit(1);
           if (issue === undefined) throw new SessionsError("issue_not_found");
           await requireAccess(
