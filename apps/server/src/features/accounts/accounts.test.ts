@@ -14,15 +14,12 @@ import { migrate } from "../../platform/migrate.ts";
 import { AccountsError, createAccountsService } from "./service.ts";
 import { createAccountsFeature } from "./index.ts";
 
-// Runs against a real Postgres: bootstrap races, sessions, and migrations must never be
-// tested against mocks (see AGENTS.md). The secret obeys the 32-character minimum.
 const SECRET = "correct horse battery staple staple";
-const EMAIL_INPUT = "  Admin@Example.COM "; // One normalization: trim, then lowercase.
+const EMAIL_INPUT = "  Admin@Example.COM ";
 const EMAIL = "admin@example.com";
 const PASSWORD = "first-admin-password";
 const PUBLIC_URL = "http://orrery.test";
 
-// The request log goes to the console; tests that don't capture it stay quiet.
 const silentLogger: Logger = createLogger("error");
 
 const postJson = (app: Hono, path: string, body: unknown) =>
@@ -37,8 +34,6 @@ const sessionCookie = (res: Response) =>
 
 const problemBody = async (res: Response) => Problem.parse(await res.json());
 
-// Drizzle wraps the driver's error; the root's message (the PostgresError's) names the
-// violated constraint. Resolves with that message, or the stringified error.
 async function rejectionMessage(promise: Promise<unknown>): Promise<string> {
   const error = await promise.then(
     () => {
@@ -106,7 +101,6 @@ describe("accounts", () => {
       expect(status.status).toBe(200);
       expect(await status.json()).toEqual({ setupComplete: false });
 
-      // Visiting (GET) creates no accounts, workspaces, sessions, or setup state.
       await app.request("/api/auth/session");
       await app.request("/api/setup/status");
       expect(await database.db.select().from(humans)).toHaveLength(0);
@@ -182,7 +176,7 @@ describe("accounts", () => {
       expect(admin).toMatchObject({
         email: EMAIL,
         isSystemAdministrator: true,
-        emailVerifiedAt: null, // SMTP is not required; the address stays unverified.
+        emailVerifiedAt: null,
       });
       expect(admin?.passwordHash).toMatch(/^scrypt\$/);
       expect(admin?.passwordHash).not.toContain(PASSWORD);
@@ -233,7 +227,6 @@ describe("accounts", () => {
       expect(loser.reason).toBeInstanceOf(AccountsError);
       expect(loser.reason.kind).toBe("setup_complete");
 
-      // The loser's human and workspace rolled back with its claim on the singleton.
       expect(await database.db.select().from(humans)).toHaveLength(1);
       expect(await database.db.select().from(workspaces)).toHaveLength(1);
       expect(await database.db.select().from(instanceSetup)).toHaveLength(1);
@@ -253,8 +246,7 @@ describe("accounts", () => {
       expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
       const loser = results.find((r) => r.status === "rejected");
       if (loser?.status !== "rejected") throw new Error("expected one rejected attempt");
-      // The winner closed setup, so the honest answer to the loser is that setup is
-      // complete — not a misleading "email is taken" for a race it can never win.
+
       expect(loser.reason).toBeInstanceOf(AccountsError);
       expect(loser.reason.kind).toBe("setup_complete");
       expect(await database.db.select().from(humans)).toHaveLength(1);
@@ -274,8 +266,6 @@ describe("accounts", () => {
     });
 
     it("rejects a workspace kind outside the contract enum", async () => {
-      // The Drizzle typing prevents an invalid kind in code; the CHECK is the guard for
-      // every other writer, so bypass the typing with raw SQL here.
       const message = await rejectionMessage(
         database.db.execute(
           sql`insert into workspaces (id, kind, name) values (${randomUUID()}, 'team', 'Nope')`,
@@ -322,14 +312,14 @@ describe("accounts", () => {
       expect(cookie).toContain("HttpOnly");
       expect(cookie).toContain("SameSite=Lax");
       expect(cookie).toContain("Path=/");
-      expect(cookie).toContain("Max-Age=604800"); // Seven days.
-      expect(cookie).not.toContain("Secure"); // This app's PUBLIC_URL is http.
+      expect(cookie).toContain("Max-Age=604800");
+      expect(cookie).not.toContain("Secure");
 
       const withSession = await app.request("/api/auth/session", {
         headers: { cookie: cookie?.split(";")[0] },
       });
       expect(withSession.status).toBe(200);
-      // Bootstrap never requires SMTP (ADR-0001): the administrator signs in unverified.
+
       expect(await withSession.json()).toEqual({
         email: EMAIL,
         displayName: null,
@@ -374,8 +364,6 @@ describe("accounts", () => {
       const app = makeApp(SECRET);
       await bootstrapAdmin(app);
 
-      // A stored password may predate today's rules; login accepts any non-empty
-      // password and answers wrong ones with the same 401, whatever their shape.
       const short = await postJson(app, "/api/auth/login", { email: EMAIL, password: "tiny" });
       const wrong = await postJson(app, "/api/auth/login", {
         email: EMAIL,
@@ -415,7 +403,6 @@ describe("accounts", () => {
       const login = await postJson(first, "/api/auth/login", { email: EMAIL, password: PASSWORD });
       const cookie = sessionCookie(login)?.split(";")[0];
 
-      // A new service instance holds no in-memory state: everything above lives in Postgres.
       const second = makeApp(SECRET);
 
       const setupAgain = await postJson(second, "/api/setup/admin", setupBody);
@@ -519,7 +506,6 @@ describe("accounts", () => {
       expect(ok.status).toBe(200);
       expect(await ok.json()).toEqual({ changed: true });
 
-      // Current session stays valid; other session is revoked.
       const stillActive = await app.request("/api/auth/session", {
         headers: { cookie: currentCookie },
       });
@@ -529,7 +515,6 @@ describe("accounts", () => {
       });
       expect(revoked.status).toBe(401);
 
-      // Old password fails; new password works.
       const oldLogin = await postJson(app, "/api/auth/login", {
         email: EMAIL,
         password: PASSWORD,
@@ -575,7 +560,7 @@ describe("accounts", () => {
         const token = sessionCookie(login)?.split(";")[0]?.split("=")[1] ?? "";
 
         const captured = lines.join("\n");
-        // The request log itself was captured, so the absence below is meaningful.
+
         expect(captured).toContain("/api/setup/admin");
         expect(captured).toContain("/api/auth/login");
         expect(captured).not.toContain(PASSWORD);

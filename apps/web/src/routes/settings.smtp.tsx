@@ -25,9 +25,6 @@ import {
   verifyEmail,
 } from "../features/settings/index.ts";
 
-// SMTP configuration and email verification (issue #22), for system administrators.
-// The query answers null for anyone else, so the page shows a plain refusal instead of a
-// repeated failed request; the server enforces the same boundary for direct clients.
 export const Route = createFileRoute("/settings/smtp")({
   validateSearch: (search: Record<string, unknown>) => {
     const parsed: { token?: string } = {};
@@ -53,8 +50,7 @@ function SmtpSettingsPage() {
   const { token: initialToken } = Route.useSearch();
   const { data: session } = useSuspenseQuery(sessionQuery);
   const { data: settings } = useSuspenseQuery(smtpSettingsQuery);
-  // A null settings response means "not an administrator", so this is only read on the
-  // administrative branch below; keep it a plain boolean for the signed-out shape too.
+
   const emailVerified = session.signedIn && session.emailVerified;
 
   return (

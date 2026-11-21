@@ -2,9 +2,6 @@ import { randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { decryptSecret, encryptSecret } from "./secrets.ts";
 
-// Pure crypto behavior (ADR-0004): round trips, and every way a stored value can fail
-// to read. No Postgres here; the settings service tests prove the database flow.
-
 const KEY = randomBytes(32);
 const OTHER_KEY = randomBytes(32);
 
@@ -25,11 +22,11 @@ describe("secrets at rest", () => {
 
   it("refuses a stored value that is not exactly four v1 parts", () => {
     const stored = encryptSecret(KEY, "the-mail-relay-passphrase");
-    // A fifth part, whatever it is.
+
     expect(decryptSecret(KEY, `${stored}:extra`)).toBeUndefined();
-    // A missing part.
+
     expect(decryptSecret(KEY, stored.slice(0, stored.lastIndexOf(":")))).toBeUndefined();
-    // Not the v1 format at all.
+
     expect(decryptSecret(KEY, "v2:aaaa:bbbb:cccc")).toBeUndefined();
   });
 

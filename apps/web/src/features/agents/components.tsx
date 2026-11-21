@@ -34,13 +34,6 @@ import {
 } from "./commands.ts";
 import { agentKeysQuery, agentsQuery, workspaceAgentKeysQuery } from "./queries.ts";
 
-// Agents and their keys (issue #30). An agent is registered under the signed-in human,
-// then a key binds it to this workspace and selected projects. The level offered in the
-// form is capped by the human's current level on each project; the server rechecks that
-// ceiling at issue and on every authenticated request. A key's secret is shown once;
-// rotating a key mints an overlapping replacement and shows only the new secret once.
-// Every list, including the owner's view of other humans' keys, is secret-free.
-
 const validityOptions = [
   { value: "7", label: "7 days" },
   { value: "14", label: "14 days" },
@@ -50,7 +43,6 @@ const validityOptions = [
   { value: "never", label: "Never" },
 ] as const;
 
-// The enum's own order is the level order; no second ranking table is needed in the UI.
 const levelRank = (level: ProjectAccessLevel) => ProjectAccessLevel.options.indexOf(level);
 const levelsUpTo = (cap: ProjectAccessLevel) =>
   ProjectAccessLevel.options.filter((level) => levelRank(level) <= levelRank(cap));
@@ -59,11 +51,9 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
   const { data: agents } = useSuspenseQuery(agentsQuery);
   const { data: mine } = useSuspenseQuery(agentKeysQuery(workspaceId));
   const { data: projects } = useSuspenseQuery(projectsQuery(workspaceId));
-  // Run metadata is joined on the client by run id: it supplies harness/model/subagent
-  // attribution without a cross-feature SQL join.
+
   const { data: runs } = useSuspenseQuery(workspaceRunsQuery(workspaceId));
-  // An owner also sees keys issued by other humans in this workspace. The query is
-  // disabled for ordinary members, whose view stays their own keys.
+
   const workspaceKeys = useQuery({ ...workspaceAgentKeysQuery(workspaceId), enabled: isOwner });
   const queryClient = useQueryClient();
   const toast = useToast();
@@ -96,8 +86,6 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
     setBusyKey(key.id);
     setError(undefined);
     try {
-      // Omitted options preserve the source's validity and grants; the server re-caps
-      // those grants by the human's current access and returns a fresh one-time secret.
       const replacement = await rotateAgentKey(key.id);
       setSecret(replacement.secret);
       setCopied(false);
@@ -363,9 +351,6 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
   );
 }
 
-// #82: the agents view lists only live sessions from the workspace-level read, rather
-// than polling every issue of every project. The same badge and one-click stop control
-// as the issue page lets a human stop an agent without revoking its key.
 function ActiveSessions({
   workspaceId,
   projects,
@@ -506,7 +491,7 @@ function IssueKeyForm({
   function toggle(projectId: string, checked: boolean) {
     setSelected((current) => {
       const next = { ...current };
-      // The lowest level is within every cap, so it is always a safe default.
+
       if (checked) next[projectId] = "read";
       else delete next[projectId];
       return next;

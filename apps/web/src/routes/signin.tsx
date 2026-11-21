@@ -9,8 +9,6 @@ import type { FormEvent } from "react";
 import { useState } from "react";
 import { sessionQuery, signIn } from "../features/accounts/index.ts";
 
-// Only the internal workspace-invitation path is accepted as a post-sign-in destination.
-// It is not a general redirect: complete URLs, schemes, and every other route are ignored.
 const INVITATION_NEXT = /^\/workspace-invitation\?token=([A-Za-z0-9_-]+)$/;
 
 function invitationTokenFrom(next: string | undefined): string | undefined {
@@ -49,10 +47,7 @@ function SignInPage() {
     setError(undefined);
     try {
       await signIn({ email, password });
-      // Anything cached while signed out (notably an anonymous smtpSettingsQuery of
-      // null) must not survive the new identity: with staleTime, ensureQueryData would
-      // otherwise keep serving that refusal after sign-in. Login also only answers with
-      // the email, so fetch the session from the server for the verified state.
+
       queryClient.clear();
       await queryClient.fetchQuery(sessionQuery);
       const token = invitationTokenFrom(next);

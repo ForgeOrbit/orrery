@@ -1,16 +1,3 @@
-// The invitation story (issue #23), through the API and the browser: the administrator
-// sends an installation invitation, the Mailpit catcher receives the link, the link's
-// GET is inert, the recipient's POST registers one account with one personal workspace,
-// and reuse fails. Registration is invitation-only: there is no public sign-up.
-// Black-box: HTTP and real pages against a running Orrery, never server code. Errors
-// answer as RFC 9457 Problems (ADR-0003).
-//
-// Runs after bootstrap.spec.ts (alphabetical file order, one worker), which created the
-// administrator and closed setup. SMTP is saved here, because this suite must deliver:
-// the later smtp.spec.ts re-saves its own settings for its deeper story.
-//
-//   docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { expect, request, test, type APIRequestContext } from "@playwright/test";
 import { ADMIN_EMAIL, ADMIN_PASSWORD, recordSecret } from "./admin.ts";
 
@@ -18,11 +5,8 @@ const baseUrl = process.env.ORRERY_URL;
 if (!baseUrl)
   throw new Error("Set ORRERY_URL to a running Orrery, for example http://localhost:8080");
 
-// The Mailpit catcher the mail-test compose profile starts (compose.yaml).
 const mailpit = process.env.MAILPIT_URL ?? "http://localhost:8025";
 
-// The settings that deliver through the catcher: its SMTP listener is plain and open,
-// reached over the compose network.
 const SETTINGS = {
   host: "mailpit",
   port: 1025,
@@ -33,9 +17,6 @@ const SETTINGS = {
 } as const;
 const SUBJECT = "Your Orrery invitation";
 
-// Two invited people: one registers through the API, one through the browser. A third
-// registers through the browser while its sign-in is refused once. Their passwords and
-// tokens are secrets the stack's logs must never contain.
 const INVITEE_EMAIL = "newcomer@orrery.test";
 const INVITEE_PASSWORD = "invited-newcomer-password";
 const BROWSER_INVITEE_EMAIL = "browser.person@orrery.test";
@@ -43,8 +24,6 @@ const BROWSER_INVITEE_PASSWORD = "browser-checked-invitee-password";
 const RESILIENT_INVITEE_EMAIL = "resilient.person@orrery.test";
 const RESILIENT_INVITEE_PASSWORD = "resilient-person-password";
 
-// The fresh tokens from the last delivered invitation emails; the send tests fill
-// these in, the later tests consume them. Tests run in file order.
 let inviteeToken = "";
 let browserInviteeToken = "";
 
@@ -54,15 +33,12 @@ test.beforeAll(async () => {
     await recordSecret(value);
   }
   api = await request.newContext({ baseURL: baseUrl });
-  // Sign in as the administrator bootstrap.spec.ts created. Playwright restarts the
-  // worker after a failed test, and a restarted worker re-runs this hook with a fresh,
-  // signed-in context — every test below stays authorized whatever happened to its
-  // predecessors.
+
   const login = await api.post("/api/auth/login", {
     data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
   });
   expect(login.status()).toBe(200);
-  // This suite must deliver: arm SMTP before anything sends.
+
   const saved = await api.put("/api/settings/smtp", { data: SETTINGS });
   expect(saved.status()).toBe(200);
 });
@@ -89,26 +65,23 @@ test("sends the invitation, and the catcher receives the seven-day link", async 
   expect(res.status()).toBe(201);
   expect(await res.json()).toEqual({ email: INVITEE_EMAIL, status: "pending" });
 
-  // Actual delivery: the catcher holds the invitation, addressed to the invitee.
   await expect
     .poll(async () => caughtInvitationToken(api, INVITEE_EMAIL), { timeout: 15_000 })
     .toBeTruthy();
   const token = await caughtInvitationToken(api, INVITEE_EMAIL);
   if (token === undefined) throw new Error("the catcher never received the invitation");
-  // A token the stack's logs must never contain.
+
   await recordSecret(token);
   inviteeToken = token;
 });
 
 test("refuses a registered email and a duplicate pending invitation", async () => {
-  // The administrator's own address has an account.
   const registered = await api.post("/api/invitations/installation", {
     data: { email: ADMIN_EMAIL },
   });
   expect(registered.status()).toBe(409);
   expect(await registered.json()).toMatchObject({ status: 409, code: "account_exists" });
 
-  // One pending invitation per email: the newcomer's link does not double.
   const duplicate = await api.post("/api/invitations/installation", {
     data: { email: INVITEE_EMAIL },
   });
@@ -119,34 +92,26 @@ test("refuses a registered email and a duplicate pending invitation", async () =
 test("the link's GET is inert; the POST registers; reuse fails", async () => {
   expect(inviteeToken).not.toBe("");
 
-  // Following the link serves the register page and changes nothing.
   const link = await api.get(`/register?token=${inviteeToken}`);
   expect(link.status()).toBe(200);
   expect(link.headers()["content-type"]).toContain("text/html");
 
-  // No GET route redeems the token either: the unknown API GET falls through to the
-  // app shell, never to an endpoint.
   const apiGet = await api.get("/api/invitations/installation/registration");
   expect(apiGet.status()).toBe(200);
   expect(apiGet.headers()["content-type"]).toContain("text/html");
 
-  // The recipient's POST is what registers: one account, bound to the invited email,
-  // starting verified.
   const res = await api.post("/api/invitations/installation/registration", {
     data: { token: inviteeToken, password: INVITEE_PASSWORD },
   });
   expect(res.status()).toBe(200);
   expect(await res.json()).toEqual({ email: INVITEE_EMAIL, emailVerified: true });
 
-  // Single-use: the same token is worthless now.
   const again = await api.post("/api/invitations/installation/registration", {
     data: { token: inviteeToken, password: INVITEE_PASSWORD },
   });
   expect(again.status()).toBe(400);
   expect(await again.json()).toMatchObject({ code: "invitation_invalid" });
 
-  // The account works: the invited person signs in with the password they chose, in
-  // their own context — the shared one stays the administrator's.
   const newcomer = await request.newContext({ baseURL: baseUrl });
   try {
     const login = await newcomer.post("/api/auth/login", {
@@ -165,7 +130,6 @@ test("the link's GET is inert; the POST registers; reuse fails", async () => {
 });
 
 test("registration is invitation-only: no public sign-up exists", async () => {
-  // The plausible public-registration routes are not there.
   for (const path of ["/api/auth/register", "/api/register", "/api/auth/signup"]) {
     const res = await api.post(path, {
       data: { email: "x@example.com", password: "whatever-password" },
@@ -175,8 +139,6 @@ test("registration is invitation-only: no public sign-up exists", async () => {
     expect(await res.json()).toMatchObject({ code: "not_found" });
   }
 
-  // Without a real invitation, the only registration route refuses, and no account
-  // appears: signing in with the attempted credentials is still impossible.
   const garbage = await api.post("/api/invitations/installation/registration", {
     data: { token: "not-a-real-token", password: "whatever-password" },
   });
@@ -189,7 +151,6 @@ test("registration is invitation-only: no public sign-up exists", async () => {
 });
 
 test("accepting an invitation in the browser", async ({ page }) => {
-  // A second invitation, for the person the browser will register.
   const invited = await api.post("/api/invitations/installation", {
     data: { email: BROWSER_INVITEE_EMAIL },
   });
@@ -202,20 +163,17 @@ test("accepting an invitation in the browser", async ({ page }) => {
   await recordSecret(token);
   browserInviteeToken = token;
 
-  // The emailed link, in the browser: a page, not a redemption.
   await page.goto(`/register?token=${browserInviteeToken}`);
   await expect(page.getByRole("heading", { name: "Accept your invitation" })).toBeVisible();
 
-  // Choosing a password is what registers: one flow, ending signed in.
   await page.getByLabel("Password").fill(BROWSER_INVITEE_PASSWORD);
   await page.getByRole("button", { name: "Register" }).click();
   await expect(page.getByText(`Signed in as ${BROWSER_INVITEE_EMAIL}.`)).toBeVisible();
   await expect(page.getByRole("heading", { name: "Your workspaces" })).toBeVisible();
-  // The new personal workspace, and nothing else in the list.
+
   await expect(page.getByRole("listitem")).toHaveCount(1);
   await expect(page.getByRole("list")).toContainText("Personal");
 
-  // The cookies the server just set are secrets the logs must never contain.
   for (const cookie of await page.context().cookies()) {
     await recordSecret(cookie.value);
   }
@@ -225,8 +183,6 @@ test("another person cannot access the new personal workspace", async ({ page })
   expect(inviteeToken).not.toBe("");
   expect(browserInviteeToken).not.toBe("");
 
-  // Over HTTP: each signed-in person sees exactly their own workspace, and nobody
-  // else's — not even the system administrator's listing contains the invitees'.
   const newcomer = await request.newContext({ baseURL: baseUrl });
   const browserPerson = await request.newContext({ baseURL: baseUrl });
   const anonymous = await request.newContext({ baseURL: baseUrl });
@@ -259,7 +215,6 @@ test("another person cannot access the new personal workspace", async ({ page })
     expect(browserPersonList.map((w) => w.id)).not.toContain(newcomerWorkspaceId);
     expect(newcomerList.map((w) => w.id)).not.toContain(browserPersonWorkspaceId);
 
-    // Without a session there is no listing at all.
     const refused = await anonymous.get("/api/workspaces");
     expect(refused.status()).toBe(401);
     expect(await refused.json()).toMatchObject({ status: 401, code: "not_signed_in" });
@@ -269,8 +224,6 @@ test("another person cannot access the new personal workspace", async ({ page })
     await anonymous.dispose();
   }
 
-  // In the browser: the other person signs in and sees their own workspace, and no
-  // trace of the first person's account or workspace — proven by id, not by wording.
   await page.goto("/signin");
   await page.getByLabel("Email").fill(INVITEE_EMAIL);
   await page.getByLabel("Password").fill(INVITEE_PASSWORD);
@@ -278,7 +231,7 @@ test("another person cannot access the new personal workspace", async ({ page })
   await expect(page.getByText(`Signed in as ${INVITEE_EMAIL}.`)).toBeVisible();
   await expect(page.getByRole("heading", { name: "Your workspaces" })).toBeVisible();
   await expect(page.getByRole("listitem")).toHaveCount(1);
-  // The shown workspace is the newcomer's own, never the browser person's.
+
   const shown = await page.locator("main li[data-workspace-id]").getAttribute("data-workspace-id");
   expect(shown).toBe(newcomerWorkspaceId);
   expect(shown).not.toBe(browserPersonWorkspaceId);
@@ -290,7 +243,6 @@ test("another person cannot access the new personal workspace", async ({ page })
 });
 
 test("registration completes even when the follow-up sign-in fails", async ({ page }) => {
-  // A third invitation, for a person whose sign-in the browser will refuse once.
   const invited = await api.post("/api/invitations/installation", {
     data: { email: RESILIENT_INVITEE_EMAIL },
   });
@@ -302,19 +254,15 @@ test("registration completes even when the follow-up sign-in fails", async ({ pa
   if (token === undefined) throw new Error("the catcher never received the invitation");
   await recordSecret(token);
 
-  // Refuse only the sign-in that follows registration: registration itself must run.
   await page.route("**/api/auth/login", (route) => route.abort());
   await page.goto(`/register?token=${token}`);
   await page.getByLabel("Password").fill(RESILIENT_INVITEE_PASSWORD);
   await page.getByRole("button", { name: "Register" }).click();
 
-  // The account was created; the person is told so and sent to sign in, with no form
-  // left whose resubmit would fail with invitation_invalid.
   await expect(page.getByText("Your account was created")).toBeVisible();
   await expect(page.getByRole("link", { name: "Sign in" })).toBeVisible();
   await expect(page.getByLabel("Password")).toHaveCount(0);
 
-  // The account is real: once the browser stops refusing, signing in works.
   await page.unroute("**/api/auth/login");
   await page.getByRole("link", { name: "Sign in" }).click();
   await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
@@ -328,8 +276,6 @@ test("registration completes even when the follow-up sign-in fails", async ({ pa
 });
 
 test("tracks installation invitations: resend rotates the link, revoke and decline resolve offers, delivery stays separate", async () => {
-  // Resend: the old link stops working, the history keeps both rows, and the new one
-  // registers the recipient.
   const resendEmail = "installation.resend@orrery.test";
   const resendPassword = "installation-resend-password";
   await recordSecret(resendPassword);
@@ -380,7 +326,6 @@ test("tracks installation invitations: resend rotates the link, revoke and decli
   });
   expect(registered.status()).toBe(200);
 
-  // Revoke: the offer resolves and its link never registers.
   const revokeEmail = "installation.revoke@orrery.test";
   const revokePassword = "installation-revoke-password";
   await recordSecret(revokePassword);
@@ -403,7 +348,6 @@ test("tracks installation invitations: resend rotates the link, revoke and decli
   });
   expect(revokedAttempt.status()).toBe(400);
 
-  // Decline: the recipient resolves the offer from the link, without a session.
   const declineEmail = "installation.decline@orrery.test";
   const declineInvite = await api.post("/api/invitations/installation", {
     data: { email: declineEmail },
@@ -431,8 +375,6 @@ test("tracks installation invitations: resend rotates the link, revoke and decli
     expect.objectContaining({ email: declineEmail, status: "declined" }),
   );
 
-  // Delivery failure is independent of the lifecycle: the row stays pending, and the
-  // list reports the failed email separately. Repairing SMTP and resending recovers it.
   const failedEmail = "installation.delivery@orrery.test";
   await api.put("/api/settings/smtp", {
     data: { ...SETTINGS, host: "127.0.0.1", port: 1 },
@@ -531,8 +473,6 @@ test("installation invite form refreshes failed delivery history without a reloa
     await page.getByLabel("Email").fill(FAILED_EMAIL);
     await page.getByRole("button", { name: "Send installation invitation" }).click();
 
-    // The original delivery Problem stays visible, while the history refreshes on its
-    // own to show the pending row, the separate failure, and the Resend action.
     await expect(page.getByRole("dialog").getByRole("alert").first()).toContainText(
       "Could not reach the SMTP server",
     );
@@ -551,7 +491,6 @@ test("installation invite form refreshes failed delivery history without a reloa
   for (const cookie of await page.context().cookies()) await recordSecret(cookie.value);
 });
 
-// One person's workspace listing, already validated against the response shape.
 async function workspacesOf(context: APIRequestContext) {
   const res = await context.get("/api/workspaces");
   expect(res.status()).toBe(200);
@@ -565,9 +504,6 @@ async function workspacesOf(context: APIRequestContext) {
   });
 }
 
-// The invitation token for one recipient, from the catcher's copy of the email: scans
-// the caught messages by subject and address. Fields are read with runtime checks,
-// never type assertions — a third party's response is not trusted to match a cast.
 async function caughtInvitationToken(
   client: APIRequestContext,
   to: string,
@@ -576,8 +512,6 @@ async function caughtInvitationToken(
   return tokens[0];
 }
 
-// Every matching installation token, for a resend where the old and new emails share a
-// recipient and subject. Order is the catcher's, so callers compare sets.
 async function caughtInvitationTokens(client: APIRequestContext, to: string): Promise<string[]> {
   const list = await client.get(`${mailpit}/api/v1/messages`);
   const body: unknown = await list.json();
@@ -602,8 +536,6 @@ async function caughtInvitationTokens(client: APIRequestContext, to: string): Pr
   return tokens;
 }
 
-// One installation invitation's id from the administrator's history, optionally
-// narrowed by lifecycle state.
 async function installationInvitationId(
   client: APIRequestContext,
   email: string,
@@ -623,7 +555,6 @@ async function installationInvitationId(
   throw new Error(`no ${status ?? "matching"} installation invitation for ${email}`);
 }
 
-// The recipient addresses of one caught message.
 function caughtRecipients(detail: object): string[] {
   const to: unknown = Reflect.get(detail, "To");
   if (!Array.isArray(to)) return [];

@@ -1,9 +1,3 @@
-// Error helpers shared by the HTTP layer and tests: drivers and ORMs wrap the
-// interesting error, and some wrappers log more than they should.
-
-// The root of a thrown error's cause chain: the driver or database error underneath
-// whatever the ORM wrapped it in.
-// Stops after a few links, so a cyclic cause chain cannot loop forever.
 const MAX_CAUSE_DEPTH = 10;
 
 export function rootCause(error: unknown): Error | undefined {
@@ -14,12 +8,7 @@ export function rootCause(error: unknown): Error | undefined {
   return current;
 }
 
-// What to log about an unexpected error, as log fields. A Postgres error's message can
-// quote the input that broke it (for example a bad uuid), so it logs its name, SQLSTATE
-// code and the schema identifiers involved (constraint, table, column), never its
-// message or detail. Everything else keeps its message, which is usually the whole story.
 export interface ErrorSummary {
-  // The root error's name.
   error: string;
   code?: string;
   constraint?: string;
@@ -33,9 +22,6 @@ const stringField = (value: object, key: string): string | undefined => {
   return typeof field === "string" ? field : undefined;
 };
 
-// The constraint name of a Postgres unique violation (SQLSTATE 23505), walking through
-// driver and ORM wrappers, or undefined for anything else. Features translate a
-// constraint into its own error: the constraint is the honest, stable reason.
 export function uniqueConstraintName(error: unknown): string | undefined {
   let current: unknown = error;
   for (let depth = 0; current !== null && typeof current === "object" && depth < 3; depth++) {
@@ -75,10 +61,6 @@ export function errorSummary(error: unknown): ErrorSummary {
   return { error: root.name, message: root.message };
 }
 
-// An error's code (ECONNREFUSED, EAUTH, ...), read without asserting a shape: errors
-// arrive from drivers and libraries that each wrap them differently. For log fields:
-// name and code only, so a wrapped error's message — which can quote what broke it —
-// never reaches a log.
 export function errorNameAndCode(error: unknown): { error: string; code?: string } {
   const code = stringField(error instanceof Error ? error : {}, "code");
   return {

@@ -4,11 +4,6 @@ import { questionTools } from "@orrery/contract";
 import { isAgentError, type AgentAuthenticator } from "../agents/index.ts";
 import { InboxError, type InboxService } from "./service.ts";
 
-// MCP transport adapter for human input (#41). It authenticates the bearer key on every
-// call and validates tool args with the shared contract; the service decides everything.
-// Agents can ask and read the resolution back, but there is deliberately no MCP answer
-// tool: only the human REST inbox may answer.
-
 type Args = Record<string, unknown>;
 
 const str = (value: unknown, field: string): string => {

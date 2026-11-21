@@ -24,9 +24,6 @@ export interface IssueMentionTextAreaProps {
   issues?: readonly Issue[];
 }
 
-// GitHub-style # issue mention autocomplete wrapping TextAreaField. Typing # (or #1,
-// #title) opens a floating picker for matching issues in the project; ArrowUp/ArrowDown,
-// Enter/Tab, Escape, and click all work with zero effects.
 const EMPTY_ISSUES: readonly Issue[] = [];
 
 export function IssueMentionTextArea({

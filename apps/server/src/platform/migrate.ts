@@ -2,10 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Sql } from "./db.ts";
 
-// Applies the plain .sql files in /db/migrations in file-name order, all in one transaction, so a
-// failing migration leaves the database unchanged. Applied files are recorded in schema_migrations. An advisory lock makes this safe when several
-// replicas start at once. Any implementation of the server can apply the same files.
-const LOCK_ID = 4_206_917; // arbitrary, fixed: "orrery migrations"
+const LOCK_ID = 4_206_917;
 
 export async function migrate(sql: Sql, dir: string): Promise<string[]> {
   const files = (await readdir(dir)).filter((f) => f.endsWith(".sql")).toSorted();

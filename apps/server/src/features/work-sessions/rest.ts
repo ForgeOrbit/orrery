@@ -30,10 +30,6 @@ import { isAgentError, type AgentAuthenticator } from "../agents/index.ts";
 import type { WorkActor } from "../projects/index.ts";
 import { SessionsError, type SessionsErrorKind, type SessionsService } from "./service.ts";
 
-// Thin REST adapter for work sessions (#36). Every decision is in service.ts: the bearer
-// key resolves to an agent identity, the session's identity comes from the service, and
-// every error is an RFC 9457 Problem built through platform/problem.ts.
-
 const issueParams = z.object({ issueId: z.string().min(1).max(200) });
 const projectParams = z.object({ projectId: z.string().min(1).max(200) });
 const workspaceParams = z.object({ workspaceId: z.string().min(1).max(200) });
@@ -47,7 +43,6 @@ const reacquireBody = ReacquireWorkSessionInput.omit({ issueId: true });
 const logActivityBody = LogSessionActivityInput.omit({ issueId: true });
 const readyWorkQuery = ReadyWorkInput.omit({ projectId: true });
 
-// Only the three cumulative totals go to the service; the fence is passed separately.
 const telemetryOf = (body: SessionTelemetry | undefined): SessionTelemetry | undefined =>
   body === undefined
     ? undefined
@@ -378,8 +373,6 @@ function isKind<K extends readonly SessionsErrorKind[]>(
   return kinds.some((kind) => kind === error.kind);
 }
 
-// The kinds array narrows the problem status for each route, so a route declares exactly
-// the failures it can produce (the same pattern as projects/rest.ts).
 function failure<K extends readonly SessionsErrorKind[]>(c: Context, error: unknown, kinds: K) {
   if (isAgentError(error)) {
     return problemResponse(c, { status: 401, code: error.kind, title: error.message });
@@ -447,9 +440,6 @@ export function createSessionsRest(
 ) {
   const app = new OpenAPIHono({ defaultHook: validationHook });
 
-  // One actor path for reads: a bearer key acts as an agent, otherwise a browser session
-  // acts as a human. Mutations pass the agent identity directly; a missing key becomes a
-  // SessionsError in the service rather than silently falling back to a cookie.
   const workActor = async (c: Context): Promise<WorkActor | null> => {
     const identity = await authenticate(c.req.raw);
     if (identity !== null) return { kind: "agent", identity };

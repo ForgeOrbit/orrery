@@ -8,9 +8,6 @@ import type { FormEvent } from "react";
 import { useState } from "react";
 import { requestPasswordReset } from "../features/recovery/index.ts";
 
-// The password-recovery request page (issue #31). It shows the server's answer verbatim:
-// the response is the same for every address, so this page learns nothing about which
-// accounts exist or which have verified email addresses.
 export const Route = createFileRoute("/forgot-password")({
   staticData: { accessPage: true },
   component: ForgotPasswordPage,

@@ -1,4 +1,3 @@
-// Public interface of the agents feature. Other code imports only this file.
 import type { Feature } from "../../platform/feature.ts";
 import type { SessionReader } from "../accounts/index.ts";
 import { type AgentAuthenticator, readBearerToken } from "./auth.ts";
@@ -18,8 +17,6 @@ export function createAgentAuthenticator(service: AgentsService): AgentAuthentic
   };
 }
 
-// Management routes borrow accounts' session reader; bearer-header parsing stays inside
-// this feature, and the service alone decides whether a presented credential authenticates.
 export interface AgentsFeature extends Feature {
   authenticator: AgentAuthenticator;
 }

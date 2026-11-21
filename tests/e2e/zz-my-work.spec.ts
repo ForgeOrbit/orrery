@@ -1,12 +1,3 @@
-// Cross-workspace My work (issue #99), black-box against a running Orrery. A signed-in
-// human sees their personal and shared assignments, the live sessions under their own
-// agents and the questions waiting on them; agent keys and anonymous callers get a 401
-// Problem. A second human joined by invitation proves that a revoked project grant and a
-// removed workspace membership drop all three shared sections on the next read while their
-// personal work stays. Nothing here imports server code.
-//
-//   docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { randomUUID } from "node:crypto";
 import { expect, request, test, type APIRequestContext } from "@playwright/test";
 import { ADMIN_EMAIL, ADMIN_PASSWORD, recordSecret } from "./admin.ts";
@@ -37,8 +28,6 @@ const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : [
 const hasId = (items: readonly unknown[], id: string): boolean =>
   items.some((item) => field(item, "id") === id || field(item, "sessionId") === id);
 
-// Mailpit keeps old messages, so the live invitation is the matching token that still
-// previews successfully rather than whichever message happens to be first in the inbox.
 async function matchingTokens(
   client: APIRequestContext,
   to: string,
@@ -183,7 +172,7 @@ test.beforeAll(async () => {
   });
   expect(login.status()).toBe(200);
   expect((await api.put("/api/settings/smtp", { data: SMTP_SETTINGS })).status()).toBe(200);
-  // A separate context has no human cookie, so a bearer key cannot be helped by a session.
+
   agentApi = await request.newContext({ baseURL: baseUrl });
   memberApi = await request.newContext({ baseURL: baseUrl });
 });
@@ -316,8 +305,6 @@ test("revoking a project grant or removing a member drops all shared work immedi
   const workspaceId = idOf(await created.json(), "shared workspace");
   const sharedProject = await createProject(api, workspaceId, "Shared revoke project");
 
-  // A real second human joins through a mailed invitation with Contribute on the shared
-  // project. Their own My work is the read under test, never the administrator's.
   const memberEmail = `my-work-revoke.${randomUUID()}@orrery.test`;
   const memberPassword = "my-work-member-password";
   await recordSecret(memberPassword);
@@ -346,7 +333,6 @@ test("revoking a project grant or removing a member drops all shared work immedi
   );
   const memberHumanId = requiredText(field(memberRow, "humanId"), "the member id");
 
-  // Personal work stays visible throughout; only the shared grant/membership changes.
   const personalWorkspaceId = await personalWorkspaceOf(memberApi);
   const personalProject = await createProject(memberApi, personalWorkspaceId, "Personal revoke");
   const personalIssue = await createIssue(
@@ -415,8 +401,6 @@ test("revoking a project grant or removing a member drops all shared work immedi
   expect(afterRevoke.questions).toEqual([]);
   expect(hasId(afterRevoke.assigned, personalIssue.id)).toBe(true);
 
-  // Restore the grant, then remove the whole membership: both paths are read-only checks
-  // against current grant/membership rows, so each exclusion is immediate on the next GET.
   const restored = await api.patch(`/api/projects/${sharedProject.id}/access`, {
     data: { email: memberEmail, level: "contribute" },
   });

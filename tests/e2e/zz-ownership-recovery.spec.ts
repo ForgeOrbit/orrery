@@ -1,13 +1,3 @@
-// Ownership recovery (issue #43), black-box against a running Orrery. A system
-// administrator sees a minimal shared-workspace directory, is refused while an active
-// owner exists and when promoting themselves, then recovers a workspace whose sole owner
-// was deactivated and reactivated. Members are notified through the real relay, and the
-// administrator gains no workspace membership and no project access.
-//
-//   COMPOSE_PROJECT_NAME=orrery-e2e-43 ORRERY_VERSION=orrery-43 \
-//     ORRERY_PORT=18080 POSTGRES_PORT=15432 MAILPIT_HTTP_PORT=18025 \
-//     docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:18080 MAILPIT_URL=http://localhost:18025 pnpm test:e2e
 import { randomUUID } from "node:crypto";
 import { expect, request, test, type APIRequestContext } from "@playwright/test";
 import { ADMIN_EMAIL, ADMIN_PASSWORD, recordSecret } from "./admin.ts";
@@ -162,12 +152,9 @@ test("the minimal directory, refusals, recovery, notification and no admin proje
   });
   expect(appointed.status()).toBe(200);
 
-  // Leave the workspace so the invited member is its sole owner and the administrator
-  // has no workspace membership or project access.
   const left = await admin.post(`/api/workspaces/${workspaceId}/leave`);
   expect(left.status()).toBe(204);
 
-  // Refusal with an active owner, and the minimal directory's content boundary.
   const refused = await admin.post(`/api/admin/workspaces/${workspaceId}/recover-ownership`, {
     data: { humanId: memberId },
   });
@@ -186,7 +173,6 @@ test("the minimal directory, refusals, recovery, notification and no admin proje
   expect(field(entry, "kind")).toBe("shared");
   expect(field(entry, "hasActiveOwner")).toBe(true);
 
-  // The bootstrap actor is the administrator's own stable human id.
   const history = await admin.get("/api/installation/history");
   expect(history.status()).toBe(200);
   const bootstrap = asArray(await history.json()).find(
@@ -194,8 +180,6 @@ test("the minimal directory, refusals, recovery, notification and no admin proje
   );
   const adminId = requiredText(field(field(bootstrap, "actor"), "humanId"), "the administrator id");
 
-  // Deactivate the sole owner, then reactivate the account: the membership stays
-  // suspended with its former-owner mark, so the workspace is ownerless but recoverable.
   const deactivated = await admin.post(`/api/admin/accounts/${memberId}/deactivate`, { data: {} });
   expect(deactivated.status()).toBe(200);
   const reactivated = await admin.post(`/api/admin/accounts/${memberId}/reactivate`, { data: {} });
@@ -214,14 +198,12 @@ test("the minimal directory, refusals, recovery, notification and no admin proje
   expect(field(status, "suspendedAt")).not.toBeNull();
   expect(field(status, "accountDeactivated")).toBe(false);
 
-  // Self-promotion is always refused for the acting administrator.
   const selfPromotion = await admin.post(`/api/admin/workspaces/${workspaceId}/recover-ownership`, {
     data: { humanId: adminId },
   });
   expect(selfPromotion.status()).toBe(403);
   expect(await selfPromotion.json()).toMatchObject({ code: "self_recovery_forbidden" });
 
-  // The reactivated former sole owner is promoted even though they are the only member.
   const recovery = await admin.post(`/api/admin/workspaces/${workspaceId}/recover-ownership`, {
     data: { humanId: memberId },
   });
@@ -249,10 +231,8 @@ test("the minimal directory, refusals, recovery, notification and no admin proje
     "workspace_ownership_recovered",
   );
 
-  // The relay delivered the notification to the promoted member.
   await recoveryMailDelivered(memberEmail);
 
-  // The administrator remains an outsider: no workspace membership and no project access.
   expect((await admin.get(`/api/workspaces/${workspaceId}`)).status()).toBe(404);
   expect((await admin.get(`/api/projects/${projectId}/issues`)).status()).toBe(404);
   const adminWorkspaces = await admin.get("/api/workspaces");

@@ -1,9 +1,3 @@
-// #96 black-box proof: cumulative token/cost totals and v1 structured activity blocks over
-// the real MCP protocol and the public REST API. Drives one agent loop end to end against a
-// running Orrery image:
-//
-//   docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { randomUUID } from "node:crypto";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { expect, request, test, type APIRequestContext } from "@playwright/test";
@@ -121,7 +115,6 @@ test("MCP agent loop reports cumulative totals and a v1 test_results block", asy
     expect(created.isError).toBe(false);
     const issueId = requiredText(field(asRecord(created.data.issue), "id"), "the issue id");
 
-    // The new issue is offered as ready work before this agent claims it.
     const ready = await call(client, "ready_work", { projectId });
     expect(ready.isError).toBe(false);
     expect(asArray(field(ready.data, "issues")).map((issue) => field(issue, "id"))).toContain(
@@ -145,7 +138,6 @@ test("MCP agent loop reports cumulative totals and a v1 test_results block", asy
     expect(field(renewed.data.session, "outputTokens")).toBe(20);
     expect(field(renewed.data.session, "costUsdMicros")).toBeNull();
 
-    // A retry of the same totals is idempotent, not additive.
     const retried = await call(client, "renew_claim", {
       issueId,
       inputTokens: 100,
@@ -154,7 +146,6 @@ test("MCP agent loop reports cumulative totals and a v1 test_results block", asy
     expect(retried.isError).toBe(false);
     expect(field(retried.data.session, "inputTokens")).toBe(100);
 
-    // Progress overwrites what it reports and preserves what it omits.
     const progressed = await call(client, "report_progress", {
       issueId,
       summary: "Tests run",
@@ -166,7 +157,6 @@ test("MCP agent loop reports cumulative totals and a v1 test_results block", asy
     expect(field(progressed.data.session, "outputTokens")).toBe(20);
     expect(field(progressed.data.session, "costUsdMicros")).toBe(750);
 
-    // A v1 block is stored verbatim inside detail.
     const block = {
       version: 1,
       type: "test_results",
@@ -184,7 +174,6 @@ test("MCP agent loop reports cumulative totals and a v1 test_results block", asy
     expect(activity.isError).toBe(false);
     expect(field(activity.data.activity, "detail")).toMatchObject({ source: "ci", block });
 
-    // Arbitrary JSON without a block still passes through.
     const custom = await call(client, "log_session_activity", {
       issueId,
       kind: "thought",
@@ -194,7 +183,6 @@ test("MCP agent loop reports cumulative totals and a v1 test_results block", asy
     expect(custom.isError).toBe(false);
     expect(field(custom.data.activity, "detail")).toEqual({ tool: "edit", nested: { step: 1 } });
 
-    // Malformed v1 blocks and negative totals are refused by the tool's input schema.
     const badBlock = await call(client, "log_session_activity", {
       issueId,
       kind: "status",

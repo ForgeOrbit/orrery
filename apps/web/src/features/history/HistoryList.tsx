@@ -3,9 +3,6 @@ import { Stack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
 import type { HistoryEvent } from "@orrery/contract";
 
-// One list serves every history view. Events carry their own kind and stable type code, so
-// a later producer adds a row here simply by recording a new event; no component change
-// is needed. The actor is always the stable identity from the event, never a caller's name.
 const labels: Record<string, string> = {
   workspace_created: "created the workspace",
   member_joined: "joined the workspace",
@@ -65,8 +62,7 @@ function describe(event: HistoryEvent): string {
       ? event.previousLevel === null || event.previousLevel === event.level
         ? ` (${event.level})`
         : ` (${event.previousLevel} to ${event.level})`
-      : // A revocation records only the level that was taken away.
-        event.previousLevel !== null
+      : event.previousLevel !== null
         ? ` (was ${event.previousLevel})`
         : "";
   const target =

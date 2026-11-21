@@ -1,4 +1,3 @@
-// Public interface of the transfers feature. Other code imports only this file.
 import type { Feature } from "../../platform/feature.ts";
 import type { SessionReader } from "../accounts/index.ts";
 import { createTransfersRest, routes } from "./rest.ts";

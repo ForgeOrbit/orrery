@@ -9,10 +9,6 @@ import { projectActivityQuery } from "../projects/index.ts";
 import { requestStop } from "./commands.ts";
 import { sessionQuery } from "./queries.ts";
 
-// #82: one issue's current work session. A stop request is a signal on an *active*
-// session, not a terminal status, so the badge shows "stopping" until the agent
-// acknowledges the request or the five-minute lease expires. The same control is used on
-// the issue page and in the agents view so both surfaces agree.
 export function SessionStatus({
   issueId,
   projectId,
@@ -59,8 +55,6 @@ function StopAgentForm({ issueId, projectId }: { issueId: string; projectId: str
     setSubmitting(true);
     setError(undefined);
     try {
-      // Set the returned session into the cache first: the badge flips to "stopping"
-      // immediately from the server's own answer, with no local guess about the status.
       const updated = await requestStop(issueId, reason);
       queryClient.setQueryData(sessionQuery(issueId).queryKey, updated);
       await queryClient.invalidateQueries({

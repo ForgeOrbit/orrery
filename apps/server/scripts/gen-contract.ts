@@ -1,5 +1,3 @@
-// Writes the language-neutral contract to /contract: the REST API as OpenAPI 3.1 and every MCP
-// tool as JSON Schema. CI runs this and fails if the committed files differ.
 import { writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { tools } from "@orrery/contract";

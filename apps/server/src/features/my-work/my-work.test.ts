@@ -29,11 +29,6 @@ import { createProjectsFeature, projectAccessAtLeast } from "../projects/index.t
 import { createMyWorkRest } from "./rest.ts";
 import { createMyWorkService, MyWorkError, type MyWorkService } from "./service.ts";
 
-// Real Postgres: My work is a cross-workspace read whose scoping is decided entirely by
-// current membership and grant rows in database time. Every case below drives those rows
-// directly — no mocked repository, no sleeping clock. The REST cases exercise the same
-// service through the real Hono adapter and accounts' real session cookie reader.
-
 const SETUP_SECRET = "correct horse battery staple my work";
 const PUBLIC_URL = "http://orrery.test";
 
@@ -108,8 +103,6 @@ afterEach(async () => {
   });
 });
 
-// --- Fixtures -------------------------------------------------------------------
-
 type Human = { id: string; email: string };
 type Workspace = { id: string; name: string };
 type Project = { id: string; workspaceId: string; name: string; key: string };
@@ -148,8 +141,6 @@ async function personalWorkspace(owner: Human, label: string): Promise<Workspace
 }
 
 async function sharedWorkspace(owner: Human, label: string): Promise<Workspace> {
-  // The shared-workspace owner trigger is checked at commit, so the owner membership must
-  // be inserted in the same transaction as the workspace row.
   return database.db.transaction(async (tx) => {
     const id = randomUUID();
     const [row] = await tx
@@ -380,7 +371,7 @@ async function buildWorld() {
 
   const readGrant = await grant(readProject, alice, "read", bob);
   const contributeGrant = await grant(contributeProject, alice, "contribute", bob);
-  // noAccessProject deliberately has no grant for Alice.
+
   await grant(fallbackProject, alice, "contribute", bob);
 
   const aliceAgent = await agent(alice, "alice-bot");
@@ -584,8 +575,6 @@ const field = (value: unknown, key: string): unknown =>
   typeof value === "object" && value !== null ? Reflect.get(value, key) : undefined;
 const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 
-// --- Service tests --------------------------------------------------------------
-
 describe("my-work service (real Postgres)", () => {
   it("aggregates assigned issues, live agent sessions and actionable questions across workspaces", async () => {
     const w = await buildWorld();
@@ -672,7 +661,7 @@ describe("my-work service (real Postgres)", () => {
     expect(result.activeAgentSessions.map((s) => s.sessionId)).toContain(w.readSession.id);
     expect(result.needsInputQuestions.map((q) => q.id)).not.toContain(w.openQuestion);
     expect(result.needsInputQuestions).toEqual([]);
-    // A grant on the personal workspace is implicit owner access, unaffected by the revoke.
+
     expect(result.assignedIssues.map((i) => i.id)).toContain(w.personalIssue.id);
   });
 
@@ -716,8 +705,6 @@ describe("my-work service (real Postgres)", () => {
   });
 });
 
-// --- REST tests -----------------------------------------------------------------
-
 async function signInCookie(who: Human): Promise<string> {
   const token = `session-${randomUUID()}`;
   await database.db.insert(browserSessions).values({
@@ -746,8 +733,6 @@ describe("my-work REST (real Postgres, real session reader)", () => {
     expect(anonymous.headers.get("content-type")).toContain("application/problem+json");
     expect(field(await anonymous.json(), "code")).toBe("not_signed_in");
 
-    // A valid agent bearer key is never read by this human-only endpoint: with no cookie
-    // the real session reader returns null, so the answer is the same 401 as anonymous.
     const agentKey = `key-${randomUUID()}`;
     await database.db.insert(agentApiKeys).values({
       id: randomUUID(),
@@ -775,8 +760,7 @@ describe("my-work REST (real Postgres, real session reader)", () => {
     const denied = await rest.request("/api/my-work", { headers: { cookie } });
     expect(denied.status).toBe(401);
     expect(denied.headers.get("content-type")).toContain("application/problem+json");
-    // Accounts' real session reader refuses a deactivated human's retained cookie, so the
-    // adapter never reaches the service's own deactivation check.
+
     expect(field(await denied.json(), "code")).toBe("not_signed_in");
   });
 });

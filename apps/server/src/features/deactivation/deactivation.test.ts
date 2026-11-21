@@ -42,11 +42,6 @@ import { tokenHash } from "../../platform/tokens.ts";
 import { createAccountsFeature, type AccountsFeature } from "../accounts/index.ts";
 import { createFeatures } from "../index.ts";
 
-// Issue #38 against a real Postgres. These are database and policy behaviors: suspension
-// in place, key/claim/grant revocation, the sole-owner trigger shape, the last-admin guard,
-// and the non-revival of shared authority on reactivation. The black-box
-// zz-deactivation.spec.ts repeats the public surface against the running image.
-
 const SECRET = "deactivation-test-bootstrap-secret-123456";
 const ADMIN_EMAIL = "deactivation-admin@example.com";
 const ADMIN_PASSWORD = "deactivation-admin-password";
@@ -58,8 +53,6 @@ let database: Database;
 let app: Hono;
 let accounts: AccountsFeature;
 
-// Strict indexed access: a fixture that must exist fails loudly instead of allowing an
-// undefined row to leak into assertions.
 function one<T>(rows: readonly T[]): T {
   const row = rows[0];
   if (row === undefined) throw new Error("expected a row, got none");
@@ -101,8 +94,6 @@ async function login(email: string, password: string): Promise<string> {
   return cookieFrom(res);
 }
 
-// A verified account with a real password hash and personal workspace, created through
-// accounts' one insertion seam, then signed in normally.
 async function createHuman(email: string, password: string) {
   const humanId = await database.db.transaction(async (tx) => {
     const created = await accounts.createInvitedHuman({ email, password }, tx);
@@ -113,8 +104,6 @@ async function createHuman(email: string, password: string) {
 }
 
 async function insertSharedWorkspace(name: string, ownerHumanId: string) {
-  // The deferred owner trigger fires at commit, so the workspace and its first owner must
-  // be created in one transaction (just as the workspaces service does).
   return database.db.transaction(async (tx) => {
     const workspace = one(
       await tx
@@ -337,8 +326,6 @@ describe("account deactivation and reactivation (#38)", () => {
     const issue = one(await database.db.select().from(issues).where(eq(issues.id, claimed.id)));
     expect(issue.status).toBe("todo");
 
-    // The author is still named and attributed; the display marks them deactivated instead
-    // of falling back to an "unknown" label (#38).
     const authoredIssues = await getJson(`/api/projects/${project.id}/issues`, adminCookie);
     expect(authoredIssues.status).toBe(200);
     const authoredIssue = IssuesResponse.parse(await authoredIssues.json()).find(
@@ -433,7 +420,7 @@ describe("account deactivation and reactivation (#38)", () => {
       404,
       "workspace_not_found",
     );
-    // The old key stays revoked even though the identity is active again.
+
     await expectProblem(
       await getJson(`/api/agents/me?workspaceId=${shared.id}`, undefined, secret),
       401,

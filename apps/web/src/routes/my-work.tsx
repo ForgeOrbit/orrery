@@ -5,9 +5,6 @@ import { sessionQuery } from "../features/accounts/index.ts";
 import { MyWorkErrorState, MyWorkSections, myWorkQuery } from "../features/my-work/index.ts";
 import { PageHeader } from "../lib/PageHeader.tsx";
 
-// One daily home screen across workspaces (issue #107). The endpoint decides what is in
-// scope; this page only polls it and renders the three sections. No useEffect: data comes
-// from the query, which refetches every four seconds while the page is open.
 export const Route = createFileRoute("/my-work")({
   beforeLoad: async ({ context }) => {
     const session = await context.queryClient.fetchQuery(sessionQuery);

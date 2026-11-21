@@ -1,13 +1,3 @@
-// Workspace-scoped agent API keys (issue #30), black-box against a running Orrery:
-// register an agent, issue a key, authenticate a REST request as that agent, and prove
-// that cross-workspace, revoked, and owner-revoked keys are refused. Nothing here imports
-// server code; everything goes through HTTP and the Mailpit catcher.
-//
-// Runs after the other specs (alphabetical file order, one worker), which bootstrap the
-// administrator and create the existing verified account used as the key's owner.
-//
-//   docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { randomUUID } from "node:crypto";
 import { expect, request, test, type APIRequestContext } from "@playwright/test";
 import { ADMIN_EMAIL, ADMIN_PASSWORD, recordSecret } from "./admin.ts";
@@ -110,8 +100,6 @@ async function issueKey(
   return { id: idOf(field(body, "key"), "key"), secret };
 }
 
-// A separate request context whose cookie jar belongs to the agent's human, so the
-// bearer request is never helped by a signed-in browser session.
 async function bearerGet(client: APIRequestContext, path: string, secret: string) {
   return client.get(path, { headers: { Authorization: `Bearer ${secret}` } });
 }
@@ -159,7 +147,6 @@ test("issues a key and resolves the agent identity from a bearer REST request", 
     projects: [{ projectId, level: "read" }],
   });
 
-  // The secret is shown once: no later listing can recover it.
   const listed = await api.get("/api/agents/keys");
   expect(listed.status()).toBe(200);
   expect(JSON.stringify(await listed.json())).not.toContain(issued.secret);
@@ -232,8 +219,6 @@ test("a workspace owner revokes another human's key without seeing its secret, a
   });
   expect(accepted.status()).toBe(200);
 
-  // The member owns an agent with a key in this workspace and another in their personal
-  // workspace. The second key is the one the owner must not be able to affect.
   const memberAgent = await createAgent(memberApi, `member-bot-${randomUUID()}`);
   const teamKey = await issueKey(memberApi, memberAgent, workspaceId, projectId);
   const personal = await personalWorkspaceOf(memberApi);
@@ -248,7 +233,6 @@ test("a workspace owner revokes another human's key without seeing its secret, a
     idOf(await ownProject.json(), "project"),
   );
 
-  // The owner's view lists the team key but carries no secret.
   const ownerList = await api.get(`/api/workspaces/${workspaceId}/agent-keys`);
   expect(ownerList.status()).toBe(200);
   const ownerBody = await ownerList.json();
@@ -258,8 +242,7 @@ test("a workspace owner revokes another human's key without seeing its secret, a
   const revoke = await api.delete(`/api/workspaces/${workspaceId}/agent-keys/${teamKey.id}`);
   expect(revoke.status()).toBe(204);
   expect((await bearerGet(api, "/api/agents/me", teamKey.secret)).status()).toBe(401);
-  // The same key still works in the member's own workspace; the owner's action did not
-  // reach it, and the owner cannot name it through the team's revoke route.
+
   expect((await bearerGet(memberApi, "/api/agents/me", ownKey.secret)).status()).toBe(200);
   const elsewhere = await api.delete(`/api/workspaces/${workspaceId}/agent-keys/${ownKey.id}`);
   expect(elsewhere.status()).toBe(404);

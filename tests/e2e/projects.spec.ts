@@ -1,14 +1,3 @@
-// The personal project cycle (issue #26), black-box against a running Orrery: a human
-// creates a personal project and an issue, edits it, comments, closes and reopens it,
-// writes and edits a basic Markdown knowledge entry, and the activity keeps its
-// authorship. Unauthenticated requests cannot list or fetch the project. Both paths are
-// exercised: the full REST cycle, then the same cycle in the browser.
-//
-// Runs after bootstrap.spec.ts (alphabetical file order, one worker), which created and
-// signed in the administrator. This suite needs no mail delivery.
-//
-//   docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { expect, request, test, type APIRequestContext } from "@playwright/test";
 import { ADMIN_EMAIL, ADMIN_PASSWORD, recordSecret } from "./admin.ts";
 
@@ -16,8 +5,6 @@ const baseUrl = process.env.ORRERY_URL;
 if (!baseUrl)
   throw new Error("Set ORRERY_URL to a running Orrery, for example http://localhost:8080");
 
-// The admin's personal workspace, found once from the listing the API returns. Projects
-// in it are private, which is the boundary this suite proves.
 let personalWorkspaceId = "";
 let api: APIRequestContext;
 
@@ -35,7 +22,6 @@ test.afterAll(async () => {
 });
 
 test("runs the full project cycle over REST", async () => {
-  // A project in the personal workspace, with the creator recorded.
   const created = await api.post(`/api/workspaces/${personalWorkspaceId}/projects`, {
     data: { name: "REST Project" },
   });
@@ -56,7 +42,6 @@ test("runs the full project cycle over REST", async () => {
   expect(fetched.status()).toBe(200);
   expect(await fetched.json()).toMatchObject({ id: projectId, name: "REST Project" });
 
-  // Create the issue: project-local number 1, open, authored by the administrator.
   const issueCreated = await api.post(`/api/projects/${projectId}/issues`, {
     data: { title: "REST issue", body: "The **first** draft." },
   });
@@ -74,7 +59,6 @@ test("runs the full project cycle over REST", async () => {
     updatedBy: { email: ADMIN_EMAIL },
   });
 
-  // Edit the title and Markdown body.
   const edited = await api.patch(`/api/issues/${issueId}`, {
     data: { title: "REST issue edited", body: "The **final** draft." },
   });
@@ -86,7 +70,6 @@ test("runs the full project cycle over REST", async () => {
     updatedBy: { email: ADMIN_EMAIL },
   });
 
-  // Comment; the comment keeps its author.
   const commented = await api.post(`/api/issues/${issueId}/comments`, {
     data: { body: "A REST comment." },
   });
@@ -102,7 +85,6 @@ test("runs the full project cycle over REST", async () => {
     { issueId, body: "A REST comment.", author: { email: ADMIN_EMAIL } },
   ]);
 
-  // Close, then reopen. closedAt follows the status.
   const closed = await api.patch(`/api/issues/${issueId}`, { data: { status: "done" } });
   expect(closed.status()).toBe(200);
   const closedBody = await closed.json();
@@ -113,8 +95,6 @@ test("runs the full project cycle over REST", async () => {
   expect(reopened.status()).toBe(200);
   expect(await reopened.json()).toMatchObject({ status: "todo", closedAt: null });
 
-  // A basic Markdown knowledge entry, then an edit that keeps the creator and records
-  // the last editor.
   const knowledgeCreated = await api.post(`/api/projects/${projectId}/knowledge`, {
     data: { title: "REST knowledge", body: "# Notes\n\nStored **as written**." },
   });
@@ -146,7 +126,6 @@ test("runs the full project cycle over REST", async () => {
   expect(knowledgeListed.status()).toBe(200);
   expect(listIds(await knowledgeListed.json())).toContain(entryId);
 
-  // The activity feed records each real change, in order, with the actor.
   const activity = await api.get(`/api/projects/${projectId}/activity`);
   expect(activity.status()).toBe(200);
   const activityBody: unknown = await activity.json();
@@ -217,14 +196,12 @@ test("runs the complete cycle in the browser", async ({ page }) => {
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByText(`Signed in as ${ADMIN_EMAIL}.`)).toBeVisible();
 
-  // A personal project, created from the workspace page.
   await page.goto(`/workspaces/${personalWorkspaceId}`);
   await page.getByRole("button", { name: "New project" }).click();
   await page.getByLabel("Project name").fill("Browser Project");
   await page.getByRole("button", { name: "Create project" }).click();
   await expect(page.getByRole("heading", { name: "Browser Project" })).toBeVisible();
 
-  // An issue, created from the project page.
   await page.getByRole("button", { name: "New issue" }).first().click();
   await page.getByLabel("Issue title").fill("Browser issue");
   await page.getByLabel("Description").fill("Created in the browser.");
@@ -232,7 +209,6 @@ test("runs the complete cycle in the browser", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Browser issue" })).toBeVisible();
   await expect(page.locator("[data-issue-status]")).toHaveAttribute("data-issue-status", "todo");
 
-  // Edit the issue in place.
   await page.getByRole("button", { name: "Edit" }).first().click();
   await page.getByLabel("Title").fill("Browser issue edited");
   await page.getByLabel("Body").fill("Edited in the browser.");
@@ -241,12 +217,10 @@ test("runs the complete cycle in the browser", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Browser issue edited" })).toBeVisible();
   await expect(page.locator("[data-issue-body]")).toHaveText("Edited in the browser.");
 
-  // Comment.
   await page.getByLabel("Comment").fill("A browser comment.");
   await page.getByRole("button", { name: "Add comment" }).click();
   await expect(page.getByText("A browser comment.")).toBeVisible();
 
-  // Close, then reopen.
   await page.getByRole("button", { name: "Close issue" }).click();
   await expect(page.locator("[data-issue-status]")).toHaveAttribute("data-issue-status", "done");
   await expect(page.getByRole("button", { name: "Reopen issue" })).toBeVisible();
@@ -254,7 +228,6 @@ test("runs the complete cycle in the browser", async ({ page }) => {
   await expect(page.locator("[data-issue-status]")).toHaveAttribute("data-issue-status", "todo");
   await expect(page.getByRole("button", { name: "Close issue" })).toBeVisible();
 
-  // A basic Markdown knowledge entry, then an edit.
   await page.getByRole("link", { name: "Back to project" }).click();
   await page.getByRole("tab", { name: /Knowledge/ }).click();
   await page.getByRole("button", { name: "New document" }).first().click();
@@ -272,7 +245,6 @@ test("runs the complete cycle in the browser", async ({ page }) => {
   await expect(page.locator("[data-knowledge-body]")).toContainText("Edited");
   await expect(page.locator("[data-knowledge-body]")).toContainText("Still Markdown.");
 
-  // The project's activity records the cycle, attributed to the administrator.
   await page.getByRole("link", { name: "Back to project" }).click();
   await page.getByRole("tab", { name: "Activity" }).click();
   for (const type of [
@@ -288,12 +260,9 @@ test("runs the complete cycle in the browser", async ({ page }) => {
     await expect(page.locator(`[data-activity-type="${type}"]`)).toContainText(ADMIN_EMAIL);
   }
 
-  // The cookies the server just set are secrets the logs must never contain.
   for (const cookie of await page.context().cookies()) await recordSecret(cookie.value);
 });
 
-// The administrator's personal workspace id, from the listing the API returns. Fields are
-// read with runtime checks, never type assertions: the response is a server's.
 async function personalWorkspaceOf(client: APIRequestContext): Promise<string> {
   const res = await client.get("/api/workspaces");
   expect(res.status()).toBe(200);

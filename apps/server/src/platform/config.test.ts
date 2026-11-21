@@ -36,7 +36,7 @@ describe("loadConfig: ORRERY_ENCRYPTION_KEY", () => {
   it("decodes a 32-byte base64 key to the 32 bytes", () => {
     const key = loadConfig({
       ...baseEnv,
-      // Valid 32-byte base64, deliberately fake (same value as ci.yml).
+
       ORRERY_ENCRYPTION_KEY: "dGhpcy1rZXktaXMtanVzdC1hLXRlc3QtZml4dHVyZSE=",
     }).ORRERY_ENCRYPTION_KEY;
     expect(key).toBeInstanceOf(Buffer);
@@ -44,23 +44,20 @@ describe("loadConfig: ORRERY_ENCRYPTION_KEY", () => {
   });
 
   it("refuses to start with a key that is not base64 for exactly 32 bytes", () => {
-    // Not 32 bytes, whatever the string.
     expect(() => loadConfig({ ...baseEnv, ORRERY_ENCRYPTION_KEY: "aGk=" })).toThrow(
       /ORRERY_ENCRYPTION_KEY/,
     );
-    // Base64-shaped but not a key's worth of bytes.
+
     expect(() =>
       loadConfig({ ...baseEnv, ORRERY_ENCRYPTION_KEY: Buffer.alloc(16).toString("base64") }),
     ).toThrow(/ORRERY_ENCRYPTION_KEY/);
-    // Not base64 at all.
+
     expect(() => loadConfig({ ...baseEnv, ORRERY_ENCRYPTION_KEY: "not base64!!" })).toThrow(
       /ORRERY_ENCRYPTION_KEY/,
     );
   });
 
   it("refuses a stray character inside an otherwise valid key", () => {
-    // A lenient decoder would skip the stray byte and still land on 32 usable bytes;
-    // canonical base64 re-encodes differently, so the key is refused.
     const valid = "5JxZLMqonzkGHjJwLLuzM6d6fQ6m7onmSI+7yeB9NW0=";
     const stray = `${valid.slice(0, 22)}*${valid.slice(22)}`;
     expect(() => loadConfig({ ...baseEnv, ORRERY_ENCRYPTION_KEY: stray })).toThrow(

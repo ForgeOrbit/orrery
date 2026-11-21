@@ -37,13 +37,8 @@ import {
   type WorkspaceEventType,
 } from "../../db/schema.ts";
 
-// The service is the only file in a feature that decides anything. rest.ts calls it.
-
-// Seven days, evaluated in database time at redemption, never by a deployed clock (#20).
 const INVITATION_TTL_SECONDS = 7 * 24 * 60 * 60;
 
-// How long an unknown delivery keeps blocking a fresh invitation. Matches invitations'
-// grace window so a crashed or failed send never locks an email out for seven days.
 export const UNKNOWN_DELIVERY_GRACE_SECONDS = 10 * 60;
 
 export type WorkspacesErrorKind =
@@ -64,13 +59,9 @@ export type WorkspacesErrorKind =
   | "member_not_found"
   | "last_owner"
   | "workspace_owner_capability"
-  // #38: a deactivated identity cannot accept an invitation, and a workspace whose only
-  // owner was deactivated needs #43 ownership recovery before anyone rejoins it.
   | "account_deactivated"
   | "ownerless_workspace";
 
-// Each kind is the REST error's stable code and its message the Problem's title
-// (ADR-0003), so clients branch on the code and people read the title.
 const messages = {
   not_signed_in: "Not signed in.",
   workspace_not_found: "This workspace does not exist.",
@@ -106,8 +97,6 @@ export class WorkspacesError extends Error {
   }
 }
 
-// The emailed link. Plain text like every email the installation sends; following it
-// (GET) changes nothing, and acceptance or registration is the POST that consumes it.
 function invitationMail(
   workspaceName: string,
   email: string,
@@ -139,8 +128,6 @@ function requireAccount(account: SessionAccount | null): SessionAccount {
   return account;
 }
 
-// Records one access-change event inside the caller's transaction, so the event and the
-// change it describes commit together or not at all.
 async function recordEvent(
   tx: DbTransaction,
   type: WorkspaceEventType,
@@ -157,8 +144,6 @@ async function recordEvent(
   });
 }
 
-// A read-only shared workspace lookup: no guard or row lock, because it decides nothing
-// and changing ownership concurrently may only make this response momentarily stale.
 async function readSharedWorkspace(
   tx: DbTransaction,
   workspaceId: string,
@@ -175,8 +160,6 @@ async function readSharedWorkspace(
   return workspace;
 }
 
-// Acquire the same transaction lock as direct ownership statements before taking any
-// row locks. The per-workspace version below still detects stale REPEATABLE READ writers.
 async function lockOwnershipWrites(tx: DbTransaction) {
   await tx.execute(sql`select lock_workspace_ownership_writes()`);
 }
@@ -198,12 +181,6 @@ async function lockWorkspaceForMutation(
   return workspace;
 }
 
-// A membership with every effective capability and the account's verified mark. The
-// service reads authority after the workspace lock, never from a stale snapshot: an owner
-// removed by the transaction ahead of this one is no longer an owner here. The missing
-// kind is the caller's choice: a non-member actor answers workspace_not_found (404) so
-// no endpoint can enumerate shared workspaces, while a missing target answers
-// member_not_found (404). Redemption reports a missing inviter as inviter_not_authorized.
 interface WorkspaceMembershipRow {
   humanId: string;
   email: string;
@@ -238,8 +215,7 @@ async function readMembership(
       and(
         eq(workspaceMemberships.workspaceId, workspaceId),
         eq(workspaceMemberships.humanId, humanId),
-        // A suspended membership (#38) grants no authority, but the row stays for
-        // ownership history and clean re-invitation.
+
         isNull(workspaceMemberships.suspendedAt),
       ),
     )
@@ -253,9 +229,6 @@ async function requireOwner(tx: DbTransaction, workspaceId: string, humanId: str
   if (!membership.isOwner) throw new WorkspacesError("not_workspace_owner");
 }
 
-// The same non-enumerating actor check for every invitation-management endpoint. A caller
-// who is not a member answers workspace_not_found; a member without Invite members answers
-// not_workspace_owner.
 async function requireInviter(tx: DbTransaction, workspaceId: string, humanId: string) {
   const inviter = await readMembership(tx, workspaceId, humanId, "workspace_not_found");
   if (!inviter.isOwner && !inviter.canInviteMembers) {
@@ -264,9 +237,6 @@ async function requireInviter(tx: DbTransaction, workspaceId: string, humanId: s
   return inviter;
 }
 
-// Owners hold all four capabilities. A delegate's authority is only what is stored.
-// The capability names come from the shared contract so the server and the web app cannot
-// drift apart.
 const capabilityEvents: Record<
   WorkspaceCapability,
   { granted: WorkspaceEventType; revoked: WorkspaceEventType }
@@ -283,10 +253,6 @@ const capabilityEvents: Record<
   },
 };
 
-// A delegated inviter may only offer a project they currently Manage in this workspace.
-// Owners may offer any project in the workspace. The caller decides the error kind: a
-// management action is refused as not_workspace_owner, while redemption reports that the
-// invitation's authority has been withdrawn as inviter_not_authorized.
 async function requireProjectManageScope(
   tx: DbTransaction,
   workspaceId: string,
@@ -312,9 +278,6 @@ async function requireProjectManageScope(
   if (ids.some((id) => !managed.has(id))) throw new WorkspacesError(deniedKind);
 }
 
-// The same verified-inviter policy for creating and rotating an offer (#20): the
-// current owner must have a verified mailbox and an active account. A deactivated
-// inviter (#38) cannot offer workspace access even though their row is retained.
 async function requireVerifiedInviter(tx: DbTransaction, humanId: string) {
   const [inviter] = await tx
     .select({ emailVerifiedAt: humans.emailVerifiedAt })
@@ -326,11 +289,6 @@ async function requireVerifiedInviter(tx: DbTransaction, humanId: string) {
   }
 }
 
-// #20's acceptance rule: the inviter's authority is rechecked when the offer is taken
-// up, not only when it was sent. They must still be a verified member with either
-// ownership or Invite members, and a delegate must still Manage every offered project.
-// The check runs under the workspace lock inside redemption; a failure rolls the token
-// back to pending rather than burning it.
 async function requireInviterStillAuthorized(
   tx: DbTransaction,
   workspaceId: string,
@@ -345,10 +303,6 @@ async function requireInviterStillAuthorized(
   await requireProjectManageScope(tx, workspaceId, inviter, offered, "inviter_not_authorized");
 }
 
-// Every project this human currently Manages in the workspace. Used both to scope an
-// inviter's view of the invitation history and to decide whether a dead pending offer can
-// still be redeemed. Reading the grants instead of trusting a stored flag keeps authority
-// tied to current project access (#28).
 async function loadManagedProjectIds(tx: DbTransaction, workspaceId: string, humanId: string) {
   const rows = await tx
     .select({ projectId: projectAccessGrants.projectId })
@@ -364,9 +318,6 @@ async function loadManagedProjectIds(tx: DbTransaction, workspaceId: string, hum
   return new Set(rows.map((row) => row.projectId));
 }
 
-// Non-throwing form of requireInviterStillAuthorized, for deciding whether a pending
-// invitation is still live when another invitation to the same address is created. A dead
-// offer must not block that address for seven days.
 async function inviterStillAuthorized(
   tx: DbTransaction,
   workspaceId: string,
@@ -396,19 +347,13 @@ async function inviterStillAuthorized(
   ) {
     return false;
   }
-  // Scope is an authority check too, and it applies to owners as much as delegates: a
-  // project that moved out of this workspace makes the offer dead. Returning false here
-  // frees the address so a fresh invite supersedes the stale offer instead of blocking
-  // it with invitation_pending for seven days.
+
   if (!(await offeredProjectsInWorkspace(tx, workspaceId, offered))) return false;
   if (inviter.isOwner) return true;
   const managed = await loadManagedProjectIds(tx, workspaceId, inviterHumanId);
   return offered.every((grant) => managed.has(grant.projectId));
 }
 
-// The listing projection: personal owners are owners by definition; a shared workspace
-// is the caller's membership. Owners hold all four capabilities whatever the stored
-// columns say; a member holds only what was granted.
 function toWorkspace(row: {
   id: string;
   kind: Workspace["kind"];
@@ -432,8 +377,6 @@ function toWorkspace(row: {
   };
 }
 
-// A member row's effective capabilities: an owner holds all four whatever the stored
-// columns say, so a stored false never hides an implicit authority.
 function toMember(row: WorkspaceMembershipRow): WorkspaceMember {
   return {
     humanId: row.humanId,
@@ -446,8 +389,6 @@ function toMember(row: WorkspaceMembershipRow): WorkspaceMember {
   };
 }
 
-// The project grants an invitation offers, joined to their project names for the
-// inviter's history and the recipient's preview.
 interface OfferedProjectGrant {
   projectId: string;
   projectName: string | null;
@@ -583,9 +524,6 @@ async function readWorkspaceInvitationSummary(
   return toWorkspaceSummary(row, grants.get(invitationId) ?? []);
 }
 
-// Every offered project must currently belong to the workspace. Owners, delegates, and
-// the liveness check that decides whether a pending offer blocks an address all ask the
-// same question; this is the one non-throwing answer they share.
 async function offeredProjectsInWorkspace(
   tx: DbTransaction,
   workspaceId: string,
@@ -600,8 +538,6 @@ async function offeredProjectsInWorkspace(
   return rows.length === ids.length;
 }
 
-// Validate an offered scope at invitation creation: every project must currently belong
-// to the workspace. Acceptance rechecks the same fact under the workspace lock.
 async function requireOfferedProjectsInWorkspace(
   tx: DbTransaction,
   workspaceId: string,
@@ -614,43 +550,37 @@ async function requireOfferedProjectsInWorkspace(
 
 export interface WorkspacesDeps {
   db: PostgresJsDatabase;
-  // The URL the emailed link carries.
+
   publicUrl: string;
-  // Accounts owns humans: invited registration creates the account and personal
-  // workspace, and the verified mark is earned by the invitation token.
+
   createInvitedHuman: (
     input: { email: string; password: string },
     tx: DbTransaction,
   ) => Promise<{ humanId: string }>;
   markEmailVerified: (humanId: string, tx: DbTransaction) => Promise<void>;
-  // Settings owns the relay: the one mail path, never a second transport.
+
   deliver: (mail: OutgoingMail) => Promise<void>;
-  // Projects owns project grants: removing a member ends them in the same transaction
-  // and records the revocations. The projects feature's public interface supplies this.
+
   revokeMemberProjectAccess: (
     tx: DbTransaction,
     workspaceId: string,
     humanId: string,
     actorHumanId: string,
   ) => Promise<void>;
-  // Agents owns API keys: removing a member also revokes every key their agents hold in
-  // this workspace, so a re-invitation cannot silently revive a pre-removal credential.
+
   revokeMemberWorkspaceKeys: (
     tx: DbTransaction,
     workspaceId: string,
     humanId: string,
     actorHumanId: string,
   ) => Promise<void>;
-  // Work sessions owns claims: removing a member ends every active claim their agents hold
-  // in this workspace, in this same transaction and after the issue rows are locked.
+
   releaseMemberWorkSessions: (
     tx: DbTransaction,
     workspaceId: string,
     humanId: string,
   ) => Promise<void>;
-  // Projects validates and writes the project grants an invitation offers, inside the
-  // same redemption transaction. It returns offered project ids that are no longer in
-  // the workspace.
+
   applyInvitationGrants: (
     tx: DbTransaction,
     workspaceId: string,
@@ -701,15 +631,10 @@ export interface WorkspacesService {
     input: UpdateWorkspaceMemberRequest,
   ): Promise<WorkspaceMember>;
   removeMember(account: SessionAccount | null, workspaceId: string, humanId: string): Promise<void>;
-  // A member leaves a shared workspace of their own accord. The last owner cannot leave,
-  // and a personal workspace cannot be left at all. The cleanup is identical to a removal
-  // but the audit event names the act as voluntary.
+
   leaveWorkspace(account: SessionAccount | null, workspaceId: string): Promise<void>;
 }
 
-// The delivery attempt, recorded separately from the lifecycle: pending never implies
-// delivered (#20). Only a recorded failure never redeems, and only a still-pending row
-// is updated so a late socket error never stamps 'failed' onto an already-accepted row.
 async function recordDelivery(db: PostgresJsDatabase, id: string, delivery: InvitationDelivery) {
   await db
     .update(workspaceInvitations)
@@ -722,8 +647,6 @@ async function recordDelivery(db: PostgresJsDatabase, id: string, delivery: Invi
     );
 }
 
-// Sends one workspace invitation and records the attempt separately from the lifecycle.
-// A known failure never redeems and answers with settings' own Problem.
 async function deliverWorkspaceInvitation(
   db: PostgresJsDatabase,
   deliver: (mail: OutgoingMail) => Promise<void>,
@@ -752,12 +675,6 @@ async function deliverWorkspaceInvitation(
   await recordDelivery(db, input.id, InvitationDelivery.enum.sent);
 }
 
-// One token transition for both redemption paths. The workspace is located from the
-// token, locked first, and only then is the invitation conditionally consumed; invite
-// replacement takes the same workspace lock, so the two paths cannot interleave their
-// invitation reads and writes. The inviter's authority is rechecked in this transaction
-// after the transition; if it fails, the whole transaction rolls the token back to
-// pending rather than burning it.
 async function redeemWorkspaceInvitation(tx: DbTransaction, token: string) {
   const [located] = await tx
     .select({ workspaceId: workspaceInvitations.workspaceId })
@@ -768,8 +685,6 @@ async function redeemWorkspaceInvitation(tx: DbTransaction, token: string) {
 
   const workspace = await lockWorkspaceForMutation(tx, located.workspaceId, "invitation_invalid");
 
-  // Email delivery can update this row without taking the ownership lock. Wait for
-  // it before starting the statement that samples the deadline and acceptance time.
   const [locked] = await tx
     .select({ id: workspaceInvitations.id })
     .from(workspaceInvitations)
@@ -834,8 +749,7 @@ async function requireRecipientNotMember(tx: DbTransaction, workspaceId: string,
       and(
         eq(workspaceMemberships.workspaceId, workspaceId),
         eq(humans.email, email),
-        // A suspended membership does not block a fresh invitation: the reactivated human
-        // re-enters through the normal acceptance path, which unsuspends the row (#38).
+
         isNull(workspaceMemberships.suspendedAt),
       ),
     )
@@ -859,10 +773,6 @@ export function createWorkspacesService({
   applyInvitationGrants,
   log,
 }: WorkspacesDeps): WorkspacesService {
-  // The one departure tail shared by a removal and a voluntary leave. Both delete the
-  // membership first (the row a claim's key-share lock waits on), then revoke in this same
-  // transaction and release claims under the issue locks. Only the actor and the audit
-  // event differ, so the two paths cannot drift apart.
   async function endMembership(
     tx: DbTransaction,
     workspaceId: string,
@@ -878,11 +788,7 @@ export function createWorkspacesService({
           eq(workspaceMemberships.humanId, humanId),
         ),
       );
-    // Project grants die with the membership, in this transaction, so a rejoin starts
-    // fresh and cannot revive an old level. So do the human's API keys in this workspace:
-    // without this, a pre-removal key would authenticate again the moment a re-invitation
-    // restored the membership. The release helper locks affected issues in id order before
-    // touching sessions, so a racing claim or renewal cannot keep a claim.
+
     await revokeMemberProjectAccess(tx, workspaceId, humanId, actorHumanId);
     await revokeMemberWorkspaceKeys(tx, workspaceId, humanId, actorHumanId);
     await releaseMemberWorkSessions(tx, workspaceId, humanId);
@@ -890,8 +796,6 @@ export function createWorkspacesService({
   }
 
   return {
-    // Access is what the caller holds, not what exists: their personal workspace plus the
-    // shared workspaces they belong to. Another person's workspace never appears.
     async list(account) {
       if (account === null) throw new WorkspacesError("not_signed_in");
       const rows = await db
@@ -927,8 +831,6 @@ export function createWorkspacesService({
       return rows.map(toWorkspace);
     },
 
-    // One workspace, but only through the caller's own access. A non-member gets the
-    // same answer as a missing workspace, so the endpoint cannot enumerate workspaces.
     async get(account, workspaceId) {
       if (account === null) throw new WorkspacesError("not_signed_in");
       const [row] = await db
@@ -968,9 +870,6 @@ export function createWorkspacesService({
       return toWorkspace(row);
     },
 
-    // The member directory. Owners and members holding permission management or removal
-    // authority need it to do their work; an ordinary member gets no list of addresses.
-    // A non-member still answers workspace_not_found rather than a membership-related 404.
     async members(account, workspaceId) {
       const actor = requireAccount(account);
       return db.transaction(
@@ -1005,8 +904,7 @@ export function createWorkspacesService({
             .where(
               and(
                 eq(workspaceMemberships.workspaceId, workspaceId),
-                // A suspended membership is kept for history, not shown in the active
-                // directory (#38); re-invitation is how a reactivated human rejoins.
+
                 isNull(workspaceMemberships.suspendedAt),
               ),
             )
@@ -1017,8 +915,6 @@ export function createWorkspacesService({
       );
     },
 
-    // Creating a shared workspace and its first owner is one transaction: a workspace
-    // can never exist without an owner, and the creator can configure it immediately.
     async create(account, input) {
       const actor = requireAccount(account);
       const id = randomUUID();
@@ -1049,10 +945,6 @@ export function createWorkspacesService({
       };
     },
 
-    // An owner or a delegated inviter invites one address. The invitation can go to an
-    // existing account or an address with no account yet; the email does not reveal which.
-    // The inviter must be verified (#20), and a delegate may only offer projects they
-    // Manage. Authority is rechecked again when the offer is accepted.
     async invite(account, workspaceId, input) {
       const actor = requireAccount(account);
       const token = randomBytes(32).toString("base64url");
@@ -1074,13 +966,6 @@ export function createWorkspacesService({
 
           await requireRecipientNotMember(tx, workspaceId, input.email);
 
-          // A pending invitation blocks a new one while it is unexpired and either sent or
-          // still within the in-flight delivery grace window — but only while its inviter
-          // could still redeem it. A delegate who lost Invite members or project Manage
-          // leaves an unredeemable offer; revoking it here frees the address immediately
-          // instead of holding it for seven days (#28). Expired rows, known-failed
-          // deliveries, and stale unknown deliveries past the grace window are superseded
-          // in place so a failed SMTP attempt never locks an address out either.
           const [blocking] = await tx
             .select({
               id: workspaceInvitations.id,
@@ -1179,8 +1064,7 @@ export function createWorkspacesService({
               })),
             );
           }
-          // The mail is sent after the insert commits, like the installation invitation:
-          // the row is the durable offer, the delivery attempt is separate.
+
           return workspace.name;
         });
       } catch (error) {
@@ -1207,10 +1091,6 @@ export function createWorkspacesService({
       return { workspaceId, email: input.email, status: InvitationStatus.enum.pending };
     },
 
-    // Invitations for owners and delegated inviters, newest first. An owner sees all of
-    // them; a delegate sees only offers they could resend or revoke themselves, i.e. those
-    // whose every offered project is one they currently Manage. Delivery is reported
-    // separately from the lifecycle; a pending row past its deadline is stored as expired.
     async invitations(account, workspaceId) {
       const actor = requireAccount(account);
       return db.transaction(async (tx) => {
@@ -1241,8 +1121,7 @@ export function createWorkspacesService({
           workspaceId,
           rows.map((row) => row.id),
         );
-        // A delegate must not see another inviter's offer on a project that was never
-        // shared with them: the grant carries project ids, names, and levels.
+
         const managed = inviter.isOwner
           ? new Set<string>()
           : await loadManagedProjectIds(tx, workspaceId, actor.humanId);
@@ -1256,10 +1135,6 @@ export function createWorkspacesService({
       });
     },
 
-    // Resend rotates the link for an owner or delegated inviter: the old row keeps its
-    // history (revoked if still live, otherwise expired), and the new row keeps the same
-    // offered projects and starts a fresh seven-day deadline. The resender is the new
-    // offer's inviter, so acceptance rechecks their authority and project scope.
     async resendInvitation(account, workspaceId, invitationId) {
       const actor = requireAccount(account);
       const token = randomBytes(32).toString("base64url");
@@ -1269,9 +1144,7 @@ export function createWorkspacesService({
         invitation = await db.transaction(async (tx) => {
           const workspace = await lockWorkspaceForMutation(tx, workspaceId);
           const inviter = await requireInviter(tx, workspaceId, actor.humanId);
-          // Rotating is a new offer: the current inviter must satisfy the same verified
-          // inviter policy as an initial invitation. The check runs before the old row
-          // is touched, so a refusal leaves the original link valid.
+
           await requireVerifiedInviter(tx, actor.humanId);
 
           const [row] = await tx
@@ -1363,10 +1236,6 @@ export function createWorkspacesService({
       return readWorkspaceInvitationSummary(db, workspaceId, id);
     },
 
-    // Revoke is an owner's or delegated inviter's answer to an offer that should no
-    // longer be live. Only a pending, unexpired row changes; the row keeps its history and
-    // revocation time. A delegate cannot touch another inviter's offer with projects they
-    // do not Manage, but may always revoke their own — even after losing that Manage.
     async revokeInvitation(account, workspaceId, invitationId) {
       const actor = requireAccount(account);
       const didRevoke = await db.transaction(async (tx) => {
@@ -1414,7 +1283,7 @@ export function createWorkspacesService({
           )
           .returning({ id: workspaceInvitations.id });
         if (revoked.length > 0) return true;
-        // Keep the deadline transition even though the requested revocation failed.
+
         await tx
           .update(workspaceInvitations)
           .set({
@@ -1428,9 +1297,6 @@ export function createWorkspacesService({
       return readWorkspaceInvitationSummary(db, workspaceId, invitationId);
     },
 
-    // The recipient declines from the emailed link. Holding the token is the capability;
-    // only a pending, unexpired offer changes, so a forwarded copy cannot disturb an
-    // accepted or revoked one.
     async declineInvitation(input) {
       const declined = await db
         .update(workspaceInvitations)
@@ -1450,9 +1316,6 @@ export function createWorkspacesService({
       if (declined.length === 0) throw new WorkspacesError("invitation_invalid");
     },
 
-    // The link's read side: the workspace, address, inviter, and actual offered scope,
-    // without consuming the token. Invalid, expired, used, or known-failed links answer
-    // the same Problem. The recipient sees every offered project before accepting.
     async previewInvitation(token) {
       const [row] = await db
         .select({
@@ -1503,18 +1366,11 @@ export function createWorkspacesService({
       };
     },
 
-    // The workspace is locked, then the token is consumed by one shared transition
-    // helper. The account and the offered access are rechecked inside the same
-    // transaction; a mismatch or a lost inviter authority rolls the token back to
-    // pending rather than burning it.
     async acceptInvitation(account, token) {
       const actor = requireAccount(account);
       const workspace = await db.transaction(async (tx) => {
         const invitation = await redeemWorkspaceInvitation(tx, token);
 
-        // The account's current email and verification state, read in this transaction:
-        // a forwarded link cannot attach to another address, and an unverified account
-        // cannot claim an invitation that would otherwise verify it for free.
         const [human] = await tx
           .select({
             email: humans.email,
@@ -1525,19 +1381,13 @@ export function createWorkspacesService({
           .where(eq(humans.id, actor.humanId))
           .limit(1);
         if (human === undefined) throw new WorkspacesError("not_signed_in");
-        // The session may have been read just before a concurrent deactivation committed.
-        // Recheck the account inside this transaction, so a suspended identity cannot
-        // unsuspend a membership or gain fresh project access (#38).
+
         if (human.deactivatedAt !== null) throw new WorkspacesError("account_deactivated");
         if (human.email !== invitation.email) {
           throw new WorkspacesError("invitation_recipient_mismatch");
         }
         if (human.emailVerifiedAt === null) throw new WorkspacesError("email_unverified");
 
-        // Rejoining a workspace whose only owner was deactivated would produce zero active
-        // owners and trip the deferred 0007 trigger at COMMIT as a 500. A deactivated
-        // former owner stays suspended until #43 ownership recovery appoints a new owner;
-        // here the caller gets a clean, actionable 409 instead.
         const [suspendedMembership] = await tx
           .select({ isFormerOwner: workspaceMemberships.isFormerOwner })
           .from(workspaceMemberships)
@@ -1565,10 +1415,6 @@ export function createWorkspacesService({
           }
         }
 
-        // A previously deactivated human has a suspended membership row (#38). Accepting
-        // a fresh invitation revives that same row with fresh access and no former
-        // ownership; it never restores the old owner's authority or capabilities. An
-        // active membership still cannot be joined twice.
         const inserted = await tx
           .insert(workspaceMemberships)
           .values({
@@ -1620,10 +1466,6 @@ export function createWorkspacesService({
       };
     },
 
-    // A new address: the invitation creates the installation account, its personal
-    // workspace, the verified mark, and the membership in one transaction. The shared
-    // redemption helper locks the workspace first and rechecks inviter authority; any
-    // failure leaves the token pending and no partial account behind.
     async registerThroughInvitation(input) {
       const email = await db.transaction(async (tx) => {
         const invitation = await redeemWorkspaceInvitation(tx, input.token);
@@ -1667,8 +1509,6 @@ export function createWorkspacesService({
       return { email, emailVerified: true as const };
     },
 
-    // Owners appoint existing members. The workspace lock serializes appointments with
-    // removals, and an already-owner member is a no-op rather than a duplicate event.
     async appointOwner(account, workspaceId, humanId) {
       const actor = requireAccount(account);
       return db.transaction(async (tx) => {
@@ -1693,11 +1533,6 @@ export function createWorkspacesService({
       });
     },
 
-    // The four capabilities are independent, and only a real change writes an event.
-    // An owner may change any of them on a non-owner but cannot reduce an owner's
-    // implicit authority. A permission manager may change only capabilities they hold,
-    // on someone else, and never appoint or remove another permission manager. A caller
-    // who is not a member answers workspace_not_found, never a membership-related 404.
     async updateMemberCapability(account, workspaceId, humanId, input) {
       const actor = requireAccount(account);
       return db.transaction(async (tx) => {
@@ -1708,16 +1543,14 @@ export function createWorkspacesService({
           actor.humanId,
           "workspace_not_found",
         );
-        // The request schema already guarantees at least one capability; parse again at
-        // the policy boundary so a direct service caller cannot bypass that contract.
+
         const requested = UpdateWorkspaceMemberRequest.parse(input);
 
         const member = await requireWorkspaceMember(tx, workspaceId, humanId);
 
         if (member.isOwner) {
           if (!actorMembership.isOwner) throw new WorkspacesError("not_workspace_owner");
-          // Setting true on an owner is a no-op; setting anything false would contradict
-          // the implicit authority every owner holds.
+
           if (Object.values(requested).some((value) => !value)) {
             throw new WorkspacesError("workspace_owner_capability");
           }
@@ -1731,12 +1564,11 @@ export function createWorkspacesService({
           if (actorMembership.humanId === humanId) {
             throw new WorkspacesError("not_workspace_owner");
           }
-          // Only owners appoint or remove permission managers.
+
           if (requested.canManageMemberPermissions !== undefined) {
             throw new WorkspacesError("not_workspace_owner");
           }
-          // Revocation has the same ceiling as granting: a delegate cannot change a
-          // capability they do not themselves hold, in either direction.
+
           for (const capability of workspaceCapabilities) {
             if (requested[capability] !== undefined && !actorMembership[capability]) {
               throw new WorkspacesError("not_workspace_owner");
@@ -1776,11 +1608,6 @@ export function createWorkspacesService({
       });
     },
 
-    // Owners may remove anyone, subject to the last-owner rule. A delegated remover can
-    // only remove an ordinary member: owners and permission managers stay protected,
-    // including when the protected person is the actor. Owners are counted after the
-    // workspace lock so two racing removals cannot both conclude another owner remains;
-    // the database trigger is the second line of defence.
     async removeMember(account, workspaceId, humanId) {
       const actor = requireAccount(account);
       await db.transaction(async (tx) => {
@@ -1807,8 +1634,7 @@ export function createWorkspacesService({
               and(
                 eq(workspaceMemberships.workspaceId, workspaceId),
                 eq(workspaceMemberships.isOwner, true),
-                // Only active owners keep the workspace administered. A suspended former
-                // owner is retained for history, not counted as current authority.
+
                 isNull(workspaceMemberships.suspendedAt),
               ),
             );
@@ -1825,16 +1651,9 @@ export function createWorkspacesService({
       });
     },
 
-    // Voluntary leave is the same cleanup as a removal with the actor as the subject, but
-    // the audit event says the person left of their own accord. A personal workspace is
-    // not a membership and cannot be left; a shared workspace must keep one owner, so the
-    // last owner is refused. The workspace lock serializes this with appointments and
-    // removals, and the database trigger remains the second line of defence.
     async leaveWorkspace(account, workspaceId) {
       const actor = requireAccount(account);
       await db.transaction(async (tx) => {
-        // A personal or missing workspace fails here as workspace_not_found, so "leave"
-        // can never detach the owner from their personal workspace.
         await lockWorkspaceForMutation(tx, workspaceId);
         const membership = await readMembership(
           tx,
@@ -1850,8 +1669,7 @@ export function createWorkspacesService({
               and(
                 eq(workspaceMemberships.workspaceId, workspaceId),
                 eq(workspaceMemberships.isOwner, true),
-                // Only active owners keep the workspace administered. A suspended former
-                // owner is retained for history, not counted as current authority.
+
                 isNull(workspaceMemberships.suspendedAt),
               ),
             );

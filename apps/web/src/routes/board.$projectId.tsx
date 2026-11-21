@@ -56,8 +56,6 @@ type BoardFilter = "all" | "needs-input" | "ready";
 type AssigneeFilter = "all" | "unassigned" | "human" | "agent";
 type BoardPanel = { kind: "new-issue" } | { kind: "session"; issueId: string; sessionId: string };
 
-// The workflow order is part of the product contract (#94); never derive it from a
-// project's issues or from an unordered object.
 const BOARD_COLUMNS: IssueStatus[] = [
   "backlog",
   "todo",

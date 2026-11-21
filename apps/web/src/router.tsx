@@ -9,9 +9,9 @@ export const queryClient = new QueryClient({
 export const router = createRouter({
   routeTree,
   context: { queryClient },
-  // Start loading a route's code and data when its link is hovered.
+
   defaultPreload: "intent",
-  // Loaders read from the Query cache, so the router shouldn't cache on its own.
+
   defaultPreloadStaleTime: 0,
 });
 

@@ -1,4 +1,3 @@
-// Public interface of the work-sessions feature. Other code imports only this file.
 import type { Feature } from "../../platform/feature.ts";
 import type { DbTransaction } from "../../platform/db.ts";
 import type { SessionReader } from "../accounts/index.ts";
@@ -23,17 +22,16 @@ export type SessionsFeatureDeps = SessionsDeps & {
 
 export interface SessionsFeature extends Feature {
   service: SessionsService;
-  // The narrow seam projects borrows to fence agent issue edits and closure.
+
   agentHoldsSession(
     tx: DbTransaction,
     agentId: string,
     workspaceId: string,
     issueId: string,
   ): Promise<boolean>;
-  // #98: the trash gate projects borrows to refuse a delete of a claimed issue.
+
   issueHasLiveSession(tx: DbTransaction, issueId: string): Promise<boolean>;
-  // Workspaces borrows this to end a departing member's agents' claims inside the same
-  // removal transaction, under the same issue locks renewals use.
+
   releaseMemberWorkSessions(tx: DbTransaction, workspaceId: string, humanId: string): Promise<void>;
 }
 

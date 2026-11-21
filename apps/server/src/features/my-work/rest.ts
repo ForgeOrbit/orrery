@@ -9,10 +9,6 @@ import {
 import type { SessionReader } from "../accounts/index.ts";
 import { MyWorkError, type MyWorkErrorKind, type MyWorkService } from "./service.ts";
 
-// Thin REST adapter. This endpoint is human-only: it reads the session cookie and never
-// resolves an agent bearer key, so an agent key without a cookie gets the same 401 as an
-// anonymous caller. Every scoping decision lives in service.ts.
-
 const myWork = createRoute({
   method: "get",
   path: "/api/my-work",

@@ -1,14 +1,3 @@
-// Password recovery (issue #31), black-box against the running installation: only a
-// verified address is mailed a link, the link is single-use, it signs out prior browser
-// sessions, and the local administrator command works with a broken relay without
-// reopening bootstrap or changing workspace ownership. Mailpit proves real delivery.
-//
-// Runs after invitations.spec.ts (which arms SMTP and closes setup) and before
-// smtp.spec.ts (which verifies the administrator's own email). The administrator is
-// unverified here: that is the fixture for "no reset mail to an unverified address".
-//
-//   docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { exec as execCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { expect, request, test, type APIRequestContext, type APIResponse } from "@playwright/test";
@@ -55,7 +44,7 @@ test.beforeAll(async () => {
     data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
   });
   expect(login.status()).toBe(200);
-  // The administrator's own email is still unverified in this suite's slot.
+
   const session = await api.get("/api/auth/session");
   expect(await session.json()).toMatchObject({ email: ADMIN_EMAIL, emailVerified: false });
   const listing = await api.get("/api/workspaces");
@@ -75,13 +64,12 @@ test("requests for unverified, unknown, and verified addresses answer the same w
   });
   expect(unverified.status()).toBe(200);
   expect(await unverified.json()).toEqual(await unknown.json());
-  // The unverified administrator and the unknown address received no reset mail.
+
   expect(await caughtResetMessage(api, ADMIN_EMAIL)).toBeUndefined();
   expect(await caughtResetMessage(api, "nobody@orrery.test")).toBeUndefined();
 });
 
 test("delivers a reset link only to a verified address, and GETting it changes nothing", async () => {
-  // Registration through an invitation creates a verified account.
   const invited = await api.post("/api/invitations/installation", {
     data: { email: RECOVERED_EMAIL },
   });
@@ -117,7 +105,6 @@ test("delivers a reset link only to a verified address, and GETting it changes n
   await recordSecret(token ?? "");
   resetToken = token ?? "";
 
-  // Opening the link serves the form and redeems nothing.
   const page = await api.get(`/reset-password?token=${resetToken}`);
   expect(page.status()).toBe(200);
   expect(page.headers()["content-type"]).toContain("text/html");
@@ -143,18 +130,16 @@ test("redeems once, signs out old browser sessions, and refuses reuse", async ()
     });
     expect(confirmed.status()).toBe(200);
 
-    // Every prior browser session for this account is gone.
     for (const context of [first, second]) {
       expect((await context.get("/api/auth/session")).status()).toBe(401);
     }
-    // The same link is worthless a second time.
+
     const again = await api.post("/api/auth/password-reset/confirm", {
       data: { token: resetToken, password: LOCAL_PASSWORD },
     });
     expect(again.status()).toBe(400);
     expect(await again.json()).toMatchObject({ code: "reset_token_invalid" });
 
-    // The new password works, the old one does not.
     expect(await loginStatus(INVITED_PASSWORD)).toBe(401);
     expect(await loginStatus(RESET_PASSWORD)).toBe(200);
   } finally {
@@ -170,7 +155,6 @@ test("administrator local recovery signs out sessions, works with broken SMTP, a
   });
   expect(broken.status()).toBe(200);
 
-  // A separate browser session for the administrator, to prove it is signed out.
   const adminSession = await request.newContext({ baseURL: baseUrl });
   let signedOut = false;
   try {
@@ -181,10 +165,6 @@ test("administrator local recovery signs out sessions, works with broken SMTP, a
     for (const cookie of await adminSession.cookies()) await recordSecret(cookie.value);
     expect((await adminSession.get("/api/auth/session")).status()).toBe(200);
 
-    // The command runs inside the container with the server's own environment. Secrets
-    // travel through exec's environment, not the script's arguments or the logs.
-    // The administrator's password stays the same so the later suites still sign in;
-    // the proof here is that every prior session is ended and no relay is needed.
     const { stdout } = await exec(localRecoveryCommand(ADMIN_EMAIL, ADMIN_PASSWORD), {
       timeout: 60_000,
     });
@@ -192,7 +172,6 @@ test("administrator local recovery signs out sessions, works with broken SMTP, a
     expect((await adminSession.get("/api/auth/session")).status()).toBe(401);
     signedOut = true;
 
-    // An ordinary account cannot use the local command, even with container access.
     type ExecFailure = Error & { code?: number; stderr?: string };
     const refused = await exec(localRecoveryCommand(RECOVERED_EMAIL, LOCAL_PASSWORD), {
       timeout: 60_000,
@@ -203,23 +182,21 @@ test("administrator local recovery signs out sessions, works with broken SMTP, a
     expect(refused).toBeDefined();
     expect(refused?.code).not.toBe(0);
     expect(refused?.stderr).toContain("system administrators only");
-    // The refused attempt changed nothing for that account.
+
     expect(await loginStatus(RESET_PASSWORD)).toBe(200);
   } finally {
     await adminSession.dispose();
   }
 
-  // The shared admin context's session was ended too; sign in again for the checks.
   expect(signedOut).toBe(true);
   const relogin = await api.post("/api/auth/login", {
     data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
   });
   expect(relogin.status()).toBe(200);
 
-  // Recovery cannot reopen bootstrap, and it leaves workspace ownership untouched.
   const status = await api.get("/api/setup/status");
   expect(await status.json()).toEqual({ setupComplete: true });
-  // With the real setup secret, setup still refuses: recovery did not reopen it.
+
   const secondSetup = await api.post("/api/setup/admin", {
     data: {
       secret: process.env.ORRERY_SETUP_SECRET ?? "",
@@ -232,7 +209,6 @@ test("administrator local recovery signs out sessions, works with broken SMTP, a
   const workspacesAfter = await api.get("/api/workspaces");
   expect(await workspacesAfter.json()).toEqual(workspacesBefore);
 
-  // Repair the relay for the later smtp.spec.ts.
   const repaired = await api.put("/api/settings/smtp", { data: SETTINGS });
   expect(repaired.status()).toBe(200);
 });
@@ -247,8 +223,6 @@ test("serves the request and reset forms", async ({ page }) => {
   await expect(page.getByLabel("New password")).toBeVisible();
 });
 
-// The local administrator command inside the container. Secrets travel through exec's
-// environment, never the script's arguments or the stack's logs.
 function localRecoveryCommand(email: string, password: string): string {
   return (
     `docker compose -f "${composeFile}" exec -T ` +
@@ -258,8 +232,6 @@ function localRecoveryCommand(email: string, password: string): string {
   );
 }
 
-// Sign in as the recovered account in a throwaway context. The shared `api` context
-// stays the administrator's, so settings and setup remain admin-only throughout.
 async function loginStatus(password: string): Promise<number> {
   const context = await request.newContext({ baseURL: baseUrl });
   try {
@@ -272,8 +244,6 @@ async function loginStatus(password: string): Promise<number> {
   }
 }
 
-// The reset answer is a fixed resource; assert equality with a fresh request without
-// assuming its exact wording here (the service owns the words, the web app shows them).
 async function unverifiedAnswer(context: APIRequestContext): Promise<unknown> {
   const res = await context.post("/api/auth/password-reset/request", {
     data: { email: "another-unknown@orrery.test" },
@@ -281,8 +251,6 @@ async function unverifiedAnswer(context: APIRequestContext): Promise<unknown> {
   return res.json();
 }
 
-// Match a caught message by subject and recipient, returning its ID (runtime-checked:
-// a third party's JSON is never trusted with a cast).
 async function caughtMessage(
   context: APIRequestContext,
   subject: string,

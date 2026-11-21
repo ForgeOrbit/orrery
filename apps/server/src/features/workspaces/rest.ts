@@ -373,7 +373,6 @@ const leaveWorkspace = createRoute({
   },
 });
 
-// Route definitions, for the generated OpenAPI document.
 export const routes = [
   listWorkspaces,
   getWorkspace,
@@ -393,7 +392,6 @@ export const routes = [
   leaveWorkspace,
 ];
 
-// Transport details rest.ts owns: every workspaces error kind's HTTP status.
 const statusFor = {
   not_signed_in: 401,
   workspace_not_found: 404,
@@ -416,8 +414,6 @@ const statusFor = {
   ownerless_workspace: 409,
 } as const satisfies Record<WorkspacesErrorKind, number>;
 
-// True when the error's kind is one of the route's kinds. A type guard is the honest
-// way to narrow; no assertions.
 function isKind<K extends readonly WorkspacesErrorKind[]>(
   error: WorkspacesError,
   kinds: K,
@@ -425,8 +421,6 @@ function isKind<K extends readonly WorkspacesErrorKind[]>(
   return kinds.some((kind) => kind === error.kind);
 }
 
-// The kinds each route's service calls can throw. A route answers exactly these; a kind
-// it does not answer is a programming error and stays a 500.
 const listKinds = ["not_signed_in"] as const;
 const getKinds = ["not_signed_in", "workspace_not_found"] as const;
 const membersKinds = ["not_signed_in", "workspace_not_found", "not_workspace_owner"] as const;
@@ -504,9 +498,6 @@ const removeKinds = [
 ] as const;
 const leaveKinds = ["not_signed_in", "workspace_not_found", "last_owner"] as const;
 
-// Thin: resolve the session, call the service, map the result to HTTP. The service
-// decides who may do what; this layer only carries it, and every error is a Problem
-// built through platform/problem.ts (ADR-0003).
 function failure<K extends readonly WorkspacesErrorKind[]>(c: Context, error: unknown, kinds: K) {
   if (error instanceof WorkspacesError && isKind(error, kinds)) {
     return problemResponse(c, {
@@ -518,8 +509,6 @@ function failure<K extends readonly WorkspacesErrorKind[]>(c: Context, error: un
   throw error;
 }
 
-// The invitation send also answers every delivery failure with settings' own code and
-// status, so a client can tell the reasons apart wherever the send happened.
 function sendFailure<K extends readonly WorkspacesErrorKind[]>(
   c: Context,
   error: unknown,
@@ -538,7 +527,6 @@ function sendFailure<K extends readonly WorkspacesErrorKind[]>(
 }
 
 export function createWorkspacesRest(service: WorkspacesService, sessionReader: SessionReader) {
-  // Validation failures answer as a validation_failed Problem, like every other error.
   const app = new OpenAPIHono({ defaultHook: validationHook });
 
   app.openapi(listWorkspaces, async (c) => {

@@ -34,10 +34,6 @@ import {
 import type { OutgoingMail } from "../settings/index.ts";
 import { createInboxService, InboxError, type InboxService } from "./service.ts";
 
-// Real Postgres: the question lifecycle is a database-time state machine. Every boundary
-// and race below is driven by statement_timestamp() against a real transaction, never by a
-// mocked clock or a sleeping test.
-
 const SECRET = "correct horse battery staple inbox";
 const ADMIN_EMAIL = "inbox-admin@example.com";
 const PUBLIC_URL = "http://orrery.test";
@@ -486,8 +482,6 @@ describe("questions against real Postgres", () => {
     );
     expect(kindOf(sibling)).toBe("agents_cannot_answer");
 
-    // The access ceiling is the one policy resolver; feed the service the Read and null
-    // outcomes it would receive for a reader and an unrelated member.
     const readOnly = createInboxService({
       db: database.db,
       projectAccessCeiling: async () => new Map([[f.projectId, ProjectAccessLevel.enum.read]]),
@@ -505,8 +499,7 @@ describe("questions against real Postgres", () => {
       deliver: async () => {},
       log: silentLogger,
     });
-    // No access at all is a 404: an unrelated caller must not learn that the question or
-    // its issue exists (non-enumeration), while a Reader gets a 403 on the answer.
+
     expect(
       kindOf(await refused(unrelated.answer(await humanActor(f), question.id, "outsider"))),
     ).toBe("question_not_found");
@@ -522,8 +515,6 @@ describe("questions against real Postgres", () => {
     await claim(f, issue.id, runId);
     const mine = await ask(f, issue.id, runId);
 
-    // A question in another human's personal workspace must not appear in this inbox, even
-    // though it is the newest question in the database.
     const other = await bootstrap(`inbox-other-${randomUUID()}@example.com`);
     const otherIssue = await newIssue(other);
     const otherRun = await newRun(other);
@@ -534,8 +525,6 @@ describe("questions against real Postgres", () => {
     expect(ids).not.toContain(theirs.id);
     expect(ids.length).toBeLessThanOrEqual(200);
 
-    // After the deadline, a read must show the question as paused in database time even if
-    // no write has evaluated the deadline yet.
     await setDeadline(mine.id, "statement_timestamp() - interval '1 second'");
     const fromList = (await inbox.list(await humanActor(f))).find((row) => row.id === mine.id);
     expect(fromList?.status).toBe("paused");
@@ -576,17 +565,12 @@ describe("questions against real Postgres", () => {
     await sessions.progress(actor, issue.id, "halfway through migration");
     const question = await ask(f, issue.id, runId);
 
-    // The 5-minute claim lapses BEFORE the 1-hour question deadline passes, without being
-    // lazily materialized yet.
     await database.db
       .update(workSessions)
       .set({ leaseExpiresAt: sql`statement_timestamp() - interval '10 minutes'` })
       .where(eq(workSessions.id, claimed.id));
     await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
 
-    // Human answers after the 1-hour deadline: evaluateDeadline runs first, pauses, then
-    // resolves to answered. The already-lapsed session must materialize as 'expired',
-    // never be clobbered to 'released', so the interrupted run can reacquire with progress.
     await inbox.answer(await humanActor(f), question.id, "proceed with option A");
 
     const resumed = await sessions.resume(actor, { issueId: issue.id, runId });
@@ -618,10 +602,6 @@ function actorOf(member: Member) {
   };
 }
 
-// A shared project with an owning human, a Contribute member (who also owns an agent key),
-// a Reader and a complete outsider. This is the permission matrix #42 changes: the owner
-// has Manage, the member has Contribute, and neither membership alone nor a key grants
-// policy authority.
 async function sharedFixture() {
   const owner = await bootstrap();
   const humansIn: Member[] = [];
@@ -641,8 +621,7 @@ async function sharedFixture() {
   const reader = humansIn[1]!;
   const outsider = humansIn[2]!;
   const workspaceId = randomUUID();
-  // The shared-workspace owner trigger is checked at commit, so the owner membership is
-  // inserted in the same transaction as the workspace row.
+
   await database.db.transaction(async (tx) => {
     await tx
       .insert(workspaces)
@@ -788,7 +767,7 @@ describe("fallback policy permission matrix against real Postgres", () => {
         ),
       ),
     ).toBe("insufficient_project_access");
-    // An outsider cannot even learn that the project exists.
+
     expect(
       errorKindOf(
         await refused(
@@ -819,7 +798,6 @@ describe("fallback policy permission matrix against real Postgres", () => {
       title: "Override matrix",
     });
 
-    // Contributors can tighten an issue below a fallback_allowed project.
     const tightened = await projectsService.setIssueFallbackPolicyOverride(
       actorOf(s.contributor),
       issue.id,
@@ -828,7 +806,6 @@ describe("fallback policy permission matrix against real Postgres", () => {
     expect(tightened.fallbackPolicyOverride).toBe("require_human");
     expect(tightened.effectiveFallbackPolicy).toBe("require_human");
 
-    // Clearing that override would loosen back to fallback_allowed: Manage only.
     expect(
       errorKindOf(
         await refused(
@@ -914,9 +891,6 @@ describe("fallback policy permission matrix against real Postgres", () => {
     expect((await questionOf(question.id))?.status).toBe("fallback_used");
     expect(await isNeedsInput(issue.id)).toBe(false);
 
-    // Authorization let the existing Contribute worker continue, not grow its level. A
-    // key whose current ceiling is Read (as after a downgrade) is still refused both the
-    // fenced write and a renewal, with the same stable codes as before the deadline.
     const readIdentity = AgentIdentity.parse({
       ...s.identity,
       projects: [{ projectId: s.projectId, projectName: "Shared fallback project", level: "read" }],
@@ -948,14 +922,12 @@ describe("fallback deadline and late answers against real Postgres", () => {
     });
     await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
 
-    // A pure read projects fallback_used in database time, before any check-in writes it.
     const projected = (
       await inbox.issueHistory({ kind: "agent", identity: f.identity }, issue.id)
     )[0];
     expect(projected?.status).toBe("fallback_used");
     expect(projected?.authorizedFallback).toBe("Use v1");
 
-    // Checking in exactly at the boundary resolves the fallback without releasing the claim.
     await sessions.renew({ kind: "agent", identity: f.identity }, issue.id);
     expect((await questionOf(question.id))?.status).toBe("fallback_used");
     expect((await questionOf(question.id))?.resolvedAt).not.toBeNull();
@@ -963,7 +935,6 @@ describe("fallback deadline and late answers against real Postgres", () => {
     expect(await activeSessions(issue.id)).toBe(1);
     expect(await activityTypes(f.projectId)).toContain("issue_question_fallback_used");
 
-    // The worker keeps a fresh five-minute lease, not one clipped to the passed deadline.
     const [row] = await database.db
       .select({ lease: workSessions.leaseExpiresAt })
       .from(workSessions)
@@ -1024,7 +995,6 @@ describe("fallback deadline and late answers against real Postgres", () => {
     await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
     await sessions.renew({ kind: "agent", identity: f.identity }, issue.id);
 
-    // Work already proceeded with the fallback; the issue was closed afterwards.
     await projectsService.updateIssue(await humanActor(f), issue.id, { status: "done" });
     const late = await inbox.answer(await humanActor(f), question.id, "Use v2 after all");
 
@@ -1039,7 +1009,6 @@ describe("fallback deadline and late answers against real Postgres", () => {
     expect((await projectsService.getIssue(await humanActor(f), issue.id)).status).toBe("done");
     expect(await activityTypes(f.projectId)).toContain("issue_question_follow_up");
 
-    // A second answer cannot overwrite the first follow-up.
     expect(
       errorKindOf(
         await refused(inbox.answer(await humanActor(f), question.id, "another follow-up")),
@@ -1056,7 +1025,7 @@ describe("fallback deadline and late answers against real Postgres", () => {
     const runId = await newRun(f);
     await claim(f, issue.id, runId);
     const question = await ask(f, issue.id, runId);
-    // The deadline lands between the ask and the answer; evaluation runs inside answer.
+
     await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
 
     const raced = await inbox.answer(await humanActor(f), question.id, "late answer");
@@ -1077,7 +1046,6 @@ describe("fallback deadline and late answers against real Postgres", () => {
     const question = await ask(f, issue.id, runId);
     const agentActor = { kind: "agent" as const, identity: f.identity };
 
-    // T≈57m: a check-in keeps a full lease instead of clipping it to the response deadline.
     await setDeadline(question.id, "statement_timestamp() + interval '10 seconds'");
     await sessions.renew(agentActor, issue.id);
     const [leaseBefore] = await database.db
@@ -1090,7 +1058,6 @@ describe("fallback deadline and late answers against real Postgres", () => {
       .where(eq(questionRows.id, question.id));
     expect(leaseBefore!.lease.getTime()).toBeGreaterThan(deadlineRow!.deadline.getTime());
 
-    // T=60m+1s: the lease is still live, so the worker checks in again and keeps its claim.
     await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
     await sessions.renew(agentActor, issue.id);
     expect((await questionOf(question.id))?.status).toBe("fallback_used");
@@ -1106,8 +1073,6 @@ describe("fallback deadline and late answers against real Postgres", () => {
     const question = await ask(f, issue.id, runId);
     const agentActor = { kind: "agent" as const, identity: f.identity };
 
-    // require_human still clamps the lease to the deadline, so a worker checking in near
-    // the boundary cannot extend its claim past the moment the question pauses.
     await setDeadline(question.id, "statement_timestamp() + interval '10 seconds'");
     await sessions.renew(agentActor, issue.id);
     const [leaseBefore] = await database.db
@@ -1167,7 +1132,7 @@ describe("fallback deadline and late answers against real Postgres", () => {
     const read = () =>
       inbox.issueHistory({ kind: "agent", identity: f.identity }, issue.id).then((rows) => rows[0]);
     expect((await read())?.status).toBe("fallback_used");
-    // A manager changing the policy must not re-project the resolved answer as paused.
+
     await projectsService.setProjectFallbackPolicy((await humanActor(f)).account, f.projectId, {
       fallbackPolicy: "require_human",
     });
@@ -1198,8 +1163,6 @@ describe("fallback deadline and late answers against real Postgres", () => {
     expect(fromHistory?.authorizedFallback).toBe("Use v1");
   });
 
-  // #94: a work session that ends without completing the work must never leave an
-  // in_progress issue behind, and answering the question must return it to ready work.
   it("reverts an in_progress issue to todo at the require_human pause and re-offers it when answered", async () => {
     const f = await bootstrap();
     const issue = await newIssue(f, "Paused work");
@@ -1210,8 +1173,6 @@ describe("fallback deadline and late answers against real Postgres", () => {
       "in_progress",
     );
 
-    // The 1h deadline pauses a require_human question, releases the claim and returns the
-    // issue to todo while Needs input keeps it out of the ready queue.
     const question = (await inbox.list(await humanActor(f)))[0];
     if (question === undefined) throw new Error("the question was not found");
     await setDeadline(question.id, "statement_timestamp() - interval '1 second'");
@@ -1225,8 +1186,6 @@ describe("fallback deadline and late answers against real Postgres", () => {
       (await sessions.readyWork(await humanActor(f), f.projectId)).map((i) => i.id),
     ).not.toContain(issue.id);
 
-    // Answering the paused question clears Needs input; the issue is already todo, so it
-    // appears in ready work without ever sitting stranded in in_progress.
     await inbox.answer(await humanActor(f), question.id, "Use v2");
     expect(await isNeedsInput(issue.id)).toBe(false);
     expect((await projectsService.getIssue(await humanActor(f), issue.id)).status).toBe("todo");
@@ -1245,8 +1204,6 @@ describe("fallback deadline and late answers against real Postgres", () => {
       "in_progress",
     );
 
-    // Only the five-minute claim lease lapses; the one-hour question deadline has not,
-    // so evaluateDeadline is a no-op and the question is still open.
     await database.db.execute(
       sql`update work_sessions set lease_expires_at = statement_timestamp() - interval '1 second' where issue_id = ${issue.id}`,
     );

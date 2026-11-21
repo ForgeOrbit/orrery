@@ -7,13 +7,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDb, type Database } from "../../platform/db.ts";
 import { migrate } from "../../platform/migrate.ts";
 
-// #95: a real-Postgres proof that upgrading a database with pre-key projects backfills
-// each row with a valid, workspace-unique key before NOT NULL and the unique index are
-// applied. The upgrade is exercised by applying the real migrations in two stages.
 const MIGRATIONS = new URL("../../../../../db/migrations", import.meta.url).pathname;
-// The last three migrations are the #95 upgrade: a generated nullable column, a custom
-// backfill, and the generated constraints. Partition by file name so the drizzle-kit
-// generated files never need a hand-written marker comment.
+
 const isKeyMigration = (file: string) => /^003[234]_/.test(file);
 
 describe("project key migration", () => {
@@ -40,10 +35,6 @@ describe("project key migration", () => {
   });
 
   it("derives valid, workspace-unique keys for every legacy project", async () => {
-    // Raw SQL is required here: these rows intentionally predate the key column, so the
-    // typed Drizzle `db` (built from today's schema, which requires `key`) cannot insert
-    // them. The post-upgrade read uses raw SQL for the same reason: it reads the staged
-    // snapshot through postgres.js without coupling the test to the current `db` type.
     const human = randomUUID();
     const otherHuman = randomUUID();
     await database.sql`insert into humans (id, email, password_hash) values (${human}, ${`legacy-${human}@example.com`}, 'scrypt$anything')`;
@@ -53,14 +44,13 @@ describe("project key migration", () => {
     await database.sql`insert into workspaces (id, kind, name, personal_owner_human_id) values (${first}, 'personal', ${`Legacy ${first}`}, ${human})`;
     await database.sql`insert into workspaces (id, kind, name, personal_owner_human_id) values (${second}, 'personal', ${`Legacy ${second}`}, ${otherHuman})`;
 
-    // Same name in the same workspace collides; the same name in another workspace does not.
     const a = randomUUID();
     const b = randomUUID();
     const c = randomUUID();
     await database.sql`insert into projects (id, workspace_id, name, created_by_human_id, created_at) values (${a}, ${first}, 'Alpha Beta', ${human}, now())`;
     await database.sql`insert into projects (id, workspace_id, name, created_by_human_id, created_at) values (${b}, ${first}, 'Alpha Beta', ${human}, now() + interval '1 second')`;
     await database.sql`insert into projects (id, workspace_id, name, created_by_human_id, created_at) values (${c}, ${second}, 'Alpha Beta', ${human}, now())`;
-    // A name with no letters must still get a valid key.
+
     const numeric = randomUUID();
     await database.sql`insert into projects (id, workspace_id, name, created_by_human_id, created_at) values (${numeric}, ${first}, '1234', ${human}, now() + interval '2 seconds')`;
 

@@ -5,7 +5,6 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "./http.ts";
 import { createLogger } from "./log.ts";
 
-// MCP checks the Host header, which fetch() won't let us set, so these tests use a real server.
 describe("mcp", () => {
   let server: ServerType;
   let port: number;

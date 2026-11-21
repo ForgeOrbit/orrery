@@ -10,10 +10,6 @@ import { sessionTools } from "@orrery/contract";
 import { isAgentError, type AgentAuthenticator } from "../agents/index.ts";
 import { SessionsError, type SessionsService } from "./service.ts";
 
-// MCP transport adapter for work sessions (#36). It authenticates the bearer key on every
-// call, validates tool args with the shared contract schemas, calls the service, and maps
-// failures to MCP structured errors. No policy or lease decision lives here.
-
 type Args = Record<string, unknown>;
 
 const str = (value: unknown, field: string): string => {
@@ -21,13 +17,9 @@ const str = (value: unknown, field: string): string => {
   return value;
 };
 
-// The optional session fence is already validated by the tool's input schema; a missing
-// one keeps #36 callers working, a present one pins the write to that exact session.
 const sessionFence = (args: Args): string | undefined =>
   typeof args.sessionId === "string" ? args.sessionId : undefined;
 
-// The tool's input schema already validated these as non-negative integers; send only the
-// cumulative totals the caller actually reported so the service preserves the rest (#96).
 const telemetry = (args: Args): SessionTelemetry | undefined => {
   const reported: SessionTelemetry = {};
   if (typeof args.inputTokens === "number") reported.inputTokens = args.inputTokens;
@@ -36,16 +28,11 @@ const telemetry = (args: Args): SessionTelemetry | undefined => {
   return Object.keys(reported).length === 0 ? undefined : reported;
 };
 
-// #94: the validated tool argument is one of completed/released/review/done. A missing
-// value means the default completion (review handoff), matching the shared contract.
 const stopOutcome = (args: Args): StopOutcome =>
   args.outcome === "released" || args.outcome === "done" || args.outcome === "review"
     ? args.outcome
     : "completed";
 
-// The tool's input schema already validated the detail; this narrows the parsed `unknown`
-// to the service's type without a second parser or an unchecked assertion. The kind uses
-// the shared contract schema directly so the two transports cannot drift apart.
 const activityDetail = (value: unknown): Record<string, unknown> | undefined => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   return Object.fromEntries(Object.entries(value));
@@ -80,8 +67,7 @@ export function createSessionsMcp(service: SessionsService, authenticate: AgentA
       session: await service.stop(
         { kind: "agent", identity },
         str(args.issueId, "issueId"),
-        // The tool's input schema has already validated the outcome; keep the legacy
-        // "completed" spelling as the default review handoff.
+
         stopOutcome(args),
         sessionFence(args),
         telemetry(args),
@@ -155,7 +141,7 @@ export function createSessionsMcp(service: SessionsService, authenticate: AgentA
           try {
             const identity = await authenticate(request);
             if (identity === null) throw new SessionsError("not_signed_in");
-            // The tool's own contract schema validates every argument; no second parser.
+
             const result = await strategy(identity, tool.input.parse(rawArgs));
             return {
               content: [{ type: "text" as const, text: JSON.stringify(result) }],

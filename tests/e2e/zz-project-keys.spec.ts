@@ -1,9 +1,3 @@
-// #95 black-box proof: project keys and KEY-N issue identifiers over REST and MCP against
-// a running Orrery. The same payloads are read through an agent key over the MCP protocol,
-// so a shared contract change cannot be visible on only one transport.
-//
-//   docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { randomUUID } from "node:crypto";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { expect, request, test, type APIRequestContext } from "@playwright/test";
@@ -98,7 +92,6 @@ test("REST exposes workspace-unique keys and immutable key updates", async () =>
   expect(fetched.status()).toBe(200);
   expect(await fetched.json()).toMatchObject({ key: "KEYS", name: `Keyed KEYS` });
 
-  // A caller that omits the key still gets a valid derived one.
   const derived = await api.post(`/api/workspaces/${workspaceId}/projects`, {
     data: { name: "Derived Key" },
   });
@@ -128,7 +121,6 @@ test("REST resolves a transfer key collision with a replacement key only", async
   const unchanged = await api.get(`/api/projects/${moved.id}`);
   expect(await unchanged.json()).toMatchObject({ key: "TRNS" });
 
-  // A key is only renameable here to resolve a collision, never as a general edit path.
   const other = await createProject("NOCO");
   const secondDest = await api.post("/api/workspaces", {
     data: { name: `Other destination ${randomUUID()}` },

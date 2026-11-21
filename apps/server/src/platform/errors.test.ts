@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { errorSummary, rootCause } from "./errors.ts";
 
-// Shaped like a postgres.js error: a SQLSTATE plus the schema identifiers involved.
 class PostgresShapedError extends Error {
   readonly code = "23514";
   readonly constraint_name = "humans_email_normalized";

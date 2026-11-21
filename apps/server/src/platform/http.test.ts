@@ -6,17 +6,12 @@ import type { Feature } from "./feature.ts";
 import { createApp } from "./http.ts";
 import { createLogger, type Logger } from "./log.ts";
 
-// A route that explodes, to prove createApp's error handling: one JSON log line and a
-// 500 Problem, with no parameters, headers, or bodies in either.
-
 const wrapped = createRoute({
   method: "get",
   path: "/wrapped",
   responses: { 200: { description: "Never reached" } },
 });
 
-// Shaped like a Drizzle wrapper: its message embeds query parameters, the cause is the
-// driver's error with the real story.
 const wrappedErrorFeature: Feature = {
   name: "wrappedError",
   rest: new OpenAPIHono().openapi(wrapped, () => {
@@ -26,8 +21,6 @@ const wrappedErrorFeature: Feature = {
   }),
 };
 
-// Shaped like a driver error: it carries a SQLSTATE, and its message quotes the input
-// that broke the query.
 class PostgresShapedError extends Error {
   readonly code: string;
 
@@ -89,7 +82,6 @@ const httpExceptionFeature: Feature = {
   }),
 };
 
-// postgres.js connects lazily, so building the features never touches this address.
 const database = createDb("postgres://unused@127.0.0.1:1/unused");
 afterAll(() => void database.sql.end());
 
@@ -120,7 +112,7 @@ describe("createApp error handling", () => {
         method: "GET",
         path: "/boom",
       });
-      // Only the decided fields: no params, headers, cookies, or bodies.
+
       expect(Object.keys(unhandled[0] ?? {}).toSorted()).toEqual(
         ["time", "level", "msg", "error", "message", "method", "path"].toSorted(),
       );
@@ -170,7 +162,7 @@ describe("createApp error handling", () => {
         error: "Error",
         message: 'violates check constraint "humans_email_normalized"',
       });
-      // The wrapper's message carried the parameters; they must not reach the log.
+
       expect(lines.join("\n")).not.toContain("the-password-hash");
     } finally {
       spy.mockRestore();
@@ -195,8 +187,7 @@ describe("createApp error handling", () => {
       const unhandled = unhandledErrorLines(lines);
       expect(unhandled).toHaveLength(1);
       expect(unhandled[0]).toMatchObject({ error: "PostgresError", code: "22P02" });
-      // A SQLSTATE error logs without a message, so the value it would quote never
-      // reaches the log.
+
       expect(Object.keys(unhandled[0] ?? {}).toSorted()).toEqual(
         ["time", "level", "msg", "error", "code", "method", "path"].toSorted(),
       );

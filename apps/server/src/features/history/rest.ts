@@ -65,7 +65,6 @@ const installationHistory = createRoute({
   },
 });
 
-// Route definitions, for the generated OpenAPI document.
 export const routes = [workspaceHistory, projectHistory, installationHistory];
 
 const statusFor = {
@@ -103,7 +102,6 @@ function failure<K extends readonly HistoryErrorKind[]>(c: Context, error: unkno
 }
 
 export function createHistoryRest(service: HistoryService, sessionReader: SessionReader) {
-  // Validation failures answer as a validation_failed Problem, like every other error.
   const app = new OpenAPIHono({ defaultHook: validationHook });
 
   app.openapi(workspaceHistory, async (c) => {

@@ -1,10 +1,10 @@
 import { z } from "zod";
 import { Email, LoginEmail, LoginPassword, NewPassword } from "./common.ts";
 
-// Browser sign-in with email and password. Any non-empty email string and password are
-// accepted by shape and checked against what is stored; wrong, unknown, or malformed
-// credentials all answer the same 401. A successful login sets an HttpOnly session
-// cookie, and the credentials themselves never appear in a response.
+
+
+
+
 export const LoginRequest = z
   .object({
     email: LoginEmail,
@@ -28,9 +28,9 @@ export const DisplayName = z
   .meta({ id: "DisplayName" });
 export type DisplayName = z.infer<typeof DisplayName>;
 
-// The signed-in account behind the browser's session cookie. `emailVerified` reports
-// whether the mailbox has been verified (issue #22); an administrator signs in before
-// verifying, so the two states are independent.
+
+
+
 export const SessionResponse = z
   .object({
     email: Email,

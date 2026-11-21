@@ -1,15 +1,3 @@
-// Resume, reacquire and stale-session rejection (issue #40, stories 55 and 56), black-box
-// against a running Orrery through a real MCP protocol client. An interrupted run resumes
-// its original conversation, is told whether its claim is still live or has expired, keeps
-// its recorded progress, reacquires only an available claim, and deduplicates retries.
-// A stale completion on the expired session is refused both when unclaimed and when a
-// replacement worker holds the issue. No server code is imported.
-//
-// The `zz-` prefix runs this after the other session suites. Lease expiry is a test fixture
-// set in database time inside the Postgres container (production has no clock override).
-//
-//   docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { randomUUID } from "node:crypto";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
@@ -110,9 +98,6 @@ async function newRun(client: Client): Promise<string> {
   return requiredText(field(result.data, "runId"), "the run id");
 }
 
-// Simulate a client being absent past the five-minute boundary. The lease deadline is a
-// normal row value; moving it into the past in database time is how a black-box test
-// crosses the boundary without a production clock override or a five-minute wait.
 async function expireLease(issueId: string): Promise<void> {
   const sql =
     `UPDATE work_sessions SET lease_expires_at = statement_timestamp() - interval '1 second' ` +
@@ -159,20 +144,16 @@ test("interrupt, resume, reacquire and retry without duplicating a claim", async
     });
     expect(progress.isError).toBe(false);
 
-    // While live, resume reports a valid claim for the original run.
     const live = await call(client, "resume_work_session", { issueId, runId });
     expect(live.isError).toBe(false);
     const liveResume = asRecord(live.data.resume);
     expect(field(liveResume, "disposition")).toBe("active");
     expect(field(asRecord(liveResume.session), "id")).toBe(sessionId);
 
-    // Interrupt the client (drop the MCP connection) and cross the lease boundary.
     await client.close();
     client = await connect(secret);
     await expireLease(issueId);
 
-    // Resume the original conversation: the claim is clearly expired, not resurrected, and
-    // the progress reported before the interruption is still there.
     const interrupted = await call(client, "resume_work_session", { issueId, runId });
     expect(interrupted.isError).toBe(false);
     const interruptedResume = asRecord(interrupted.data.resume);
@@ -182,9 +163,6 @@ test("interrupt, resume, reacquire and retry without duplicating a claim", async
     expect(field(expiredSession, "status")).toBe("expired");
     expect(field(expiredSession, "progress")).toBe("Resumable progress");
 
-    // A stale completion, renewal and progress report on the expired session are refused,
-    // even with nobody else holding the issue. Naming sessionId fences them to S1 so they
-    // cannot fall through to a newer session the same agent may acquire later.
     for (const stale of ["stop_session", "renew_claim", "report_progress"]) {
       const args: Record<string, unknown> =
         stale === "report_progress"
@@ -198,7 +176,6 @@ test("interrupt, resume, reacquire and retry without duplicating a claim", async
     expect(staleEdit.isError).toBe(true);
     expect(staleEdit.data).toMatchObject({ code: "session_required" });
 
-    // Reacquiring the expired claim yields a new active session with the progress intact.
     const reacquired = await call(client, "reacquire_issue", { issueId, runId });
     expect(reacquired.isError).toBe(false);
     const reacquiredId = requiredText(field(reacquired.data.session, "id"), "the reacquired id");
@@ -206,8 +183,6 @@ test("interrupt, resume, reacquire and retry without duplicating a claim", async
     expect(field(reacquired.data.session, "status")).toBe("active");
     expect(field(reacquired.data.session, "progress")).toBe("Resumable progress");
 
-    // A delayed completion from S1 is still refused now that S2 is live. Naming S2's id
-    // succeeds, proving the fence targets the exact session rather than disabling writes.
     const staleAfterReacquire = await call(client, "stop_session", {
       issueId,
       outcome: "completed",
@@ -219,8 +194,6 @@ test("interrupt, resume, reacquire and retry without duplicating a claim", async
     expect(fencedRenew.isError).toBe(false);
     expect(field(asRecord(fencedRenew.data.session), "id")).toBe(reacquiredId);
 
-    // Retries after reconnect — both a repeated reacquire and a repeated claim — resolve
-    // to the same active session and never create a duplicate claim.
     const retry = await call(client, "reacquire_issue", { issueId, runId });
     expect(retry.isError).toBe(false);
     expect(field(retry.data.session, "id")).toBe(reacquiredId);
@@ -264,13 +237,10 @@ test("a stale completion is refused when another worker now holds the issue", as
     ).toBe(false);
     await expireLease(issueId);
 
-    // A different worker legitimately claims the released issue.
     const claimed = await call(replacement, "claim_issue", { issueId, runId: replacementRun });
     expect(claimed.isError).toBe(false);
     expect(field(claimed.data.session, "status")).toBe("active");
 
-    // The original run cannot reacquire over the live claim, and its stale completion and
-    // writes are refused without disturbing the replacement or becoming a fresh claim.
     const reacquire = await call(original, "reacquire_issue", { issueId, runId: originalRun });
     expect(reacquire.isError).toBe(true);
     expect(reacquire.data).toMatchObject({ code: "issue_claimed" });

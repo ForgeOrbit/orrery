@@ -1363,7 +1363,6 @@
   white-space: nowrap;
 }
 
-/* A project label owns its color; the custom property is set per pill from the API. */
 .label-pill {
   display: inline-flex;
   align-items: center;
@@ -2027,8 +2026,6 @@
   }
 }
 
-/* Safe GFM rendering (issue descriptions and comments). The host surfaces keep
-   pre-wrap for plain text, so the Markdown document restores normal flow here. */
 .markdown-body {
   white-space: normal;
 }
@@ -2110,7 +2107,6 @@
   block-size: auto;
 }
 
-/* Structured v1 activity blocks and the JSON fallback in the session inspector. */
 .activity-block {
   margin-block: 0.5rem;
 }

@@ -1,8 +1,6 @@
 import type { RunEventType, RunStatus } from "@orrery/contract";
 import { defineStateMachine } from "../../platform/state-machine.ts";
 
-// Explicit Run & RunChild state machine (verified by docs/formal/RunLifecycle.tla).
-// Runs can end and be reactivated by a resumed conversation (`run_started`).
 export const runMachine = defineStateMachine<RunStatus>("Run", {
   active: ["active", "ended"],
   ended: ["active", "ended"],

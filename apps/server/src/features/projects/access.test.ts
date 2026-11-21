@@ -33,11 +33,6 @@ import { createAccountsFeature } from "../accounts/index.ts";
 import { createWorkspacesFeature } from "../workspaces/index.ts";
 import { createProjectsFeature } from "./index.ts";
 
-// Runs against a real Postgres (see AGENTS.md): project levels, grant rows, access
-// events, membership removal, and the database's scope trigger are database behavior.
-// The REST seam is the public interface; the black-box e2e suite repeats the matrix
-// against the built server and real browser.
-
 const SECRET = "correct horse battery staple staple";
 const ADMIN_EMAIL = "admin@example.com";
 const ADMIN_PASSWORD = "first-admin-password";
@@ -80,7 +75,6 @@ function field(value: unknown, key: string): unknown {
   return typeof value === "object" && value !== null ? Reflect.get(value, key) : undefined;
 }
 
-// A body's id, checked at runtime: the response is a server's, not a typed fixture.
 function idOf(value: unknown, what: string): string {
   const id = field(value, "id");
   if (typeof id !== "string") throw new Error(`missing ${what}`);
@@ -169,8 +163,6 @@ async function addMembership(workspaceId: string, humanId: string) {
     .values({ id: randomUUID(), workspaceId, humanId, isOwner: false });
 }
 
-// A second verified account with a live session and (optionally) a workspace
-// membership. Direct fixtures keep the point on project behavior, not invitation mail.
 async function secondHuman(email: string, workspaceId?: string) {
   const human = await insertHuman(email);
   if (workspaceId !== undefined) await addMembership(workspaceId, human.id);
@@ -353,7 +345,6 @@ describe("shared project access", () => {
     const ownerProject = await createProject(app, adminCookie, workspace.id, "Owner Project");
     const member = await secondHuman(MEMBER_EMAIL, workspace.id);
 
-    // Membership alone grants no project access, and no creation permission.
     const memberWorkspace = await getJson(app, `/api/workspaces/${workspace.id}`, member.cookie);
     expect(memberWorkspace.status).toBe(200);
     expect(Workspace.parse(await memberWorkspace.json())).toMatchObject({
@@ -384,7 +375,6 @@ describe("shared project access", () => {
       "project_creation_not_allowed",
     );
 
-    // The owner grants the capability; the member sees it and can create.
     const members = await getJson(app, `/api/workspaces/${workspace.id}/members`, adminCookie);
     expect(members.status).toBe(200);
     expect(WorkspaceMembersResponse.parse(await members.json())).toContainEqual(
@@ -421,8 +411,6 @@ describe("shared project access", () => {
       createdBy: { humanId: member.human.id, email: MEMBER_EMAIL },
     });
 
-    // The creator's Manage is persisted as an explicit grant, and the member sees only
-    // the project they may access.
     const [creatorGrant] = await database.db
       .select()
       .from(projectAccessGrants)
@@ -436,7 +424,6 @@ describe("shared project access", () => {
     expect(visible.status).toBe(200);
     expect(ProjectsResponse.parse(await visible.json())).toEqual([memberProject]);
 
-    // The owner still manages every project in the workspace, including the member's.
     const ownerView = await getJson(app, `/api/projects/${memberProject.id}`, adminCookie);
     expect(ownerView.status).toBe(200);
     expect(Project.parse(await ownerView.json())).toMatchObject({
@@ -457,7 +444,6 @@ describe("shared project access", () => {
       memberProject.id,
     ]);
 
-    // Revocation takes the creation capability away and is recorded too.
     const revoked = await patchJson(
       app,
       `/api/workspaces/${workspace.id}/members/${member.human.id}`,
@@ -501,11 +487,9 @@ describe("shared project access", () => {
     const colleague = await secondHuman(COLLEAGUE_EMAIL, workspace.id);
     const outsider = await secondHuman(OUTSIDER_EMAIL);
     await addMembership(workspace.id, outsider.human.id);
-    // The outsider is a member only to prove grants to non-members are refused; a
-    // non-member fixture below proves cross-workspace denial.
+
     const nonMember = await secondHuman("nonmember@example.com");
 
-    // Read: every read path works; every mutation and every management path refuses.
     await grantAccess(app, adminCookie, project.id, MEMBER_EMAIL, "read");
     const reads = [
       `/api/projects/${project.id}`,
@@ -546,7 +530,6 @@ describe("shared project access", () => {
       await expectProblem(res, 403, "insufficient_project_access");
     }
 
-    // An ordinary member sees none of another workspace's project, even by direct id.
     await expectProblem(
       await getJson(app, `/api/projects/${project.id}`, nonMember.cookie),
       404,
@@ -558,7 +541,6 @@ describe("shared project access", () => {
       "project_not_found",
     );
 
-    // Contribute: edit, close, reopen, comment, and knowledge work; management still not.
     const contribute = await grantAccess(app, adminCookie, project.id, MEMBER_EMAIL, "contribute");
     expect(contribute).toMatchObject({ level: "contribute", email: MEMBER_EMAIL });
 
@@ -625,8 +607,6 @@ describe("shared project access", () => {
       "insufficient_project_access",
     );
 
-    // Manage: settings and access grants, including granting another manager and
-    // revoking them again. Every change is attributed in the database.
     await grantAccess(app, adminCookie, project.id, MEMBER_EMAIL, "manage");
     const renamed = await patchJson(
       app,
@@ -671,7 +651,6 @@ describe("shared project access", () => {
       "project_not_found",
     );
 
-    // A grant to a non-member is refused, and nothing is written.
     await expectProblem(
       await patchJson(
         app,
@@ -683,7 +662,6 @@ describe("shared project access", () => {
       "member_not_found",
     );
 
-    // The access events record every real change, with both sides and levels.
     const events = await database.db
       .select()
       .from(projectAccessEvents)
@@ -735,8 +713,6 @@ describe("shared project access", () => {
       },
     ]);
 
-    // Removing the managing member ends their project access and records the cleanup,
-    // so a later rejoin cannot revive the old grant.
     const removed = await deleteRequest(
       app,
       `/api/workspaces/${workspace.id}/members/${member.human.id}`,
@@ -768,8 +744,6 @@ describe("shared project access", () => {
     const member = await secondHuman(MEMBER_EMAIL);
     const outsider = await secondHuman(OUTSIDER_EMAIL);
 
-    // A second human cannot list or fetch the personal workspace's projects, and cannot
-    // read an issue or knowledge entry inside one.
     await expectProblem(
       await getJson(app, `/api/workspaces/${adminPersonal}/projects`, member.cookie),
       404,
@@ -791,7 +765,6 @@ describe("shared project access", () => {
       "workspace_not_found",
     );
 
-    // Another team's shared workspace and project are invisible by direct id.
     const otherWorkspace = await createSharedWorkspace(app, outsider.cookie, "Elsewhere");
     const otherProject = await createProject(app, outsider.cookie, otherWorkspace.id, "Their Work");
     await expectProblem(
@@ -805,8 +778,6 @@ describe("shared project access", () => {
       "workspace_not_found",
     );
 
-    // The installation administrator is not a member of Elsewhere: no access from the
-    // role alone.
     await expectProblem(
       await getJson(app, `/api/projects/${otherProject.id}`, adminCookie),
       404,
@@ -818,7 +789,6 @@ describe("shared project access", () => {
       "workspace_not_found",
     );
 
-    // Membership alone still grants nothing, even for the system administrator.
     await addMembership(otherWorkspace.id, admin.id);
     const list = await getJson(app, `/api/workspaces/${otherWorkspace.id}/projects`, adminCookie);
     expect(list.status).toBe(200);
@@ -829,7 +799,6 @@ describe("shared project access", () => {
       "project_not_found",
     );
 
-    // And the outsider cannot reach the administrator's personal project either.
     await expectProblem(
       await getJson(app, `/api/projects/${adminProject.id}`, outsider.cookie),
       404,
@@ -877,8 +846,6 @@ describe("shared project access", () => {
       ),
     ).toContain("project_access_grant_member");
 
-    // Deliberately outside the contract enum, which Drizzle's typed insert cannot
-    // express: raw SQL is the only way to test the database's own CHECK.
     expect(
       await rejection(
         database.sql`
@@ -890,7 +857,6 @@ describe("shared project access", () => {
       ),
     ).toContain("project_access_grants_level");
 
-    // A wrong event shape is refused: a grant cannot carry a previous level.
     expect(
       await rejection(
         database.db.insert(projectAccessEvents).values({
@@ -906,7 +872,6 @@ describe("shared project access", () => {
       ),
     ).toContain("project_access_events_shape");
 
-    // The valid counterparts still insert.
     await database.db.insert(projectAccessGrants).values({
       id: randomUUID(),
       projectId: project.id,
@@ -933,7 +898,6 @@ describe("shared project access", () => {
     const manager = await secondHuman("manager@example.com", workspace.id);
     const project = await createProject(app, adminCookie, workspace.id, "Core");
 
-    // Grant manager Manage on Core so they can call project-access routes.
     const granted = await patchJson(
       app,
       `/api/projects/${project.id}/access`,
@@ -944,7 +908,6 @@ describe("shared project access", () => {
 
     const eventsBefore = await database.db.select().from(projectAccessEvents);
 
-    // A project manager cannot write a lower explicit grant or revoke a workspace owner.
     const grantOwner = await patchJson(
       app,
       `/api/projects/${project.id}/access`,
@@ -968,7 +931,6 @@ describe("shared project access", () => {
     );
     expect(grantsAfter.map((g) => g.humanId)).toEqual([manager.human.id]);
 
-    // Promoting a member with an existing grant to owner hides that stale grant from the listing.
     const promoted = await postJson(
       app,
       `/api/workspaces/${workspace.id}/owners`,
@@ -981,8 +943,6 @@ describe("shared project access", () => {
     );
     expect(grantsAfterPromotion).toEqual([]);
 
-    // Workspace owners always have Create projects: revoking is 409, granting is a no-op,
-    // and neither records a workspace_events row.
     const wsEventsBefore = await database.db.select().from(workspaceEvents);
 
     const revokeOwnerCap = await patchJson(
@@ -1028,12 +988,10 @@ describe("shared project access", () => {
     expect(added.status).toBe(201);
     const linkId = idOf(await added.json(), "the link");
 
-    // Read sees the links in the issue detail.
     const asReader = await getJson(app, `/api/issues/${issue.id}`, reader.cookie);
     expect(asReader.status).toBe(200);
     expect(IssueDetail.parse(await asReader.json()).links).toHaveLength(1);
 
-    // Read cannot add or remove; both are Problems, not silent successes.
     await expectProblem(
       await postJson(
         app,
@@ -1050,7 +1008,6 @@ describe("shared project access", () => {
       "insufficient_project_access",
     );
 
-    // An authenticated outsider cannot even inspect the issue, so no link leaks through detail.
     const outsider = await secondHuman(OUTSIDER_EMAIL);
     await expectProblem(
       await getJson(app, `/api/issues/${issue.id}`, outsider.cookie),
@@ -1058,7 +1015,6 @@ describe("shared project access", () => {
       "issue_not_found",
     );
 
-    // Contribute can add and remove; the level is checked at write time.
     await grantAccess(app, adminCookie, project.id, MEMBER_EMAIL, "contribute");
     const contributed = await postJson(
       app,

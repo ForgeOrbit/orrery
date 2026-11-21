@@ -45,11 +45,8 @@ const confirmPasswordReset = createRoute({
   },
 });
 
-// Route definitions, for the generated OpenAPI document.
 export const routes = [requestPasswordReset, confirmPasswordReset];
 
-// Thin: call the service, map its one transport error to a Problem (ADR-0003). Anything
-// else is a bug and stays a 500; no policy lives here.
 export function createRecoveryRest(service: RecoveryService) {
   const app = new OpenAPIHono({ defaultHook: validationHook });
 

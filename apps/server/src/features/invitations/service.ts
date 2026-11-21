@@ -12,17 +12,8 @@ import type { OutgoingMail } from "../settings/index.ts";
 import { invitations, humans } from "../../db/schema.ts";
 import { canResendInvitation, supersedeTargetForPending } from "./state-machine.ts";
 
-// The service is the only file in a feature that decides anything. rest.ts calls it.
-
-// How long an invitation lives (#20): seven days, evaluated in database time at
-// redemption, never by a deployed clock.
 const INVITATION_TTL_SECONDS = 7 * 24 * 60 * 60;
 
-// How long an unknown delivery keeps blocking a fresh invitation. The mail transport
-// caps a send well below this (settings' sender: 10s to connect, 10s for the greeting,
-// 20s on the socket), so past it the send has finished or died and the row is stale
-// rather than in flight. Ten minutes is short next to the seven-day lifetime, so a crash
-// cannot block the address for long. Database time only, like every deadline here.
 export const UNKNOWN_DELIVERY_GRACE_SECONDS = 10 * 60;
 
 export type InvitationsErrorKind =
@@ -35,8 +26,6 @@ export type InvitationsErrorKind =
   | "invitation_not_pending"
   | "inviter_not_authorized";
 
-// Each kind is the REST error's stable code and its message the Problem's title
-// (ADR-0003), so clients branch on the code and people read the title.
 const messages = {
   not_signed_in: "Not signed in.",
   not_admin: "Only a system administrator can manage installation invitations.",
@@ -59,9 +48,6 @@ export class InvitationsError extends Error {
   }
 }
 
-// The emailed invitation. Plain text like every email the installation sends, with the
-// link the recipient follows. The link's GET changes nothing; the password chosen on
-// that page is what registers.
 function invitationMail(email: string, token: string, publicUrl: string): OutgoingMail {
   return {
     to: email,
@@ -80,21 +66,12 @@ function invitationMail(email: string, token: string, publicUrl: string): Outgoi
   };
 }
 
-// Installation invitations are administrator-only (issue #23): no session is 401, an
-// ordinary account is 403. The one authorization rule of this feature, stated once.
-// An unverified administrator may still send: #20's verified-inviter rule is stated for
-// workspace invitations, and nothing can be sent at all without configured SMTP, which
-// an administrator set up — ADR-0001 signs the first administrator in before
-// verification on purpose.
 function requireAdministrator(account: SessionAccount | null): SessionAccount {
   if (account === null) throw new InvitationsError("not_signed_in");
   if (!account.isSystemAdministrator) throw new InvitationsError("not_admin");
   return account;
 }
 
-// Records one delivery attempt's outcome, separately from the lifecycle (#20): the
-// status says whether the email left, the timestamp says when mail was last tried.
-// Guarded by status = 'pending' so a late socket error never marks an accepted row failed.
 async function recordDelivery(db: PostgresJsDatabase, id: string, delivery: InvitationDelivery) {
   await db
     .update(invitations)
@@ -102,9 +79,6 @@ async function recordDelivery(db: PostgresJsDatabase, id: string, delivery: Invi
     .where(and(eq(invitations.id, id), eq(invitations.status, InvitationStatus.enum.pending)));
 }
 
-// The deadline is a fact, not a decision. Whenever an inviter looks at invitations or
-// changes one, due rows become expired once, at the deadline they already passed. The
-// partial index on pending rows is then free for a resend or a fresh invitation.
 async function expireDueInstallationInvitations(db: PostgresJsDatabase) {
   await db
     .update(invitations)
@@ -117,9 +91,6 @@ async function expireDueInstallationInvitations(db: PostgresJsDatabase) {
     );
 }
 
-// The projection every management response shares: recipient, inviter, target, offered
-// grants, lifecycle timestamps, and delivery as a separate fact. The token never leaves
-// the email.
 const summarySelection = {
   id: invitations.id,
   email: invitations.email,
@@ -187,10 +158,6 @@ async function readInstallationSummary(
   return toInstallationSummary(row);
 }
 
-// Sends one installation invitation email and records the attempt separately from the
-// lifecycle. A known failure never redeems and answers with settings' own Problem; an
-// unknown result is recorded after the send, so the link still redeems if holding it
-// proves the email arrived.
 async function sendInstallationInvitation(
   db: PostgresJsDatabase,
   deliver: (mail: OutgoingMail) => Promise<void>,
@@ -212,18 +179,16 @@ async function sendInstallationInvitation(
 
 export interface InvitationsServiceDeps {
   db: PostgresJsDatabase;
-  // The URL the emailed link carries.
+
   publicUrl: string;
-  // Accounts owns humans: the registered-email guard, the account-creation seam, and
-  // the verified mark all live there, and invitations asks instead of querying humans
-  // itself.
+
   emailRegistered: (email: string, tx?: DbTransaction) => Promise<boolean>;
   createInvitedHuman: (
     input: { email: string; password: string },
     tx: DbTransaction,
   ) => Promise<{ humanId: string }>;
   markEmailVerified: (humanId: string, tx: DbTransaction) => Promise<void>;
-  // Settings owns the relay: the one mail path, never a second transport.
+
   deliver: (mail: OutgoingMail) => Promise<void>;
   log?: Logger;
 }
@@ -259,30 +224,18 @@ export function createInvitationsService({
   log,
 }: InvitationsServiceDeps): InvitationsService {
   return {
-    // Sends the invitation. No history event here: installation invitations are not
-    // among #20's sensitive access actions, and membership events begin with #24's
-    // workspace invitations.
     async inviteInstallation(account, input) {
       const admin = requireAdministrator(account);
       const token = randomBytes(32).toString("base64url");
       const id = randomUUID();
       try {
         await db.transaction(async (tx) => {
-          // Serialize per email with createInvitedHuman() so a concurrent registration
-          // cannot commit between emailRegistered() and the invitation insert.
           await tx.execute(sql`select pg_advisory_xact_lock(61683815, hashtext(${input.email}))`);
 
-          // A registered address has nothing to be invited to.
           if (await emailRegistered(input.email, tx)) {
             throw new InvitationsError("account_exists");
           }
 
-          // A pending invitation blocks a new one while it is valid and not known-failed;
-          // an expired one, one whose email never left, or one whose delivery stayed unknown
-          // past the grace window is superseded in place below. Unknown delivery inside the
-          // window blocks too: a send may still be in flight, and silently invalidating a
-          // possibly-delivered link is the worse failure. Holding the token redeems either
-          // way; only a known failure refuses.
           const blocking = await tx
             .select({ id: invitations.id })
             .from(invitations)
@@ -306,10 +259,6 @@ export function createInvitationsService({
             .limit(1);
           if (blocking.length > 0) throw new InvitationsError("invitation_pending");
 
-          // Supersede in place. A row past its deadline expired at that deadline; a
-          // still-live row that cannot deliver (known failure, or unknown past the grace
-          // window) is revoked now. Replacing an undelivered offer must never pretend it
-          // expired in the future. Delivery stays a separate fact on the old row.
           await tx
             .update(invitations)
             .set({
@@ -356,16 +305,12 @@ export function createInvitationsService({
           });
         });
       } catch (error) {
-        // One pending invitation per email: the loser of a race learns the same as the
-        // loser of a double click.
         if (uniqueConstraintName(error) === "one_pending_invitation_per_email") {
           throw new InvitationsError("invitation_pending");
         }
         throw error;
       }
 
-      // The delivery attempt, recorded separately from the lifecycle: pending never
-      // implies delivered (#20).
       await sendInstallationInvitation(db, deliver, log, {
         id,
         email: input.email,
@@ -375,8 +320,6 @@ export function createInvitationsService({
       return { email: input.email, status: InvitationStatus.enum.pending };
     },
 
-    // Every installation invitation, newest first, with its lifecycle and its delivery
-    // as separate facts. Administrators are the only inviters for an installation.
     async listInstallation(account) {
       requireAdministrator(account);
       await expireDueInstallationInvitations(db);
@@ -388,8 +331,6 @@ export function createInvitationsService({
       return rows.map(toInstallationSummary);
     },
 
-    // Resend rotates the link: the old row keeps its history (revoked if still live,
-    // otherwise expired), and a new pending row starts a fresh seven-day deadline.
     async resendInstallation(account, invitationId) {
       const admin = requireAdministrator(account);
       const token = randomBytes(32).toString("base64url");
@@ -397,7 +338,6 @@ export function createInvitationsService({
       let email: string;
       try {
         email = await db.transaction(async (tx) => {
-          // Take the email lock before the row lock, as in creation and registration.
           const [target] = await tx
             .select({ email: invitations.email })
             .from(invitations)
@@ -452,8 +392,6 @@ export function createInvitationsService({
           return row.email;
         });
       } catch (error) {
-        // A concurrent fresh invitation owns the one pending slot; the resend answers
-        // the same as any other pending invitation.
         if (uniqueConstraintName(error) === "one_pending_invitation_per_email") {
           throw new InvitationsError("invitation_pending");
         }
@@ -469,8 +407,6 @@ export function createInvitationsService({
       return readInstallationSummary(db, id);
     },
 
-    // Revoke is the inviter's answer to an offer that should no longer be live. Only a
-    // pending, unexpired row changes: the row keeps who revoked it and when.
     async revokeInstallation(account, invitationId) {
       requireAdministrator(account);
       await expireDueInstallationInvitations(db);
@@ -503,9 +439,6 @@ export function createInvitationsService({
       return readInstallationSummary(db, invitationId);
     },
 
-    // The recipient declines from the emailed link. Holding the token is the
-    // capability; only a pending, unexpired invitation changes, so a forwarded copy
-    // cannot disturb an accepted or revoked one.
     async declineInstallation(input) {
       const declined = await db
         .update(invitations)
@@ -525,14 +458,6 @@ export function createInvitationsService({
       if (declined.length === 0) throw new InvitationsError("invitation_invalid");
     },
 
-    // One conditional update, evaluated in database time: the invitation must be
-    // pending, unexpired, and not known-failed, and only this POST consumes its token.
-    // An unknown delivery may redeem — holding the token proves the email arrived — so
-    // only a recorded failure refuses. The account, its personal workspace, and the
-    // verified mark join the same transaction, so a half-registered human cannot exist,
-    // and a reused, expired, or failed link changes nothing. No history event here
-    // either: the account and its personal workspace are not among #20's sensitive
-    // access actions, and membership events begin with #24.
     async registerInstallation(input) {
       const hash = tokenHash(input.token);
       const email = await db.transaction(async (tx) => {
@@ -542,8 +467,7 @@ export function createInvitationsService({
           .where(eq(invitations.tokenHash, hash))
           .limit(1);
         if (target === undefined) throw new InvitationsError("invitation_invalid");
-        // Account creation already takes this lock. Acquire it before changing the
-        // invitation so concurrent sends and redemptions agree on lock order.
+
         await tx.execute(sql`select pg_advisory_xact_lock(61683815, hashtext(${target.email}))`);
         const rows = await tx
           .update(invitations)
@@ -560,14 +484,10 @@ export function createInvitationsService({
         const [row] = rows;
         if (row === undefined) throw new InvitationsError("invitation_invalid");
 
-        // The offer is still authorized only if its inviter remains a system
-        // administrator; the check runs in this transaction, and a failure rolls the
-        // token back to pending rather than burning it.
         const [inviter] = await tx
           .select({ isSystemAdministrator: humans.isSystemAdministrator })
           .from(humans)
-          // An invitation sent by an administrator deactivated after it was issued cannot
-          // be redeemed (#38): authority is rechecked at redemption, inside this transaction.
+
           .where(and(eq(humans.id, row.invitedByHumanId), isNull(humans.deactivatedAt)))
           .limit(1);
         if (inviter?.isSystemAdministrator !== true) {
@@ -581,8 +501,6 @@ export function createInvitationsService({
           );
           await markEmailVerified(humanId, tx);
         } catch (error) {
-          // Unreachable while one pending invitation per email holds, but honest if it
-          // ever happens: the invited email already has an account, and nothing changes.
           if (uniqueConstraintName(error) === "humans_email_unique") {
             throw new InvitationsError("account_exists");
           }

@@ -1,12 +1,3 @@
-// Shared-to-shared project transfer (issue #46), black-box against a running Orrery.
-// A project owned by shared workspace W1 moves to shared workspace W2 in one transaction
-// with one person holding both authorities. Afterwards a W1 agent key is refused on the
-// moved project, the W2 owner holds Manage and sees the preserved issues and activity, and
-// W1's access-change history never appears in W2's project or workspace history. Nothing
-// here imports server code; everything goes through HTTP and the Mailpit catcher.
-//
-//   docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { randomUUID } from "node:crypto";
 import { expect, request, test, type APIRequestContext } from "@playwright/test";
 import { ADMIN_EMAIL, ADMIN_PASSWORD, recordSecret } from "./admin.ts";
@@ -74,8 +65,6 @@ async function ensureAdminVerified() {
   expect(verified.status()).toBe(200);
 }
 
-// The workspace invitation to W1 offers the project, so registering the member records a
-// W1-scoped project_access_granted event — exactly the history a transfer must not carry.
 async function liveInvitationToken(to: string, workspaceName: string): Promise<string> {
   let live: string | undefined;
   await expect
@@ -152,7 +141,6 @@ test("moves a shared project between workspaces without carrying source keys or 
   expect(issueRes.status()).toBe(201);
   const issueId = idOf(await issueRes.json(), "issue");
 
-  // A W1 agent key scoped to the project, which must not follow the project to W2.
   const agentRes = await admin.post("/api/agents", {
     data: { name: `shared-transfer-agent-${suffix}` },
   });
@@ -169,8 +157,6 @@ test("moves a shared project between workspaces without carrying source keys or 
   const secret = requiredText(field(await keyRes.json(), "secret"), "the key secret");
   await recordSecret(secret);
 
-  // Register a W1 member with a W1-scoped project grant: its access event is the one that
-  // must stay in W1 after the move.
   const memberEmail = `shared-transfer.member.${suffix}@orrery.test`;
   const invite = await admin.post(`/api/workspaces/${sourceId}/invitations`, {
     data: { email: memberEmail, projectGrants: [{ projectId, level: "read" }] },
@@ -199,7 +185,6 @@ test("moves a shared project between workspaces without carrying source keys or 
     .map((event) => requiredText(field(event, "id"), "the source access event id"));
   expect(sourceAccessIds.length).toBeGreaterThan(0);
 
-  // One person with both authorities previews the shared-to-shared move and completes it.
   const previewRes = await admin.post(`/api/projects/${projectId}/transfer/preview`, {
     data: { destinationWorkspaceId: destId },
   });
@@ -220,13 +205,11 @@ test("moves a shared project between workspaces without carrying source keys or 
     accessLevel: "manage",
   });
 
-  // The old W1 key is refused on the moved project.
   const keyOnly = await fetch(new URL(`/api/projects/${projectId}`, baseUrl), {
     headers: { Authorization: `Bearer ${secret}` },
   });
   expect(keyOnly.status).toBeGreaterThanOrEqual(400);
 
-  // The destination owner keeps Manage and the preserved issue and activity history.
   const after = await admin.get(`/api/projects/${projectId}`);
   expect(after.status()).toBe(200);
   expect(await after.json()).toMatchObject({ id: projectId, accessLevel: "manage" });
@@ -237,8 +220,6 @@ test("moves a shared project between workspaces without carrying source keys or 
     "issue_created",
   );
 
-  // The project history in W2 has its own Manage grant events and the authored activity,
-  // but none of W1's access-change events.
   const afterHistory = await admin.get(`/api/projects/${projectId}/history`);
   expect(afterHistory.status()).toBe(200);
   const afterEvents = asArray(await afterHistory.json());
@@ -250,7 +231,6 @@ test("moves a shared project between workspaces without carrying source keys or 
     false,
   );
 
-  // W1 still reads its own access history; W2 reads only its receipt.
   const w1History = await admin.get(`/api/workspaces/${sourceId}/history`);
   expect(asArray(await w1History.json()).map((event) => field(event, "id"))).toEqual(
     expect.arrayContaining(sourceAccessIds),
@@ -262,7 +242,6 @@ test("moves a shared project between workspaces without carrying source keys or 
   );
   expect(w2Events.map((event) => field(event, "type"))).toContain("project_transfer_received");
 
-  // The W1 member's old project grant is gone: they can no longer read the moved project.
   const memberView = await member.get(`/api/projects/${projectId}`);
   expect(memberView.status()).toBeGreaterThanOrEqual(400);
 });

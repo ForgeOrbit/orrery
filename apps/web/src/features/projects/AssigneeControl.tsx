@@ -9,11 +9,6 @@ import { useState } from "react";
 import { updateIssue } from "./commands.ts";
 import { issueQuery, issuesQuery, projectActivityQuery } from "./queries.ts";
 
-// #84: the assignee selector. A card's assignee is a human member or a registered agent
-// in the project's workspace; both are pull-queue hints, never a launch trigger. The
-// candidate list is supplied by the route from the workspace's existing reads, so this
-// feature stays free of cross-feature import cycles. The server — not this component —
-// validates that the chosen identity is active and registered in the workspace.
 export type AssigneeCandidate = { value: string; label: string; assignee: Assignee };
 
 export function AssigneeControl({

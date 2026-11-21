@@ -1,4 +1,3 @@
-// Structured JSON logs on stdout, one object per line.
 type Level = "debug" | "info" | "warn" | "error";
 const order: Record<Level, number> = { debug: 10, info: 20, warn: 30, error: 40 };
 

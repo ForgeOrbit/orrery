@@ -44,13 +44,13 @@ import {
   WorkSessionsResponse,
 } from "./sessions.ts";
 
-// Every MCP tool an agent can call, as a contract. The server registers a handler for each one,
-// and `pnpm gen` writes their JSON Schemas to /contract/mcp-tools.json.
-//
-// These are exactly the project-work operations a Contribute or Read agent key may reach:
-// issues, comments, knowledge, and the activity feed. Membership, project access grants,
-// workspace administration, and instance settings are deliberately absent — they are human
-// operations and no agent key is accepted for them.
+
+
+
+
+
+
+
 export interface ToolContract {
   name: string;
   description: string;
@@ -106,8 +106,8 @@ const updateIssue = {
   output: z.object({ issue: Issue }),
 };
 
-// Project-scoped labels (#97). Creating, editing and deleting labels, and attaching or
-// detaching them on issues, needs Contribute; listing needs only Read.
+
+
 const labelId = id("The label id");
 const listLabels = {
   name: "list_labels",
@@ -152,10 +152,10 @@ const detachIssueLabel = {
   output: z.object({ issue: Issue }),
 };
 
-// Directed blocked_by dependencies (#86/#94). An issue with any non-terminal blocker is
-// omitted from ready work, so agents cannot claim downstream work before its prerequisites
-// reach done or cancelled; review is a handoff and still blocks.
-// Modifying an edge needs Contribute; reading either direction needs only Read.
+
+
+
+
 const addBlockedBy = {
   name: "add_blocked_by",
   description:
@@ -208,8 +208,8 @@ const createComment = {
   output: z.object({ comment: IssueComment }),
 };
 
-// Structured issue links (#87). Adding or removing one requires Contribute access; reading
-// them is part of get_issue and needs only Read. Like comments, a link needs no work session.
+
+
 const addIssueLink = {
   name: "add_issue_link",
   description:
@@ -261,10 +261,10 @@ const updateKnowledge = {
   output: z.object({ entry: KnowledgeEntry }),
 };
 
-// Run reporting (issue #34). The single static /mcp endpoint cannot distinguish
-// concurrent clients, so an explicit runId or the harness's (harness, nativeSessionId)
-// key correlates a report. The bearer key decides the agent and workspace; no lease is
-// implied by a check-in. Per-CLI wiring of this tool follows in #44 and #45.
+
+
+
+
 const runCheckin = {
   name: "orrery_run_checkin",
   description:
@@ -273,10 +273,10 @@ const runCheckin = {
   output: RunReportResponse,
 };
 
-// Work sessions and renewable claims (issue #36). Claiming is idempotent for helpers that
-// pass the same (agent, run, issue): they join one coordinated session. Renew, progress,
-// stop, and every fenced issue write require a live session the agent holds; reads, issue
-// creation, comments, and knowledge edits need none. A stale write is never a fresh claim.
+
+
+
+
 const claimIssue = {
   name: "claim_issue",
   description:
@@ -317,11 +317,11 @@ const getWorkSession = {
   output: WorkSessionResponse,
 };
 
-// Resume and reacquisition (issue #40). Resume is a pure read for the original run: it
-// reports whether that run still holds a live claim, has an expired one, or never claimed,
-// and keeps the recorded progress visible. Reacquire re-arms only the run's own expired
-// claim, and only when the issue has no live claimant and is not paused for input. Neither
-// call ever resurrects an expired lease or turns a stale call into a fresh claim.
+
+
+
+
+
 const resumeWorkSession = {
   name: "resume_work_session",
   description:
@@ -354,9 +354,9 @@ const allSessionsForIssue = {
   output: z.object({ sessions: WorkSessionsResponse }),
 };
 
-// Ephemeral telemetry (#83): append-only thought/action/status entries stay with the work
-// session and are never mixed into issue comments. Appending requires a live session held
-// by this agent; reading needs only Read access on the issue's project.
+
+
+
 const logSessionActivity = {
   name: "log_session_activity",
   description:
@@ -373,10 +373,10 @@ const listSessionActivities = {
   output: ListSessionActivitiesResponse,
 };
 
-// Human input (issue #41, fallback policy in #42). An agent asks through this tool;
-// answering, setting the project policy and setting an issue override are human-only
-// REST operations, so no agent key — including a sibling run — can authorize its own
-// fallback or answer a question.
+
+
+
+
 const askForInput = {
   name: "ask_for_input",
   description:
@@ -385,8 +385,8 @@ const askForInput = {
   output: QuestionResponse,
 };
 
-// Agents read the human's answer back with a separate tool, matching the issue history
-// REST route. There is still no MCP answer tool: only the human REST inbox may answer.
+
+
 const listIssueQuestions = {
   name: "list_issue_questions",
   description:
@@ -395,8 +395,8 @@ const listIssueQuestions = {
   output: z.object({ questions: InboxResponse }),
 };
 
-// Each feature registers only its own tools; `tools` is the complete list used by
-// `pnpm gen` to write contract/mcp-tools.json.
+
+
 export const projectTools: readonly ToolContract[] = [
   listProjects,
   getProject,

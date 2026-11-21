@@ -1,10 +1,3 @@
-// Member removal and voluntary leave (issue #37), black-box against a running Orrery.
-// A real signed-in member and an agent key prove that removal revokes the key immediately,
-// that re-invitation starts with no grants and cannot revive the old key, that voluntary
-// leave works while the last owner is blocked, and that distinct audit events surface.
-//
-//   docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { randomUUID } from "node:crypto";
 import { expect, request, test, type APIRequestContext } from "@playwright/test";
 import { ADMIN_EMAIL, ADMIN_PASSWORD, recordSecret } from "./admin.ts";
@@ -33,8 +26,6 @@ const idOf = (value: unknown, what: string): string =>
   requiredText(field(value, "id"), `the ${what} id`);
 const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 
-// Mailpit keeps old messages, so a re-invitation is the matching token whose preview is
-// still live rather than whichever message happens to be first in the inbox.
 async function matchingTokens(
   client: APIRequestContext,
   to: string,
@@ -122,8 +113,6 @@ async function signInMember() {
   expect(login.status()).toBe(200);
 }
 
-// Each test gets its own mailbox and verified account, so a departure in one test can
-// never affect the membership or credentials used in another.
 async function registerMember(input: {
   name: string;
   workspaceId: string;
@@ -191,7 +180,6 @@ test("removal revokes the member's key and re-invitation cannot revive it or kee
   expect(refused.status()).toBe(401);
   expect(await refused.json()).toMatchObject({ status: 401, code: "key_revoked" });
 
-  // Re-invite with no project grants: the old key stays dead and the new key starts empty.
   const reInvite = await admin.post(`/api/workspaces/${workspaceId}/invitations`, {
     data: { email: memberEmail, projectGrants: [] },
   });

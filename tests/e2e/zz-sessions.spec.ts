@@ -1,10 +1,3 @@
-// Work sessions and renewable claims (issue #36), black-box against a running Orrery.
-// A real MCP protocol client proves fenced agent writes are refused without a live session
-// and allowed with one, while reads, creation, comments and knowledge stay unfenced. A
-// second client races a claim; a bearer-only REST request checks the same public surface.
-//
-//   docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { randomUUID } from "node:crypto";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { expect, request, test, type APIRequestContext } from "@playwright/test";
@@ -147,7 +140,6 @@ test("fenced writes need a live session; reads, creation, comments and knowledge
     const issue = asRecord(created.data.issue);
     const issueId = requiredText(field(issue, "id"), "the issue id");
 
-    // Unfenced reads and writes work with no claim at all.
     expect((await call(client, "get_issue", { issueId })).isError).toBe(false);
     expect((await call(client, "list_issues", { projectId })).isError).toBe(false);
     expect(
@@ -160,7 +152,6 @@ test("fenced writes need a live session; reads, creation, comments and knowledge
     );
     expect((await call(client, "ready_work", { projectId })).isError).toBe(false);
 
-    // Fenced writes are refused without a session, over both transports, with one code.
     const unfencedMcp = await call(client, "update_issue", { issueId, title: "No session" });
     expect(unfencedMcp.isError).toBe(true);
     expect(unfencedMcp.data).toMatchObject({ code: "session_required" });
@@ -168,7 +159,6 @@ test("fenced writes need a live session; reads, creation, comments and knowledge
     expect(unfencedRest.status).toBe(409);
     expect(asRecord(await unfencedRest.json())).toMatchObject({ code: "session_required" });
 
-    // A live session the agent holds allows the edit, close, reopen, progress and stop.
     const runId = await newRun(client);
     const claim = await call(client, "claim_issue", { issueId, runId });
     expect(claim.isError).toBe(false);
@@ -186,14 +176,12 @@ test("fenced writes need a live session; reads, creation, comments and knowledge
     expect(stopped.isError).toBe(false);
     expect(field(stopped.data.session, "status")).toBe("completed");
 
-    // Progress survives the stop, and the fenced write is refused again once inactive.
     const readBack = await call(client, "get_work_session", { issueId });
     expect(field(readBack.data.session, "progress")).toBe("Halfway");
     const afterStop = await call(client, "update_issue", { issueId, title: "After stop" });
     expect(afterStop.isError).toBe(true);
     expect(afterStop.data).toMatchObject({ code: "session_required" });
 
-    // REST exposes the same lifecycle with the same key.
     const restIssue = await call(client, "create_issue", { projectId, title: "REST session" });
     const restIssueId = requiredText(field(restIssue.data.issue, "id"), "the REST issue id");
     const restRun = await newRun(client);
@@ -201,7 +189,7 @@ test("fenced writes need a live session; reads, creation, comments and knowledge
       runId: restRun,
     });
     expect(restClaim.status).toBe(201);
-    // ADR-0003: REST answers with the resource itself, not a `{ session }` envelope.
+
     expect(asRecord(await restClaim.json())).toMatchObject({ status: "active" });
     const restProgress = await http.post(`/api/issues/${restIssueId}/work-sessions/progress`, {
       summary: "REST progress",
@@ -224,9 +212,6 @@ test("fenced writes need a live session; reads, creation, comments and knowledge
   }
 });
 
-// #82: a human stop request is a signal on the live session. The holding agent detects it
-// on its next heartbeat/progress check-in over MCP, while the request itself is a
-// human-only REST action that an agent key cannot perform.
 test("a human stop request reaches the agent on renew and progress and is recorded in history", async () => {
   const workspaceId = await personalWorkspaceOf(api);
   const projectId = await project(api, workspaceId);
@@ -242,7 +227,6 @@ test("a human stop request reaches the agent on renew and progress and is record
     expect(claim.isError).toBe(false);
     expect(field(claim.data.session, "stopRequested")).toBe(false);
 
-    // An agent key cannot ask its own operator to stop.
     const denied = await http.post(`/api/issues/${issueId}/work-sessions/stop-request`, {
       reason: "self",
     });
@@ -253,7 +237,6 @@ test("a human stop request reaches the agent on renew and progress and is record
       status: 403,
     });
 
-    // The signed-in human requests the stop with a reason.
     const requested = await api.post(`/api/issues/${issueId}/work-sessions/stop-request`, {
       data: { reason: "Wrong direction" },
     });
@@ -264,7 +247,6 @@ test("a human stop request reaches the agent on renew and progress and is record
       stopReason: "Wrong direction",
     });
 
-    // The agent sees the signal on both check-ins over MCP.
     const renewed = await call(client, "renew_claim", { issueId });
     expect(renewed.isError).toBe(false);
     expect(field(renewed.data.session, "stopRequested")).toBe(true);
@@ -276,7 +258,6 @@ test("a human stop request reaches the agent on renew and progress and is record
     expect(progressed.isError).toBe(false);
     expect(field(progressed.data.session, "stopRequested")).toBe(true);
 
-    // The same fact is readable over REST and appears in the project's activity feed.
     const current = await api.get(`/api/issues/${issueId}/work-sessions`);
     expect(current.status()).toBe(200);
     expect(asRecord(await current.json())).toMatchObject({ stopRequested: true });
@@ -290,7 +271,6 @@ test("a human stop request reaches the agent on renew and progress and is record
       ),
     ).toBe(true);
 
-    // The agent acknowledges the signal and ends the session; the request stays in history.
     const stopped = await call(client, "stop_session", { issueId, outcome: "released" });
     expect(stopped.isError).toBe(false);
     expect(field(stopped.data.session, "status")).toBe("released");
@@ -330,7 +310,6 @@ test("clicking Stop agent in the browser transitions the session badge to stoppi
     await page.getByRole("button", { name: "Stop agent" }).click();
     await expect(badge).toHaveText("stopping");
 
-    // The agents view lists only live sessions and shows the same stopping badge.
     await page.goto(`/workspaces/${workspaceId}`);
     await page.getByRole("tab", { name: /Agents/ }).click();
     const agentsBadge = page.locator(
@@ -370,7 +349,6 @@ test("ready work omits claimed issues and two claims yield one winner", async ()
       expect.arrayContaining([issueId, otherId]),
     );
 
-    // Two distinct runs are two workers on the same issue; only one may claim it.
     const runA = await newRun(client);
     const runB = await newRun(rival);
     const [claimA, claimB] = await Promise.all([
@@ -407,7 +385,6 @@ test("an open blocker hides ready work until it closes (REST and MCP)", async ()
     const blockerId = requiredText(field(blocker.data.issue, "id"), "the blocker id");
     const blockedId = requiredText(field(blocked.data.issue, "id"), "the blocked issue id");
 
-    // MCP add and list both directions.
     const added = await call(client, "add_blocked_by", {
       issueId: blockedId,
       blockedByIssueId: blockerId,
@@ -421,7 +398,6 @@ test("an open blocker hides ready work until it closes (REST and MCP)", async ()
       blockedId,
     );
 
-    // REST sees the same edge; re-adding it is idempotent.
     const restAdd = await http.post(`/api/issues/${blockedId}/blocked-by`, {
       blockedByIssueId: blockerId,
     });
@@ -431,7 +407,6 @@ test("an open blocker hides ready work until it closes (REST and MCP)", async ()
       blockedByIssueId: blockerId,
     });
 
-    // B is not ready while A is open, over both transports.
     expect(ids((await call(client, "ready_work", { projectId })).data)).not.toContain(blockedId);
     const restReadyBlocked = await http.get(`/api/projects/${projectId}/ready-work`);
     expect(restReadyBlocked.status).toBe(200);
@@ -439,7 +414,6 @@ test("an open blocker hides ready work until it closes (REST and MCP)", async ()
       blockedId,
     );
 
-    // A human closes A; no dependency row is rewritten, so B becomes ready immediately.
     const closed = await api.patch(`/api/issues/${blockerId}`, { data: { status: "done" } });
     expect(closed.status()).toBe(200);
     expect(ids((await call(client, "ready_work", { projectId })).data)).toContain(blockedId);
@@ -448,7 +422,6 @@ test("an open blocker hides ready work until it closes (REST and MCP)", async ()
     expect(restReady.status).toBe(200);
     expect(asArray(await restReady.json()).map((issue) => field(issue, "id"))).toContain(blockedId);
 
-    // REST removal over the same key clears the relation.
     const removed = await http.del(`/api/issues/${blockedId}/blocked-by/${blockerId}`);
     expect(removed.status).toBe(204);
     expect(ids((await call(client, "list_blocked_by", { issueId: blockedId })).data)).toEqual([]);
@@ -457,8 +430,6 @@ test("an open blocker hides ready work until it closes (REST and MCP)", async ()
   }
 });
 
-// #83: ephemeral session telemetry is append-only on the live session, readable over both
-// transports, never posted as an issue comment, and streamed into the issue sidecar.
 test("session activities stream into the issue sidecar without touching comments", async ({
   browser,
 }) => {
@@ -498,7 +469,6 @@ test("session activities stream into the issue sidecar without touching comments
     });
     expect(action.isError).toBe(false);
 
-    // Both transports read the same newest-first timeline; comments stay empty.
     const listed = await call(client, "list_session_activities", { issueId, sessionId });
     expect(listed.isError).toBe(false);
     expect(asArray(field(listed.data, "activities")).map((entry) => field(entry, "kind"))).toEqual([
@@ -515,7 +485,6 @@ test("session activities stream into the issue sidecar without touching comments
       asArray(field((await call(client, "list_comments", { issueId })).data, "comments")),
     ).toEqual([]);
 
-    // Browser: open the issue and the sidecar inspector; the timeline is polled into view.
     context = await browser.newContext();
     const page = await context.newPage();
     await page.goto("/signin");
@@ -536,7 +505,6 @@ test("session activities stream into the issue sidecar without touching comments
       timeline.locator('[data-activity-kind="thought"] [data-activity-detail]'),
     ).toContainText('"step": 1', { timeout: 10_000 });
 
-    // Ending the session refuses further appends but never removes the recorded trail.
     const stopped = await call(client, "stop_session", { issueId, outcome: "completed" });
     expect(stopped.isError).toBe(false);
     const refused = await call(client, "log_session_activity", {
@@ -582,15 +550,12 @@ test("ready work is ordered by priority over REST and MCP", async () => {
     const plainId = requiredText(field(plain.data.issue, "id"), "the plain issue id");
     const highId = requiredText(field(await highRest.json(), "id"), "the high issue id");
 
-    // Both transports report the same deterministic queue: urgent > high > low > none.
     const expected = [urgentId, highId, lowId, plainId];
     expect(ids((await call(client, "ready_work", { projectId })).data)).toEqual(expected);
     const restReady = await http.get(`/api/projects/${projectId}/ready-work`);
     expect(restReady.status).toBe(200);
     expect(asArray(await restReady.json()).map((issue) => field(issue, "id"))).toEqual(expected);
 
-    // A human reprioritizes freely over REST. Low becomes urgent and, having the smaller
-    // position, now leads the two urgent cards and the whole queue.
     const moved = await api.patch(`/api/issues/${lowId}`, { data: { priority: "urgent" } });
     expect(moved.status()).toBe(200);
     expect(ids((await call(client, "ready_work", { projectId })).data)).toEqual([
@@ -604,8 +569,6 @@ test("ready work is ordered by priority over REST and MCP", async () => {
   }
 });
 
-// #84: assignment is a pull-queue hint, and the claim stays authoritative. A second key
-// on a different registered agent proves the strict refusal over MCP and REST.
 test("assignment reserves work for one agent across REST and MCP", async () => {
   const workspaceId = await personalWorkspaceOf(api);
   const projectId = await project(api, workspaceId);
@@ -628,7 +591,6 @@ test("assignment reserves work for one agent across REST and MCP", async () => {
     expect(assigned.status()).toBe(200);
     expect(field(await assigned.json(), "assignee")).toMatchObject({ agentId: agentA });
 
-    // Agent A sees its own issue first and Agent B never sees it in any filter.
     expect(ids((await call(clientA, "ready_work", { projectId })).data)).toEqual([
       issueId,
       plainId,
@@ -652,7 +614,6 @@ test("assignment reserves work for one agent across REST and MCP", async () => {
       code: "issue_assigned_to_other_agent",
     });
 
-    // The assignee can claim it, and the claim is still one-per-issue.
     expect(
       (await call(clientA, "claim_issue", { issueId, runId: await newRun(clientA) })).isError,
     ).toBe(false);
@@ -722,7 +683,6 @@ test("the board and agents panel show assignment, live session state and the sid
     await page.getByRole("button", { name: "Sign in" }).click();
     await expect(page.getByText(`Signed in as ${ADMIN_EMAIL}.`)).toBeVisible();
 
-    // Assign from the issue view; the selector is the workspace's registered agents.
     await page.goto(`/issues/${issueId}`);
     await page.getByRole("combobox", { name: "Assignee" }).click();
     await page.getByRole("option", { name: `Agent · ${agentName}`, exact: true }).click();
@@ -757,8 +717,6 @@ test("the board and agents panel show assignment, live session state and the sid
   }
 });
 
-// #94: the full agent loop over both transports proves that session events drive the
-// six-state workflow, including the default review handoff and the explicit done close.
 test("session transitions drive the six-state workflow over MCP and REST", async () => {
   const workspaceId = await personalWorkspaceOf(api);
   const projectId = await project(api, workspaceId);
@@ -773,7 +731,6 @@ test("session transitions drive the six-state workflow over MCP and REST", async
     const issueId = requiredText(field(issue, "id"), "the issue id");
     expect(field(issue, "status")).toBe("todo");
 
-    // Ready work is the todo queue and claim moves the issue to in_progress.
     expect(ids((await call(client, "ready_work", { projectId })).data)).toContain(issueId);
     const claim = await call(client, "claim_issue", {
       issueId,
@@ -784,8 +741,6 @@ test("session transitions drive the six-state workflow over MCP and REST", async
       "in_progress",
     );
 
-    // Default completion hands off to review: closedAt stays null and the issue leaves
-    // the ready queue.
     const review = await call(client, "stop_session", { issueId });
     expect(review.isError).toBe(false);
     const reviewed = asRecord((await call(client, "get_issue", { issueId })).data.issue);
@@ -793,8 +748,6 @@ test("session transitions drive the six-state workflow over MCP and REST", async
     expect(field(reviewed, "closedAt")).toBeNull();
     expect(ids((await call(client, "ready_work", { projectId })).data)).not.toContain(issueId);
 
-    // A fresh issue completed with outcome done closes it over REST and unblocks a
-    // dependent whose blocker was only in review.
     const dependent = await call(client, "create_issue", { projectId, title: "Dependent" });
     const dependentId = requiredText(field(dependent.data.issue, "id"), "the dependent id");
     const blocker = await call(client, "create_issue", { projectId, title: "Blocker" });

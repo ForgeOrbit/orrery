@@ -1,8 +1,6 @@
 import type { TransferAuthorizationStatus } from "@orrery/contract";
 import { defineStateMachine } from "../../platform/state-machine.ts";
 
-// Explicit Project Transfer Authorization state machine
-// (verified by docs/formal/ProjectTransfer.tla).
 export const transferAuthorizationMachine = defineStateMachine<TransferAuthorizationStatus>(
   "TransferAuthorization",
   {

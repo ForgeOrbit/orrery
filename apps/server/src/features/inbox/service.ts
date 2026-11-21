@@ -26,10 +26,6 @@ import type { OutgoingMail } from "../settings/index.ts";
 import type { WorkActor } from "../projects/index.ts";
 import { decideQuestionAnswer, questionMachine } from "./state-machine.ts";
 
-// The service is the only file that decides anything for human input (#41). REST and MCP
-// authenticate, validate, and map results: every access decision, deadline evaluation and
-// resolution transition happens here, in one transaction that locks the issue row first.
-
 export type InboxErrorKind =
   | "not_signed_in"
   | "agents_cannot_use_inbox"
@@ -80,8 +76,7 @@ export interface InboxDeps {
   db: PostgresJsDatabase;
   projectAccessCeiling: InboxProjectAccessCeiling;
   projectAccessAtLeast: (actual: ProjectAccessLevel, required: ProjectAccessLevel) => boolean;
-  // Settings' one mail sender. Called only after the question transaction commits, so a
-  // relay failure never rolls back a question or leaves a half-written resolution.
+
   deliver: (mail: OutgoingMail) => Promise<void>;
   log: Logger;
 }
@@ -96,8 +91,7 @@ export interface InboxService {
   answer(actor: WorkActor | null, questionId: string, answer: string): Promise<Question>;
   list(actor: WorkActor | null): Promise<Question[]>;
   issueHistory(actor: WorkActor | null, issueId: string): Promise<Question[]>;
-  // Narrow seams borrowed by work sessions, executed on the caller's already issue-locked
-  // transaction. Neither opens a nested transaction.
+
   questionDeadline(tx: DbTransaction, issueId: string): Promise<Date | null>;
   evaluateDeadline(tx: DbTransaction, issueId: string): Promise<void>;
 }
@@ -105,9 +99,6 @@ export interface InboxService {
 type QuestionRow = typeof questions.$inferSelect;
 type QuestionView = Omit<QuestionRow, "sessionId"> & { effectiveStatus?: string };
 
-// Reads must never show an open question past the one-hour deadline: the same DB-time
-// predicate as the write path is projected in SQL using the effective fallback policy
-// (issue override ?? project policy), so a stale row reads as paused or fallback_used.
 const questionColumns = {
   id: questions.id,
   issueId: questions.issueId,
@@ -144,7 +135,7 @@ function toQuestion(row: QuestionView): Question {
     question: row.question,
     proposedFallback: row.proposedFallback,
     status,
-    // Only a resolved fallback authorizes the proposed fallback to reach the harness.
+
     authorizedFallback: status === QuestionStatus.enum.fallback_used ? row.proposedFallback : null,
     responseDeadlineAt: row.responseDeadlineAt.toISOString(),
     answer: row.answer,
@@ -158,8 +149,6 @@ function toQuestion(row: QuestionView): Question {
   };
 }
 
-// Lock the issue first on every state change. Every writer of questions.needs_input goes
-// through this lock, so a deadline evaluation and an answer serialize on one row.
 async function lockIssue(tx: DbTransaction, issueId: string) {
   const [row] = await tx
     .select({
@@ -170,9 +159,7 @@ async function lockIssue(tx: DbTransaction, issueId: string) {
       status: issues.status,
     })
     .from(issues)
-    // #98: a trashed issue has no inbox: its questions are no longer actionable and must
-    // not block or reappear after the sweep. This is the same read gate every question
-    // writer passes through under the issue row lock.
+
     .where(and(eq(issues.id, issueId), isNull(issues.deletedAt)))
     .limit(1)
     .for("update");
@@ -180,9 +167,6 @@ async function lockIssue(tx: DbTransaction, issueId: string) {
   return row;
 }
 
-// The effective policy on the caller's already issue-locked transaction. Keeping this read
-// in one place makes the deadline write, the check-in lease and a policy change's freeze of
-// already-due questions decide from the same committed policy snapshot.
 async function effectiveFallbackPolicy(
   tx: DbTransaction,
   issueId: string,
@@ -199,8 +183,6 @@ async function effectiveFallbackPolicy(
   return policy?.override ?? policy?.projectPolicy ?? FallbackPolicy.enum.require_human;
 }
 
-// Record the question and its resolution in the project's activity feed, which the history
-// feature already exposes. The summary is the text a reader needs, never a secret.
 async function recordActivity(
   tx: DbTransaction,
   input: {
@@ -229,10 +211,6 @@ async function recordActivity(
   });
 }
 
-// A late answer to an authorized fallback is a follow-up, never a reversal: status stays
-// fallback_used, Needs input and the issue's status are untouched, and the work already
-// done with the fallback is not undone. The isNull guard makes a repeated answer idempotent
-// by refusing a second follow-up instead of overwriting the first.
 async function storeFollowUp(
   tx: DbTransaction,
   input: {
@@ -274,8 +252,6 @@ function humanIdOf(actor: WorkActor): string {
   throw new InboxError("agents_cannot_use_inbox");
 }
 
-// An agent's effective level is capped by its human owner's *current* project access, so a
-// downgrade or removal stops a question immediately. A human actor uses its own level.
 async function requireAccess(
   tx: DbTransaction,
   actor: WorkActor,
@@ -309,9 +285,7 @@ async function requireAccess(
           ? keyLevel
           : humanLevel;
   }
-  // No access at all means the caller must not learn that the project, issue or question
-  // exists: answer 404 with the feature's non-enumeration code. Only a caller who *has*
-  // Read but lacks the required level (a Reader asked to Contribute) gets a 403.
+
   if (effective === null) throw new InboxError(missing);
   if (!deps.projectAccessAtLeast(effective, required)) {
     throw new InboxError("insufficient_access");
@@ -324,11 +298,6 @@ function requireAgent(actor: AgentActor | null): AgentIdentity {
   return actor.identity;
 }
 
-// The deadline and the resolution are decided in one conditional UPDATE in database time.
-// Two concurrent deadline evaluations cannot both resolve a question; the issue row lock
-// taken by the caller serializes them, and the guard makes the transition idempotent.
-// The effective policy is read on that same locked transaction: an issue override wins
-// over the project policy, and only a human-set fallback_allowed authorizes the fallback.
 const evaluateDeadline: InboxService["evaluateDeadline"] = async (tx, issueId) => {
   const [due] = await tx
     .select({ id: questions.id })
@@ -357,10 +326,7 @@ const evaluateDeadline: InboxService["evaluateDeadline"] = async (tx, issueId) =
       .where(stillDue)
       .returning();
     if (used === undefined) return;
-    // Work continues with the authorized fallback: clear Needs input so the issue is
-    // ready as soon as the claim lapses, but never release a live, checking-in claim.
-    // The harness only receives proposedFallback via the resolved question's
-    // authorizedFallback field; an agent can never set or loosen this policy itself.
+
     await tx
       .update(issues)
       .set({ needsInput: false, updatedAt: sql`statement_timestamp()` })
@@ -382,9 +348,7 @@ const evaluateDeadline: InboxService["evaluateDeadline"] = async (tx, issueId) =
     .where(stillDue)
     .returning();
   if (paused === undefined) return;
-  // require_human: materialize any already-lapsed session as 'expired' (preserving its
-  // terminal expiry for resume/reacquire) and release only a still-live claim, keeping
-  // Needs input set until a human answers.
+
   await tx
     .update(workSessions)
     .set({
@@ -413,9 +377,7 @@ const evaluateDeadline: InboxService["evaluateDeadline"] = async (tx, issueId) =
         gt(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
       ),
     );
-  // #94: the claim ended without completion, so the issue returns to todo under this
-  // locked transaction. Needs input stays set until a human answers, which keeps a paused
-  // issue out of list_ready_work without ever stranding it in in_progress.
+
   await tx
     .update(issues)
     .set({ needsInput: true, updatedAt: sql`statement_timestamp()` })
@@ -440,11 +402,7 @@ const questionDeadline: InboxService["questionDeadline"] = async (tx, issueId) =
     .where(and(eq(questions.issueId, issueId), eq(questions.status, "open")))
     .limit(1);
   if (row === undefined) return null;
-  // Only require_human clips a check-in's lease to the response deadline. Under
-  // fallback_allowed the worker keeps its normal five-minute lease across the boundary:
-  // the deadline evaluation runs first on the same locked transaction and resolves the
-  // question to fallback_used without releasing that still-live claim. A later tightening
-  // to require_human is still enforced by evaluateDeadline at the deadline itself.
+
   return (await effectiveFallbackPolicy(tx, issueId)) === FallbackPolicy.enum.require_human
     ? row.responseDeadlineAt
     : null;
@@ -457,7 +415,7 @@ export function createInboxService(deps: InboxDeps): InboxService {
     async ask(actorArg, input) {
       const identity = requireAgent(actorArg);
       const actor: WorkActor = { kind: "agent", identity };
-      // Lock the issue, evaluate any due deadline, then decide the ask in DB time.
+
       const outcome = await db.transaction(async (tx) => {
         const issue = await lockIssue(tx, input.issueId);
         await evaluateDeadline(tx, issue.id);
@@ -481,9 +439,7 @@ export function createInboxService(deps: InboxDeps): InboxService {
           )
           .limit(1);
         if (run === undefined) throw new InboxError("run_not_found");
-        // #94: an ask belongs to work in progress on a live session. The session check
-        // below is the authoritative liveness gate; this guard keeps a terminal, review
-        // or triage issue from gaining a question.
+
         if (issue.status !== "in_progress") throw new InboxError("question_not_open");
         const [session] = await tx
           .select({ id: workSessions.id })
@@ -551,8 +507,7 @@ export function createInboxService(deps: InboxDeps): InboxService {
           issueNumber: issue.number,
         };
       });
-      // Email only after commit, outside the DB lock. A relay failure is logged, never
-      // allowed to roll back the question or to leak the relay secret into the log.
+
       if (outcome.ownerEmail !== null) {
         try {
           await deps.deliver({
@@ -598,10 +553,7 @@ export function createInboxService(deps: InboxDeps): InboxService {
           deps,
           "question_not_found",
         );
-        // Evaluate the deadline in database time before reading the resolution: an answer
-        // that races the boundary first pauses (require_human, releasing the claim) or
-        // resolves to fallback_used (fallback_allowed). In the latter case the answer is
-        // recorded as a follow-up, never as an on-time answer.
+
         await evaluateDeadline(tx, issue.id);
         const freshRow = async () => {
           const [fresh] = await tx
@@ -626,9 +578,7 @@ export function createInboxService(deps: InboxDeps): InboxService {
         if (answerAction === "already_resolved") throw new InboxError("question_resolved");
         if (answerAction === "record_follow_up") return toQuestion(await followUp());
         questionMachine.assertTransition(row.status, "answered");
-        // Exactly one conditional update wins: open (before the deadline) or paused (after
-        // a deadline pause) becomes answered. Two concurrent answers serialize on the
-        // issue row lock and the guard; only one can transition the question.
+
         const resolveAnswered = () =>
           tx
             .update(questions)
@@ -643,8 +593,7 @@ export function createInboxService(deps: InboxDeps): InboxService {
               and(
                 eq(questions.id, questionId),
                 sql`${questions.status} in ('open', 'paused')`,
-                // An open question is answered directly only strictly before the deadline
-                // in database time; at/after it the deadline must resolve first.
+
                 or(
                   gt(questions.responseDeadlineAt, sql`statement_timestamp()`),
                   eq(questions.status, "paused"),
@@ -655,9 +604,6 @@ export function createInboxService(deps: InboxDeps): InboxService {
         const [first] = await resolveAnswered();
         let answered = first;
         if (answered === undefined) {
-          // The deadline can land between the evaluation and this statement. Re-evaluate,
-          // then re-read: under fallback_allowed the answer becomes a follow-up; under
-          // require_human the now-paused question is resolved instead of a spurious 409.
           await evaluateDeadline(tx, issue.id);
           const retried = await freshRow();
           if (retried.status === "fallback_used") return toQuestion(await followUp());
@@ -668,16 +614,12 @@ export function createInboxService(deps: InboxDeps): InboxService {
           }
         }
         if (answered === undefined) throw new InboxError("question_resolved");
-        // Clears Needs input whether the claim is still held (continue) or lapsed/released
-        // at the deadline (resume after reacquisition). We never reacquire a claim here.
+
         await tx
           .update(issues)
           .set({ needsInput: false, updatedAt: sql`statement_timestamp()` })
           .where(eq(issues.id, issue.id));
-        // #94: the one-hour deadline is not the only way a claim can end. A five-minute
-        // lease can lapse while the question is still open (so evaluateDeadline was a
-        // no-op). Answering must not leave a live issue stranded in in_progress with no
-        // worker: expire the lapsed claim and return it to todo under this issue lock.
+
         const [liveClaim] = await tx
           .select({ id: workSessions.id })
           .from(workSessions)
@@ -726,9 +668,6 @@ export function createInboxService(deps: InboxDeps): InboxService {
       const humanId = humanIdOf(actorArg);
       return db.transaction(
         async (tx) => {
-          // Scope to this human's workspaces first: a global LIMIT would let a busy workspace
-          // hide another workspace's inbox. One postgres.js transaction is a single connection,
-          // so the per-workspace access queries run sequentially, never via Promise.all.
           const personal = await tx
             .select({ id: workspaces.id })
             .from(workspaces)
@@ -758,8 +697,7 @@ export function createInboxService(deps: InboxDeps): InboxService {
             const projectIds = candidates.map((row) => row.projectId);
             if (projectIds.length === 0) continue;
             const ceiling = await deps.projectAccessCeiling(tx, workspaceId, humanId, projectIds);
-            // Readers can see the question and its resolution; only Contribute or Manage may
-            // answer, and that stricter rule is enforced by the answer endpoint itself.
+
             const readable = projectIds.filter((projectId) => {
               const level = ceiling.get(projectId) ?? null;
               return (

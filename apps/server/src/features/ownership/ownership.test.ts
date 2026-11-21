@@ -38,11 +38,6 @@ import { createFeatures } from "../index.ts";
 import { createOwnershipService, type OwnershipService } from "./service.ts";
 import type { OutgoingMail } from "../settings/index.ts";
 
-// Issue #43 against a real Postgres. The policy is a set of database and transaction
-// decisions: refusal while an owner is active, self-promotion, eligibility, one atomic
-// promotion with two audit trails, and a directory that cannot reveal workspace content.
-// The black-box zz-ownership-recovery.spec.ts repeats the public surface against the image.
-
 const SECRET = "ownership-test-bootstrap-secret-123456";
 const ADMIN_EMAIL = "ownership-admin@example.com";
 const ADMIN_PASSWORD = "ownership-admin-password";
@@ -109,8 +104,6 @@ async function createHuman(email: string, password: string) {
   return { humanId, email, cookie: await login(email, password) };
 }
 
-// A shared workspace with one owner and any number of active members, created in one
-// transaction so the deferred owner trigger sees a complete, valid shape.
 async function insertWorkspace(name: string, ownerHumanId: string, memberIds: string[] = []) {
   return database.db.transaction(async (tx) => {
     const workspace = one(
@@ -260,7 +253,6 @@ describe("installation workspace directory (#43)", () => {
       accountDeactivated: false,
     });
 
-    // No field, id or name anywhere in the response may come from a project.
     expect(Object.keys(entry).toSorted()).toEqual([
       "createdAt",
       "hasActiveOwner",
@@ -275,7 +267,6 @@ describe("installation workspace directory (#43)", () => {
     expect(serialized).not.toContain('"projects"');
     expect(serialized).not.toContain('"projectId"');
 
-    // A still-deactivated account is marked, never hidden.
     await deactivate(member.humanId, await login(ADMIN_EMAIL, ADMIN_PASSWORD));
     const after = InstallationDirectoryResponse.parse(
       await (
@@ -342,8 +333,6 @@ describe("ownership recovery refusals (#43)", () => {
       "self_recovery_forbidden",
     );
 
-    // A workspace whose only retained owner is the administrator as a suspended former
-    // owner is still not a reason to let the administrator promote themselves.
     const asFormerOwner = await database.db.transaction(async (tx) => {
       const workspace = one(
         await tx
@@ -387,7 +376,6 @@ describe("ownership recovery refusals (#43)", () => {
   it("refuses a deactivated target, an outsider, a suspended non-former-owner and missing ids", async () => {
     const cookie = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
 
-    // Sole owner deactivated: the retained former owner is not eligible until reactivated.
     const owner = await createHuman("deact.owner@example.com", "deact-owner-password");
     const outsider = await createHuman("outsider@example.com", "outsider-password");
     const suspended = await createHuman("suspended.member@example.com", "suspended-password");
@@ -529,7 +517,7 @@ describe("successful ownership recovery (#43)", () => {
       ),
     );
     expect(installationEvent.actor.humanId).toBe(admin.humanId);
-    // No workspace or project content in the installation view.
+
     expect(installationEvent.summary).toBeNull();
     expect(installationEvent.scope.kind).toBe("installation");
   });
@@ -564,7 +552,7 @@ describe("successful ownership recovery (#43)", () => {
 
     const promoted = await membership(workspace.id, owner.humanId);
     expect(promoted).toMatchObject({ isOwner: true, isFormerOwner: false, suspendedAt: null });
-    // The promoter is a member of no workspace here and holds no project grant.
+
     expect(await membership(workspace.id, admin.humanId)).toBeUndefined();
     const [adminGrant] = await database.db
       .select()
@@ -579,7 +567,6 @@ describe("successful ownership recovery (#43)", () => {
     expect(adminGrant).toBeUndefined();
     expect((await getJson(`/api/workspaces/${workspace.id}`, cookie)).status).toBe(404);
 
-    // Deactivation's revocations stay revoked; recovery restores ownership only.
     const [key] = await database.db
       .select()
       .from(agentApiKeys)
@@ -594,7 +581,6 @@ describe("successful ownership recovery (#43)", () => {
         .limit(1),
     ).toEqual([]);
 
-    // Active members plus the promoted owner are notified, once each.
     expect(delivered.map((mail) => mail.to).toSorted()).toEqual(
       [member.email, owner.email].toSorted(),
     );

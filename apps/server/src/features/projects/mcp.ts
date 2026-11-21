@@ -11,31 +11,22 @@ import {
 import { isAgentError, type AgentAuthenticator } from "../agents/index.ts";
 import { ProjectsError, type ProjectsService, type WorkActor } from "./service.ts";
 
-// MCP transport adapter for the projects feature (issue #33). Like rest.ts, this file only
-// authenticates the request, validates tool input with the shared contract, calls this
-// feature's own service, and maps the result. Every access decision is in service.ts.
-// No membership, project access, workspace, or instance administration tool is registered.
-
 type Args = Record<string, unknown>;
 type Strategy = (actor: WorkActor, args: Args) => Promise<Args>;
 
-// A typed accessor: the contract schema has already parsed and validated the argument.
 const str = (value: unknown, field: string): string => {
   if (typeof value !== "string") throw new Error(`missing ${field}`);
   return value;
 };
 
-// The shared tool contract has already validated these optional fields. Parsing both with
-// their contract schemas keeps the service boundary typed and rejects non-finite positions
-// exactly as REST does, without inventing a second set of values here.
 const priority = (value: unknown): IssuePriority | undefined =>
   value === undefined ? undefined : IssuePriority.parse(value);
 const sortOrder = (value: unknown): number | undefined =>
   value === undefined ? undefined : IssueSortOrder.parse(value);
-// A missing field leaves assignment untouched; an explicit null clears it.
+
 const assignee = (value: unknown): AssigneeShape | null | undefined =>
   value === undefined ? undefined : value === null ? null : Assignee.parse(value);
-// A missing field leaves a parent untouched; an explicit null clears it.
+
 const parentIssueId = (value: unknown): string | null | undefined =>
   value === undefined ? undefined : value === null ? null : str(value, "parentIssueId");
 
@@ -189,9 +180,6 @@ export function createProjectsMcp(service: ProjectsService, authenticate: AgentA
         },
         async (rawArgs) => {
           try {
-            // Authentication is re-run for every tool call: revocation, expiry, a removed
-            // membership, or a lowered human grant takes effect immediately. No bearer
-            // header is an authentication failure here; MCP has no human session.
             const identity = await authenticate(request);
             if (identity === null) throw new ProjectsError("not_signed_in");
             const parsed = tool.input.parse(rawArgs);

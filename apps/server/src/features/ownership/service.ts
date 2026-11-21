@@ -21,13 +21,6 @@ import type { Logger } from "../../platform/log.ts";
 import type { SessionAccount } from "../accounts/index.ts";
 import type { OutgoingMail } from "../settings/index.ts";
 
-// Ownership recovery (#43). The service is the only file that decides anything. The
-// directory is deliberately minimal — identity, ownership and membership status, never
-// projects or content — and the recovery writes ownership and both audit trails in one
-// transaction under the same ownership lock every other workspace writer takes. The
-// administrator never becomes a member and never gains a project grant; mail is sent only
-// after commit, and a relay failure is logged, never allowed to undo the recovery.
-
 export type OwnershipErrorKind =
   | "not_signed_in"
   | "not_system_administrator"
@@ -66,9 +59,6 @@ function requireAccount(account: SessionAccount | null): SessionAccount {
   return account;
 }
 
-// Rechecked inside the transaction: a session is read before this point, and only an
-// *active* administrator may read the directory or appoint an owner. A deactivated
-// administrator's cached cookie is an ordinary 403 here, not a bypass.
 async function requireActiveAdministrator(tx: DbTransaction, humanId: string) {
   const [admin] = await tx
     .select({ id: humans.id })
@@ -84,13 +74,10 @@ async function requireActiveAdministrator(tx: DbTransaction, humanId: string) {
   if (admin === undefined) throw new OwnershipError("not_system_administrator");
 }
 
-// The same transaction-wide ownership lock every other ownership writer takes, first.
 async function lockOwnershipWrites(tx: DbTransaction) {
   await tx.execute(sql`select lock_workspace_ownership_writes()`);
 }
 
-// Advance this workspace's guard before touching its membership, so a stale REPEATABLE
-// READ writer fails serialization instead of committing a conflicting ownership change.
 async function bumpGuard(tx: DbTransaction, workspaceId: string) {
   await tx
     .insert(workspaceOwnershipGuards)
@@ -103,7 +90,7 @@ async function bumpGuard(tx: DbTransaction, workspaceId: string) {
 
 export interface OwnershipDeps {
   db: PostgresJsDatabase;
-  // Settings owns the one mail transport; a relay failure is caught here, not thrown.
+
   deliver: (mail: OutgoingMail) => Promise<void>;
   log?: Logger;
 }
@@ -117,9 +104,6 @@ export interface OwnershipService {
   ): Promise<OwnershipRecovery>;
 }
 
-// After commit and outside the ownership lock: active members plus the promoted owner.
-// A failed recipient lookup or relay is logged with its kind and code only — secrets are
-// never logged, and the recovery itself has already committed.
 async function notifyMembers(
   db: PostgresJsDatabase,
   deliver: (mail: OutgoingMail) => Promise<void>,
@@ -162,10 +146,6 @@ async function notifyMembers(
 
 export function createOwnershipService({ db, deliver, log }: OwnershipDeps): OwnershipService {
   return {
-    // An administrator-only list of shared workspaces. The projection is intentionally
-    // narrow: no joins to projects, issues, knowledge or their content. Membership status
-    // is included so the administrator can tell which ownerless workspace has an eligible
-    // reactivated former owner.
     async directory(account) {
       const actor = requireAccount(account);
       return db.transaction(
@@ -227,10 +207,6 @@ export function createOwnershipService({ db, deliver, log }: OwnershipDeps): Own
       );
     },
 
-    // One transaction. The lock comes first, then the active-admin recheck, then the
-    // workspace, then the guard bump, then every refusal, then the single promotion and
-    // both events. Nothing here touches agent keys or project grants, and no membership
-    // row is ever created for the administrator.
     async recoverOwnership(account, workspaceId, targetHumanId) {
       const actor = requireAccount(account);
       const { workspaceName, ...result } = await db.transaction(async (tx) => {
@@ -247,14 +223,10 @@ export function createOwnershipService({ db, deliver, log }: OwnershipDeps): Own
         }
         await bumpGuard(tx, workspaceId);
 
-        // Self-promotion is refused even if the administrator is an eligible member or a
-        // suspended former owner of this very workspace.
         if (targetHumanId === actor.humanId) {
           throw new OwnershipError("self_recovery_forbidden");
         }
 
-        // An active owner keeps full authority; recovery exists only for ownerless
-        // workspaces. The ownership lock and guard serialize this count with appointments.
         const [owners] = await tx
           .select({ count: sql<number>`count(*)::int` })
           .from(workspaceMemberships)
@@ -280,7 +252,7 @@ export function createOwnershipService({ db, deliver, log }: OwnershipDeps): Own
           .limit(1)
           .for("update");
         if (target === undefined) throw new OwnershipError("human_not_found");
-        // A still-deactivated former owner cannot be promoted; reactivation comes first.
+
         if (target.deactivatedAt !== null) throw new OwnershipError("target_deactivated");
 
         const [membership] = await tx
@@ -299,9 +271,7 @@ export function createOwnershipService({ db, deliver, log }: OwnershipDeps): Own
           .limit(1)
           .for("update");
         if (membership === undefined) throw new OwnershipError("member_not_found");
-        // An active member or a suspended former owner is eligible — including the sole
-        // member who was the workspace's only owner. An outsider has no row, and a
-        // suspended non-former-owner has no retained authority to promote.
+
         const eligible =
           membership.suspendedAt === null ||
           (membership.suspendedAt !== null && membership.isFormerOwner);

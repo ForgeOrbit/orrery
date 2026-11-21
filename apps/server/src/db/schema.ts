@@ -36,13 +36,6 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 
-// The database schema, in one place. drizzle-kit writes it to plain SQL in /db/migrations
-// (see drizzle.config.ts); the server applies those files in name order at startup.
-
-// A human account. Email normalization (trim, then lowercase) is defined once, in the
-// shared contract's Email schema, and enforced here so no writer can store an
-// un-normalized address. `email_verified_at` stays null until the mailbox is verified;
-// bootstrap never requires SMTP (ADR-0001).
 export const humans = pgTable(
   "humans",
   {
@@ -53,10 +46,7 @@ export const humans = pgTable(
     emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
     isSystemAdministrator: boolean("is_system_administrator").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    // Account deactivation (#38). A non-null timestamp means the identity is suspended
-    // across the installation: login, sessions, and agent keys stop, but the row (and
-    // everything attributed to it) stays. Reactivation clears this same timestamp; it
-    // never restores shared authority or old credentials.
+
     deactivatedAt: timestamp("deactivated_at", { withTimezone: true }),
   },
   (t) => [
@@ -68,23 +58,12 @@ export const humans = pgTable(
   ],
 );
 
-// A list of values as quoted SQL literals, for a CHECK constraint over a text column
-// backed by a contract enum. Raw SQL by necessity (DDL has no parameters); safe because
-// the values are enum members, never input.
 function sqlLiteralList(enumeration: { options: readonly string[] }): string {
   return enumeration.options.map((value) => `'${value}'`).join(", ");
 }
 
-// A container that owns projects: one personal workspace per human, or a shared one.
-// The allowed kinds come from the contract's WorkspaceKind enum.
-
-// A CHECK constraint is DDL: it cannot carry bound parameters, so the kind list must be
-// raw SQL text. That is safe here because the values come from the WorkspaceKind enum,
-// never from input.
 const personalKindSql = sql.raw(`'${WorkspaceKind.enum.personal}'`);
 
-// The invitations partial index needs the same trick: the pending literal comes from the
-// InvitationStatus enum value, raw because DDL binds no parameters.
 const pendingStatusSql = sql.raw(`'${InvitationStatus.enum.pending}'`);
 
 export const workspaces = pgTable(
@@ -98,23 +77,18 @@ export const workspaces = pgTable(
   },
   (t) => [
     check("workspace_kind", sql`${t.kind} in (${sql.raw(sqlLiteralList(WorkspaceKind))})`),
-    // Exactly the personal kind carries a personal owner; the literal comes from the
-    // enum value, raw for the same DDL reason as the kind list above.
+
     check(
       "workspace_owner_matches_kind",
       sql`(${t.kind} = ${personalKindSql}) = (${t.personalOwnerHumanId} is not null)`,
     ),
-    // One personal workspace per human.
+
     uniqueIndex("one_personal_workspace_per_human")
       .on(t.personalOwnerHumanId)
       .where(sql`${t.kind} = ${personalKindSql}`),
   ],
 );
 
-// Per-workspace serialization point for ownership changes. Every supported writer
-// updates this row before touching memberships, so a transaction with a stale snapshot
-// fails serialization instead of committing a workspace with no owner. The row is
-// created by a trigger with its workspace and removed with it.
 export const workspaceOwnershipGuards = pgTable("workspace_ownership_guards", {
   workspaceId: text("workspace_id")
     .primaryKey()
@@ -122,11 +96,6 @@ export const workspaceOwnershipGuards = pgTable("workspace_ownership_guards", {
   version: integer("version").notNull().default(0),
 });
 
-// Membership of a shared workspace (issue #24). A membership is a human's presence in
-// the workspace; `is_owner` carries full authority and the four `can_*` columns are the
-// independently delegated workspace capabilities (#20, #28). They are all false by
-// default, so membership alone never grants workspace-wide authority. Personal workspaces
-// do not use memberships; their single owner is `workspaces.personal_owner_human_id`.
 export const workspaceMemberships = pgTable(
   "workspace_memberships",
   {
@@ -143,28 +112,18 @@ export const workspaceMemberships = pgTable(
     canRemoveMembers: boolean("can_remove_members").notNull().default(false),
     canManageMemberPermissions: boolean("can_manage_member_permissions").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    // A suspended membership (#38) grants no shared access. Deactivation suspends in
-    // place rather than deleting, so it keeps the human's place in the workspace's history.
-    // Re-inviting a reactivated human clears this and issues fresh grants.
+
     suspendedAt: timestamp("suspended_at", { withTimezone: true }),
-    // Ownership held at suspension time, kept so a workspace whose only owner was
-    // deactivated is eligible for later ownership recovery (#43) without ever restoring
-    // ownership automatically on reactivation.
+
     isFormerOwner: boolean("is_former_owner").notNull().default(false),
   },
   (t) => [
-    // One membership per person per workspace: accepting twice cannot double access.
     uniqueIndex("one_membership_per_workspace_and_human").on(t.workspaceId, t.humanId),
-    // The listing starts from the caller's memberships.
+
     index("workspace_memberships_human_id").on(t.humanId),
   ],
 );
 
-// A workspace invitation (issue #24). It reuses the invitation lifecycle from #23 —
-// pending, accepted, or expired in place, with delivery tracked separately — but targets
-// a shared workspace instead of the installation. The emailed link carries a random
-// token; only its SHA-256 hash is stored. Expiry is seven days, evaluated in database
-// time when the token is redeemed.
 export const workspaceInvitations = pgTable(
   "workspace_invitations",
   {
@@ -172,7 +131,7 @@ export const workspaceInvitations = pgTable(
     workspaceId: text("workspace_id")
       .notNull()
       .references(() => workspaces.id),
-    // Normalized by the contract's Email schema; the CHECK enforces it for every writer.
+
     email: text("email").notNull(),
     status: text("status").$type<InvitationStatus>().notNull(),
     tokenHash: text("token_hash").notNull().unique(),
@@ -200,27 +159,20 @@ export const workspaceInvitations = pgTable(
         sqlLiteralList(InvitationDelivery),
       )}))`,
     ),
-    // One pending invitation per address per workspace; the same person can be invited
-    // to a different workspace without the links colliding.
+
     uniqueIndex("one_pending_workspace_invitation_per_email")
       .on(t.workspaceId, t.email)
       .where(sql`${t.status} = ${pendingStatusSql}`),
   ],
 );
 
-// The workspace access-change events recorded so far: #24's creation, joining,
-// appointment, and removal, plus #27's Create projects grants and #28's other three
-// capability grants. Project-level grants live in project_access_events below, because
-// they are scoped to a project. History visibility arrives in #32; the events are written
-// now so it can be built on real history rather than a later backfill. Content never
-// carries secrets.
 export const workspaceEventTypes = [
   "workspace_created",
   "member_joined",
   "owner_appointed",
   "member_removed",
   "owner_removed",
-  // #37: voluntary leave is a distinct audit act from being removed by someone else.
+
   "member_left",
   "owner_left",
   "create_projects_granted",
@@ -231,13 +183,11 @@ export const workspaceEventTypes = [
   "remove_members_revoked",
   "manage_member_permissions_granted",
   "manage_member_permissions_revoked",
-  // Personal-to-shared transfer (#39): the source records authorization and completion,
-  // the destination its receipt. Workspace-scoped so each side keeps only its own audit.
+
   "project_transfer_authorized",
   "project_transfer_received",
   "project_transferred_out",
-  // #43: an administrator restored ownership of an ownerless shared workspace. The event
-  // names only the actor and the promoted human, never a project or workspace content.
+
   "workspace_ownership_recovered",
 ] as const;
 export type WorkspaceEventType = (typeof workspaceEventTypes)[number];
@@ -250,8 +200,7 @@ export const workspaceEvents = pgTable(
       .notNull()
       .references(() => workspaces.id),
     type: text("type").$type<WorkspaceEventType>().notNull(),
-    // The human who performed the action, and the human it concerned. They are the same
-    // for a join or a workspace creation; different for an appointment or removal.
+
     actorHumanId: text("actor_human_id")
       .notNull()
       .references(() => humans.id),
@@ -269,7 +218,6 @@ export const workspaceEvents = pgTable(
   ],
 );
 
-// A browser session. Only the SHA-256 hash of the cookie's token is stored.
 export const browserSessions = pgTable("browser_sessions", {
   id: text("id").primaryKey(),
   humanId: text("human_id")
@@ -280,9 +228,6 @@ export const browserSessions = pgTable("browser_sessions", {
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
 });
 
-// Bootstrap closes exactly once. The only allowed row is (true), inserted in the same
-// transaction as the administrator; concurrent setups race on the primary key and
-// exactly one can ever win (issue #21).
 export const instanceSetup = pgTable(
   "instance_setup",
   {
@@ -295,11 +240,6 @@ export const instanceSetup = pgTable(
   (t) => [check("instance_setup_singleton", sql`${t.id} = true`)],
 );
 
-// Persistent instance settings (ADR-0001): what the system administrator configures
-// through the app, unlike deployment essentials, which come from environment variables.
-// SMTP is one singleton row, written wholesale by an administrator. The password is the
-// one secret in it, and it is never plaintext at rest: ADR-0004 encrypts it with the
-// deployment's key, and only the ciphertext is stored.
 export const instanceSettings = pgTable(
   "instance_settings",
   {
@@ -317,8 +257,7 @@ export const instanceSettings = pgTable(
   },
   (t) => [
     check("instance_settings_singleton", sql`${t.id} = true`),
-    // DDL cannot bind parameters, so the security list is raw SQL text; the values come
-    // from the SmtpSecurity contract enum, never from input.
+
     check(
       "instance_settings_smtp_security",
       sql`${t.smtpSecurity} in (${sql.raw(sqlLiteralList(SmtpSecurity))})`,
@@ -326,9 +265,6 @@ export const instanceSettings = pgTable(
   ],
 );
 
-// A single-use email verification token (issue #22). The email carries the raw token;
-// only its SHA-256 hash is stored. Redemption is one conditional update in database
-// time: unused, unexpired, and issued to the redeeming account.
 export const emailVerificationTokens = pgTable("email_verification_tokens", {
   id: text("id").primaryKey(),
   humanId: text("human_id")
@@ -340,10 +276,6 @@ export const emailVerificationTokens = pgTable("email_verification_tokens", {
   usedAt: timestamp("used_at", { withTimezone: true }),
 });
 
-// A single-use password reset token (issue #31). The emailed link carries the raw
-// token; only its SHA-256 hash is stored. Redemption is one conditional update in
-// database time: unused, unexpired. A token is never issued to an unverified address,
-// and a failed delivery removes its token so an email that never left cannot redeem.
 export const passwordResetTokens = pgTable("password_reset_tokens", {
   id: text("id").primaryKey(),
   humanId: text("human_id")
@@ -355,21 +287,14 @@ export const passwordResetTokens = pgTable("password_reset_tokens", {
   usedAt: timestamp("used_at", { withTimezone: true }),
 });
 
-// Recovery and password-reset events (#20 history): a reset was requested and mailed,
-// a reset link was redeemed, or an administrator used the local recovery command.
-// There is deliberately no token, hash, or password column — not even a snapshot of
-// one — so reading this history can never expose a credential. The flow that earns
-// each event writes it in the same transaction as the change it describes.
 export const accountRecoveryEventTypes = [
   "password_reset_requested",
   "password_reset_completed",
   "local_recovery_completed",
-  // #38: installation-wide account status changes. `humanId` is the affected account;
-  // `actorHumanId` is the administrator who made the change. Secret-free by design.
+
   "account_deactivated",
   "account_reactivated",
-  // #43: the same recovery is visible in the administrator's installation history. No
-  // workspace name, project, or content is stored here — only the two people involved.
+
   "workspace_ownership_recovered",
 ] as const;
 export type AccountRecoveryEventType = (typeof accountRecoveryEventTypes)[number];
@@ -381,8 +306,7 @@ export const accountRecoveryEvents = pgTable(
     humanId: text("human_id")
       .notNull()
       .references(() => humans.id),
-    // Null for password-recovery events, whose subject is also the actor. Set for the
-    // deactivation/reactivation events (#38), recorded by a system administrator.
+
     actorHumanId: text("actor_human_id").references(() => humans.id),
     type: text("type").$type<AccountRecoveryEventType>().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -396,18 +320,11 @@ export const accountRecoveryEvents = pgTable(
   ],
 );
 
-// An invitation (issue #23): a system administrator's offer to register on the
-// installation, sent to one email. The emailed link carries a random token; only its
-// SHA-256 hash is stored. The lifecycle is tracked separately from delivery and account
-// verification (#20): the row keeps who invited and when it was accepted, expiry is
-// seven days evaluated in database time at redemption, and a newer invitation supersedes
-// a stale one in place by marking it expired.
 export const invitations = pgTable(
   "invitations",
   {
     id: text("id").primaryKey(),
-    // The invited address, normalized by the contract's Email schema; the CHECK enforces
-    // it for every other writer, exactly like humans.
+
     email: text("email").notNull(),
     status: text("status").$type<InvitationStatus>().notNull(),
     tokenHash: text("token_hash").notNull().unique(),
@@ -420,16 +337,13 @@ export const invitations = pgTable(
     declinedAt: timestamp("declined_at", { withTimezone: true }),
     expiredAt: timestamp("expired_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
-    // Delivery, tracked separately from the lifecycle: pending never implies delivered
-    // (#20). Null means no attempt has been recorded; only 'failed' never redeems, and
-    // an old null row is superseded once its send could no longer be in flight.
+
     deliveryStatus: text("delivery_status").$type<InvitationDelivery>(),
     deliveryAttemptedAt: timestamp("delivery_attempted_at", { withTimezone: true }),
   },
   (t) => [
     check("invitations_email_normalized", sql`${t.email} = lower(btrim(${t.email}))`),
-    // DDL cannot bind parameters, so the status lists are raw SQL text; the values come
-    // from the contract enums, never from input.
+
     check("invitations_status", sql`${t.status} in (${sql.raw(sqlLiteralList(InvitationStatus))})`),
     check(
       "invitations_delivery_status",
@@ -437,18 +351,13 @@ export const invitations = pgTable(
         sqlLiteralList(InvitationDelivery),
       )}))`,
     ),
-    // One pending invitation per email: a second valid link must not accumulate (#25
-    // rotates the existing one instead).
+
     uniqueIndex("one_pending_invitation_per_email")
       .on(t.email)
       .where(sql`${t.status} = ${pendingStatusSql}`),
   ],
 );
 
-// A project (issue #26): a collection of issues and knowledge owned by one workspace.
-// The creator is recorded as authorship, not as a second owner: the project belongs to
-// the workspace. `next_issue_number` is the per-project counter that gives issues their
-// human-readable numbers; it is incremented under the row lock of an issue creation.
 export const projects = pgTable(
   "projects",
   {
@@ -457,16 +366,14 @@ export const projects = pgTable(
       .notNull()
       .references(() => workspaces.id),
     name: text("name").notNull(),
-    // #95: an immutable, workspace-unique uppercase key. The CHECK enforces the shared
-    // contract's format even for a writer that bypasses the service.
+
     key: text("key").notNull(),
     createdByHumanId: text("created_by_human_id")
       .notNull()
       .references(() => humans.id),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     nextIssueNumber: integer("next_issue_number").notNull().default(1),
-    // Fallback policy (#42): require_human is the default, so no project silently
-    // authorizes an agent's proposed fallback. Only project Manage may change it.
+
     fallbackPolicy: text("fallback_policy")
       .$type<FallbackPolicy>()
       .notNull()
@@ -479,16 +386,12 @@ export const projects = pgTable(
       "projects_fallback_policy",
       sql`${t.fallbackPolicy} in (${sql.raw(sqlLiteralList(FallbackPolicy))})`,
     ),
-    // #95: keys are unique inside one workspace, not across the installation.
+
     uniqueIndex("one_project_key_per_workspace").on(t.workspaceId, t.key),
     index("projects_workspace_created").on(t.workspaceId, t.createdAt),
   ],
 );
 
-// A source owner's authorization to move a personal project into a shared workspace
-// (#39). The token is shown once and only its hash is stored, like an invitation. A
-// receiver accepts while the authorization is pending and before its database-time
-// expiry; acceptance rechecks every authority in one transaction and consumes the row.
 export const projectTransferAuthorizations = pgTable(
   "project_transfer_authorizations",
   {
@@ -525,11 +428,6 @@ export const projectTransferAuthorizations = pgTable(
   ],
 );
 
-// An explicit project access grant (issue #27). Personal projects have no direct
-// collaborators; a trigger in migration 0012 refuses grants outside a shared workspace
-// and grants to humans who are not members of that workspace. The workspace owner's
-// Manage is implicit and has no row. The unique pair makes one level per person per
-// project, and the CHECK keeps the level in the contract enum.
 export const projectAccessGrants = pgTable(
   "project_access_grants",
   {
@@ -548,9 +446,8 @@ export const projectAccessGrants = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    // One level per person per project: a change updates in place and cannot double.
     uniqueIndex("one_project_access_grant_per_human").on(t.projectId, t.humanId),
-    // DDL cannot bind parameters; the values come from the ProjectAccessLevel enum.
+
     check(
       "project_access_grants_level",
       sql`${t.level} in (${sql.raw(sqlLiteralList(ProjectAccessLevel))})`,
@@ -559,11 +456,6 @@ export const projectAccessGrants = pgTable(
   ],
 );
 
-// The projects an invitation offers (#25). The invitation belongs to one workspace, so
-// every offered project must still belong to that same workspace when the offer is
-// accepted. The level is the project access granted on acceptance; membership itself
-// still grants no project access. Resending copies these rows to the replacement
-// invitation, which keeps the offer and its history intact.
 export const workspaceInvitationGrants = pgTable(
   "workspace_invitation_grants",
   {
@@ -585,13 +477,6 @@ export const workspaceInvitationGrants = pgTable(
   ],
 );
 
-// Project access-change events (#27), scoped to the project whose access changed and to
-// the workspace that owned the project when the change happened. The workspace scope is
-// what keeps a source's membership history from following a project after a shared-to-
-// shared move (#46): each workspace only ever reads its own access-change events. The
-// type implies the shape: a grant has a level and no previous level, a level change has
-// both, and a revocation has only the previous level. #32 builds the history view on
-// these rows; writing starts here, with no backfill. No emails or secrets are stored.
 export const projectAccessEvents = pgTable(
   "project_access_events",
   {
@@ -599,8 +484,7 @@ export const projectAccessEvents = pgTable(
     projectId: text("project_id")
       .notNull()
       .references(() => projects.id),
-    // #46: the workspace that owned the project at the moment of the change. A transfer
-    // never rewrites old rows, so a project moving W1 -> W2 cannot expose W1's grants.
+
     workspaceId: text("workspace_id")
       .notNull()
       .references(() => workspaces.id),
@@ -630,7 +514,7 @@ export const projectAccessEvents = pgTable(
         sqlLiteralList(ProjectAccessLevel),
       )}))`,
     ),
-    // DDL cannot bind parameters; the event types are raw SQL text from the enum.
+
     check(
       "project_access_events_shape",
       sql`(
@@ -643,14 +527,11 @@ export const projectAccessEvents = pgTable(
       )`,
     ),
     index("project_access_events_project_created").on(t.projectId, t.createdAt),
-    // Workspace history filters on this column for every project it owns.
+
     index("project_access_events_workspace_created").on(t.workspaceId, t.createdAt),
   ],
 );
 
-// An agent is a worker identity owned by one human (issue #30). Its actions are
-// attributed to this identity, not to a model or a run; several keys and clients can
-// act as the same agent. Only the owner may register an agent under their identity.
 export const agents = pgTable(
   "agents",
   {
@@ -662,16 +543,11 @@ export const agents = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    // An owner cannot create two agents under the same display name.
     uniqueIndex("one_agent_name_per_human").on(t.humanId, t.name),
     index("agents_human_created").on(t.humanId, t.createdAt),
   ],
 );
 
-// A bearer key for one agent, scoped to exactly one workspace (issue #30). The secret
-// is shown once at issue time; only its SHA-256 hash is stored. A null `expires_at` is
-// "Never" — it skips the time check, never the access checks. Revocation is a timestamp
-// rather than a delete, so creation and revocation stay auditable.
 export const agentApiKeys = pgTable(
   "agent_api_keys",
   {
@@ -692,14 +568,12 @@ export const agentApiKeys = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     revokedByHumanId: text("revoked_by_human_id").references(() => humans.id),
-    // Rotation lineage (#35): a replacement names the key it replaces. Ids only, never a
-    // secret. SET NULL keeps a historical replacement valid if a source key is deleted.
+
     replacesKeyId: text("replaces_key_id").references((): AnyPgColumn => agentApiKeys.id, {
       onDelete: "set null",
     }),
   },
   (t) => [
-    // DDL cannot bind parameters; the values come from the contract enum.
     check(
       "agent_api_keys_validity",
       sql`${t.validity} in (${sql.raw(sqlLiteralList(AgentKeyValidity))})`,
@@ -709,8 +583,6 @@ export const agentApiKeys = pgTable(
   ],
 );
 
-// The selected projects a key may act on, with the requested level. A key can hold
-// several projects in its one workspace; no row means the key has no project access.
 export const agentApiKeyProjects = pgTable(
   "agent_api_key_projects",
   {
@@ -732,10 +604,6 @@ export const agentApiKeyProjects = pgTable(
   ],
 );
 
-// Credential audit events (#20 history): creation and revocation of a key, with the
-// actor and the workspace it happened in. There is deliberately no secret column — nor
-// even a hash — so an audit read can never expose a credential. A workspace owner's
-// revocation of someone else's key is recorded with that owner as the actor.
 export const agentKeyEvents = pgTable(
   "agent_key_events",
   {
@@ -764,13 +632,6 @@ export const agentKeyEvents = pgTable(
   ],
 );
 
-// A run is one harness conversation under one agent identity (issue #34). The bearer
-// key identifies the agent and scopes the workspace; the harness's native session id
-// distinguishes concurrent conversations and survives a resume. Reported fields that a
-// harness did not provide stay null so the UI can say `unknown` instead of inventing a
-// value. A partial unique index enforces identity only when both harness and native
-// session id were reported: two anonymous runs stay distinct instead of colliding on a
-// sentinel, while two clients sharing one key's session id still get one row.
 export const runs = pgTable(
   "runs",
   {
@@ -801,8 +662,6 @@ export const runs = pgTable(
   ],
 );
 
-// Model values observed during a run. A change is written only when a reporter names a
-// model different from the current one; an absent model never overwrites a known one.
 export const runModelChanges = pgTable(
   "run_model_changes",
   {
@@ -818,12 +677,6 @@ export const runModelChanges = pgTable(
   (t) => [index("run_model_changes_run_created").on(t.runId, t.createdAt)],
 );
 
-// A child worker observed inside a parent run. Codex and Claude report child
-// attribution in hooks on the parent's session; repeated events update this row in
-// place when an identity was reported. Every attribution field is nullable, so an
-// unreported one displays `unknown`, and two anonymous children stay distinct. A named
-// child run must belong to the same agent and workspace (checked in the service) and is
-// linked here by a foreign key that clears the link if that run is ever deleted.
 export const runChildren = pgTable(
   "run_children",
   {
@@ -843,8 +696,7 @@ export const runChildren = pgTable(
   },
   (t) => [
     check("run_children_status", sql`${t.status} in (${sql.raw(sqlLiteralList(RunStatus))})`),
-    // Only a named child has a stable identity. Two children with neither an agent id
-    // nor a child run id are anonymous observations: both rows are kept, not collapsed.
+
     uniqueIndex("one_child_per_run_and_reported_identity")
       .on(t.runId, t.agentId, t.agentType, t.childRunId)
       .where(sql`${t.agentId} is not null or ${t.childRunId} is not null`),
@@ -852,10 +704,6 @@ export const runChildren = pgTable(
   ],
 );
 
-// An issue in a project. The body is Markdown, stored as written. `number` is local to
-// the project; the id is the stable identity. `closed_at` is set exactly while the issue
-// is terminal (done or cancelled), so leaving a terminal state clears it and an edit
-// while terminal leaves it untouched.
 export const issues = pgTable(
   "issues",
   {
@@ -867,15 +715,11 @@ export const issues = pgTable(
     title: text("title").notNull(),
     body: text("body").notNull().default(""),
     status: text("status").$type<IssueStatus>().notNull(),
-    // Board importance (#88), defaulting to the neutral `none`. The database repeats the
-    // contract's enum so a writer that bypasses the service cannot invent a level.
+
     priority: text("priority").$type<IssuePriority>().notNull().default("none"),
-    // Board position (#88). A float, so moving a card only writes that row's new midpoint
-    // between its neighbours. Created issues get number * 65535; an index keeps the ready
-    // work ordering (priority, then position, then creation) backed by the database.
+
     sortOrder: doublePrecision("sort_order").notNull(),
-    // Authorship is one identity, never two: a human or an agent, recorded in its own
-    // column. An agent's work is attributed to the agent, not to its human owner.
+
     createdByHumanId: text("created_by_human_id").references(() => humans.id),
     createdByAgentId: text("created_by_agent_id").references(() => agents.id),
     updatedByHumanId: text("updated_by_human_id").references(() => humans.id),
@@ -883,30 +727,20 @@ export const issues = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     closedAt: timestamp("closed_at", { withTimezone: true }),
-    // Needs input is owned by the human-input slice (#37/#41); deadline resolution keeps
-    // it in sync. The issue override (#42) tightens or, with project Manage, loosens the
-    // project's fallback policy; null means "use the project's policy".
+
     needsInput: boolean("needs_input").notNull().default(false),
     fallbackPolicyOverride: text("fallback_policy_override").$type<FallbackPolicy>(),
-    // Board assignment (#84). The type decides which identity table the id names; there
-    // is deliberately no single FK because the target is one of two tables. The service
-    // validates the pair against current membership/keys inside the writing transaction,
-    // and the CHECK below keeps a bypassing writer from storing a half or unknown assignee.
+
     assigneeType: text("assignee_type").$type<AssigneeType>(),
     assigneeId: text("assignee_id"),
-    // #97: an optional one-level parent in the same project. The self-reference is checked
-    // here for self-parenting; same-project and depth-1 need other rows, so a trigger (in a
-    // custom migration) enforces them for writers that bypass the service as well.
+
     parentIssueId: text("parent_issue_id").references((): AnyPgColumn => issues.id),
-    // #98: trash lifecycle. A soft-deleted issue keeps its row (and number) so project
-    // activity and ORR-N references never break. The two delete columns are always written
-    // together; purged_at is set only after a soft delete and marks a scrubbed tombstone.
+
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     deletedByHumanId: text("deleted_by_human_id").references(() => humans.id),
     purgedAt: timestamp("purged_at", { withTimezone: true }),
   },
   (t) => [
-    // Exactly one author/editor identity: a human or an agent.
     check(
       "issues_created_by_actor",
       sql`(${t.createdByHumanId} is not null) <> (${t.createdByAgentId} is not null)`,
@@ -915,19 +749,17 @@ export const issues = pgTable(
       "issues_updated_by_actor",
       sql`(${t.updatedByHumanId} is not null) <> (${t.updatedByAgentId} is not null)`,
     ),
-    // Issue numbers never repeat inside a project, and two concurrent creations cannot
-    // both take the same one.
+
     uniqueIndex("one_issue_number_per_project").on(t.projectId, t.number),
-    // Ready work and the board read a project's cards in position order; the priority
-    // ranking is applied in the query, so this index serves the sortOrder/createdAt tail.
+
     index("issues_project_sort_order").on(t.projectId, t.sortOrder, t.createdAt),
-    // Assignment-driven queue lookups (board badges, ready-work filtering).
+
     index("issues_assignee").on(t.assigneeType, t.assigneeId),
     check("issues_number_positive", sql`${t.number} > 0`),
-    // DDL cannot bind parameters; the values come from the IssueStatus contract enum.
+
     check("issues_status", sql`${t.status} in (${sql.raw(sqlLiteralList(IssueStatus))})`),
     check("issues_priority", sql`${t.priority} in (${sql.raw(sqlLiteralList(IssuePriority))})`),
-    // Both columns are null, or both are present. A present type must be a contract value.
+
     check("issues_assignee_pair", sql`(${t.assigneeType} is null) = (${t.assigneeId} is null)`),
     check(
       "issues_assignee_type",
@@ -935,9 +767,7 @@ export const issues = pgTable(
         sqlLiteralList(AssigneeType),
       )}))`,
     ),
-    // Postgres sorts NaN above Infinity, so bounding the value on both sides rejects NaN
-    // as well as ±Infinity. Midpoint arithmetic can otherwise produce a non-finite position
-    // that no client can reorder past, and the CHECK holds even for a bypassing writer.
+
     check(
       "issues_sort_order_finite",
       sql`${t.sortOrder} > '-Infinity'::double precision and ${t.sortOrder} < 'Infinity'::double precision`,
@@ -948,7 +778,7 @@ export const issues = pgTable(
         sqlLiteralList(FallbackPolicy),
       )}))`,
     ),
-    // #94: both done and cancelled are terminal; review stays non-terminal and blocking.
+
     check(
       "issues_closed_at_matches_status",
       sql`(${t.status} in (${sql.raw(TERMINAL_ISSUE_STATUSES.map((status) => `'${status}'`).join(", "))})) = (${t.closedAt} is not null)`,
@@ -957,20 +787,17 @@ export const issues = pgTable(
       "issues_no_self_parent",
       sql`${t.parentIssueId} is null or ${t.parentIssueId} <> ${t.id}`,
     ),
-    // #98: a soft delete is one fact — the deleter and the deletion time are written
-    // together — and a tombstone can only be scrubbed after it has been deleted.
+
     check("issues_deleted_pair", sql`(${t.deletedAt} is null) = (${t.deletedByHumanId} is null)`),
     check(
       "issues_purged_requires_deleted",
       sql`${t.purgedAt} is null or ${t.deletedAt} is not null`,
     ),
-    // Subtasks are listed with their parent's board; the index serves that lookup.
+
     index("issues_parent").on(t.projectId, t.parentIssueId),
   ],
 );
 
-// A project-scoped label (#97). The name is unique per project ignoring case: the service
-// checks first, and this expression index is the database's final word for bypassing writers.
 export const projectLabels = pgTable(
   "project_labels",
   {
@@ -997,9 +824,6 @@ export const projectLabels = pgTable(
   ],
 );
 
-// A label attached to an issue (#97). The composite primary key is also the uniqueness
-// rule: one label cannot be attached twice to the same issue. A trigger enforces that the
-// label belongs to the issue's project, since a CHECK cannot read another table.
 export const issueLabels = pgTable(
   "issue_labels",
   {
@@ -1016,12 +840,6 @@ export const issueLabels = pgTable(
   ],
 );
 
-// A directed blocked_by edge (#86): `issue_id` cannot be ready work until
-// `blocked_by_issue_id` reaches a terminal state (done or cancelled, #94). `review` is a
-// non-terminal handoff and still blocks. Both issues belong to one project; the service checks
-// project scope and acyclicity before writing, and these constraints make the data rule
-// hold even for a writer that bypasses it. The unique index stops duplicate edges, and the
-// reverse index keeps "what does this issue block" lookups indexed.
 export const issueDependencies = pgTable(
   "issue_dependencies",
   {
@@ -1032,8 +850,7 @@ export const issueDependencies = pgTable(
     blockedByIssueId: text("blocked_by_issue_id")
       .notNull()
       .references(() => issues.id),
-    // Authorship is one identity, never two: a human or an agent, recorded in its own
-    // column. An agent's work is attributed to the agent, not to its human owner.
+
     createdByHumanId: text("created_by_human_id").references(() => humans.id),
     createdByAgentId: text("created_by_agent_id").references(() => agents.id),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -1049,8 +866,6 @@ export const issueDependencies = pgTable(
   ],
 );
 
-// A comment on an issue. Comments are ordinary discussion: they need no work session
-// (#20), and they keep the author who wrote them.
 export const issueComments = pgTable(
   "issue_comments",
   {
@@ -1072,11 +887,6 @@ export const issueComments = pgTable(
   ],
 );
 
-// A structured external link attached to an issue (#87). The kind classifies the artifact
-// so agents and humans can attach PRs and commits without burying URLs in Markdown. The
-// author is one identity, human or agent, kept after either leaves. Like every data rule,
-// the URL scheme and the (issue, url) uniqueness are enforced here too, not only in the
-// contract, so no writer can store an unsafe or duplicated link.
 export const issueLinks = pgTable(
   "issue_links",
   {
@@ -1097,21 +907,13 @@ export const issueLinks = pgTable(
       sql`(${t.createdByHumanId} is not null) <> (${t.createdByAgentId} is not null)`,
     ),
     check("issue_links_kind", sql`${t.kind} in (${sql.raw(sqlLiteralList(IssueLinkKind))})`),
-    // DDL binds no parameters; the pattern is a fixed literal, never input.
+
     check("issue_links_url_http_s", sql`${t.url} ~* '^https?://'`),
     uniqueIndex("one_link_per_issue_and_url").on(t.issueId, t.url),
     index("issue_links_issue_created").on(t.issueId, t.createdAt),
   ],
 );
 
-// A work session: one attempt to work on one issue, coordinated within a run (#36). Its
-// identity is (agent, run, workspace, issue) — never the API key used to reach it — so a
-// replacement key during rotation renews the same session. The lease is a five-minute
-// reservation evaluated in database time. `progress` is deliberately a separate column
-// from the lease status: lazy expiry only flips `status`, so an interruption never erases
-// what the worker recorded. The partial unique index is the database guarantee that two
-// concurrent claims cannot both hold one issue, even if two transactions race past the
-// row lock path.
 export const workSessions = pgTable(
   "work_sessions",
   {
@@ -1135,14 +937,11 @@ export const workSessions = pgTable(
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }).notNull(),
     progress: text("progress").notNull().default(""),
     progressUpdatedAt: timestamp("progress_updated_at", { withTimezone: true }),
-    // A human stop request (#82) is recorded on the still-active session in one atomic
-    // write: a timestamp and the requesting human are set together, with an optional
-    // reason. It is a signal the agent reads on its next check-in, never a status change.
+
     stopRequestedAt: timestamp("stop_requested_at", { withTimezone: true }),
     stopRequestedByHumanId: text("stop_requested_by_human_id").references(() => humans.id),
     stopReason: text("stop_reason"),
-    // Cumulative session telemetry (#96), reported by the harness on renew/progress/complete.
-    // Null until first reported; a reported total is never negative, in the contract or here.
+
     inputTokens: integer("input_tokens"),
     outputTokens: integer("output_tokens"),
     costUsdMicros: integer("cost_usd_micros"),
@@ -1155,8 +954,7 @@ export const workSessions = pgTable(
       "work_sessions_status",
       sql`${t.status} in (${sql.raw(sqlLiteralList(WorkSessionStatus))})`,
     ),
-    // A stop request is one fact: its actor and time are always written together, and a
-    // reason may only exist when a request does. No half-recorded signal can be read.
+
     check(
       "work_sessions_stop_request",
       sql`(
@@ -1164,7 +962,7 @@ export const workSessions = pgTable(
         or (${t.stopRequestedAt} is not null and ${t.stopRequestedByHumanId} is not null)
       )`,
     ),
-    // A reported total is non-negative; a null is "never reported" and stays null (#96).
+
     check(
       "work_sessions_input_tokens_nonnegative",
       sql`${t.inputTokens} is null or ${t.inputTokens} >= 0`,
@@ -1177,7 +975,7 @@ export const workSessions = pgTable(
       "work_sessions_cost_usd_micros_nonnegative",
       sql`${t.costUsdMicros} is null or ${t.costUsdMicros} >= 0`,
     ),
-    // At most one active session per issue, enforced by Postgres under a concurrent race.
+
     uniqueIndex("one_active_work_session_per_issue")
       .on(t.issueId)
       .where(sql`${t.status} = ${sql.raw(`'${WorkSessionStatus.enum.active}'`)}`),
@@ -1187,11 +985,6 @@ export const workSessions = pgTable(
   ],
 );
 
-// Ephemeral telemetry for a work session (#83). An activity is append-only and belongs to
-// a session and its run, never to issue_comments. There is no status column and no cascade
-// on lease expiry or session completion: an interrupted run keeps its whole trail for
-// debugging. `detail` is a JSONB object left deliberately unstructured for #15's blocks.
-// The kind check mirrors the shared contract so no writer can store an unknown kind.
 export const workSessionActivities = pgTable(
   "work_session_activities",
   {
@@ -1212,16 +1005,11 @@ export const workSessionActivities = pgTable(
       "work_session_activities_kind",
       sql`${t.kind} in (${sql.raw(sqlLiteralList(SessionActivityKind))})`,
     ),
-    // The inspector reads a whole session's timeline in created-at order; index that path.
+
     index("work_session_activities_session_created").on(t.workSessionId, t.createdAt),
   ],
 );
 
-// A question an agent asked the team (issue #41). Its identity is the work session that
-// asked it, never the API key used to reach the service, so key rotation keeps the same
-// question history. The one-hour response deadline and every resolution are evaluated in
-// database time; the partial unique index guarantees one open-or-paused question per issue,
-// which is what keeps issues.needs_input unambiguous under concurrent asks.
 export const questions = pgTable(
   "questions",
   {
@@ -1260,8 +1048,7 @@ export const questions = pgTable(
   (t) => [
     check("questions_status", sql`${t.status} in (${sql.raw(sqlLiteralList(QuestionStatus))})`),
     check("questions_deadline_after_creation", sql`${t.responseDeadlineAt} > ${t.createdAt}`),
-    // Exactly one resolution shape per status. `fallback_used` (#42) may carry a follow-up
-    // answer, but it never clears that resolution or reverses the fallback work.
+
     check(
       "questions_resolution_matches_status",
       sql`(
@@ -1277,7 +1064,7 @@ export const questions = pgTable(
             or (${t.followUp} is not null and ${t.followUpByHumanId} is not null and ${t.followUpAt} is not null)))
       )`,
     ),
-    // One active question per issue, so needs_input has a single owner at any moment.
+
     uniqueIndex("one_open_question_per_issue")
       .on(t.issueId)
       .where(sql`${t.status} in ('open', 'paused')`),
@@ -1286,8 +1073,6 @@ export const questions = pgTable(
   ],
 );
 
-// A basic Markdown knowledge entry (issue #26). This is deliberately not the full vault
-// (#6): a title, a body, and who created and last edited it.
 export const knowledgeEntries = pgTable(
   "knowledge_entries",
   {
@@ -1317,14 +1102,6 @@ export const knowledgeEntries = pgTable(
   ],
 );
 
-// The project's activity feed (issue #26). Each event is written in the same transaction
-// as the change it describes, so history cannot disagree with the project. The summary is
-// a snapshot of the item's title at that moment, not a pointer that changes later.
-//
-// The target columns follow the event type: a project event points at neither item, an
-// issue event points at the issue, and a knowledge event points at the entry. These
-// literals come from the ProjectActivityType enum, never from input; DDL cannot bind
-// parameters, so they are raw SQL text.
 const projectActivityTypesSql = sql.raw(
   ProjectActivityType.options
     .filter((type) => type.startsWith("project_"))
@@ -1352,7 +1129,7 @@ export const projectActivity = pgTable(
       .notNull()
       .references(() => projects.id),
     type: text("type").$type<ProjectActivityType>().notNull(),
-    // The actor is a human or an agent; both stay attached after either leaves.
+
     actorHumanId: text("actor_human_id").references(() => humans.id),
     actorAgentId: text("actor_agent_id").references(() => agents.id),
     issueId: text("issue_id").references(() => issues.id),
@@ -1361,12 +1138,11 @@ export const projectActivity = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    // Exactly one actor identity: a human or an agent.
     check(
       "project_activity_actor",
       sql`(${t.actorHumanId} is not null) <> (${t.actorAgentId} is not null)`,
     ),
-    // DDL cannot bind parameters; the values come from the ProjectActivityType enum.
+
     check(
       "project_activity_type",
       sql`${t.type} in (${sql.raw(sqlLiteralList(ProjectActivityType))})`,

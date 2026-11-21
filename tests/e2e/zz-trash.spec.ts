@@ -1,10 +1,3 @@
-// #98 black-box proof: human-only issue soft-delete, Project manager restore, and the
-// agent-facing denials over REST and MCP against a running Orrery. The 30-day scrub
-// boundary itself is proved at the real-Postgres service seam in trash.test.ts, because
-// an e2e client cannot move the database clock.
-//
-//   docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { randomUUID } from "node:crypto";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { expect, request, test, type APIRequestContext } from "@playwright/test";
@@ -123,8 +116,6 @@ async function invitationToken(): Promise<string | undefined> {
   return undefined;
 }
 
-// A shared project with a Contribute member, so restore's Manage-only gate can be proved
-// over HTTP with a real second human rather than only at the service seam.
 async function sharedContributeProject(): Promise<{
   member: APIRequestContext;
   project: { id: string; workspaceId: string };
@@ -237,7 +228,6 @@ test("agents get 403 on delete, no trash tool, and trashed issues vanish from re
     const names = (await client.listTools()).tools.map((tool) => tool.name);
     expect(names.some((name) => /delete_issue|restore_issue|trash/.test(name))).toBe(false);
 
-    // The active issue is visible before the delete and hidden afterwards over MCP.
     const visible = await call(client, "get_issue", { issueId: blockerId });
     expect(visible.isError).toBe(false);
     expect(field(visible.data.issue, "id")).toBe(blockerId);
@@ -293,7 +283,6 @@ test("a live work session fences delete, and a non-Manager human cannot restore"
     await claimClient.close();
   }
 
-  // A Contribute member of a shared workspace may delete but may not restore.
   const memberIssue = await createIssue(project.id, "Member trash issue");
   try {
     const removed = await api.delete(`/api/issues/${memberIssue}`);

@@ -18,10 +18,6 @@ import { migrate } from "../../platform/migrate.ts";
 import { createAccountsFeature } from "../accounts/index.ts";
 import { createProjectsFeature, ProjectsError, type WorkActor } from "./index.ts";
 
-// #97 TDD seam: project-scoped labels and one-level subtasks. Every invariant is proved
-// both through the service (the only deciding layer) and against the database, because a
-// bypassing writer must not be able to store a second nesting level or a foreign label.
-
 const SECRET = "correct horse battery staple staple";
 const EMAIL = "admin@example.com";
 const PASSWORD = "first-admin-password";
@@ -143,9 +139,6 @@ beforeAll(async () => {
   actor = { kind: "human", account: admin! };
 }, 120_000);
 
-// The service is reached through the feature's public interface with the same human actor
-// the REST cookie resolves to; REST assertions below cover the transport mapping.
-
 afterAll(async () => {
   await database?.sql.end();
   await pg?.stop();
@@ -158,7 +151,6 @@ afterEach(async () => {
     await tx.execute(sql`delete from project_labels`);
     await tx.execute(sql`delete from issues`);
     await tx.execute(sql`delete from projects`);
-    // Keep the bootstrapped human, workspace and session: each test reuses one login.
   });
 });
 
@@ -205,7 +197,7 @@ describe("project-scoped labels (#97)", () => {
 
     const removed = await del(`/api/labels/${label.id}`);
     expect(removed.status).toBe(204);
-    // A racing second delete cannot succeed or emit a second activity event.
+
     await problemOf(await del(`/api/labels/${label.id}`), 404, "label_not_found");
     const afterDelete = await get(`/api/projects/${pid}/labels`);
     expect(await afterDelete.json()).toEqual([]);
@@ -253,7 +245,6 @@ describe("project-scoped labels (#97)", () => {
       labels: [{ id: label, name: "Bug", color: "#ff0000" }],
     });
 
-    // A repeated attach is idempotent: one row, one activity event.
     const again = await post(`/api/issues/${issueA.id}/labels/${label}`, {});
     expect(again.status).toBe(201);
     const rows = await database.db
@@ -269,7 +260,7 @@ describe("project-scoped labels (#97)", () => {
     expect(field(Array.isArray(listedBody) ? listedBody[0] : undefined, "labels")).toMatchObject([
       { id: label },
     ]);
-    // The fallback-policy override path reuses the same issue mapper and must keep labels.
+
     const overridden = await patch(`/api/issues/${issueA.id}/fallback-policy`, {
       override: "require_human",
     });
@@ -281,7 +272,7 @@ describe("project-scoped labels (#97)", () => {
       404,
       "label_not_found",
     );
-    // The database trigger refuses a foreign label even for a writer that bypasses the service.
+
     await expect(
       rejectionMessage(
         database.db.execute(
@@ -399,7 +390,6 @@ describe("one-level subtasks (#97)", () => {
     const rootId = ids[0]!.id;
     const childId = ids[1]!.id;
 
-    // A self-parent is a CHECK, not just a service rule.
     await expect(
       rejectionMessage(
         database.db.execute(
@@ -408,7 +398,6 @@ describe("one-level subtasks (#97)", () => {
       ),
     ).resolves.toMatch(/own parent|issues_no_self_parent/i);
 
-    // Give the child a parent, then prove a second level is refused by the trigger.
     await database.db.execute(
       sql`update issues set parent_issue_id = ${rootId} where id = ${childId}`,
     );
@@ -424,7 +413,6 @@ describe("one-level subtasks (#97)", () => {
       ),
     ).resolves.toMatch(/depth/i);
 
-    // An issue that already has children cannot become a subtask.
     await expect(
       rejectionMessage(
         database.db.execute(
@@ -433,7 +421,6 @@ describe("one-level subtasks (#97)", () => {
       ),
     ).resolves.toMatch(/depth|children/i);
 
-    // Cross-project parenting is refused by the same trigger.
     const foreignId = randomUUID();
     await database.db.execute(sql`
       insert into issues (id, project_id, number, title, status, sort_order,
@@ -448,8 +435,6 @@ describe("one-level subtasks (#97)", () => {
       ),
     ).resolves.toMatch(/same project/i);
 
-    // A parent cannot move to another project while its subtasks stay behind, even when
-    // a writer bypasses the service and updates project_id directly.
     await expect(
       rejectionMessage(
         database.db.execute(sql`update issues set project_id = ${other} where id = ${rootId}`),
@@ -493,8 +478,6 @@ describe("one-level subtasks (#97)", () => {
       updatedByHumanId: humanId,
     });
 
-    // An unreadable parent answers like a missing one, on both create and update, rather
-    // than leaking its existence with a cross-project conflict.
     await problemOf(
       await post(`/api/projects/${pid}/issues`, { title: "Child", parentIssueId: foreignIssueId }),
       404,
@@ -514,7 +497,6 @@ describe("one-level subtasks (#97)", () => {
     const b = await issue(pid, { title: "B" });
     const c = await issue(pid, { title: "C" });
 
-    // Both writers lock the project row first, then the two issues in ascending id order.
     const results = await Promise.allSettled([
       service.updateIssue(actor, b.id, { parentIssueId: a.id }),
       service.updateIssue(actor, a.id, { parentIssueId: c.id }),
@@ -527,8 +509,7 @@ describe("one-level subtasks (#97)", () => {
       .from(issues)
       .where(eq(issues.projectId, pid));
     const parents = new Map(rows.map((row) => [row.id, row.parent]));
-    // A is B's parent in one outcome; in the other A's parent change was refused. Either
-    // way no stored parent may itself have a parent.
+
     const storedParents = [parents.get(a.id), parents.get(b.id)].filter(
       (value): value is string => value !== null && value !== undefined,
     );
