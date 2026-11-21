@@ -1,4 +1,6 @@
-import { Link } from "@tanstack/react-router";
+import { Heading } from "@astryxdesign/core/Heading";
+import { Text } from "@astryxdesign/core/Text";
+import { Link } from "../../lib/Link.tsx";
 import { ApiProblemError } from "../../lib/api.ts";
 
 // The one failure page for a project, issue, or knowledge entry. A 401 asks the reader to
@@ -20,11 +22,15 @@ export function ResourceLoadError({ resource, error }: { resource: Resource; err
   if (error instanceof ApiProblemError && error.status === 401) {
     return (
       <main>
-        <h1>{title}</h1>
-        <p role="alert">Sign in to view this {noun}.</p>
-        <p>
+        <Heading level={1} color="inherit">
+          {title}
+        </Heading>
+        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+          Sign in to view this {noun}.
+        </Text>
+        <Text as="p" display="block" type="inherit" color="inherit">
           <Link to="/signin">Sign in</Link>
-        </p>
+        </Text>
       </main>
     );
   }
@@ -32,11 +38,15 @@ export function ResourceLoadError({ resource, error }: { resource: Resource; err
   if (error instanceof ApiProblemError && error.status === 404) {
     return (
       <main>
-        <h1>{title}</h1>
-        <p role="alert">This {noun} does not exist or is not available to you.</p>
-        <p>
+        <Heading level={1} color="inherit">
+          {title}
+        </Heading>
+        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+          This {noun} does not exist or is not available to you.
+        </Text>
+        <Text as="p" display="block" type="inherit" color="inherit">
           <Link to="/">Go to your workspaces</Link>
-        </p>
+        </Text>
       </main>
     );
   }
@@ -44,19 +54,27 @@ export function ResourceLoadError({ resource, error }: { resource: Resource; err
   if (error instanceof ApiProblemError && error.status === 403) {
     return (
       <main>
-        <h1>{title}</h1>
-        <p role="alert">You do not have permission to view this {noun}.</p>
-        <p>
+        <Heading level={1} color="inherit">
+          {title}
+        </Heading>
+        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+          You do not have permission to view this {noun}.
+        </Text>
+        <Text as="p" display="block" type="inherit" color="inherit">
           <Link to="/">Go to your workspaces</Link>
-        </p>
+        </Text>
       </main>
     );
   }
 
   return (
     <main>
-      <h1>{title}</h1>
-      <p role="alert">Could not load this {noun}. Check your connection and try again.</p>
+      <Heading level={1} color="inherit">
+        {title}
+      </Heading>
+      <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+        Could not load this {noun}. Check your connection and try again.
+      </Text>
     </main>
   );
 }

@@ -141,7 +141,13 @@
       }
     ]
   },
-  "ignorePatterns": ["**/dist/**", "contract/**", "**/routeTree.gen.ts"],
+  "ignorePatterns": [
+    "**/dist/**",
+    "contract/**",
+    "**/routeTree.gen.ts",
+    "apps/web/src/astryx-themes.ts",
+    "apps/web/src/themes/orrery/orrery.*"
+  ],
   "overrides": [
     {
       "files": ["apps/**", "packages/**", "tests/**"],

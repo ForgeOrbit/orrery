@@ -1,3 +1,7 @@
+import { Text } from "@astryxdesign/core/Text";
+import { Badge } from "@astryxdesign/core/Badge";
+import { Selector } from "@astryxdesign/core/Selector";
+import { Button } from "@astryxdesign/core/Button";
 import { ISSUE_SORT_STEP, IssuePriority, type Issue, type IssueDetail } from "@orrery/contract";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -7,7 +11,7 @@ import { issueQuery, issuesQuery, projectActivityQuery } from "./queries.ts";
 // A board badge is a plain label: readers always see the current importance, even when
 // they cannot change it.
 export function PriorityBadge({ priority }: { priority: IssuePriority }) {
-  return <span data-issue-priority={priority}>{priority}</span>;
+  return <Badge data-issue-priority={priority} label={priority} />;
 }
 
 // Move one card within its own priority group. Crossing groups by changing sortOrder would
@@ -79,31 +83,38 @@ export function IssuePriorityControls({
   }
 
   return (
-    <span data-issue-order-controls={issue.id}>
-      <label htmlFor={`issue-priority-${issue.id}`}>Priority</label>
-      <select
+    <Text type="inherit" color="inherit" data-issue-order-controls={issue.id}>
+      <Selector
+        label="Priority"
         id={`issue-priority-${issue.id}`}
         data-issue-priority-select={issue.id}
         value={issue.priority}
-        disabled={saving}
-        onChange={(event) => {
-          const next = IssuePriority.safeParse(event.target.value);
+        isDisabled={saving}
+        onChange={(value) => {
+          const next = IssuePriority.safeParse(value);
           if (next.success) void save({ priority: next.data });
         }}
-      >
-        {IssuePriority.options.map((option) => (
-          <option key={option} value={option}>
-            {option}
-          </option>
-        ))}
-      </select>{" "}
-      <button type="button" disabled={saving || !canMoveUp} onClick={() => move("up")}>
-        Move up
-      </button>{" "}
-      <button type="button" disabled={saving || !canMoveDown} onClick={() => move("down")}>
-        Move down
-      </button>
-      {error !== undefined && <span role="alert">{error}</span>}
-    </span>
+        options={IssuePriority.options.map((option) => ({ value: option, label: option }))}
+      />{" "}
+      <Button
+        type="button"
+        isDisabled={saving || !canMoveUp}
+        onClick={() => move("up")}
+        label="Move up"
+        variant="secondary"
+      />{" "}
+      <Button
+        type="button"
+        isDisabled={saving || !canMoveDown}
+        onClick={() => move("down")}
+        label="Move down"
+        variant="secondary"
+      />
+      {error !== undefined && (
+        <Text type="inherit" color="inherit" role="alert">
+          {error}
+        </Text>
+      )}
+    </Text>
   );
 }

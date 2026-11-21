@@ -1,5 +1,11 @@
+import { Heading } from "@astryxdesign/core/Heading";
+import { Text } from "@astryxdesign/core/Text";
+import { Section } from "@astryxdesign/core/Section";
+import { TextField } from "../lib/fields.tsx";
+import { Button } from "@astryxdesign/core/Button";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { Link } from "../lib/Link.tsx";
 import type { InvitationSummary } from "@orrery/contract";
 import type { FormEvent } from "react";
 import { useState } from "react";
@@ -28,7 +34,11 @@ export const Route = createFileRoute("/")({
     ]);
   },
   component: Home,
-  errorComponent: () => <p>Server: unreachable</p>,
+  errorComponent: () => (
+    <Text as="p" display="block" type="inherit" color="inherit">
+      Server: unreachable
+    </Text>
+  ),
 });
 
 function Home() {
@@ -39,43 +49,49 @@ function Home() {
 
   return (
     <main>
-      <h1>Orrery</h1>
-      <p>
+      <Heading level={1} color="inherit">
+        Orrery
+      </Heading>
+      <Text as="p" display="block" type="inherit" color="inherit">
         Server: {health.status} ({health.version})
-      </p>
+      </Text>
       {session.signedIn ? (
         <>
-          <p>Signed in as {session.email}.</p>
-          <section>
-            <h2>Your workspaces</h2>
+          <Text as="p" display="block" type="inherit" color="inherit">
+            Signed in as {session.email}.
+          </Text>
+          <Section className="page-section" padding={0}>
+            <Heading level={2} color="inherit">
+              Your workspaces
+            </Heading>
             <ul>
               {workspaces.map((workspace) => (
                 <li key={workspace.id} data-workspace-id={workspace.id}>
                   <Link to="/workspaces/$workspaceId" params={{ workspaceId: workspace.id }}>
                     {workspace.name}
                   </Link>{" "}
-                  <span>
+                  <Text type="inherit" color="inherit">
                     {workspace.kind === "personal"
                       ? "Personal"
                       : workspace.isOwner
                         ? "Owner"
                         : "Member"}
-                  </span>
+                  </Text>
                 </li>
               ))}
             </ul>
-          </section>
+          </Section>
           <CreateWorkspaceForm />
           <InstallationInvitations />
         </>
       ) : setup.setupComplete ? (
-        <p>
+        <Text as="p" display="block" type="inherit" color="inherit">
           <Link to="/signin">Sign in</Link> to continue.
-        </p>
+        </Text>
       ) : (
-        <p>
+        <Text as="p" display="block" type="inherit" color="inherit">
           New installation? <Link to="/setup">Set up Orrery</Link>.
-        </p>
+        </Text>
       )}
     </main>
   );
@@ -111,24 +127,28 @@ function CreateWorkspaceForm() {
   }
 
   return (
-    <section>
-      <h2>Create a shared workspace</h2>
+    <Section className="page-section" padding={0}>
+      <Heading level={2} color="inherit">
+        Create a shared workspace
+      </Heading>
       <form onSubmit={(event) => void onSubmit(event)}>
-        <label htmlFor="workspace-name">Workspace name</label>
-        <input
+        <TextField
+          label="Workspace name"
           id="workspace-name"
-          name="name"
+          htmlName="name"
           value={name}
-          onChange={(event) => setName(event.target.value)}
+          onChange={setName}
           required
           maxLength={120}
         />
-        {error !== undefined && <p role="alert">{error}</p>}
-        <button type="submit" disabled={submitting}>
-          Create workspace
-        </button>
+        {error !== undefined && (
+          <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+            {error}
+          </Text>
+        )}
+        <Button type="submit" isDisabled={submitting} label="Create workspace" variant="primary" />
       </form>
-    </section>
+    </Section>
   );
 }
 
@@ -180,29 +200,38 @@ function InstallationInvitations() {
   }
 
   return (
-    <section>
-      <h2>Installation invitations</h2>
-      <p>
+    <Section className="page-section" padding={0}>
+      <Heading level={2} color="inherit">
+        Installation invitations
+      </Heading>
+      <Text as="p" display="block" type="inherit" color="inherit">
         <Link to="/settings/smtp">Configure SMTP</Link>
-      </p>
-      <p>
+      </Text>
+      <Text as="p" display="block" type="inherit" color="inherit">
         <Link to="/history/installation">View installation history</Link>
-      </p>
+      </Text>
       <form onSubmit={(event) => void onInvite(event)}>
-        <label htmlFor="installation-invite-email">Email</label>
-        <input
+        <TextField
+          label="Email"
           id="installation-invite-email"
-          name="email"
+          htmlName="email"
           type="email"
           value={email}
-          onChange={(event) => setEmail(event.target.value)}
+          onChange={setEmail}
           required
           autoComplete="off"
         />
-        {error !== undefined && <p role="alert">{error}</p>}
-        <button type="submit" disabled={inviting}>
-          Send installation invitation
-        </button>
+        {error !== undefined && (
+          <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+            {error}
+          </Text>
+        )}
+        <Button
+          type="submit"
+          isDisabled={inviting}
+          label="Send installation invitation"
+          variant="primary"
+        />
       </form>
       <InvitationList
         invitations={invitations}
@@ -215,6 +244,6 @@ function InstallationInvitations() {
           run(invitation, () => revokeInstallationInvitation(invitation.id))
         }
       />
-    </section>
+    </Section>
   );
 }

@@ -1,3 +1,6 @@
+import { Heading } from "@astryxdesign/core/Heading";
+import { Text } from "@astryxdesign/core/Text";
+import { Section } from "@astryxdesign/core/Section";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import type { RunChild, RunDetail, RunModelChange } from "@orrery/contract";
 import { workspaceRunsQuery } from "./queries.ts";
@@ -10,7 +13,12 @@ import { workspaceRunsQuery } from "./queries.ts";
 const unknown = (value: string | null | undefined) => value ?? "unknown";
 
 function ModelHistory({ changes }: { changes: readonly RunModelChange[] }) {
-  if (changes.length === 0) return <p data-model-history-empty>No model changes reported.</p>;
+  if (changes.length === 0)
+    return (
+      <Text as="p" display="block" type="inherit" color="inherit" data-model-history-empty>
+        No model changes reported.
+      </Text>
+    );
   return (
     <ul data-model-history>
       {changes.map((change) => (
@@ -23,7 +31,12 @@ function ModelHistory({ changes }: { changes: readonly RunModelChange[] }) {
 }
 
 function Children({ workers }: { workers: readonly RunChild[] }) {
-  if (workers.length === 0) return <p data-children-empty>No child workers reported.</p>;
+  if (workers.length === 0)
+    return (
+      <Text as="p" display="block" type="inherit" color="inherit" data-children-empty>
+        No child workers reported.
+      </Text>
+    );
   return (
     <ul data-children>
       {workers.map((child) => (
@@ -45,12 +58,19 @@ function RunItem({ run }: { run: RunDetail }) {
   return (
     <li data-run-id={run.id} data-harness={unknown(run.harness)} data-model={unknown(run.model)}>
       <strong data-run-label>Run {run.id}</strong> · agent{" "}
-      <span data-agent-name>{run.agentName}</span> · harness {unknown(run.harness)}
+      <Text type="inherit" color="inherit" data-agent-name>
+        {run.agentName}
+      </Text>{" "}
+      · harness {unknown(run.harness)}
       {run.harnessVersion !== null && <> {run.harnessVersion}</>} · model {unknown(run.model)} ·{" "}
       {run.status}
-      <h4>Model changes</h4>
+      <Heading level={4} color="inherit">
+        Model changes
+      </Heading>
       <ModelHistory changes={run.modelHistory} />
-      <h4>Child workers</h4>
+      <Heading level={4} color="inherit">
+        Child workers
+      </Heading>
       <Children workers={run.children} />
     </li>
   );
@@ -59,10 +79,14 @@ function RunItem({ run }: { run: RunDetail }) {
 export function RunsSection({ workspaceId }: { workspaceId: string }) {
   const { data: runs } = useSuspenseQuery(workspaceRunsQuery(workspaceId));
   return (
-    <section data-runs-section>
-      <h2>Runs</h2>
+    <Section className="page-section" padding={0} data-runs-section>
+      <Heading level={2} color="inherit">
+        Runs
+      </Heading>
       {runs.length === 0 ? (
-        <p>No runs reported in this workspace yet.</p>
+        <Text as="p" display="block" type="inherit" color="inherit">
+          No runs reported in this workspace yet.
+        </Text>
       ) : (
         <ul>
           {runs.map((run) => (
@@ -70,6 +94,6 @@ export function RunsSection({ workspaceId }: { workspaceId: string }) {
           ))}
         </ul>
       )}
-    </section>
+    </Section>
   );
 }

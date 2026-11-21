@@ -1,3 +1,4 @@
 // Public interface of the web inbox feature.
-export { inboxQuery } from "./queries.ts";
+export { inboxQuery, issueQuestionsQuery } from "./queries.ts";
 export { answerQuestion } from "./commands.ts";
+export { isPendingQuestion, QuestionDetails } from "./QuestionDetails.tsx";

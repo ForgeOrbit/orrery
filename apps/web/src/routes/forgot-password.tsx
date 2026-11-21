@@ -1,4 +1,9 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { Heading } from "@astryxdesign/core/Heading";
+import { Text } from "@astryxdesign/core/Text";
+import { TextField } from "../lib/fields.tsx";
+import { Button } from "@astryxdesign/core/Button";
+import { createFileRoute } from "@tanstack/react-router";
+import { Link } from "../lib/Link.tsx";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { requestPasswordReset } from "../features/recovery/index.ts";
@@ -7,6 +12,7 @@ import { requestPasswordReset } from "../features/recovery/index.ts";
 // the response is the same for every address, so this page learns nothing about which
 // accounts exist or which have verified email addresses.
 export const Route = createFileRoute("/forgot-password")({
+  staticData: { accessPage: true },
   component: ForgotPasswordPage,
 });
 
@@ -33,28 +39,38 @@ function ForgotPasswordPage() {
 
   return (
     <main>
-      <h1>Reset your password</h1>
-      <p>Enter your email address. If it can be recovered, we will send a reset link.</p>
+      <Heading level={1} color="inherit">
+        Reset your password
+      </Heading>
+      <Text as="p" display="block" type="inherit" color="inherit">
+        Enter your email address. If it can be recovered, we will send a reset link.
+      </Text>
       <form onSubmit={(event) => void onSubmit(event)}>
-        <label htmlFor="forgot-email">Email</label>
-        <input
+        <TextField
+          label="Email"
           id="forgot-email"
-          name="email"
+          htmlName="email"
           type="email"
           value={email}
-          onChange={(event) => setEmail(event.target.value)}
+          onChange={setEmail}
           required
           autoComplete="username"
         />
-        {error !== undefined && <p role="alert">{error}</p>}
-        {message !== undefined && <p role="status">{message}</p>}
-        <button type="submit" disabled={submitting}>
-          Send reset link
-        </button>
+        {error !== undefined && (
+          <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+            {error}
+          </Text>
+        )}
+        {message !== undefined && (
+          <Text as="p" display="block" type="inherit" color="inherit" role="status">
+            {message}
+          </Text>
+        )}
+        <Button type="submit" isDisabled={submitting} label="Send reset link" variant="primary" />
       </form>
-      <p>
+      <Text as="p" display="block" type="inherit" color="inherit">
         <Link to="/signin">Back to sign in</Link>
-      </p>
+      </Text>
     </main>
   );
 }

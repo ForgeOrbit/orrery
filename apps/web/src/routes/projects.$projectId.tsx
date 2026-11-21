@@ -1,19 +1,21 @@
+import { Heading } from "@astryxdesign/core/Heading";
+import { Text } from "@astryxdesign/core/Text";
+import { Section } from "@astryxdesign/core/Section";
+import { TextField } from "../lib/fields.tsx";
+import { Button } from "@astryxdesign/core/Button";
+import { Selector } from "@astryxdesign/core/Selector";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import {
-  ProjectAccessLevel,
-  type IssueDetail,
-  type Project,
-  type ProjectActivityType,
-} from "@orrery/contract";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { Link } from "../lib/Link.tsx";
+import { ProjectAccessLevel, type Project, type ProjectActivityType } from "@orrery/contract";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import {
-  createIssue,
+  CreateIssueForm,
   createKnowledgeEntry,
   IssuePriorityControls,
-  issueQuery,
   issuesQuery,
+  issueStatusLabels,
   knowledgeEntriesQuery,
   knowledgeEntryQuery,
   projectAccessQuery,
@@ -91,7 +93,7 @@ function ProjectPage() {
 
   return (
     <main>
-      <p>
+      <Text as="p" display="block" type="inherit" color="inherit">
         <Link to="/workspaces/$workspaceId" params={{ workspaceId: project.workspaceId }}>
           Back to workspace
         </Link>{" "}
@@ -103,19 +105,28 @@ function ProjectPage() {
         <Link to="/board/$projectId" params={{ projectId: project.id }} data-board-link>
           Board
         </Link>
-      </p>
-      <h1>{project.name}</h1>
-      <p>
-        Project · <span data-project-access-level={project.accessLevel}>{project.accessLevel}</span>{" "}
+      </Text>
+      <Heading level={1} color="inherit">
+        {project.name}
+      </Heading>
+      <Text as="p" display="block" type="inherit" color="inherit">
+        Project ·{" "}
+        <Text type="inherit" color="inherit" data-project-access-level={project.accessLevel}>
+          {project.accessLevel}
+        </Text>{" "}
         · created by {project.createdBy.displayName}
-      </p>
+      </Text>
 
       {canManage && <ProjectSettings key={project.name} project={project} />}
 
-      <section>
-        <h2>Issues</h2>
+      <Section className="page-section" padding={0}>
+        <Heading level={2} color="inherit">
+          Issues
+        </Heading>
         {issues.length === 0 ? (
-          <p>No issues yet.</p>
+          <Text as="p" display="block" type="inherit" color="inherit">
+            No issues yet.
+          </Text>
         ) : (
           <ul>
             {issues.map((issue) => (
@@ -124,7 +135,9 @@ function ProjectPage() {
                   #{issue.number} {issue.title}
                 </Link>{" "}
                 <PriorityBadge priority={issue.priority} />{" "}
-                <span data-issue-status={issue.status}>{issue.status}</span>{" "}
+                <Text type="inherit" color="inherit" data-issue-status={issue.status}>
+                  {issueStatusLabels[issue.status]}
+                </Text>{" "}
                 {canContribute && (
                   <IssuePriorityControls issue={issue} issues={issues} projectId={project.id} />
                 )}
@@ -133,12 +146,16 @@ function ProjectPage() {
           </ul>
         )}
         {canContribute && <CreateIssueForm projectId={project.id} />}
-      </section>
+      </Section>
 
-      <section>
-        <h2>Knowledge</h2>
+      <Section className="page-section" padding={0}>
+        <Heading level={2} color="inherit">
+          Knowledge
+        </Heading>
         {knowledge.length === 0 ? (
-          <p>No knowledge entries yet.</p>
+          <Text as="p" display="block" type="inherit" color="inherit">
+            No knowledge entries yet.
+          </Text>
         ) : (
           <ul>
             {knowledge.map((entry) => (
@@ -146,13 +163,15 @@ function ProjectPage() {
                 <Link to="/knowledge/$entryId" params={{ entryId: entry.id }}>
                   {entry.title}
                 </Link>{" "}
-                <span>by {entry.updatedBy.displayName}</span>
+                <Text type="inherit" color="inherit">
+                  by {entry.updatedBy.displayName}
+                </Text>
               </li>
             ))}
           </ul>
         )}
         {canContribute && <CreateKnowledgeForm projectId={project.id} />}
-      </section>
+      </Section>
 
       {canManage && project.workspaceKind === "shared" && <ProjectAccess projectId={project.id} />}
 
@@ -188,24 +207,28 @@ function ProjectSettings({ project }: { project: Project }) {
   }
 
   return (
-    <section>
-      <h2>Project settings</h2>
+    <Section className="page-section" padding={0}>
+      <Heading level={2} color="inherit">
+        Project settings
+      </Heading>
       <form onSubmit={(event) => void onSubmit(event)}>
-        <label htmlFor="project-rename">Project name</label>
-        <input
+        <TextField
+          label="Project name"
           id="project-rename"
-          name="name"
+          htmlName="name"
           value={name}
-          onChange={(event) => setName(event.target.value)}
+          onChange={setName}
           required
           maxLength={120}
         />
-        {error !== undefined && <p role="alert">{error}</p>}
-        <button type="submit" disabled={saving}>
-          Save project
-        </button>
+        {error !== undefined && (
+          <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+            {error}
+          </Text>
+        )}
+        <Button type="submit" isDisabled={saving} label="Save project" variant="primary" />
       </form>
-    </section>
+    </Section>
   );
 }
 
@@ -253,84 +276,71 @@ function ProjectAccess({ projectId }: { projectId: string }) {
   }
 
   return (
-    <section>
-      <h2>Project access</h2>
+    <Section className="page-section" padding={0}>
+      <Heading level={2} color="inherit">
+        Project access
+      </Heading>
       {grants.length === 0 ? (
-        <p>No one else has explicit access yet.</p>
+        <Text as="p" display="block" type="inherit" color="inherit">
+          No one else has explicit access yet.
+        </Text>
       ) : (
         <ul>
           {grants.map((grant) => (
             <li key={grant.humanId} data-project-access-for={grant.email}>
-              {grant.email} <span data-access-level={grant.level}>{grant.level}</span>{" "}
-              <span>granted by {grant.grantedBy.email}</span>{" "}
-              <button type="button" onClick={() => void onRevoke(grant.humanId)} disabled={saving}>
-                Revoke access
-              </button>
+              {grant.email}{" "}
+              <Text type="inherit" color="inherit" data-access-level={grant.level}>
+                {grant.level}
+              </Text>{" "}
+              <Text type="inherit" color="inherit">
+                granted by {grant.grantedBy.email}
+              </Text>{" "}
+              <Button
+                type="button"
+                onClick={() => void onRevoke(grant.humanId)}
+                isDisabled={saving}
+                label="Revoke access"
+                variant="destructive"
+              />
             </li>
           ))}
         </ul>
       )}
       <form onSubmit={(event) => void onGrant(event)}>
-        <label htmlFor="access-email">Email</label>
-        <input
+        <TextField
+          label="Email"
           id="access-email"
-          name="email"
+          htmlName="email"
           type="email"
           value={email}
-          onChange={(event) => setEmail(event.target.value)}
+          onChange={setEmail}
           required
           autoComplete="off"
         />
-        <label htmlFor="access-level">Access level</label>
-        <select
+
+        <Selector
+          label="Access level"
           id="access-level"
-          name="level"
+          htmlName="level"
           value={level}
-          onChange={(event) => {
-            const next = ProjectAccessLevel.safeParse(event.target.value);
+          onChange={(value) => {
+            const next = ProjectAccessLevel.safeParse(value);
             if (next.success) setLevel(next.data);
           }}
-        >
-          <option value="read">Read</option>
-          <option value="contribute">Contribute</option>
-          <option value="manage">Manage</option>
-        </select>
-        {error !== undefined && <p role="alert">{error}</p>}
-        <button type="submit" disabled={saving}>
-          Grant access
-        </button>
+          options={[
+            { value: "read", label: "Read" },
+            { value: "contribute", label: "Contribute" },
+            { value: "manage", label: "Manage" },
+          ]}
+        />
+        {error !== undefined && (
+          <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+            {error}
+          </Text>
+        )}
+        <Button type="submit" isDisabled={saving} label="Grant access" variant="primary" />
       </form>
-    </section>
-  );
-}
-
-function CreateIssueForm({ projectId }: { projectId: string }) {
-  const queryClient = useQueryClient();
-  const navigate = useNavigate();
-
-  return (
-    <TitleBodyForm
-      idPrefix="issue"
-      titleLabel="Issue title"
-      bodyLabel="Description"
-      bodyRows={4}
-      submitLabel="Create issue"
-      fallbackError="Could not create the issue."
-      resetOnSuccess
-      onSubmit={async ({ title, body }) => {
-        const issue = await createIssue(projectId, { title, body });
-        // A new issue has no links yet; seed the detail cache the loader will read.
-        queryClient.setQueryData<IssueDetail>(issueQuery(issue.id).queryKey, {
-          ...issue,
-          links: [],
-        });
-        await Promise.all([
-          queryClient.invalidateQueries({ queryKey: issuesQuery(projectId).queryKey }),
-          queryClient.invalidateQueries({ queryKey: projectActivityQuery(projectId).queryKey }),
-        ]);
-        await navigate({ to: "/issues/$issueId", params: { issueId: issue.id } });
-      }}
-    />
+    </Section>
   );
 }
 
@@ -363,10 +373,14 @@ function CreateKnowledgeForm({ projectId }: { projectId: string }) {
 function Activity({ projectId }: { projectId: string }) {
   const { data: activity } = useSuspenseQuery(projectActivityQuery(projectId));
   return (
-    <section>
-      <h2>Activity</h2>
+    <Section className="page-section" padding={0}>
+      <Heading level={2} color="inherit">
+        Activity
+      </Heading>
       {activity.length === 0 ? (
-        <p>No activity yet.</p>
+        <Text as="p" display="block" type="inherit" color="inherit">
+          No activity yet.
+        </Text>
       ) : (
         <ul>
           {activity.map((event) => (
@@ -377,6 +391,6 @@ function Activity({ projectId }: { projectId: string }) {
           ))}
         </ul>
       )}
-    </section>
+    </Section>
   );
 }

@@ -1,3 +1,4 @@
+import { Text } from "@astryxdesign/core/Text";
 import type { HistoryEvent } from "@orrery/contract";
 
 // One list serves every history view. Events carry their own kind and stable type code, so
@@ -77,7 +78,12 @@ export function HistoryList({
   events: HistoryEvent[];
   emptyMessage?: string;
 }) {
-  if (events.length === 0) return <p>{emptyMessage}</p>;
+  if (events.length === 0)
+    return (
+      <Text as="p" display="block" type="inherit" color="inherit">
+        {emptyMessage}
+      </Text>
+    );
   return (
     <ul>
       {events.map((event) => {
@@ -89,7 +95,9 @@ export function HistoryList({
             data-event-type={event.type}
             data-event-id={event.id}
           >
-            <span data-event-description={description}>{description}</span>
+            <Text type="inherit" color="inherit" data-event-description={description}>
+              {description}
+            </Text>
             {event.summary !== null && <> “{event.summary}”</>}
             {event.scope.name !== null && <> · {event.scope.name}</>} ·{" "}
             <time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time>

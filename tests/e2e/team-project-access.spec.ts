@@ -305,7 +305,8 @@ test("grants access in the browser and shows Read without mutation controls", as
   // The owner grants the colleague Contribute through the project page.
   await page.goto(`/projects/${projectId}`);
   await page.getByLabel("Email").fill(COLLEAGUE_EMAIL);
-  await page.getByLabel("Access level").selectOption("contribute");
+  await page.getByRole("combobox", { name: "Access level" }).click();
+  await page.getByRole("option", { name: "Contribute", exact: true }).click();
   await page.getByRole("button", { name: "Grant access" }).click();
   const grantRow = page.locator(`li[data-project-access-for="${COLLEAGUE_EMAIL}"]`);
   await expect(grantRow).toContainText("contribute");

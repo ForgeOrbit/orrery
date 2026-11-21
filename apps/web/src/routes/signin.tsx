@@ -1,5 +1,10 @@
+import { Heading } from "@astryxdesign/core/Heading";
+import { Text } from "@astryxdesign/core/Text";
+import { TextField } from "../lib/fields.tsx";
+import { Button } from "@astryxdesign/core/Button";
 import { useQueryClient } from "@tanstack/react-query";
-import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
+import { Link } from "../lib/Link.tsx";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { sessionQuery, signIn } from "../features/accounts/index.ts";
@@ -14,6 +19,7 @@ function invitationTokenFrom(next: string | undefined): string | undefined {
 }
 
 export const Route = createFileRoute("/signin")({
+  staticData: { accessPage: true },
   validateSearch: (search: Record<string, unknown>) => {
     const next =
       typeof search.next === "string" && INVITATION_NEXT.test(search.next)
@@ -65,36 +71,41 @@ function SignInPage() {
 
   return (
     <main>
-      <h1>Sign in</h1>
+      <Heading level={1} color="inherit">
+        Sign in
+      </Heading>
       <form onSubmit={(event) => void onSubmit(event)}>
-        <label htmlFor="signin-email">Email</label>
-        <input
+        <TextField
+          label="Email"
           id="signin-email"
-          name="email"
+          htmlName="email"
           type="email"
           value={email}
-          onChange={(event) => setEmail(event.target.value)}
+          onChange={setEmail}
           required
           autoComplete="username"
         />
-        <label htmlFor="signin-password">Password</label>
-        <input
+
+        <TextField
+          label="Password"
           id="signin-password"
-          name="password"
+          htmlName="password"
           type="password"
           value={password}
-          onChange={(event) => setPassword(event.target.value)}
+          onChange={setPassword}
           required
           autoComplete="current-password"
         />
-        {error !== undefined && <p role="alert">{error}</p>}
-        <button type="submit" disabled={submitting}>
-          Sign in
-        </button>
+        {error !== undefined && (
+          <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+            {error}
+          </Text>
+        )}
+        <Button type="submit" isDisabled={submitting} label="Sign in" variant="primary" />
       </form>
-      <p>
+      <Text as="p" display="block" type="inherit" color="inherit">
         <Link to="/forgot-password">Forgot your password?</Link>
-      </p>
+      </Text>
     </main>
   );
 }

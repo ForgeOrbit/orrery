@@ -1,5 +1,8 @@
+import { Heading } from "@astryxdesign/core/Heading";
+import { Text } from "@astryxdesign/core/Text";
 import { useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
+import { Link } from "../lib/Link.tsx";
 import { HistoryList, installationHistoryQuery } from "../features/history/index.ts";
 
 // Installation-level access history, visible only to system administrators. The query
@@ -17,12 +20,16 @@ function InstallationHistoryPage() {
 
   return (
     <main>
-      <p>
+      <Text as="p" display="block" type="inherit" color="inherit">
         <Link to="/">Back to your workspaces</Link>
-      </p>
-      <h1>Installation history</h1>
+      </Text>
+      <Heading level={1} color="inherit">
+        Installation history
+      </Heading>
       {events === null ? (
-        <p role="alert">Installation history is available to system administrators only.</p>
+        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+          Installation history is available to system administrators only.
+        </Text>
       ) : (
         <HistoryList
           events={events}

@@ -1,5 +1,10 @@
+import { Heading } from "@astryxdesign/core/Heading";
+import { Text } from "@astryxdesign/core/Text";
+import { TextField } from "../lib/fields.tsx";
+import { Button } from "@astryxdesign/core/Button";
 import { useQueryClient } from "@tanstack/react-query";
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { Link } from "../lib/Link.tsx";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { sessionQuery, signIn, type Session } from "../features/accounts/index.ts";
@@ -12,6 +17,7 @@ import {
 // token is redeemed only by the POST the password form sends, and choosing a password
 // is what completes registration.
 export const Route = createFileRoute("/register")({
+  staticData: { accessPage: true },
   validateSearch: (search: Record<string, unknown>) => ({
     token: typeof search.token === "string" ? search.token : "",
   }),
@@ -82,11 +88,15 @@ function RegisterPage() {
   if (createdEmail !== undefined) {
     return (
       <main>
-        <h1>Accept your invitation</h1>
-        <p role="status">Your account was created for {createdEmail}.</p>
-        <p>
+        <Heading level={1} color="inherit">
+          Accept your invitation
+        </Heading>
+        <Text as="p" display="block" type="inherit" color="inherit" role="status">
+          Your account was created for {createdEmail}.
+        </Text>
+        <Text as="p" display="block" type="inherit" color="inherit">
           <Link to="/signin">Sign in</Link> with the password you chose.
-        </p>
+        </Text>
       </main>
     );
   }
@@ -94,11 +104,15 @@ function RegisterPage() {
   if (declined) {
     return (
       <main>
-        <h1>Accept your invitation</h1>
-        <p role="status">You declined this invitation. The link no longer works.</p>
-        <p>
+        <Heading level={1} color="inherit">
+          Accept your invitation
+        </Heading>
+        <Text as="p" display="block" type="inherit" color="inherit" role="status">
+          You declined this invitation. The link no longer works.
+        </Text>
+        <Text as="p" display="block" type="inherit" color="inherit">
           <Link to="/">Go to Orrery</Link>
-        </p>
+        </Text>
       </main>
     );
   }
@@ -106,39 +120,60 @@ function RegisterPage() {
   if (token === "") {
     return (
       <main>
-        <h1>Accept your invitation</h1>
-        <p role="alert">This invitation link is incomplete. Ask for a fresh invitation.</p>
+        <Heading level={1} color="inherit">
+          Accept your invitation
+        </Heading>
+        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+          This invitation link is incomplete. Ask for a fresh invitation.
+        </Text>
       </main>
     );
   }
 
   return (
     <main>
-      <h1>Accept your invitation</h1>
-      <p>You have been invited to join this Orrery installation.</p>
-      <p>Choose a password to create your account and personal workspace.</p>
+      <Heading level={1} color="inherit">
+        Accept your invitation
+      </Heading>
+      <Text as="p" display="block" type="inherit" color="inherit">
+        You have been invited to join this Orrery installation.
+      </Text>
+      <Text as="p" display="block" type="inherit" color="inherit">
+        Choose a password to create your account and personal workspace.
+      </Text>
       <form onSubmit={(event) => void onSubmit(event)}>
-        <label htmlFor="register-password">Password</label>
-        <input
+        <TextField
+          label="Password"
           id="register-password"
-          name="password"
+          htmlName="password"
           type="password"
           value={password}
-          onChange={(event) => setPassword(event.target.value)}
+          onChange={setPassword}
           required
           minLength={8}
           autoComplete="new-password"
         />
-        {error !== undefined && <p role="alert">{error}</p>}
-        <button type="submit" disabled={submitting || declining}>
-          Register
-        </button>
+        {error !== undefined && (
+          <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+            {error}
+          </Text>
+        )}
+        <Button
+          type="submit"
+          isDisabled={submitting || declining}
+          label="Register"
+          variant="primary"
+        />
       </form>
-      <p>
-        <button type="button" onClick={() => void onDecline()} disabled={submitting || declining}>
-          Decline invitation
-        </button>
-      </p>
+      <Text as="p" display="block" type="inherit" color="inherit">
+        <Button
+          type="button"
+          onClick={() => void onDecline()}
+          isDisabled={submitting || declining}
+          label="Decline invitation"
+          variant="secondary"
+        />
+      </Text>
     </main>
   );
 }

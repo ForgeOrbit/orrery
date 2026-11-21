@@ -1,3 +1,7 @@
+import { Text } from "@astryxdesign/core/Text";
+import { Stack } from "@astryxdesign/core/Stack";
+import { TextField } from "../../lib/fields.tsx";
+import { Button } from "@astryxdesign/core/Button";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { FormEvent } from "react";
 import { useState } from "react";
@@ -26,19 +30,21 @@ export function SessionStatus({
   const status = stopping ? "stopping" : session.status;
 
   return (
-    <span className="session-status" data-session-id={session.id}>
-      <span data-session-status={status}>{status}</span>
+    <Stack className="session-status" data-session-id={session.id}>
+      <Text type="inherit" color="inherit" data-session-status={status}>
+        {status}
+      </Text>
       {session.stopRequested && session.stopRequestedAt !== null && (
-        <span data-stop-requested-at={session.stopRequestedAt}>
+        <Text type="inherit" color="inherit" data-stop-requested-at={session.stopRequestedAt}>
           {" "}
           · stop requested at {session.stopRequestedAt}
           {session.stopReason !== null && <> · “{session.stopReason}”</>}
-        </span>
+        </Text>
       )}
       {canContribute && session.status === "active" && !stopping && (
         <StopAgentForm issueId={issueId} projectId={projectId} />
       )}
-    </span>
+    </Stack>
   );
 }
 
@@ -68,24 +74,24 @@ function StopAgentForm({ issueId, projectId }: { issueId: string; projectId: str
   }
 
   return (
-    <form
-      className="stop-agent-form"
-      onSubmit={(event) => void onSubmit(event)}
-      style={{ display: "inline", marginInlineStart: "0.5rem" }}
-    >
-      <label htmlFor={`stop-reason-${issueId}`}>Reason (optional)</label>{" "}
-      <input
+    <form className="stop-agent-form" onSubmit={(event) => void onSubmit(event)}>
+      {" "}
+      <TextField
+        label="Reason (optional)"
         id={`stop-reason-${issueId}`}
-        name="reason"
+        htmlName="reason"
         value={reason}
         maxLength={2000}
-        onChange={(event) => setReason(event.target.value)}
+        onChange={setReason}
         placeholder="Why should the agent stop?"
       />{" "}
-      <button type="submit" disabled={submitting}>
-        Stop agent
-      </button>
-      {error !== undefined && <span role="alert"> {error}</span>}
+      <Button type="submit" isDisabled={submitting} label="Stop agent" variant="destructive" />
+      {error !== undefined && (
+        <Text type="inherit" color="inherit" role="alert">
+          {" "}
+          {error}
+        </Text>
+      )}
     </form>
   );
 }

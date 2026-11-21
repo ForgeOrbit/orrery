@@ -1,8 +1,21 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-astryx-theme="orrery">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      try {
+        const appearance = localStorage.getItem("orrery.appearance");
+        if (appearance === "light" || appearance === "dark") {
+          document.documentElement.dataset.theme = appearance;
+        }
+      } catch {
+        // The browser's color scheme still applies when storage is unavailable.
+      }
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../../assets/orrery-mark.svg" />
+    <link rel="stylesheet" href="/src/orrery.css" />
     <title>Orrery</title>
   </head>
   <body>

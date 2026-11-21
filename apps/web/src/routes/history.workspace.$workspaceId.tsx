@@ -1,5 +1,8 @@
+import { Heading } from "@astryxdesign/core/Heading";
+import { Text } from "@astryxdesign/core/Text";
 import { useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
+import { Link } from "../lib/Link.tsx";
 import { HistoryList, workspaceHistoryQuery } from "../features/history/index.ts";
 import { ResourceLoadError } from "../features/projects/index.ts";
 import { workspaceQuery } from "../features/workspaces/index.ts";
@@ -23,13 +26,17 @@ function WorkspaceHistoryPage() {
 
   return (
     <main>
-      <p>
+      <Text as="p" display="block" type="inherit" color="inherit">
         <Link to="/workspaces/$workspaceId" params={{ workspaceId }}>
           Back to {workspace.name}
         </Link>
-      </p>
-      <h1>Workspace access history</h1>
-      <p>{workspace.name}</p>
+      </Text>
+      <Heading level={1} color="inherit">
+        Workspace access history
+      </Heading>
+      <Text as="p" display="block" type="inherit" color="inherit">
+        {workspace.name}
+      </Text>
       <HistoryList
         events={events}
         emptyMessage="No access changes have been recorded in this workspace."

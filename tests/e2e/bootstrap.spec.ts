@@ -49,6 +49,31 @@ async function signIn(page: Page) {
   }
 }
 
+test("follows the system and saves an explicit appearance choice", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.goto("/setup");
+  const picker = page.getByRole("radiogroup", { name: "Appearance" });
+  const canvas = page.locator("body");
+  const darkCanvas = "rgb(26, 28, 34)";
+  const lightCanvas = "rgb(246, 243, 236)";
+  await expect(picker.getByRole("radio", { name: "System" })).toBeChecked();
+  await expect(canvas).toHaveCSS("background-color", darkCanvas);
+
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(canvas).toHaveCSS("background-color", lightCanvas);
+
+  await picker.getByRole("radio", { name: "Dark" }).click();
+  await expect(canvas).toHaveCSS("background-color", darkCanvas);
+  await page.reload();
+  await expect(picker.getByRole("radio", { name: "Dark" })).toBeChecked();
+  await expect(canvas).toHaveCSS("background-color", darkCanvas);
+
+  await picker.getByRole("radio", { name: "System" }).click();
+  await page.reload();
+  await expect(picker.getByRole("radio", { name: "System" })).toBeChecked();
+  await expect(canvas).toHaveCSS("background-color", lightCanvas);
+});
+
 test("refuses a wrong setup secret in the browser", async ({ page }) => {
   await fillSetupForm(page, "definitely-not-the-secret");
   await page.getByRole("button", { name: "Create administrator" }).click();

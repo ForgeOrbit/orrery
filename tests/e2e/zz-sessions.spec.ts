@@ -723,7 +723,8 @@ test("the board and agents panel show assignment, live session state and the sid
 
     // Assign from the issue view; the selector is the workspace's registered agents.
     await page.goto(`/issues/${issueId}`);
-    await page.getByLabel("Assignee").selectOption({ label: `Agent · ${agentName}` });
+    await page.getByRole("combobox", { name: "Assignee" }).click();
+    await page.getByRole("option", { name: `Agent · ${agentName}`, exact: true }).click();
     await page.getByRole("button", { name: "Save assignee" }).click();
     await expect
       .poll(async () => {
@@ -744,9 +745,7 @@ test("the board and agents panel show assignment, live session state and the sid
     await expect(sessionRow.locator("[data-sidecar-link]")).toBeVisible();
     await sessionRow.locator("[data-sidecar-link]").click();
     await expect(page.locator("[data-session-inspector]")).toBeVisible();
-    await expect(page.locator("[data-session-inspector] button")).toHaveText(
-      "Hide session inspector",
-    );
+    await expect(page.getByRole("button", { name: "Hide session inspector" })).toBeVisible();
   } finally {
     if (context !== undefined) {
       for (const cookie of await context.cookies()) await recordSecret(cookie.value);
