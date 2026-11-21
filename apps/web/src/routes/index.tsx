@@ -52,7 +52,7 @@ export const Route = createFileRoute("/")({
 });
 
 function Home() {
-  const { data: health } = useSuspenseQuery(readinessQuery);
+  useSuspenseQuery(readinessQuery);
   const { data: session } = useSuspenseQuery(sessionQuery);
   const { data: workspaces } = useSuspenseQuery(workspacesQuery);
   const [createOpen, setCreateOpen] = useState(false);
@@ -63,7 +63,6 @@ function Home() {
     <main>
       <PageHeader
         title="Workspaces"
-        badge={`${health.status} · ${health.version}`}
         subtitle={`Signed in as ${session.email}.`}
         actions={
           <Button

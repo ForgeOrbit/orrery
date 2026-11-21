@@ -1,3 +1,5 @@
+import { EmptyState } from "@astryxdesign/core/EmptyState";
+import { Stack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
 import type { HistoryEvent } from "@orrery/contract";
 
@@ -67,7 +69,10 @@ function describe(event: HistoryEvent): string {
         event.previousLevel !== null
         ? ` (was ${event.previousLevel})`
         : "";
-  const target = event.subject === null ? "" : ` ${event.subject.displayName}`;
+  const target =
+    event.subject === null || event.subject.displayName === event.actor.displayName
+      ? ""
+      : ` ${event.subject.displayName}`;
   return `${event.actor.displayName} ${label}${target}${level}`;
 }
 
@@ -80,26 +85,33 @@ export function HistoryList({
 }) {
   if (events.length === 0)
     return (
-      <Text as="p" display="block" type="inherit" color="inherit">
-        {emptyMessage}
-      </Text>
+      <Stack className="empty-panel">
+        <EmptyState title={emptyMessage} headingLevel={2} />
+      </Stack>
     );
   return (
-    <ul>
+    <ul className="row-list">
       {events.map((event) => {
         const description = describe(event);
+        const showSummary =
+          event.summary !== null &&
+          event.type !== "installation_bootstrap" &&
+          !description.includes(event.summary);
         return (
           <li
             key={event.id}
             data-event-kind={event.kind}
             data-event-type={event.type}
             data-event-id={event.id}
+            className="row-item"
           >
-            <Text type="inherit" color="inherit" data-event-description={description}>
-              {description}
-            </Text>
-            {event.summary !== null && <> “{event.summary}”</>}
-            {event.scope.name !== null && <> · {event.scope.name}</>} ·{" "}
+            <Stack direction="horizontal" className="row-item-main">
+              <Text type="inherit" color="inherit" data-event-description={description}>
+                {description}
+              </Text>
+              {showSummary && <Text type="supporting">“{event.summary}”</Text>}
+              {event.scope.name !== null && <span className="meta-pill">{event.scope.name}</span>}
+            </Stack>
             <time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time>
           </li>
         );

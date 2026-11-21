@@ -1,8 +1,10 @@
+import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Heading } from "@astryxdesign/core/Heading";
-import { Text } from "@astryxdesign/core/Text";
 import { Section } from "@astryxdesign/core/Section";
-import { useSuspenseQuery } from "@tanstack/react-query";
+import { Stack } from "@astryxdesign/core/Stack";
+import { Text } from "@astryxdesign/core/Text";
 import type { RunChild, RunDetail, RunModelChange } from "@orrery/contract";
+import { useSuspenseQuery } from "@tanstack/react-query";
 import { workspaceRunsQuery } from "./queries.ts";
 
 // The workspace's runs (issue #34). Every reported value is optional: the UI says
@@ -78,22 +80,27 @@ function RunItem({ run }: { run: RunDetail }) {
 
 export function RunsSection({ workspaceId }: { workspaceId: string }) {
   const { data: runs } = useSuspenseQuery(workspaceRunsQuery(workspaceId));
+  if (runs.length === 0) {
+    return (
+      <Stack className="empty-panel" data-runs-section>
+        <EmptyState
+          title="No runs reported yet"
+          description="Agent conversations connected over MCP or local hooks will appear here."
+          headingLevel={2}
+        />
+      </Stack>
+    );
+  }
   return (
     <Section className="page-section" padding={0} data-runs-section>
       <Heading level={2} color="inherit">
         Runs
       </Heading>
-      {runs.length === 0 ? (
-        <Text as="p" display="block" type="inherit" color="inherit">
-          No runs reported in this workspace yet.
-        </Text>
-      ) : (
-        <ul>
-          {runs.map((run) => (
-            <RunItem key={run.id} run={run} />
-          ))}
-        </ul>
-      )}
+      <ul className="row-list">
+        {runs.map((run) => (
+          <RunItem key={run.id} run={run} />
+        ))}
+      </ul>
     </Section>
   );
 }
