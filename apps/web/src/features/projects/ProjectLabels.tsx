@@ -56,9 +56,7 @@ export function ProjectLabels({
       await refresh();
       toast({ body: "Label created." });
     } catch (cause) {
-      const msg = messageOf(cause, "Could not create the label.");
-      setError(msg);
-      toast({ body: msg, type: "error" });
+      setError(messageOf(cause, "Could not create the label."));
     } finally {
       setSaving(false);
     }

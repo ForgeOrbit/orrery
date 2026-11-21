@@ -60,9 +60,7 @@ export function Subtasks({
       ]);
       toast({ body: "Subtask created." });
     } catch (cause) {
-      const msg = cause instanceof Error ? cause.message : "Could not create the subtask.";
-      setError(msg);
-      toast({ body: msg, type: "error" });
+      setError(cause instanceof Error ? cause.message : "Could not create the subtask.");
     } finally {
       setSaving(false);
     }

@@ -384,9 +384,7 @@ function CreateProjectForm({
       toast({ body: `Created project "${project.name}".` });
       await navigate({ to: "/projects/$projectId", params: { projectId: project.id } });
     } catch (cause) {
-      const msg = cause instanceof Error ? cause.message : "Could not create the project.";
-      setError(msg);
-      toast({ body: msg, type: "error" });
+      setError(cause instanceof Error ? cause.message : "Could not create the project.");
     } finally {
       setSubmitting(false);
     }

@@ -166,9 +166,7 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
         params: { workspaceId: workspace.id },
       });
     } catch (cause) {
-      const msg = cause instanceof Error ? cause.message : "Could not create the workspace.";
-      setError(msg);
-      toast({ body: msg, type: "error" });
+      setError(cause instanceof Error ? cause.message : "Could not create the workspace.");
     } finally {
       setSubmitting(false);
     }
@@ -224,9 +222,7 @@ function InstallationInvitations() {
       setInviteOpen(false);
       toast({ body: `Invitation sent to ${email}.` });
     } catch (cause) {
-      const msg = cause instanceof Error ? cause.message : "Could not send the invitation.";
-      setInviteError(msg);
-      toast({ body: msg, type: "error" });
+      setInviteError(cause instanceof Error ? cause.message : "Could not send the invitation.");
     } finally {
       setInviting(false);
       await reload();

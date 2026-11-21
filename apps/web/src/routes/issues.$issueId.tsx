@@ -605,9 +605,7 @@ function Blockers({
       await refresh();
       toast({ body: "Blocker added." });
     } catch (cause) {
-      const msg = cause instanceof Error ? cause.message : "Could not add the blocker.";
-      setError(msg);
-      toast({ body: msg, type: "error" });
+      setError(cause instanceof Error ? cause.message : "Could not add the blocker.");
     } finally {
       setSubmitting(false);
     }
@@ -767,9 +765,7 @@ function CommentForm({ issueId, projectId }: { issueId: string; projectId: strin
       setBody("");
       toast({ body: "Comment added." });
     } catch (cause) {
-      const msg = cause instanceof Error ? cause.message : "Could not add the comment.";
-      setError(msg);
-      toast({ body: msg, type: "error" });
+      setError(cause instanceof Error ? cause.message : "Could not add the comment.");
     } finally {
       setSubmitting(false);
     }
@@ -826,9 +822,7 @@ function LinkForm({ issueId, projectId }: { issueId: string; projectId: string }
       setKind("link");
       toast({ body: "Link added." });
     } catch (cause) {
-      const msg = cause instanceof Error ? cause.message : "Could not add the link.";
-      setError(msg);
-      toast({ body: msg, type: "error" });
+      setError(cause instanceof Error ? cause.message : "Could not add the link.");
     } finally {
       setSubmitting(false);
     }

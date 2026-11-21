@@ -52,9 +52,7 @@ export function IssueLabels({
       await refresh(updated);
       toast({ body: "Label attached." });
     } catch (cause) {
-      const msg = cause instanceof Error ? cause.message : "Could not attach the label.";
-      setError(msg);
-      toast({ body: msg, type: "error" });
+      setError(cause instanceof Error ? cause.message : "Could not attach the label.");
     } finally {
       setSaving(false);
     }
