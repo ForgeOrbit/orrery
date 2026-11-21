@@ -33,6 +33,7 @@ export function createInboxFeature(deps: InboxFeatureDeps): InboxFeature {
     projectAccessAtLeast: deps.projectAccessAtLeast,
     deliver: deps.deliver,
     log: deps.log,
+    notifyActivity: deps.notifyActivity,
   });
   return {
     name: "inbox",

@@ -8,6 +8,7 @@ import {
   IssueLinkKind,
   IssuePriority,
   IssueStatus,
+  NotificationKind,
   TERMINAL_ISSUE_STATUSES,
   ProjectAccessEventType,
   ProjectAccessLevel,
@@ -1156,5 +1157,36 @@ export const projectActivity = pgTable(
       )`,
     ),
     index("project_activity_project_created").on(t.projectId, t.createdAt),
+  ],
+);
+
+export const notifications = pgTable(
+  "notifications",
+  {
+    id: text("id").primaryKey(),
+    humanId: text("human_id")
+      .notNull()
+      .references(() => humans.id),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    issueId: text("issue_id")
+      .notNull()
+      .references(() => issues.id),
+    activityId: text("activity_id")
+      .notNull()
+      .references(() => projectActivity.id),
+    kind: text("kind").$type<NotificationKind>().notNull(),
+    summary: text("summary").notNull(),
+    readAt: timestamp("read_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check("notifications_kind", sql`${t.kind} in (${sql.raw(sqlLiteralList(NotificationKind))})`),
+    uniqueIndex("one_notification_per_human_and_activity").on(t.humanId, t.activityId),
+    index("notifications_human_created").on(t.humanId, t.createdAt),
+    index("notifications_human_unread")
+      .on(t.humanId, t.createdAt)
+      .where(sql`${t.readAt} is null`),
   ],
 );

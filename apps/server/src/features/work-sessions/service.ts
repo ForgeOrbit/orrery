@@ -43,12 +43,14 @@ import {
   issues,
   projectActivity,
   projects,
+  questions,
   runs,
   workSessionActivities,
   workSessions,
   workspaceMemberships,
   workspaces,
 } from "../../db/schema.ts";
+import type { NotifyActivity } from "../notifications/index.ts";
 import type { WorkActor } from "../projects/index.ts";
 import { decideReacquire, resumeDispositionFor, workSessionMachine } from "./state-machine.ts";
 
@@ -123,6 +125,7 @@ export interface SessionsDeps {
     | ((tx: DbTransaction, issueId: string) => Promise<Date | null>)
     | undefined;
   evaluateQuestionDeadline?: ((tx: DbTransaction, issueId: string) => Promise<void>) | undefined;
+  notifyActivity?: NotifyActivity | undefined;
 }
 
 export type AgentActor = { kind: "agent"; identity: AgentIdentity };
@@ -178,6 +181,9 @@ export interface SessionsService {
   ): Promise<boolean>;
 
   issueHasLiveSession(tx: DbTransaction, issueId: string): Promise<boolean>;
+
+  /** Proactively evaluates overdue claim leases and question deadlines. */
+  sweep(): Promise<void>;
 }
 
 type SessionRow = typeof workSessions.$inferSelect;
@@ -432,7 +438,16 @@ export async function revertIssueToTodo(tx: DbTransaction, issueId: string): Pro
     .where(and(eq(issues.id, issueId), eq(issues.status, "in_progress")));
 }
 
-async function expireStale(tx: DbTransaction, issueId: string): Promise<void> {
+async function expireStale(
+  tx: DbTransaction,
+  issueId: string,
+  notify: NotifyActivity,
+): Promise<void> {
+  const [issue] = await tx
+    .select({ projectId: issues.projectId })
+    .from(issues)
+    .where(eq(issues.id, issueId))
+    .limit(1);
   const expired = await tx
     .update(workSessions)
     .set({
@@ -447,8 +462,29 @@ async function expireStale(tx: DbTransaction, issueId: string): Promise<void> {
         lte(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
       ),
     )
-    .returning({ id: workSessions.id });
+    .returning({ id: workSessions.id, agentId: workSessions.agentId });
 
+  if (expired.length > 0 && issue !== undefined) {
+    const activityId = randomUUID();
+    const summary = "Work session expired: the five-minute claim lease lapsed";
+    await tx.insert(projectActivity).values({
+      id: activityId,
+      projectId: issue.projectId,
+      issueId,
+      type: ProjectActivityType.enum.issue_session_expired,
+      actorAgentId: expired[0]!.agentId,
+      summary,
+      createdAt: sql`statement_timestamp()`,
+    });
+    await notify(tx, {
+      activityId,
+      projectId: issue.projectId,
+      issueId,
+      kind: "session_expired",
+      summary,
+      actorAgentId: expired[0]!.agentId,
+    });
+  }
   if (expired.length > 0) await revertIssueToTodo(tx, issueId);
 }
 
@@ -526,6 +562,7 @@ async function insertFreshSession(
   tx: DbTransaction,
   issueId: string,
   values: PgInsertValue<typeof workSessions>,
+  notify: NotifyActivity,
 ): Promise<SessionView | undefined> {
   for (let attempt = 0; attempt < 2; attempt++) {
     const [created] = await tx
@@ -534,7 +571,7 @@ async function insertFreshSession(
       .onConflictDoNothing()
       .returning(sessionColumns);
     if (created !== undefined) return created;
-    await expireStale(tx, issueId);
+    await expireStale(tx, issueId, notify);
   }
   return undefined;
 }
@@ -709,11 +746,14 @@ export function createSessionsService({
   listIssues,
   questionLeaseDeadline,
   evaluateQuestionDeadline,
+  notifyActivity: notifyActivityDep,
 }: SessionsDeps): SessionsService {
   const leaseDeadline = questionLeaseDeadline ?? (async () => null);
   const checkDeadline = evaluateQuestionDeadline ?? (async () => {});
+  const notifyActivity: NotifyActivity = notifyActivityDep ?? (async () => {});
 
-  const expireCommitted = (issueId: string) => db.transaction((tx) => expireStale(tx, issueId));
+  const expireCommitted = (issueId: string) =>
+    db.transaction((tx) => expireStale(tx, issueId, notifyActivity));
 
   const deadlineCommitted = async (issueId: string) => {
     if (evaluateQuestionDeadline === undefined) return;
@@ -755,7 +795,7 @@ export function createSessionsService({
         .orderBy(issues.id)
         .for("update");
 
-      for (const issueId of issueIds) await expireStale(tx, issueId);
+      for (const issueId of issueIds) await expireStale(tx, issueId, notifyActivity);
     });
   };
 
@@ -776,7 +816,7 @@ export function createSessionsService({
       await lockAgentWorkspaceAccess(tx, identity);
       const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
       const issue = await lockIssue(tx, issueId);
-      await expireStale(tx, issue.id);
+      await expireStale(tx, issue.id, notifyActivity);
 
       await checkDeadline(tx, issue.id);
       await requireAccess(
@@ -817,7 +857,7 @@ export function createSessionsService({
         await lockAgentWorkspaceAccess(tx, identity);
         const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
         const issue = await lockIssue(tx, input.issueId);
-        await expireStale(tx, issue.id);
+        await expireStale(tx, issue.id, notifyActivity);
         await checkDeadline(tx, issue.id);
 
         const [fresh] = await tx
@@ -846,17 +886,22 @@ export function createSessionsService({
 
         if (fresh?.status !== "todo") throw new SessionsError("issue_blocked");
 
-        const created = await insertFreshSession(tx, issue.id, {
-          id: randomUUID(),
-          agentId: identity.agentId,
-          runId: input.runId,
-          workspaceId: identity.workspaceId,
-          issueId: issue.id,
-          status: WorkSessionStatus.enum.active,
-          leaseExpiresAt: fiveMinutes,
-          createdAt: sql`statement_timestamp()`,
-          updatedAt: sql`statement_timestamp()`,
-        });
+        const created = await insertFreshSession(
+          tx,
+          issue.id,
+          {
+            id: randomUUID(),
+            agentId: identity.agentId,
+            runId: input.runId,
+            workspaceId: identity.workspaceId,
+            issueId: issue.id,
+            status: WorkSessionStatus.enum.active,
+            leaseExpiresAt: fiveMinutes,
+            createdAt: sql`statement_timestamp()`,
+            updatedAt: sql`statement_timestamp()`,
+          },
+          notifyActivity,
+        );
         if (created !== undefined) {
           await tx
             .update(issues)
@@ -956,8 +1001,9 @@ export function createSessionsService({
             updatedAt: sql`statement_timestamp()`,
           })
           .where(eq(issues.id, issue.id));
+        const activityId = randomUUID();
         await tx.insert(projectActivity).values({
-          id: randomUUID(),
+          id: activityId,
           projectId: issue.projectId,
           issueId: issue.id,
           type: done
@@ -967,6 +1013,16 @@ export function createSessionsService({
           summary: done ? "Work completed and issue closed" : "Work handed off for review",
           createdAt: sql`statement_timestamp()`,
         });
+        if (!done) {
+          await notifyActivity(tx, {
+            activityId,
+            projectId: issue.projectId,
+            issueId: issue.id,
+            kind: "handoff",
+            summary: "Work handed off for review",
+            actorAgentId: session.agentId,
+          });
+        }
         return toSession(updated);
       });
     },
@@ -1002,7 +1058,7 @@ export function createSessionsService({
           humanId,
           issueId,
         );
-        await expireStale(tx, issue.id);
+        await expireStale(tx, issue.id, notifyActivity);
 
         const [session] = await tx
           .select(sessionColumns)
@@ -1176,7 +1232,7 @@ export function createSessionsService({
         await lockAgentWorkspaceAccess(tx, identity);
         const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
         const issue = await lockIssue(tx, input.issueId);
-        await expireStale(tx, issue.id);
+        await expireStale(tx, issue.id, notifyActivity);
         await checkDeadline(tx, issue.id);
 
         const [fresh] = await tx
@@ -1222,20 +1278,25 @@ export function createSessionsService({
           throw new SessionsError("issue_blocked");
         }
 
-        const created = await insertFreshSession(tx, issue.id, {
-          id: randomUUID(),
-          agentId: identity.agentId,
-          runId: input.runId,
-          workspaceId: identity.workspaceId,
-          issueId: issue.id,
-          status: WorkSessionStatus.enum.active,
-          leaseExpiresAt: fiveMinutes,
-          progress: prior.progress,
-          progressUpdatedAt: prior.progressUpdatedAt,
+        const created = await insertFreshSession(
+          tx,
+          issue.id,
+          {
+            id: randomUUID(),
+            agentId: identity.agentId,
+            runId: input.runId,
+            workspaceId: identity.workspaceId,
+            issueId: issue.id,
+            status: WorkSessionStatus.enum.active,
+            leaseExpiresAt: fiveMinutes,
+            progress: prior.progress,
+            progressUpdatedAt: prior.progressUpdatedAt,
 
-          createdAt: sql`statement_timestamp()`,
-          updatedAt: sql`statement_timestamp()`,
-        });
+            createdAt: sql`statement_timestamp()`,
+            updatedAt: sql`statement_timestamp()`,
+          },
+          notifyActivity,
+        );
         if (created !== undefined) {
           await tx
             .update(issues)
@@ -1405,6 +1466,56 @@ export function createSessionsService({
       return ordered;
     },
 
+    async sweep() {
+      await db.transaction(async (tx) => {
+        const stale = await tx
+          .select({ issueId: workSessions.issueId })
+          .from(workSessions)
+          .innerJoin(issues, eq(workSessions.issueId, issues.id))
+          .where(
+            and(
+              eq(workSessions.status, WorkSessionStatus.enum.active),
+              lte(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
+              isNull(issues.deletedAt),
+            ),
+          );
+        const staleIds = [...new Set(stale.map((row) => row.issueId))].toSorted();
+        if (staleIds.length > 0) {
+          await tx
+            .select({ id: issues.id })
+            .from(issues)
+            .where(inArray(issues.id, staleIds))
+            .orderBy(issues.id)
+            .for("update");
+          for (const issueId of staleIds) await expireStale(tx, issueId, notifyActivity);
+        }
+
+        if (evaluateQuestionDeadline !== undefined) {
+          const due = await tx
+            .select({ issueId: questions.issueId })
+            .from(questions)
+            .innerJoin(issues, eq(questions.issueId, issues.id))
+            .where(
+              and(
+                eq(questions.status, "open"),
+                lte(questions.responseDeadlineAt, sql`statement_timestamp()`),
+                isNull(issues.deletedAt),
+              ),
+            );
+          const dueIds = [...new Set(due.map((row) => row.issueId))].toSorted();
+          if (dueIds.length > 0) {
+            await tx
+              .select({ id: issues.id })
+              .from(issues)
+              .where(inArray(issues.id, dueIds))
+              .orderBy(issues.id)
+              .for("update");
+            for (const issueId of dueIds) await checkDeadline(tx, issueId);
+          }
+        }
+      });
+    },
+
     async agentHoldsSession(tx, agentId, workspaceId, issueId) {
       const [row] = await tx
         .select({ id: workSessions.id })
@@ -1423,7 +1534,7 @@ export function createSessionsService({
     },
 
     async issueHasLiveSession(tx, issueId) {
-      await expireStale(tx, issueId);
+      await expireStale(tx, issueId, notifyActivity);
       return (await findActive(tx, issueId)) !== undefined;
     },
   };

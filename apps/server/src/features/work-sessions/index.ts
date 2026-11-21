@@ -1,5 +1,6 @@
 import type { Feature } from "../../platform/feature.ts";
 import type { DbTransaction } from "../../platform/db.ts";
+import type { Logger } from "../../platform/log.ts";
 import type { SessionReader } from "../accounts/index.ts";
 import type { AgentAuthenticator } from "../agents/index.ts";
 import {
@@ -18,6 +19,7 @@ export type { SessionsErrorKind, SessionsService } from "./service.ts";
 export type SessionsFeatureDeps = SessionsDeps & {
   sessionReader: SessionReader;
   authenticate: AgentAuthenticator;
+  log?: Logger | undefined;
 };
 
 export interface SessionsFeature extends Feature {
@@ -43,11 +45,20 @@ export function createSessionsFeature(deps: SessionsFeatureDeps): SessionsFeatur
     listIssues: deps.listIssues,
     questionLeaseDeadline: deps.questionLeaseDeadline,
     evaluateQuestionDeadline: deps.evaluateQuestionDeadline,
+    notifyActivity: deps.notifyActivity,
   });
   return {
     name: "work-sessions",
     rest: createSessionsRest(service, deps.sessionReader, deps.authenticate),
     registerTools: createSessionsMcp(service, deps.authenticate),
+    startBackgroundTasks: () => {
+      const timer = setInterval(() => {
+        void service.sweep().catch((error: unknown) => {
+          deps.log?.warn("expiry sweep failed", { error: String(error) });
+        });
+      }, 60 * 1000);
+      timer.unref();
+    },
     service,
     agentHoldsSession: (tx, agentId, workspaceId, issueId) =>
       service.agentHoldsSession(tx, agentId, workspaceId, issueId),

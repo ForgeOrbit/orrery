@@ -11,6 +11,7 @@ import { createHistoryFeature, historyRoutes } from "./history/index.ts";
 import { createInboxFeature, inboxRoutes } from "./inbox/index.ts";
 import { createInvitationsFeature, invitationsRoutes } from "./invitations/index.ts";
 import { createMyWorkFeature, myWorkRoutes } from "./my-work/index.ts";
+import { createNotificationsFeature, notificationsRoutes } from "./notifications/index.ts";
 import { createOwnershipFeature, ownershipRoutes } from "./ownership/index.ts";
 import { createProjectsFeature, projectAccessAtLeast, projectsRoutes } from "./projects/index.ts";
 import { createRecoveryFeature, recoveryRoutes } from "./recovery/index.ts";
@@ -85,6 +86,15 @@ export function createFeatures(database: Database, config: Config, log: Logger):
   });
   authenticateAgent = agents.authenticator;
 
+  const notifications = createNotificationsFeature({
+    db: database.db,
+    sessionReader: accounts.sessionReader,
+    projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
+      projects.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
+    projectAccessAtLeast,
+    log,
+  });
+
   const sessions = createSessionsFeature({
     db: database.db,
     sessionReader: accounts.sessionReader,
@@ -95,6 +105,8 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     listIssues: (actor, projectId) => projects.service.listIssues(actor, projectId),
     questionLeaseDeadline: leaseDeadline,
     evaluateQuestionDeadline: evaluateDeadline,
+    notifyActivity: notifications.notifyActivity,
+    log,
   });
   sessionGate = (tx, agentId, workspaceId, issueId) =>
     sessions.agentHoldsSession(tx, agentId, workspaceId, issueId);
@@ -110,6 +122,7 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     projectAccessAtLeast,
     deliver: settings.deliver,
     log,
+    notifyActivity: notifications.notifyActivity,
   });
   questionLeaseDeadline = (tx, issueId) => inbox.questionDeadline(tx, issueId);
   questionEvaluateDeadline = (tx, issueId) => inbox.evaluateDeadline(tx, issueId);
@@ -183,6 +196,7 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     }),
     sessions,
     inbox,
+    notifications,
 
     createMyWorkFeature({
       db: database.db,
@@ -214,6 +228,7 @@ export const routes = [
   ...runsRoutes,
   ...sessionsRoutes,
   ...inboxRoutes,
+  ...notificationsRoutes,
   ...myWorkRoutes,
   ...transfersRoutes,
 ];
