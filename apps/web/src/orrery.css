@@ -241,15 +241,25 @@
   flex-shrink: 0;
 }
 
-.app-nav a:hover,
-.app-nav a[data-status="active"] {
-  background: color-mix(in srgb, var(--orrery-cream) 10%, var(--orrery-ink));
+.app-nav a:hover {
+  background: color-mix(in srgb, var(--orrery-cream) 8%, var(--orrery-ink));
   color: var(--orrery-cream);
 }
 
 .app-nav a[data-status="active"] {
-  box-shadow: inset 2px 0 var(--orrery-orange);
+  background: color-mix(in srgb, var(--orrery-orange) 14%, var(--orrery-ink));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--orrery-orange) 30%, transparent);
+  color: var(--orrery-cream);
   font-weight: 600;
+}
+
+.app-nav a[data-status="active"] svg {
+  color: var(--orrery-orange);
+}
+
+.app-nav a[data-status="active"] .workspace-nav-dot {
+  background: color-mix(in srgb, var(--orrery-orange) 24%, var(--orrery-ink));
+  color: var(--orrery-orange);
 }
 
 .workspace-nav a {
@@ -568,19 +578,31 @@
   color: var(--orrery-muted);
 }
 
-.app-content main > .page-section,
+.app-content .page-section,
 .inbox-section {
   margin-block: 1.25rem;
-  padding: clamp(0.85rem, 2vw, 1.35rem);
+  padding: clamp(1rem, 2vw, 1.4rem);
   border: 1px solid var(--orrery-border);
   border-radius: var(--orrery-panel-radius);
   background: var(--orrery-surface);
   min-inline-size: 0;
 }
 
-.app-content main > .page-section > :last-child,
+.tab-panel > .page-section:first-child {
+  margin-block-start: 0;
+}
+
+.app-content .page-section > :last-child,
 .access-content main > :last-child {
   margin-block-end: 0;
+}
+
+.app-content .page-section h3 {
+  margin-block: 1.5rem 0.65rem;
+}
+
+.app-content .page-section h2 + h3 {
+  margin-block-start: 0.75rem;
 }
 
 .app-content :where(p, li, dd, td, th),
@@ -610,10 +632,15 @@
 .app-content form,
 .astryx-drawer form {
   display: grid;
-  gap: 0.75rem;
+  gap: 0.85rem;
   align-items: start;
   justify-items: start;
-  margin-block-start: 0.85rem;
+  margin-block: 0.85rem 1.35rem;
+}
+
+.app-content form:last-child,
+.astryx-drawer form:last-child {
+  margin-block-end: 0;
 }
 
 .app-content form :is(fieldset, ul),

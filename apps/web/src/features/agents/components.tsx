@@ -1,12 +1,14 @@
-import { Heading } from "@astryxdesign/core/Heading";
-import { Text } from "@astryxdesign/core/Text";
-import { Section } from "@astryxdesign/core/Section";
-import { Stack } from "@astryxdesign/core/Stack";
 import { Button } from "@astryxdesign/core/Button";
+import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
+import { Drawer, DrawerHeader } from "@astryxdesign/core/Drawer";
+import { Heading } from "@astryxdesign/core/Heading";
+import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
+import { Section } from "@astryxdesign/core/Section";
+import { Selector } from "@astryxdesign/core/Selector";
+import { Stack } from "@astryxdesign/core/Stack";
+import { Text } from "@astryxdesign/core/Text";
 import { TextField } from "../../lib/fields.tsx";
 import { TelemetryInline } from "../../lib/telemetry.tsx";
-import { Selector } from "@astryxdesign/core/Selector";
-import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { Link } from "../../lib/Link.tsx";
 import {
@@ -66,6 +68,8 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
   const [secret, setSecret] = useState<string>();
   const [error, setError] = useState<string>();
   const [busyKey, setBusyKey] = useState<string>();
+  const [registerOpen, setRegisterOpen] = useState(false);
+  const [issueKeyOpen, setIssueKeyOpen] = useState(false);
 
   const ownIds = new Set(mine.map((key) => key.id));
   const allKeys = new Map<string, AgentKey>();
@@ -109,116 +113,210 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
   }
 
   return (
-    <Section className="page-section" padding={0}>
-      <Heading level={2} color="inherit">
-        Agents
-      </Heading>
+    <Stack gap={4}>
       {secret !== undefined && (
-        <Stack role="status" data-agent-secret>
-          <Text as="p" display="block" type="inherit" color="inherit">
-            Copy this key now. It is shown once and cannot be recovered later.
-          </Text>
-          <code>{secret}</code>{" "}
-          <Button
-            type="button"
-            onClick={() => setSecret(undefined)}
-            label="Dismiss"
-            variant="secondary"
-          />
-        </Stack>
+        <Section className="page-section" padding={0}>
+          <Stack role="status" data-agent-secret gap={2}>
+            <Text as="p" display="block" type="inherit" color="inherit">
+              Copy this key now. It is shown once and cannot be recovered later.
+            </Text>
+            <Stack direction="horizontal" className="page-header-actions">
+              <code>{secret}</code>
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => setSecret(undefined)}
+                label="Dismiss"
+                variant="secondary"
+              />
+            </Stack>
+          </Stack>
+        </Section>
       )}
       {error !== undefined && (
         <Text as="p" display="block" type="inherit" color="inherit" role="alert">
           {error}
         </Text>
       )}
-      <Heading level={3} color="inherit">
-        Registered agents
-      </Heading>
-      {agents.length === 0 ? (
-        <Text as="p" display="block" type="inherit" color="inherit">
-          No agents yet. Register one below to issue a key.
-        </Text>
-      ) : (
-        <ul>
-          {agents.map((agent) => (
-            <li key={agent.id} data-agent-id={agent.id}>
-              {agent.name}
-            </li>
-          ))}
-        </ul>
-      )}
-      <Heading level={3} color="inherit">
-        Active work sessions
-      </Heading>
-      <ActiveSessions workspaceId={workspaceId} projects={projects} runs={runs} />
-      <RegisterAgentForm />
-      {agents.length > 0 && (
-        <IssueKeyForm
-          agents={agents}
-          projects={projects}
-          workspaceId={workspaceId}
-          onIssued={setSecret}
-        />
-      )}
-      <Heading level={3} color="inherit">
-        Keys in this workspace
-      </Heading>
-      {allKeys.size === 0 ? (
-        <Text as="p" display="block" type="inherit" color="inherit">
-          No keys scoped to this workspace.
-        </Text>
-      ) : (
-        <ul>
-          {[...allKeys.values()].map((key) => (
-            <li
-              key={key.id}
-              data-agent-key-id={key.id}
-              data-revoked={String(key.revokedAt !== null)}
-            >
-              {key.agentName} · {key.validity} ·{" "}
-              {key.projects.map((grant) => grant.projectName).join(", ") || "no projects"}
-              {key.revokedAt !== null && (
-                <Text type="inherit" color="inherit" data-key-status>
-                  {" "}
-                  · revoked
+
+      <Section className="page-section" padding={0}>
+        <Stack direction="horizontal" className="section-toolbar">
+          <Heading level={2} color="inherit">
+            Registered agents
+          </Heading>
+          <Button
+            type="button"
+            label="Register agent"
+            variant="primary"
+            size="sm"
+            onClick={() => setRegisterOpen(true)}
+          />
+        </Stack>
+        {agents.length === 0 ? (
+          <Text as="p" display="block" type="supporting">
+            No agents registered yet. Register an agent to issue workspace-scoped API keys.
+          </Text>
+        ) : (
+          <ul className="row-list">
+            {agents.map((agent) => (
+              <li key={agent.id} data-agent-id={agent.id} className="row-item">
+                <Text type="inherit" color="inherit" className="row-item-title">
+                  {agent.name}
                 </Text>
-              )}
-              {key.revokedAt !== null ? (
-                <Button type="button" isDisabled label="Revoked" variant="secondary" />
-              ) : ownIds.has(key.id) ? (
-                <>
-                  <Button
-                    type="button"
-                    isDisabled={busyKey === key.id}
-                    onClick={() => void rotate(key)}
-                    label="Rotate"
-                    variant="secondary"
-                  />{" "}
-                  <Button
-                    type="button"
-                    isDisabled={busyKey === key.id}
-                    onClick={() => void revoke(key, false)}
-                    label="Revoke"
-                    variant="destructive"
-                  />
-                </>
-              ) : (
-                isOwner && (
-                  <Button
-                    type="button"
-                    isDisabled={busyKey === key.id}
-                    onClick={() => void revoke(key, true)}
-                    label="Revoke (owner)"
-                    variant="destructive"
-                  />
-                )
-              )}
-            </li>
-          ))}
-        </ul>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Section>
+
+      <Section className="page-section" padding={0}>
+        <Stack direction="horizontal" className="section-toolbar">
+          <Heading level={2} color="inherit">
+            Active work sessions
+          </Heading>
+        </Stack>
+        <ActiveSessions workspaceId={workspaceId} projects={projects} runs={runs} />
+      </Section>
+
+      <Section className="page-section" padding={0}>
+        <Stack direction="horizontal" className="section-toolbar">
+          <Heading level={2} color="inherit">
+            Keys in this workspace
+          </Heading>
+          {agents.length > 0 && (
+            <Button
+              type="button"
+              label="Issue key"
+              variant="secondary"
+              size="sm"
+              onClick={() => setIssueKeyOpen(true)}
+            />
+          )}
+        </Stack>
+        {allKeys.size === 0 ? (
+          <Text as="p" display="block" type="supporting">
+            No keys scoped to this workspace.
+          </Text>
+        ) : (
+          <ul className="row-list">
+            {[...allKeys.values()].map((key) => (
+              <li
+                key={key.id}
+                data-agent-key-id={key.id}
+                data-revoked={String(key.revokedAt !== null)}
+                className="row-item"
+              >
+                <Stack direction="horizontal" className="row-item-main">
+                  <Text type="inherit" color="inherit" className="row-item-title">
+                    {key.agentName}
+                  </Text>
+                  <span className="meta-pill">{key.validity}</span>
+                  <Text type="supporting">
+                    {key.projects.map((grant) => grant.projectName).join(", ") || "no projects"}
+                  </Text>
+                  {key.revokedAt !== null && (
+                    <span className="meta-pill" data-key-status>
+                      revoked
+                    </span>
+                  )}
+                </Stack>
+                <Stack direction="horizontal" className="page-header-actions">
+                  {key.revokedAt !== null ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      isDisabled
+                      label="Revoked"
+                      variant="secondary"
+                    />
+                  ) : ownIds.has(key.id) ? (
+                    <>
+                      <Button
+                        type="button"
+                        size="sm"
+                        isDisabled={busyKey === key.id}
+                        onClick={() => void rotate(key)}
+                        label="Rotate"
+                        variant="secondary"
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        isDisabled={busyKey === key.id}
+                        onClick={() => void revoke(key, false)}
+                        label="Revoke"
+                        variant="destructive"
+                      />
+                    </>
+                  ) : (
+                    isOwner && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        isDisabled={busyKey === key.id}
+                        onClick={() => void revoke(key, true)}
+                        label="Revoke (owner)"
+                        variant="destructive"
+                      />
+                    )
+                  )}
+                </Stack>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Section>
+
+      <Drawer
+        isOpen={registerOpen}
+        onOpenChange={setRegisterOpen}
+        purpose="form"
+        label="Register agent"
+        width="26rem"
+      >
+        <Layout
+          height="auto"
+          header={<DrawerHeader title="Register agent" onOpenChange={setRegisterOpen} hasDivider />}
+        >
+          <LayoutContent>
+            <RegisterAgentForm onCreated={() => setRegisterOpen(false)} />
+          </LayoutContent>
+        </Layout>
+      </Drawer>
+
+      {agents.length > 0 && (
+        <Drawer
+          isOpen={issueKeyOpen}
+          onOpenChange={setIssueKeyOpen}
+          purpose="form"
+          label="Issue workspace API key"
+          width="28rem"
+        >
+          <Layout
+            height="auto"
+            header={
+              <DrawerHeader
+                title="Issue workspace API key"
+                onOpenChange={setIssueKeyOpen}
+                hasDivider
+              />
+            }
+          >
+            <LayoutContent>
+              <IssueKeyForm
+                agents={agents}
+                projects={projects}
+                workspaceId={workspaceId}
+                onIssued={(value) => {
+                  setSecret(value);
+                  setIssueKeyOpen(false);
+                }}
+              />
+            </LayoutContent>
+          </Layout>
+        </Drawer>
       )}
-    </Section>
+    </Stack>
   );
 }
 
@@ -301,7 +399,7 @@ function ActiveSessions({
   );
 }
 
-function RegisterAgentForm() {
+function RegisterAgentForm({ onCreated }: { onCreated?: () => void }) {
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [error, setError] = useState<string>();
@@ -315,6 +413,7 @@ function RegisterAgentForm() {
       await createAgent(name);
       setName("");
       await queryClient.invalidateQueries({ queryKey: agentsQuery.queryKey });
+      onCreated?.();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not register the agent.");
     } finally {
