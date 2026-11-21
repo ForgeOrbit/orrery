@@ -20,6 +20,7 @@
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> ·
+  <a href="docs/guides/install.md">Guides</a> ·
   <a href="#how-it-works">How It Works</a> ·
   <a href="#mcp-tools">MCP Tools</a> ·
   <a href="#connect-claude-code--codex">Connect Claude Code / Codex</a> ·
@@ -27,11 +28,11 @@
   <a href="#contributing">Contributing</a>
 </p>
 
-> **Status: active MVP.** M0–M3 are complete and runnable today with `docker compose up -d --build`.
-> M4's backend (`GET /api/my-work`, board & inbox APIs) is live while the M4 UI pass is in progress,
-> with [Shared vault (#6)](https://github.com/forge-orbit/orrery/issues/6) and
-> [Release polish (#7)](https://github.com/forge-orbit/orrery/issues/7) next. See the
-> [roadmap](#roadmap).
+> **Status: active MVP.** M0–M4 are complete and runnable today with `docker compose up -d`, and the
+> M6 operator/agent guides and GHCR GitHub Releases are live. In-app notifications and outgoing
+> webhooks ([M6, #7](https://github.com/forge-orbit/orrery/issues/7)) and the
+> [Shared vault (M5, #6)](https://github.com/forge-orbit/orrery/issues/6) are still planned. See the
+> [roadmap](#roadmap) and the [install guide](docs/guides/install.md).
 
 ---
 
@@ -90,6 +91,10 @@ remove `BOOTSTRAP_SECRET` from `.env` — setup stays closed forever. The app is
 For HTTPS on a public domain, set `ORRERY_DOMAIN` and `PUBLIC_URL` in `.env` and add `--profile tls`
 (`docker compose --profile tls up -d --build`). Agents need that public HTTPS URL in their MCP
 config, since MCP only accepts requests for the host in `PUBLIC_URL`.
+
+The full [install and upgrade guide](docs/guides/install.md) covers the environment variables,
+Caddy HTTPS, image tags and upgrades. Take a backup before upgrading using
+[Backup and restore](docs/guides/backup-and-restore.md).
 
 ### Local development
 
@@ -195,6 +200,9 @@ The same operations are available over REST.
 
 ## Connect Claude Code / Codex
 
+The short version is below. The one-page [Connect an agent](docs/guides/connect-agent.md) quickstart
+also covers Cursor and the raw `/mcp` fallback.
+
 Create an Agent in Orrery, issue it a workspace-scoped API key, and export your server URL and key
 in the shell environment your harness inherits:
 
@@ -244,7 +252,8 @@ For full setup details, manual script wiring, privacy guarantees, and the verifi
 
 ## Roadmap
 
-Milestones are tracked as GitHub epics. M0–M3 are complete and live today.
+Milestones are tracked as GitHub epics. M0–M4 are complete and live today; the M6 docs and release
+automation slice is live, with the rest of M6 still in progress.
 
 - [x] [#1](https://github.com/forge-orbit/orrery/issues/1) **M0 — Foundation.** Docker Compose, CI,
   first-run bootstrap, encrypted SMTP settings.
@@ -259,13 +268,15 @@ Milestones are tracked as GitHub epics. M0–M3 are complete and live today.
   REST parity (39 tools), five-minute atomic Claim leases, resume/reacquire, human stop signal,
   ephemeral session activities + v1 structured blocks, cumulative token/cost telemetry, and
   Needs-input inbox with one-hour fallback policies.
-- [ ] [#5](https://github.com/forge-orbit/orrery/issues/5) **M4 — Board, agents panel & needs-input
-  inbox (in progress).** Cross-workspace My work API (`GET /api/my-work`) is live; UI pass for the
-  six-column board, labels/subtasks/trash, rich sidecar inspector, and My work view is underway.
+- [x] [#5](https://github.com/forge-orbit/orrery/issues/5) **M4 — Board, agents panel & needs-input
+  inbox.** Six-column board, labels/subtasks/trash, rich sidecar inspector, and the cross-workspace
+  My work view (`GET /api/my-work`).
 - [ ] [#6](https://github.com/forge-orbit/orrery/issues/6) **M5 — Shared vault.** Obsidian-like
   Markdown vault, `[[wikilinks]]`, backlinks, FTS.
-- [ ] [#7](https://github.com/forge-orbit/orrery/issues/7) **M6 — Release polish.** In-app
-  notifications, backup/restore and setup guides.
+- [ ] [#7](https://github.com/forge-orbit/orrery/issues/7) **M6 — Release polish.** Operator/agent
+  guides ([install](docs/guides/install.md), [backup/restore](docs/guides/backup-and-restore.md),
+  [connect an agent](docs/guides/connect-agent.md)) and GHCR GitHub Releases are shipped. In-app
+  notifications and outgoing webhooks are still planned.
 
 Looking further ahead: [#15](https://github.com/forge-orbit/orrery/issues/15) Agent-customizable UI —
 slots, panels, views and rich content.
