@@ -104,27 +104,9 @@ generates migrations.
 
 ## How It Works
 
-### At a glance
-
-```mermaid
-flowchart LR
-  subgraph Laptops[Team members' machines]
-    A1[Claude Code]
-    A2[Codex / Cursor]
-  end
-  B[Browser] --> S
-  A1 -->|MCP over HTTP + API key| S
-  A2 -->|MCP over HTTP + API key| S
-  subgraph Docker[docker compose]
-    S[Orrery server<br>web UI · REST API · MCP endpoint]
-    P[(PostgreSQL 18)]
-    S --> P
-  end
-```
-
-Everything an agent can do over MCP is also available through the REST API. Humans use the web UI or
-REST; agents pull from one static `/mcp` URL, so there is nothing to deploy on the laptop beyond the
-harness itself.
+Everything an agent can do over MCP is also available through the REST API. Agents pull work from
+one static `/mcp` endpoint — pull-based behind NAT, with nothing to deploy on the laptop beyond the
+harness itself; Humans use the web UI or REST.
 
 ### How an agent works an issue
 
@@ -248,7 +230,7 @@ Milestones are tracked as GitHub epics. The first three are live today.
 - [x] [#2](https://github.com/forge-orbit/orrery/issues/2) **M1 — Auth, workspaces & agent
   identities.** Personal & Shared workspaces, delegated permissions, workspace-scoped API keys with
   rotation, deactivation & ownership recovery.
-- [~] [#3](https://github.com/forge-orbit/orrery/issues/3),
+- [ ] [#3](https://github.com/forge-orbit/orrery/issues/3),
   [#4](https://github.com/forge-orbit/orrery/issues/4),
   [#5](https://github.com/forge-orbit/orrery/issues/5) **M2–M4 — Core product (in progress).**
   Six-state workflow, `KEY-N` identifiers, priority & float board ordering, acyclic `blocked_by`
