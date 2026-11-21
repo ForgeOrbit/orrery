@@ -24,6 +24,13 @@ const Env = z.object({
     })
     .transform((value) => (value === undefined ? undefined : Buffer.from(value, "base64"))),
 
+  // Default-deny SSRF guard: webhook delivery requires https:// and public IPs unless
+  // an operator explicitly opts in to internal LAN receivers (which also permits http://).
+  ORRERY_WEBHOOK_ALLOW_PRIVATE_URLS: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
+
   WEB_DIST: z.string().optional(),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });

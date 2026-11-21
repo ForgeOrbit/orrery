@@ -51,6 +51,7 @@ import {
   workspaces,
 } from "../../db/schema.ts";
 import type { NotifyActivity } from "../notifications/index.ts";
+import type { EnqueueWebhookActivity } from "../webhooks/index.ts";
 import type { WorkActor } from "../projects/index.ts";
 import { decideReacquire, resumeDispositionFor, workSessionMachine } from "./state-machine.ts";
 
@@ -128,6 +129,7 @@ export interface SessionsDeps {
   /** Due-question discovery stays in the inbox feature; work-sessions never queries questions. */
   dueQuestionIssueIds?: (() => Promise<string[]>) | undefined;
   notifyActivity?: NotifyActivity | undefined;
+  onActivity?: EnqueueWebhookActivity | undefined;
   log?: Logger | undefined;
 }
 
@@ -751,12 +753,18 @@ export function createSessionsService({
   evaluateQuestionDeadline,
   dueQuestionIssueIds: dueQuestionIssueIdsDep,
   notifyActivity: notifyActivityDep,
+  onActivity = async () => {},
   log,
 }: SessionsDeps): SessionsService {
   const leaseDeadline = questionLeaseDeadline ?? (async () => null);
   const checkDeadline = evaluateQuestionDeadline ?? (async () => {});
   const dueQuestionIssueIds = dueQuestionIssueIdsDep ?? (async () => []);
-  const notifyActivity: NotifyActivity = notifyActivityDep ?? (async () => {});
+  // Notifications are written only for a subset of activities, but every activity that
+  // reaches notify() is also an outbox event: enqueue in the same transaction.
+  const notifyActivity: NotifyActivity = async (tx, input) => {
+    if (notifyActivityDep !== undefined) await notifyActivityDep(tx, input);
+    await onActivity(tx, input.activityId);
+  };
 
   const expireCommitted = (issueId: string) =>
     db.transaction((tx) => expireStale(tx, issueId, notifyActivity));
@@ -1019,6 +1027,7 @@ export function createSessionsService({
           summary: done ? "Work completed and issue closed" : "Work handed off for review",
           createdAt: sql`statement_timestamp()`,
         });
+        await onActivity(tx, activityId);
         if (!done) {
           await notifyActivity(tx, {
             activityId,
@@ -1099,8 +1108,9 @@ export function createSessionsService({
           .returning(sessionColumns);
         if (updated === undefined) return { error: "session_not_active" as const };
 
+        const activityId = randomUUID();
         await tx.insert(projectActivity).values({
-          id: randomUUID(),
+          id: activityId,
           projectId: issue.projectId,
           type: ProjectActivityType.enum.issue_stop_requested,
           issueId: issue.id,
@@ -1108,6 +1118,7 @@ export function createSessionsService({
           summary: normalized ?? "Stop requested",
           createdAt: sql`statement_timestamp()`,
         });
+        await onActivity(tx, activityId);
 
         return { session: toSession(updated) };
       });

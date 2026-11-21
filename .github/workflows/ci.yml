@@ -70,6 +70,8 @@ jobs:
       # readable, not a secret: it decodes to "this-key-is-just-a-test-fixture!" and
       # only ever encrypts the throwaway Mailpit password in this job.
       ORRERY_ENCRYPTION_KEY: dGhpcy1rZXktaXMtanVzdC1hLXRlc3QtZml4dHVyZSE=
+      # The webhook e2e spec delivers to a receiver on the host; opt in to private URLs.
+      ORRERY_WEBHOOK_ALLOW_PRIVATE_URLS: "true"
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4

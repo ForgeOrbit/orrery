@@ -1190,3 +1190,95 @@ export const notifications = pgTable(
       .where(sql`${t.readAt} is null`),
   ],
 );
+
+export const webhooks = pgTable(
+  "webhooks",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    url: text("url").notNull(),
+    description: text("description").notNull().default(""),
+    secretEncrypted: text("secret_encrypted").notNull(),
+    allProjects: boolean("all_projects").notNull().default(true),
+    allEvents: boolean("all_events").notNull().default(true),
+    events: text("events")
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
+    enabled: boolean("enabled").notNull().default(true),
+    consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+    disabledAt: timestamp("disabled_at", { withTimezone: true }),
+    disabledReason: text("disabled_reason"),
+    createdByHumanId: text("created_by_human_id").references(() => humans.id),
+    updatedByHumanId: text("updated_by_human_id").references(() => humans.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check("webhooks_url_scheme", sql`${t.url} ~ '^https?://'`),
+    check("webhooks_consecutive_failures_nonnegative", sql`${t.consecutiveFailures} >= 0`),
+    check(
+      "webhooks_events_valid",
+      sql`${t.events} <@ array[${sql.raw(
+        ProjectActivityType.options.map((type) => `'${type}'`).join(", "),
+      )}]::text[]`,
+    ),
+    check(
+      "webhooks_disabled_fields",
+      sql`(${t.enabled} = true and ${t.disabledAt} is null and ${t.disabledReason} is null)
+        or (${t.enabled} = false and ${t.disabledAt} is not null and ${t.disabledReason} is not null)`,
+    ),
+    index("webhooks_workspace_created").on(t.workspaceId, t.createdAt),
+  ],
+);
+
+export const webhookProjects = pgTable(
+  "webhook_projects",
+  {
+    webhookId: text("webhook_id")
+      .notNull()
+      .references(() => webhooks.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.webhookId, t.projectId] }),
+    index("webhook_projects_project").on(t.projectId),
+  ],
+);
+
+const webhookDeliveryStatuses = ["pending", "delivering", "delivered", "failed"] as const;
+const webhookDeliveryStatusesSql = sql.raw(
+  webhookDeliveryStatuses.map((status) => `'${status}'`).join(", "),
+);
+
+export const webhookDeliveries = pgTable(
+  "webhook_deliveries",
+  {
+    id: text("id").primaryKey(),
+    webhookId: text("webhook_id")
+      .notNull()
+      .references(() => webhooks.id, { onDelete: "cascade" }),
+    event: text("event").notNull(),
+    activityId: text("activity_id").references(() => projectActivity.id),
+    payload: jsonb("payload").notNull(),
+    status: text("status").$type<(typeof webhookDeliveryStatuses)[number]>().notNull(),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    lockedUntil: timestamp("locked_until", { withTimezone: true }),
+    lastStatusCode: integer("last_status_code"),
+    lastDurationMs: integer("last_duration_ms"),
+    lastError: text("last_error"),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check("webhook_deliveries_status", sql`${t.status} in (${webhookDeliveryStatusesSql})`),
+    check("webhook_deliveries_attempt_count_nonnegative", sql`${t.attemptCount} >= 0`),
+    index("webhook_deliveries_due").on(t.status, t.nextAttemptAt),
+    index("webhook_deliveries_webhook_created").on(t.webhookId, t.createdAt.desc()),
+  ],
+);

@@ -35,6 +35,7 @@ export function createInboxFeature(deps: InboxFeatureDeps): InboxFeature {
     deliver: deps.deliver,
     log: deps.log,
     notifyActivity: deps.notifyActivity,
+    onActivity: deps.onActivity,
   });
   return {
     name: "inbox",

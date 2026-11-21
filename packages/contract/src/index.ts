@@ -19,4 +19,5 @@ export * from "./sessions.ts";
 export * from "./settings.ts";
 export * from "./setup.ts";
 export * from "./transfers.ts";
+export * from "./webhooks.ts";
 export * from "./workspaces.ts";
