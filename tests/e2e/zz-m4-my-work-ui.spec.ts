@@ -14,15 +14,6 @@ const baseUrl = process.env.ORRERY_URL;
 if (!baseUrl)
   throw new Error("Set ORRERY_URL to a running Orrery, for example http://localhost:8080");
 
-const SMTP_SETTINGS = {
-  host: "mailpit",
-  port: 1025,
-  security: "none" as const,
-  username: null,
-  password: null,
-  from: "orrery@orrery.test",
-};
-
 const field = (value: unknown, key: string): unknown =>
   typeof value === "object" && value !== null ? Reflect.get(value, key) : undefined;
 const requiredText = (value: unknown, what: string): string => {
@@ -152,7 +143,6 @@ test.beforeAll(async () => {
     data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
   });
   expect(login.status()).toBe(200);
-  expect((await api.put("/api/settings/smtp", { data: SMTP_SETTINGS })).status()).toBe(200);
   // Agent calls use bearer keys in a separate context so a human cookie can never help them.
   agentApi = await request.newContext({ baseURL: baseUrl });
 });

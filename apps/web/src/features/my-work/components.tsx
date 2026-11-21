@@ -1,4 +1,3 @@
-import { Badge } from "@astryxdesign/core/Badge";
 import { Banner } from "@astryxdesign/core/Banner";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Heading } from "@astryxdesign/core/Heading";
@@ -157,7 +156,9 @@ function ActiveSessionRow({ session }: { session: MyWorkActiveSession }) {
       }
       endContent={
         session.stopRequestedAt === null ? undefined : (
-          <Badge variant="warning" label="Stop requested" />
+          <Text type="inherit" color="inherit" data-session-status="stopping">
+            Stop requested
+          </Text>
         )
       }
     />
@@ -199,7 +200,11 @@ export function MyWorkErrorState({ error }: { error: unknown }) {
         container="section"
         status="error"
         title={problem?.title ?? "Could not load My work"}
-        description={problem?.detail ?? "Check your connection and try again."}
+        description={
+          problem === undefined
+            ? "Check your connection and try again."
+            : (problem.errors?.[0]?.detail ?? problem.detail)
+        }
         collapsible={false}
       />
       <Text as="p" display="block" type="inherit" color="inherit" role="alert">

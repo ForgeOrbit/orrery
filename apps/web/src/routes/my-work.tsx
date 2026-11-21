@@ -17,29 +17,32 @@ export const Route = createFileRoute("/my-work")({
     await context.queryClient.ensureQueryData(myWorkQuery);
   },
   component: MyWorkPage,
+  pendingComponent: MyWorkLoadingState,
   errorComponent: ({ error }) => <MyWorkErrorState error={error} />,
 });
+
+function MyWorkLoadingState() {
+  return (
+    <main data-my-work-loading>
+      <Heading level={1} color="inherit">
+        My work
+      </Heading>
+      <Text as="p" display="block" type="inherit" color="inherit" role="status">
+        Loading your work…
+      </Text>
+    </main>
+  );
+}
 
 function MyWorkPage() {
   const work = useQuery(myWorkQuery);
 
-  if (work.isPending) {
-    return (
-      <main data-my-work-loading>
-        <Heading level={1} color="inherit">
-          My work
-        </Heading>
-        <Text as="p" display="block" type="inherit" color="inherit" role="status">
-          Loading your work…
-        </Text>
-      </main>
-    );
-  }
+  if (work.isPending) return <MyWorkLoadingState />;
 
   if (work.isError) return <MyWorkErrorState error={work.error} />;
 
   return (
-    <main className="my-work-page" data-my-work-page>
+    <main data-my-work-page>
       <Heading level={1} color="inherit">
         My work
       </Heading>
