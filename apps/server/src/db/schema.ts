@@ -48,6 +48,7 @@ export const humans = pgTable(
   {
     id: text("id").primaryKey(),
     email: text("email").notNull().unique(),
+    displayName: text("display_name"),
     passwordHash: text("password_hash").notNull(),
     emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
     isSystemAdministrator: boolean("is_system_administrator").notNull().default(false),
@@ -58,7 +59,13 @@ export const humans = pgTable(
     // never restores shared authority or old credentials.
     deactivatedAt: timestamp("deactivated_at", { withTimezone: true }),
   },
-  (t) => [check("humans_email_normalized", sql`${t.email} = lower(btrim(${t.email}))`)],
+  (t) => [
+    check("humans_email_normalized", sql`${t.email} = lower(btrim(${t.email}))`),
+    check(
+      "humans_display_name_valid",
+      sql`${t.displayName} is null or (btrim(${t.displayName}) <> '' and char_length(${t.displayName}) <= 120)`,
+    ),
+  ],
 );
 
 // A list of values as quoted SQL literals, for a CHECK constraint over a text column

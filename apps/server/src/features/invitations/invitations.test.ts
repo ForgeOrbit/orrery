@@ -847,7 +847,11 @@ describe("invitations", () => {
         .find((c) => c.startsWith("orrery_session="))
         ?.split(";")[0];
       const session = await app.request("/api/auth/session", { headers: { cookie: cookie ?? "" } });
-      expect(await session.json()).toEqual({ email: INVITEE, emailVerified: true });
+      expect(await session.json()).toEqual({
+        email: INVITEE,
+        displayName: null,
+        emailVerified: true,
+      });
     });
 
     it("redeems an invitation whose delivery is still unknown", async () => {

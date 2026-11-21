@@ -67,7 +67,7 @@ function MoonIcon() {
   );
 }
 
-export function AppearancePicker() {
+export function AppearancePicker({ forceDark = false }: { forceDark?: boolean }) {
   const appearance = use(AppearanceContext);
   if (appearance === null) throw new Error("AppearancePicker requires AppearanceProvider.");
   const [mode, setMode] = appearance;
@@ -83,15 +83,23 @@ export function AppearancePicker() {
     }
   }
 
+  const control = (
+    <SegmentedControl label="Appearance" size="sm" value={mode} onChange={select}>
+      <SegmentedControlItem value="system" label="System" isLabelHidden icon={<SystemIcon />} />
+      <SegmentedControlItem value="light" label="Light" isLabelHidden icon={<SunIcon />} />
+      <SegmentedControlItem value="dark" label="Dark" isLabelHidden icon={<MoonIcon />} />
+    </SegmentedControl>
+  );
+
   return (
     <section className="appearance-picker">
-      <Theme theme={theme} mode="dark">
-        <SegmentedControl label="Appearance" size="sm" value={mode} onChange={select}>
-          <SegmentedControlItem value="system" label="System" isLabelHidden icon={<SystemIcon />} />
-          <SegmentedControlItem value="light" label="Light" isLabelHidden icon={<SunIcon />} />
-          <SegmentedControlItem value="dark" label="Dark" isLabelHidden icon={<MoonIcon />} />
-        </SegmentedControl>
-      </Theme>
+      {forceDark ? (
+        <Theme theme={theme} mode="dark">
+          {control}
+        </Theme>
+      ) : (
+        control
+      )}
     </section>
   );
 }

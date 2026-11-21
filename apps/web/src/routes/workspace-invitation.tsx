@@ -321,6 +321,7 @@ function NewAccountForm({ token }: { token: string }) {
       const session: Session = {
         signedIn: true,
         email: account.email,
+        displayName: null,
         emailVerified: account.emailVerified,
       };
       queryClient.setQueryData(sessionQuery.queryKey, session);

@@ -1,12 +1,16 @@
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import {
+  ChangePasswordRequest,
+  ChangePasswordResponse,
   LoginRequest,
   LoginResponse,
+  LogoutResponse,
   SessionResponse,
   SetupAdminRequest,
   SetupAdminResponse,
   SetupStatus,
+  UpdateProfileRequest,
 } from "@orrery/contract";
 import { getCookie, setCookie } from "hono/cookie";
 import {
@@ -71,6 +75,18 @@ const login = createRoute({
   },
 });
 
+const logout = createRoute({
+  method: "post",
+  path: "/api/auth/logout",
+  summary: "Sign out and revoke the current browser session",
+  responses: {
+    200: {
+      description: "Signed out; the session cookie is cleared",
+      content: { "application/json": { schema: LogoutResponse } },
+    },
+  },
+});
+
 const session = createRoute({
   method: "get",
   path: "/api/auth/session",
@@ -81,8 +97,52 @@ const session = createRoute({
   },
 });
 
+const updateProfile = createRoute({
+  method: "patch",
+  path: "/api/account/profile",
+  summary: "Update the signed-in account's profile",
+  request: {
+    body: { required: true, content: { "application/json": { schema: UpdateProfileRequest } } },
+  },
+  responses: {
+    200: {
+      description: "Updated account profile",
+      content: { "application/json": { schema: SessionResponse } },
+    },
+    400: problem("Invalid profile fields"),
+    401: problem("No valid session"),
+  },
+});
+
+const changePassword = createRoute({
+  method: "post",
+  path: "/api/account/password",
+  summary: "Change the signed-in account's password",
+  description:
+    "Verifies the current password, updates the password hash, and revokes all other browser sessions while keeping the current session active.",
+  request: {
+    body: { required: true, content: { "application/json": { schema: ChangePasswordRequest } } },
+  },
+  responses: {
+    200: {
+      description: "Password changed; other browser sessions revoked",
+      content: { "application/json": { schema: ChangePasswordResponse } },
+    },
+    400: problem("Invalid password input"),
+    401: problem("No valid session or current password is incorrect"),
+  },
+});
+
 // Route definitions, for the generated OpenAPI document.
-export const routes = [setupStatus, setupAdmin, login, session];
+export const routes = [
+  setupStatus,
+  setupAdmin,
+  login,
+  logout,
+  session,
+  updateProfile,
+  changePassword,
+];
 
 // Transport details rest.ts owns: the session cookie's name and its fixed attributes
 // (the service decides lifetime and Secure), and every error kind's HTTP status.
@@ -94,6 +154,7 @@ const statusFor = {
   invalid_secret: 401,
   setup_complete: 409,
   invalid_credentials: 401,
+  invalid_current_password: 401,
 } as const satisfies Record<AccountsErrorKind, number>;
 
 // An accounts error as its Problem: the error kind is the code, its message the title.
@@ -159,14 +220,82 @@ export function createAccountsRest(service: AccountsService) {
     },
   );
 
+  app.openapi(logout, async (c) => {
+    const token = getCookie(c, SESSION_COOKIE);
+    if (token !== undefined) {
+      await service.logout(token);
+    }
+    setCookie(c, SESSION_COOKIE, "", {
+      ...fixedCookieAttributes,
+      secure: policy.secure,
+      maxAge: 0,
+    });
+    return c.json({ signedOut: true as const }, 200);
+  });
+
   app.openapi(session, async (c) => {
     const account = await readSession(c);
     if (account === null) {
       return problemResponse(c, { status: 401, code: "not_signed_in", title: "Not signed in." });
     }
     // The declared resource is the SessionResponse, not the service's fuller account:
-    // the client learns its email and whether that address is verified, nothing else.
-    return c.json({ email: account.email, emailVerified: account.emailVerifiedAt !== null }, 200);
+    // the client learns its email, display name, and whether that address is verified.
+    return c.json(
+      {
+        email: account.email,
+        displayName: account.displayName ?? null,
+        emailVerified: account.emailVerifiedAt !== null,
+      },
+      200,
+    );
+  });
+
+  app.openapi(updateProfile, async (c) => {
+    const account = await readSession(c);
+    if (account === null) {
+      return problemResponse(c, { status: 401, code: "not_signed_in", title: "Not signed in." });
+    }
+    try {
+      const updated = await service.updateProfile(account.humanId, c.req.valid("json"));
+      return c.json(
+        {
+          email: updated.email,
+          displayName: updated.displayName ?? null,
+          emailVerified: updated.emailVerifiedAt !== null,
+        },
+        200,
+      );
+    } catch (error) {
+      if (error instanceof AccountsError && error.kind === "invalid_credentials") {
+        return problemResponse(c, {
+          status: statusFor.invalid_credentials,
+          code: error.kind,
+          title: error.message,
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.openapi(changePassword, async (c) => {
+    const token = getCookie(c, SESSION_COOKIE);
+    const account = token === undefined ? null : await service.session(token);
+    if (token === undefined || account === null) {
+      return problemResponse(c, { status: 401, code: "not_signed_in", title: "Not signed in." });
+    }
+    try {
+      await service.changePassword(account.humanId, token, c.req.valid("json"));
+      return c.json({ changed: true as const }, 200);
+    } catch (error) {
+      if (error instanceof AccountsError && error.kind === "invalid_current_password") {
+        return problemResponse(c, {
+          status: statusFor.invalid_current_password,
+          code: error.kind,
+          title: error.message,
+        });
+      }
+      throw error;
+    }
   });
 
   return app;

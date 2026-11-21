@@ -330,7 +330,11 @@ describe("accounts", () => {
       });
       expect(withSession.status).toBe(200);
       // Bootstrap never requires SMTP (ADR-0001): the administrator signs in unverified.
-      expect(await withSession.json()).toEqual({ email: EMAIL, emailVerified: false });
+      expect(await withSession.json()).toEqual({
+        email: EMAIL,
+        displayName: null,
+        emailVerified: false,
+      });
 
       const noSession = await app.request("/api/auth/session");
       expect(noSession.status).toBe(401);
@@ -421,13 +425,139 @@ describe("accounts", () => {
 
       const stillSignedIn = await second.request("/api/auth/session", { headers: { cookie } });
       expect(stillSignedIn.status).toBe(200);
-      expect(await stillSignedIn.json()).toEqual({ email: EMAIL, emailVerified: false });
+      expect(await stillSignedIn.json()).toEqual({
+        email: EMAIL,
+        displayName: null,
+        emailVerified: false,
+      });
 
       const relogin = await postJson(second, "/api/auth/login", {
         email: EMAIL,
         password: PASSWORD,
       });
       expect(relogin.status).toBe(200);
+    });
+
+    it("updates display name, clears it, and persists across requests", async () => {
+      const app = makeApp(SECRET);
+      await bootstrapAdmin(app);
+      const login = await postJson(app, "/api/auth/login", { email: EMAIL, password: PASSWORD });
+      const cookie = sessionCookie(login)?.split(";")[0] ?? "";
+
+      const unauth = await app.request("/api/account/profile", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ displayName: "Ada" }),
+      });
+      expect(unauth.status).toBe(401);
+
+      const updated = await app.request("/api/account/profile", {
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ displayName: "  Ada Lovelace  " }),
+      });
+      expect(updated.status).toBe(200);
+      expect(await updated.json()).toEqual({
+        email: EMAIL,
+        displayName: "Ada Lovelace",
+        emailVerified: false,
+      });
+
+      const session = await app.request("/api/auth/session", { headers: { cookie } });
+      expect(await session.json()).toEqual({
+        email: EMAIL,
+        displayName: "Ada Lovelace",
+        emailVerified: false,
+      });
+
+      const cleared = await app.request("/api/account/profile", {
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ displayName: null }),
+      });
+      expect(cleared.status).toBe(200);
+      expect(await cleared.json()).toEqual({
+        email: EMAIL,
+        displayName: null,
+        emailVerified: false,
+      });
+    });
+
+    it("changes password, keeps the current session, and revokes other browser sessions", async () => {
+      const app = makeApp(SECRET);
+      await bootstrapAdmin(app);
+      const firstLogin = await postJson(app, "/api/auth/login", {
+        email: EMAIL,
+        password: PASSWORD,
+      });
+      const secondLogin = await postJson(app, "/api/auth/login", {
+        email: EMAIL,
+        password: PASSWORD,
+      });
+      const currentCookie = sessionCookie(firstLogin)?.split(";")[0] ?? "";
+      const otherCookie = sessionCookie(secondLogin)?.split(";")[0] ?? "";
+
+      const wrong = await app.request("/api/account/password", {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: currentCookie },
+        body: JSON.stringify({
+          currentPassword: "wrong-password-here",
+          newPassword: "new-password-1234",
+        }),
+      });
+      expect(wrong.status).toBe(401);
+      expect(await problemBody(wrong)).toMatchObject({ code: "invalid_current_password" });
+
+      const ok = await app.request("/api/account/password", {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: currentCookie },
+        body: JSON.stringify({
+          currentPassword: PASSWORD,
+          newPassword: "new-password-1234",
+        }),
+      });
+      expect(ok.status).toBe(200);
+      expect(await ok.json()).toEqual({ changed: true });
+
+      // Current session stays valid; other session is revoked.
+      const stillActive = await app.request("/api/auth/session", {
+        headers: { cookie: currentCookie },
+      });
+      expect(stillActive.status).toBe(200);
+      const revoked = await app.request("/api/auth/session", {
+        headers: { cookie: otherCookie },
+      });
+      expect(revoked.status).toBe(401);
+
+      // Old password fails; new password works.
+      const oldLogin = await postJson(app, "/api/auth/login", {
+        email: EMAIL,
+        password: PASSWORD,
+      });
+      expect(oldLogin.status).toBe(401);
+      const newLogin = await postJson(app, "/api/auth/login", {
+        email: EMAIL,
+        password: "new-password-1234",
+      });
+      expect(newLogin.status).toBe(200);
+    });
+
+    it("signs out by revoking the browser session and clearing the cookie", async () => {
+      const app = makeApp(SECRET);
+      await bootstrapAdmin(app);
+      const login = await postJson(app, "/api/auth/login", { email: EMAIL, password: PASSWORD });
+      const cookie = sessionCookie(login)?.split(";")[0] ?? "";
+
+      const logout = await app.request("/api/auth/logout", {
+        method: "POST",
+        headers: { cookie },
+      });
+      expect(logout.status).toBe(200);
+      expect(await logout.json()).toEqual({ signedOut: true });
+      expect(sessionCookie(logout)).toContain("Max-Age=0");
+
+      const after = await app.request("/api/auth/session", { headers: { cookie } });
+      expect(after.status).toBe(401);
     });
   });
 

@@ -161,7 +161,11 @@ test("sends the test email, and the catcher receives it with a fresh token", asy
 
 test("completes email verification by POSTing the token, exactly once", async () => {
   const before = await api.get("/api/auth/session");
-  expect(await before.json()).toEqual({ email: ADMIN_EMAIL, emailVerified: false });
+  expect(await before.json()).toEqual({
+    email: ADMIN_EMAIL,
+    displayName: null,
+    emailVerified: false,
+  });
 
   const res = await api.post("/api/settings/email-verification", {
     data: { token: verificationToken },
@@ -170,7 +174,11 @@ test("completes email verification by POSTing the token, exactly once", async ()
   expect(await res.json()).toEqual({ email: ADMIN_EMAIL, emailVerified: true });
 
   const after = await api.get("/api/auth/session");
-  expect(await after.json()).toEqual({ email: ADMIN_EMAIL, emailVerified: true });
+  expect(await after.json()).toEqual({
+    email: ADMIN_EMAIL,
+    displayName: null,
+    emailVerified: true,
+  });
 
   // Single-use: the same token is worthless once redeemed.
   const again = await api.post("/api/settings/email-verification", {
@@ -240,7 +248,11 @@ test("keeps the settings and the verified email across a restart", async () => {
   // The verified email survived the restart too.
   const session = await api.get("/api/auth/session");
   expect(session.status()).toBe(200);
-  expect(await session.json()).toEqual({ email: ADMIN_EMAIL, emailVerified: true });
+  expect(await session.json()).toEqual({
+    email: ADMIN_EMAIL,
+    displayName: null,
+    emailVerified: true,
+  });
 
   // And the settings still deliver.
   const send = await api.post("/api/settings/smtp/test");

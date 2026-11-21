@@ -244,9 +244,11 @@ function TestAndVerification({
     setVerifyError(undefined);
     try {
       const account = await verifyEmail({ token });
+      const prev = queryClient.getQueryData<Session>(sessionQuery.queryKey);
       const session: Session = {
         signedIn: true,
         email: account.email,
+        displayName: prev?.signedIn ? prev.displayName : null,
         emailVerified: account.emailVerified,
       };
       queryClient.setQueryData(sessionQuery.queryKey, session);

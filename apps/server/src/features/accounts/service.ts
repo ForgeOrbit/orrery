@@ -2,12 +2,14 @@ import { randomBytes, randomUUID, scrypt, timingSafeEqual } from "node:crypto";
 import type { ScryptOptions } from "node:crypto";
 import { WorkspaceKind } from "@orrery/contract";
 import type {
+  ChangePasswordRequest,
   LoginRequest,
   SetupAdminRequest,
   SetupAdminResponse,
   SetupStatus,
+  UpdateProfileRequest,
 } from "@orrery/contract";
-import { and, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, ne, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
 import { uniqueConstraintName } from "../../platform/errors.ts";
@@ -81,7 +83,8 @@ export type AccountsErrorKind =
   | "setup_unavailable"
   | "invalid_secret"
   | "setup_complete"
-  | "invalid_credentials";
+  | "invalid_credentials"
+  | "invalid_current_password";
 
 const messages = {
   setup_unavailable:
@@ -89,6 +92,7 @@ const messages = {
   invalid_secret: "Invalid setup secret.",
   setup_complete: "Initial setup is already complete.",
   invalid_credentials: "Invalid email or password.",
+  invalid_current_password: "Current password is incorrect.",
 } as const satisfies Record<AccountsErrorKind, string>;
 
 export class AccountsError extends Error {
@@ -148,6 +152,7 @@ export async function invalidateAccountSessions(runner: AccountRunner, humanId: 
 export interface SessionAccount {
   humanId: string;
   email: string;
+  displayName?: string | null;
   isSystemAdministrator: boolean;
   emailVerifiedAt: Date | null;
 }
@@ -173,7 +178,14 @@ export interface AccountsService {
   setupStatus(): Promise<SetupStatus>;
   setupAdmin(input: SetupAdminRequest): Promise<SetupAdminResponse>;
   login(input: LoginRequest): Promise<{ token: string; email: string }>;
+  logout(token: string): Promise<void>;
   session(token: string): Promise<SessionAccount | null>;
+  updateProfile(humanId: string, input: UpdateProfileRequest): Promise<SessionAccount>;
+  changePassword(
+    humanId: string,
+    currentSessionToken: string,
+    input: ChangePasswordRequest,
+  ): Promise<void>;
   sessionPolicy(): SessionPolicy;
   // Marks an account's email verified, at database time, inside the caller's
   // transaction: the humans table is accounts' to write, but the flow that earns the
@@ -316,11 +328,16 @@ export function createAccountsService({
       return { token, email: input.email };
     },
 
+    async logout(token: string) {
+      await db.delete(browserSessions).where(eq(browserSessions.tokenHash, tokenHash(token)));
+    },
+
     async session(token: string) {
       const [row] = await db
         .select({
           humanId: humans.id,
           email: humans.email,
+          displayName: humans.displayName,
           isSystemAdministrator: humans.isSystemAdministrator,
           emailVerifiedAt: humans.emailVerifiedAt,
         })
@@ -337,6 +354,58 @@ export function createAccountsService({
         )
         .limit(1);
       return row ?? null;
+    },
+
+    async updateProfile(humanId: string, input: UpdateProfileRequest) {
+      const [row] = await db
+        .update(humans)
+        .set({ displayName: input.displayName })
+        .where(and(eq(humans.id, humanId), isNull(humans.deactivatedAt)))
+        .returning({
+          humanId: humans.id,
+          email: humans.email,
+          displayName: humans.displayName,
+          isSystemAdministrator: humans.isSystemAdministrator,
+          emailVerifiedAt: humans.emailVerifiedAt,
+        });
+      if (row === undefined) {
+        throw new AccountsError("invalid_credentials");
+      }
+      return row;
+    },
+
+    async changePassword(
+      humanId: string,
+      currentSessionToken: string,
+      input: ChangePasswordRequest,
+    ) {
+      const [human] = await db
+        .select({
+          passwordHash: humans.passwordHash,
+          deactivatedAt: humans.deactivatedAt,
+        })
+        .from(humans)
+        .where(eq(humans.id, humanId))
+        .limit(1);
+
+      if (human === undefined || human.deactivatedAt !== null) {
+        throw new AccountsError("invalid_current_password");
+      }
+      if (!(await verifyPassword(human.passwordHash, input.currentPassword))) {
+        throw new AccountsError("invalid_current_password");
+      }
+
+      const nextHash = await hashPassword(input.newPassword);
+      const currentHash = tokenHash(currentSessionToken);
+      await db.transaction(async (tx) => {
+        await tx.update(humans).set({ passwordHash: nextHash }).where(eq(humans.id, humanId));
+        // Revoke all other browser sessions while keeping the caller's active session.
+        await tx
+          .delete(browserSessions)
+          .where(
+            and(eq(browserSessions.humanId, humanId), ne(browserSessions.tokenHash, currentHash)),
+          );
+      });
     },
 
     // Inside the caller's transaction: the mark commits with the flow that earned it

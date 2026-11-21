@@ -1,0 +1,2 @@
+ALTER TABLE "humans" ADD COLUMN "display_name" text;--> statement-breakpoint
+ALTER TABLE "humans" ADD CONSTRAINT "humans_display_name_valid" CHECK ("humans"."display_name" is null or (btrim("humans"."display_name") <> '' and char_length("humans"."display_name") <= 120));
