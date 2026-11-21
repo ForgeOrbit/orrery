@@ -458,10 +458,12 @@ function SidebarFooter({
       {session?.signedIn && (
         <div className="sidebar-account-row">
           <Link to="/account" color="inherit" className="sidebar-account-link" {...clickProp}>
-            <span className="sidebar-account-name">{session.displayName ?? session.email}</span>
-            {session.displayName !== null && (
-              <span className="sidebar-account-email">{session.email}</span>
-            )}
+            <span className="sidebar-account-text">
+              <span className="sidebar-account-name">{session.displayName ?? session.email}</span>
+              {session.displayName !== null && (
+                <span className="sidebar-account-email">{session.email}</span>
+              )}
+            </span>
           </Link>
           <IconButton
             type="button"

@@ -28,11 +28,10 @@
   <a href="#contributing">Contributing</a>
 </p>
 
-> **Status: active MVP.** M0–M4 are complete and runnable today from the published image with
-> `docker compose pull && docker compose up -d`, and the M6 operator/agent guides and GHCR GitHub
-> Releases are live. In-app notifications and outgoing webhooks
-> ([M6, #7](https://github.com/forge-orbit/orrery/issues/7)) and the
-> [Shared vault (M5, #6)](https://github.com/forge-orbit/orrery/issues/6) are still planned. See the
+> **Status: active MVP.** M0–M4 and M6 (in-app notifications, workspace-scoped outgoing webhooks,
+> operator/agent guides, and GHCR GitHub Releases) are complete and runnable today from the
+> published image with `docker compose pull && docker compose up -d`. The
+> [Shared vault (M5, #6)](https://github.com/forge-orbit/orrery/issues/6) is planned next. See the
 > [roadmap](#roadmap) and the [install guide](docs/guides/install.md).
 
 ---
@@ -261,8 +260,8 @@ For full setup details, manual script wiring, privacy guarantees, and the verifi
 
 ## Roadmap
 
-Milestones are tracked as GitHub epics. M0–M4 are complete and live today; the M6 docs and release
-automation slice is live, with the rest of M6 still in progress.
+Milestones are tracked as GitHub epics. M0–M4 and M6 are complete and live today; M5 (Shared vault)
+is planned next.
 
 - [x] [#1](https://github.com/forge-orbit/orrery/issues/1) **M0 — Foundation.** Docker Compose, CI,
   first-run bootstrap, encrypted SMTP settings.
@@ -282,10 +281,11 @@ automation slice is live, with the rest of M6 still in progress.
   My work view (`GET /api/my-work`).
 - [ ] [#6](https://github.com/forge-orbit/orrery/issues/6) **M5 — Shared vault.** Obsidian-like
   Markdown vault, `[[wikilinks]]`, backlinks, FTS.
-- [ ] [#7](https://github.com/forge-orbit/orrery/issues/7) **M6 — Release polish.** Operator/agent
-  guides ([install](docs/guides/install.md), [backup/restore](docs/guides/backup-and-restore.md),
-  [connect an agent](docs/guides/connect-agent.md)) and GHCR GitHub Releases are shipped. In-app
-  notifications and outgoing webhooks are still planned.
+- [x] [#7](https://github.com/forge-orbit/orrery/issues/7) **M6 — Release polish.** Proactive expiry
+  sweeper, in-app notifications (`/notifications` + unread badge), workspace-scoped outgoing
+  webhooks with transactional outbox, HMAC-SHA256 signing & SSRF guard, operator/agent guides
+  ([install](docs/guides/install.md), [backup/restore](docs/guides/backup-and-restore.md),
+  [connect an agent](docs/guides/connect-agent.md)), and GHCR GitHub Releases.
 
 Looking further ahead: [#15](https://github.com/forge-orbit/orrery/issues/15) Agent-customizable UI —
 slots, panels, views and rich content.

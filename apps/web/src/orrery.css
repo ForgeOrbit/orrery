@@ -264,17 +264,28 @@
   color: var(--orrery-text);
 }
 
+.sidebar-account-text {
+  display: grid;
+  gap: 0.1rem;
+  min-inline-size: 0;
+  inline-size: 100%;
+}
+
 .sidebar-account-name {
+  display: block;
   font-size: 0.8125rem;
   font-weight: 600;
+  line-height: 1.25;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .sidebar-account-email {
+  display: block;
   color: var(--sidebar-muted);
   font-size: 0.72rem;
+  line-height: 1.25;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
