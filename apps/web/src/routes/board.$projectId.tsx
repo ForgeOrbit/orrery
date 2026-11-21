@@ -19,6 +19,7 @@ import {
   completedSubtaskCount,
   CreateIssueForm,
   issueBlockedByQuery,
+  issueQuery,
   issuesQuery,
   issueStatusLabels,
   LabelPill,
@@ -83,6 +84,11 @@ function BoardPage() {
   const [createdIssue, setCreatedIssue] = useState<Issue>();
   const [moveError, setMoveError] = useState<string>();
   const [moving, setMoving] = useState(false);
+  const [pendingClose, setPendingClose] = useState<{
+    issue: Issue;
+    status: IssueStatus;
+    openSubtaskCount: number;
+  }>();
 
   const canContribute = project.accessLevel !== "read";
   const readyIds = new Set(ready.map((issue) => issue.id));
@@ -101,13 +107,10 @@ function BoardPage() {
     if (filter === "needs-input" && !issue.needsInput) return false;
     if (filter === "ready" && !readyIds.has(issue.id)) return false;
     if (assigneeFilter === "unassigned" && issue.assignee !== null) return false;
-    if (
-      assigneeFilter === "human" &&
-      (issue.assignee === null || issue.assignee.agentId !== undefined)
-    ) {
+    if (assigneeFilter === "human" && (issue.assignee === null || issue.assignee.agentId != null)) {
       return false;
     }
-    if (assigneeFilter === "agent" && issue.assignee?.agentId === undefined) return false;
+    if (assigneeFilter === "agent" && issue.assignee?.agentId == null) return false;
     if (priorityFilter !== "all" && issue.priority !== priorityFilter) return false;
     if (labelFilter !== "all" && !issue.labels.some((label) => label.id === labelFilter)) {
       return false;
@@ -123,14 +126,15 @@ function BoardPage() {
     setPanelOpen(true);
   }
 
-  async function onMove(issue: Issue, status: IssueStatus) {
-    if (status === issue.status) return;
+  async function performMove(issue: Issue, status: IssueStatus) {
     setMoving(true);
     setMoveError(undefined);
+    setPendingClose(undefined);
     try {
       await updateIssue(issue.id, { status });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: issuesQuery(projectId).queryKey }),
+        queryClient.invalidateQueries({ queryKey: issueQuery(issue.id).queryKey }),
         queryClient.invalidateQueries({ queryKey: readyWorkQuery(projectId).queryKey }),
         queryClient.invalidateQueries({ queryKey: projectActivityQuery(projectId).queryKey }),
       ]);
@@ -139,6 +143,32 @@ function BoardPage() {
     } finally {
       setMoving(false);
     }
+  }
+
+  function onMove(issue: Issue, status: IssueStatus) {
+    if (status === issue.status) return;
+    if (status === "done" || status === "cancelled") {
+      const subtasks = subtasksOf(issues, issue.id);
+      const openSubtaskCount = subtasks.length - completedSubtaskCount(subtasks);
+      if (openSubtaskCount > 0) {
+        setPendingClose({ issue, status, openSubtaskCount });
+        return;
+      }
+    }
+    void performMove(issue, status);
+  }
+
+  const hasActiveFilter =
+    filter !== "all" ||
+    assigneeFilter !== "all" ||
+    priorityFilter !== "all" ||
+    labelFilter !== "all";
+
+  function clearFilters() {
+    setFilter("all");
+    setAssigneeFilter("all");
+    setPriorityFilter("all");
+    setLabelFilter("all");
   }
 
   return (
@@ -278,6 +308,32 @@ function BoardPage() {
         </Text>
       )}
 
+      {pendingClose !== undefined && (
+        <Stack direction="horizontal" role="alert" data-board-open-subtask-warning>
+          <Text as="p" display="block" type="supporting">
+            {pendingClose.issue.identifier} still has {pendingClose.openSubtaskCount} open{" "}
+            {pendingClose.openSubtaskCount === 1 ? "subtask" : "subtasks"}. Move to{" "}
+            {issueStatusLabels[pendingClose.status]} anyway?
+          </Text>
+          <Button
+            type="button"
+            label="Close anyway"
+            variant="secondary"
+            size="sm"
+            isDisabled={moving}
+            onClick={() => void performMove(pendingClose.issue, pendingClose.status)}
+          />
+          <Button
+            type="button"
+            label="Cancel"
+            variant="ghost"
+            size="sm"
+            isDisabled={moving}
+            onClick={() => setPendingClose(undefined)}
+          />
+        </Stack>
+      )}
+
       {visible.length === 0 ? (
         <Stack className="board-empty-state">
           <EmptyState
@@ -285,8 +341,8 @@ function BoardPage() {
             icon={<Icon icon="viewColumns" size="lg" />}
             headingLevel={2}
             actions={
-              filter !== "all" ? (
-                <Button label="Show all issues" onClick={() => setFilter("all")} />
+              hasActiveFilter ? (
+                <Button label="Show all issues" onClick={clearFilters} />
               ) : undefined
             }
           />
@@ -323,7 +379,7 @@ function BoardPage() {
                         subtaskCount={subtasks.length}
                         completedSubtaskCount={completedSubtaskCount(subtasks)}
                         canMove={canContribute && !moving}
-                        onMove={(next) => void onMove(issue, next)}
+                        onMove={(next) => onMove(issue, next)}
                         onInspect={(sessionId) =>
                           showPanel({ kind: "session", issueId: issue.id, sessionId })
                         }
@@ -433,8 +489,7 @@ function BoardCard({
       ? "stopping"
       : session?.status;
   const assignee = issue.assignee;
-  const assigneeType =
-    assignee === null ? "none" : assignee.agentId !== undefined ? "agent" : "human";
+  const assigneeType = assignee === null ? "none" : assignee.agentId != null ? "agent" : "human";
 
   return (
     <li

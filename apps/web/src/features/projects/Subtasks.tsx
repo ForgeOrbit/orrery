@@ -63,63 +63,78 @@ export function Subtasks({
     }
   }
 
+  const isSubtask = issue.parentIssueId !== null;
+
   return (
     <Section className="page-section" padding={0} data-subtasks-section>
       <Heading level={2} color="inherit">
         Subtasks
       </Heading>
-      <Text
-        as="p"
-        display="block"
-        type="supporting"
-        data-subtask-count={subtasks.length}
-        data-completed-subtask-count={completed}
-      >
-        {completed} of {subtasks.length} complete
-      </Text>
-      {parent !== undefined && (
-        <Text as="p" display="block" type="supporting">
-          Subtask of{" "}
-          <Link to="/issues/$issueId" params={{ issueId: parent.id }}>
-            {parent.identifier} {parent.title}
-          </Link>
-        </Text>
-      )}
-      {subtasks.length === 0 ? (
-        <Text as="p" display="block" type="supporting">
-          No subtasks yet.
-        </Text>
+      {isSubtask ? (
+        parent !== undefined ? (
+          <Text as="p" display="block" type="supporting">
+            Subtask of{" "}
+            <Link to="/issues/$issueId" params={{ issueId: parent.id }}>
+              {parent.identifier} {parent.title}
+            </Link>
+          </Text>
+        ) : (
+          <Text as="p" display="block" type="supporting">
+            Subtask of another issue.
+          </Text>
+        )
       ) : (
-        <ul>
-          {subtasks.map((subtask) => (
-            <li key={subtask.id} data-subtask-id={subtask.id} data-subtask-status={subtask.status}>
-              <Link to="/issues/$issueId" params={{ issueId: subtask.id }}>
-                {subtask.identifier} {subtask.title}
-              </Link>{" "}
-              · {issueStatusLabels[subtask.status]}
-            </li>
-          ))}
-        </ul>
-      )}
-      {canContribute && (
-        <form onSubmit={(event) => void onCreate(event)}>
-          <TextField
-            label="Subtask name"
-            id="new-subtask-title"
-            htmlName="title"
-            value={title}
-            onChange={setTitle}
-            maxLength={200}
-            placeholder="What needs to happen?"
-            required
-          />
-          <Button type="submit" label="Create subtask" variant="primary" isDisabled={saving} />
-        </form>
-      )}
-      {error !== undefined && (
-        <Text as="p" display="block" type="supporting" role="alert">
-          {error}
-        </Text>
+        <>
+          <Text
+            as="p"
+            display="block"
+            type="supporting"
+            data-subtask-count={subtasks.length}
+            data-completed-subtask-count={completed}
+          >
+            {completed} of {subtasks.length} complete
+          </Text>
+          {subtasks.length === 0 ? (
+            <Text as="p" display="block" type="supporting">
+              No subtasks yet.
+            </Text>
+          ) : (
+            <ul>
+              {subtasks.map((subtask) => (
+                <li
+                  key={subtask.id}
+                  data-subtask-id={subtask.id}
+                  data-subtask-status={subtask.status}
+                >
+                  <Link to="/issues/$issueId" params={{ issueId: subtask.id }}>
+                    {subtask.identifier} {subtask.title}
+                  </Link>{" "}
+                  · {issueStatusLabels[subtask.status]}
+                </li>
+              ))}
+            </ul>
+          )}
+          {canContribute && (
+            <form onSubmit={(event) => void onCreate(event)}>
+              <TextField
+                label="Subtask name"
+                id="new-subtask-title"
+                htmlName="title"
+                value={title}
+                onChange={setTitle}
+                maxLength={200}
+                placeholder="What needs to happen?"
+                required
+              />
+              <Button type="submit" label="Create subtask" variant="primary" isDisabled={saving} />
+            </form>
+          )}
+          {error !== undefined && (
+            <Text as="p" display="block" type="supporting" role="alert">
+              {error}
+            </Text>
+          )}
+        </>
       )}
     </Section>
   );

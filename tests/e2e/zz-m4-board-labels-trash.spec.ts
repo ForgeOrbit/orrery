@@ -109,6 +109,16 @@ test("board, badges, labels, subtasks, trash and restore work in the browser", a
   );
   await expect(page.locator("[data-subtasks-section] li")).toHaveCount(1);
 
+  // Visiting the subtask enforces max nesting depth 1: no nested "Create subtask" form.
+  await page.locator("[data-subtasks-section] li a").first().click();
+  await expect(page.getByText(`Subtask of ${identifier}`)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Create subtask" })).toHaveCount(0);
+  await page
+    .getByRole("link", { name: new RegExp(identifier) })
+    .first()
+    .click();
+  await expect(page.locator("[data-issue-identifier]").first()).toHaveText(identifier);
+
   // Closing the parent with an open subtask warns first, and does not close by itself.
   await page.getByRole("button", { name: "Close issue" }).click();
   await expect(page.locator("[data-open-subtask-warning]")).toContainText("1 open subtask");
@@ -173,6 +183,23 @@ test("board, badges, labels, subtasks, trash and restore work in the browser", a
   await expect(
     page.locator(`[data-board-status="in_progress"] [data-board-issue-id="${parentId}"]`),
   ).toHaveCount(1);
+
+  // Moving a parent with open subtasks to Cancelled warns first on the board.
+  await page.getByRole("combobox", { name: `Move ${identifier}` }).click();
+  await page.getByRole("option", { name: "Cancelled", exact: true }).click();
+  await expect(page.locator("[data-board-open-subtask-warning]")).toContainText("1 open subtask");
+  await expect(
+    page.locator(`[data-board-status="in_progress"] [data-board-issue-id="${parentId}"]`),
+  ).toHaveCount(1);
+  await page.getByRole("button", { name: "Close anyway" }).click();
+  await expect(
+    page.locator(`[data-board-status="cancelled"] [data-board-issue-id="${parentId}"]`),
+  ).toHaveCount(1);
+
+  // Detaching the label removes it from the issue.
+  await page.locator(`[data-board-issue-id="${parentId}"] a`).first().click();
+  await page.getByRole("button", { name: "Remove UI triage" }).click();
+  await expect(page.locator("[data-issue-label-id] [data-label-name='UI triage']")).toHaveCount(0);
 
   for (const cookie of await page.context().cookies()) await recordSecret(cookie.value);
 });

@@ -38,6 +38,7 @@ export function ProjectLabels({
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: projectLabelsQuery(projectId).queryKey }),
       queryClient.invalidateQueries({ queryKey: issuesQuery(projectId).queryKey }),
+      queryClient.invalidateQueries({ queryKey: ["issues"] }),
       queryClient.invalidateQueries({ queryKey: projectActivityQuery(projectId).queryKey }),
     ]);
   }

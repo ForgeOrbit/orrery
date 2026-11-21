@@ -34,6 +34,7 @@ import {
   projectActivityQuery,
   projectLabelsQuery,
   projectQuery,
+  projectTrashQuery,
   PriorityBadge,
   readyWorkQuery,
   removeBlockedBy,
@@ -167,11 +168,11 @@ function IssuePage() {
         by {issue.createdBy.displayName} · last edited by {issue.updatedBy.displayName}
       </Text>
       {issue.labels.length > 0 && (
-        <Text as="p" display="block" type="supporting" className="issue-detail-labels">
+        <Stack direction="horizontal" className="issue-detail-labels">
           {issue.labels.map((label) => (
             <LabelPill key={label.id} label={label} />
           ))}
-        </Text>
+        </Stack>
       )}
       <Stack className="issue-layout">
         <aside className="issue-inspector">
@@ -558,8 +559,10 @@ function TrashButton({
     setError(undefined);
     try {
       await deleteIssue(issue.id);
+      queryClient.removeQueries({ queryKey: issueQuery(issue.id).queryKey });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: issuesQuery(issue.projectId).queryKey }),
+        queryClient.invalidateQueries({ queryKey: projectTrashQuery(issue.projectId).queryKey }),
         queryClient.invalidateQueries({ queryKey: readyWorkQuery(issue.projectId).queryKey }),
         queryClient.invalidateQueries({ queryKey: projectActivityQuery(issue.projectId).queryKey }),
       ]);

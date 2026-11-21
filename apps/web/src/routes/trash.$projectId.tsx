@@ -6,6 +6,7 @@ import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-quer
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import {
+  issueQuery,
   issuesQuery,
   projectActivityQuery,
   projectQuery,
@@ -46,6 +47,7 @@ function ProjectTrashPage() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: projectTrashQuery(projectId).queryKey }),
         queryClient.invalidateQueries({ queryKey: issuesQuery(projectId).queryKey }),
+        queryClient.invalidateQueries({ queryKey: issueQuery(issueId).queryKey }),
         queryClient.invalidateQueries({ queryKey: readyWorkQuery(projectId).queryKey }),
         queryClient.invalidateQueries({ queryKey: projectActivityQuery(projectId).queryKey }),
       ]);
