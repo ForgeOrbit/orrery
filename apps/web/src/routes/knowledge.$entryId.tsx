@@ -20,9 +20,6 @@ import {
   updateKnowledgeEntry,
 } from "../features/projects/index.ts";
 
-// One basic Markdown knowledge entry. It is stored and shown as written; this is not the
-// full vault editor (#6). Editing keeps the creator and records the last editor, and is
-// offered only when the project's effective level is Contribute or Manage.
 export const Route = createFileRoute("/knowledge/$entryId")({
   loader: async ({ context, params }) => {
     const entry = await context.queryClient.ensureQueryData(knowledgeEntryQuery(params.entryId));
@@ -67,8 +64,6 @@ function KnowledgePage() {
   );
 }
 
-// Keyed by updatedAt at the call site: a successful save remounts it with the
-// server's values, so no effect is needed to synchronize it.
 function EditKnowledgeForm({ entry, issues }: { entry: KnowledgeEntry; issues: Issue[] }) {
   const queryClient = useQueryClient();
   const toast = useToast();

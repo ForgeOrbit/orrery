@@ -15,7 +15,6 @@ import { OwnershipError, type OwnershipErrorKind, type OwnershipService } from "
 
 const workspaceParams = z.object({ workspaceId: z.string().min(1).max(200) });
 
-// The minimal installation directory: human browser sessions only, never agent keys.
 const directory = createRoute({
   method: "get",
   path: "/api/admin/workspaces",
@@ -57,7 +56,6 @@ const recoverOwnership = createRoute({
   },
 });
 
-// Route definitions, for the generated OpenAPI document.
 export const routes = [directory, recoverOwnership];
 
 const statusFor = {
@@ -103,7 +101,6 @@ function failure<K extends readonly OwnershipErrorKind[]>(c: Context, error: unk
   throw error;
 }
 
-// Thin: validate, resolve the human session, call the service, map the result. No policy.
 export function createOwnershipRest(service: OwnershipService, sessionReader: SessionReader) {
   const app = new OpenAPIHono({ defaultHook: validationHook });
 

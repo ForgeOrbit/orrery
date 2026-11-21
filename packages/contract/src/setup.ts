@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { Email, NewPassword } from "./common.ts";
 
-// Initial setup: creating the first system administrator (issue #21). Bootstrap is
-// protected by a deployment-supplied secret and closes exactly once, permanently.
+
+
 export const SetupStatus = z
   .object({
     setupComplete: z.boolean(),
@@ -19,7 +19,7 @@ export const SetupAdminRequest = z
   .meta({ id: "SetupAdminRequest" });
 export type SetupAdminRequest = z.infer<typeof SetupAdminRequest>;
 
-// The administrator's email, as stored. The response never includes the password.
+
 export const SetupAdminResponse = z
   .object({
     email: Email,

@@ -190,7 +190,6 @@ const identity = createRoute({
   },
 });
 
-// Route definitions, for the generated OpenAPI document.
 export const routes = [
   createAgent,
   listAgents,
@@ -229,8 +228,6 @@ function isKind<K extends readonly AgentsErrorKind[]>(
   return kinds.some((kind) => kind === error.kind);
 }
 
-// A route answers exactly the kinds it declares. Anything else stays a 500 instead of
-// silently gaining a status.
 function failure<K extends readonly AgentsErrorKind[]>(c: Context, error: unknown, kinds: K) {
   if (error instanceof AgentsError && isKind(error, kinds)) {
     return problemResponse(c, {
@@ -271,16 +268,12 @@ const identityKinds = [
   "human_deactivated",
 ] as const;
 
-// A bearer key is a transport detail of this feature: the header is read here, and the
-// service alone decides whether the key authenticates. It stays internal to rest.ts —
-// no other feature learns how the header is spelled.
 type AgentKeyReader = (c: Context) => string | null;
 
 function createAgentKeyReader(): AgentKeyReader {
   return (c) => readBearerToken(c.req.header("Authorization") ?? null);
 }
 
-// Thin: validate, call the service, map the result. The service decides who may do what.
 export function createAgentsRest(service: AgentsService, sessionReader: SessionReader) {
   const readKey = createAgentKeyReader();
   const app = new OpenAPIHono({ defaultHook: validationHook });
@@ -370,8 +363,6 @@ export function createAgentsRest(service: AgentsService, sessionReader: SessionR
 
   app.openapi(identity, async (c) => {
     try {
-      // The service decides whether a missing header is authentication failure, just as
-      // it decides whether a missing session cookie is for the session-based routes.
       return c.json(await service.authenticate(readKey(c), c.req.valid("query")), 200);
     } catch (error) {
       return failure(c, error, identityKinds);

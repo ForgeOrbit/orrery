@@ -1,13 +1,3 @@
-// Personal-to-shared project transfer (issue #39), black-box against the running
-// installation. The admin owns a personal project and the shared destination, so one
-// person holds both authorities and completes the move directly. Afterwards a personal
-// API key is refused on the moved project while the destination owner still has Manage
-// and sees the preserved project, issues and history. No server code is imported.
-//
-// The `zz-` prefix runs this with the other late suites. It needs no mail delivery.
-//
-//   docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { randomUUID } from "node:crypto";
 import { expect, request, test, type APIRequestContext } from "@playwright/test";
 import { ADMIN_EMAIL, ADMIN_PASSWORD, recordSecret } from "./admin.ts";
@@ -98,7 +88,6 @@ test("moves a personal project into a shared workspace and leaves source keys be
   expect(destinationRes.status()).toBe(201);
   const destinationWorkspaceId = idOf(await destinationRes.json(), "destination workspace");
 
-  // The one person with both authorities previews the access change, then completes it.
   const previewRes = await api.post(`/api/projects/${projectId}/transfer/preview`, {
     data: { destinationWorkspaceId },
   });
@@ -122,13 +111,11 @@ test("moves a personal project into a shared workspace and leaves source keys be
     accessLevel: "manage",
   });
 
-  // The source key is refused: a bearer request has no view of the moved project.
   const keyOnly = await fetch(new URL(`/api/projects/${projectId}`, baseUrl), {
     headers: { Authorization: `Bearer ${secret}` },
   });
   expect(keyOnly.status).toBeGreaterThanOrEqual(400);
 
-  // The destination owner keeps Manage and the preserved issue and activity history.
   const after = await api.get(`/api/projects/${projectId}`);
   expect(after.status()).toBe(200);
   expect(await after.json()).toMatchObject({ id: projectId, accessLevel: "manage" });
@@ -141,8 +128,6 @@ test("moves a personal project into a shared workspace and leaves source keys be
   expect(activity.status()).toBe(200);
   expect(stringsOf(await activity.json(), "type")).toContain("issue_created");
 
-  // Owners hold Manage implicitly and are not listed as explicit grants; the project
-  // view above is the owner's Manage proof. The access feed still shows the grant events.
   const grants = await api.get(`/api/projects/${projectId}/access`);
   expect(grants.status()).toBe(200);
   expect(Array.isArray(await grants.json())).toBe(true);

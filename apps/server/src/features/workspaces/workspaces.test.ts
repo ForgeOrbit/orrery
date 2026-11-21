@@ -45,11 +45,6 @@ import { migrate } from "../../platform/migrate.ts";
 import { tokenHash } from "../../platform/tokens.ts";
 import { createWorkspacesFeature } from "./index.ts";
 
-// Runs against a real Postgres (see AGENTS.md): memberships, ownership invariants,
-// invitation redemption, and the recorded access events are database behavior, not mock
-// behavior. Delivery is faked at the transport; the black-box e2e suite proves real
-// delivery through Mailpit.
-
 const SECRET = "correct horse battery staple staple";
 const EMAIL = "admin@example.com";
 const PASSWORD = "first-admin-password";
@@ -102,8 +97,6 @@ const problemBody = async (res: Response) => Problem.parse(await res.json());
 const codedError = (code: string, message: string): Error =>
   Object.assign(new Error(message), { code });
 
-// Drizzle wraps the driver's error; the root's message (the PostgresError's) carries the
-// trigger's message. Resolves with that, or the stringified error.
 async function rejection(promise: Promise<unknown>): Promise<string> {
   const error = await promise.then(
     () => {
@@ -117,7 +110,6 @@ async function rejection(promise: Promise<unknown>): Promise<string> {
 const tokenFrom = (text: string, path = "workspace-invitation") =>
   text.match(new RegExp(`/${path}\\?token=([A-Za-z0-9_-]+)`))?.[1];
 
-// The shared story so far: the first administrator exists (bootstrap) and is signed in.
 async function bootstrapAdmin(app: Hono) {
   const res = await postJson(app, "/api/setup/admin", {
     secret: SECRET,
@@ -143,8 +135,6 @@ async function saveSmtp(app: Hono, cookie: string) {
   expect(res.status).toBe(200);
 }
 
-// A verified account with a live session, created directly: the point is the workspace
-// flow, not repeating the installation invitation story.
 async function verifiedCookie(app: Hono, email: string) {
   const [human] = await insertHuman({ email, verified: true });
   return { human, cookie: await sessionFor(app, human.id) };
@@ -156,7 +146,7 @@ async function insertHuman(input: { email: string; verified: boolean }) {
     .insert(humans)
     .values({
       id: randomUUID(),
-      // One normalization, the same as the contract and the humans CHECK.
+
       email: input.email.trim().toLowerCase(),
       passwordHash: "scrypt$anything",
       ...(input.verified ? { emailVerifiedAt: sql`now()` } : {}),
@@ -166,8 +156,6 @@ async function insertHuman(input: { email: string; verified: boolean }) {
   return [human] as const;
 }
 
-// The database every helper in this file uses. Set by the suite's beforeAll; keeping the
-// service tests and fixtures on one connection pool is deliberate.
 let databaseForHelpers: Database;
 const currentDatabase = () => databaseForHelpers;
 
@@ -191,8 +179,6 @@ async function verifyHuman(humanId: string) {
     .where(eq(humans.id, humanId));
 }
 
-// A one-way latch for coordinating two database sessions without using a sleep as the
-// synchronization signal.
 function createGate() {
   let release!: () => void;
   const opened = new Promise<void>((resolve) => {
@@ -204,8 +190,6 @@ function createGate() {
   };
 }
 
-// Waits until a statement in another session is blocked on a lock whose query contains
-// the given text. Polling pg_stat_activity coordinates the test deterministically.
 async function waitForLockWait(pattern: string) {
   await expect
     .poll(
@@ -334,8 +318,6 @@ describe("workspaces", () => {
     });
   });
 
-  // Wired like features/index.ts, with a fake transport that keeps the emails, so the
-  // invitation token can be read back the way a recipient would.
   function makeApp() {
     const sent: { to: string; subject: string; text: string }[] = [];
     let deliveryFailure: (() => Error) | undefined;
@@ -379,9 +361,7 @@ describe("workspaces", () => {
       createInvitedHuman: accounts.createInvitedHuman,
       markEmailVerified: accounts.markEmailVerified,
       deliver: settings.deliver,
-      // This suite does not create agent keys; their revocation on removal is covered
-      // by makeAgentsApp below. The projects feature's cleanup is covered end-to-end in
-      // projects/access.test.ts.
+
       revokeMemberProjectAccess: async () => {},
       revokeMemberWorkspaceKeys: async () => {},
       releaseMemberWorkSessions: async () => {},
@@ -406,8 +386,6 @@ describe("workspaces", () => {
     };
   }
 
-  // The setup every workspace test starts from: the administrator is signed in, verified,
-  // and SMTP is saved, so an invitation can actually deliver.
   async function readyApp() {
     const made = makeApp();
     await bootstrapAdmin(made.app);
@@ -418,9 +396,6 @@ describe("workspaces", () => {
     return { ...made, admin, adminCookie: await cookieFor(made.app, EMAIL, PASSWORD) };
   }
 
-  // The same wiring as features/index.ts, with the real agents feature added: the tests
-  // that issue and revoke keys need the key owner, the workspace removal, and the mail
-  // transport for re-invitation to agree on one database and one set of feature seams.
   function makeAgentsApp() {
     const sent: { to: string; subject: string; text: string }[] = [];
     const accounts = createAccountsFeature({
@@ -505,8 +480,6 @@ describe("workspaces", () => {
     return { ...made, admin, adminCookie: await cookieFor(made.app, EMAIL, PASSWORD) };
   }
 
-  // A valid shared workspace written directly, for tests about the database invariant
-  // rather than the HTTP flow. The owner rows can be inserted in the same transaction.
   async function directSharedWorkspace(ownerIds: readonly string[], name = "Direct Team") {
     const workspaceId = randomUUID();
     await database.db.transaction(async (tx) => {
@@ -575,7 +548,6 @@ describe("workspaces", () => {
       subjectHumanId: admin.id,
     });
 
-    // The listing keeps the personal workspace and the shared one as distinct views.
     const workspacesList = await listing(app, adminCookie);
     expect(workspacesList.filter((workspace) => workspace.kind === "personal")).toHaveLength(1);
     expect(workspacesList.filter((workspace) => workspace.kind === "shared")).toEqual([created]);
@@ -598,7 +570,6 @@ describe("workspaces", () => {
       },
     ]);
 
-    // Another signed-in person sees neither the workspace nor its detail.
     const { cookie: otherCookie } = await verifiedCookie(app, "outsider@example.com");
     expect((await listing(app, otherCookie)).map((workspace) => workspace.id)).not.toContain(
       created.id,
@@ -615,8 +586,6 @@ describe("workspaces", () => {
     const { app, admin, adminCookie } = await readyApp();
     const workspace = await createWorkspace(app, adminCookie);
 
-    // The bootstrap administrator starts unverified; creating a workspace does not
-    // require it, but the invitation that could create a new account does.
     await database.db.update(humans).set({ emailVerifiedAt: null }).where(eq(humans.id, admin.id));
     const unverified = await postJson(
       app,
@@ -628,8 +597,6 @@ describe("workspaces", () => {
     expect(await problemBody(unverified)).toMatchObject({ code: "inviter_unverified" });
     expect(await database.db.select().from(workspaceInvitations)).toHaveLength(0);
 
-    // A signed-in non-member gets workspace_not_found so shared workspace ids cannot be
-    // enumerated via the invitation endpoint.
     const { cookie: outsiderCookie } = await verifiedCookie(app, "outsider@example.com");
     await verifyHuman(admin.id);
     const outsider = await postJson(
@@ -647,7 +614,6 @@ describe("workspaces", () => {
     const workspace = await createWorkspace(app, adminCookie);
     const { human: member, cookie: memberCookie } = await verifiedCookie(app, "Member@Example.COM");
 
-    // The invitation normalizes its input exactly like the account's stored email.
     const invitation = await invite(app, adminCookie, workspace.id, "  MEMBER@example.com ");
     expect(invitation).toEqual({
       workspaceId: workspace.id,
@@ -656,8 +622,6 @@ describe("workspaces", () => {
     });
     const token = await workspaceInviteToken(sent, "member@example.com", "Rocket Team");
 
-    // The forwarded link, opened by a different signed-in account, is refused and the
-    // token stays pending: the refusal must not burn the recipient's link.
     const forwardedPreview = await getJson(
       app,
       `/api/workspace-invitations/preview?token=${token}`,
@@ -691,7 +655,6 @@ describe("workspaces", () => {
     expect(stillPending).toMatchObject({ status: "pending", acceptedAt: null });
     expect(await database.db.select().from(workspaceMemberships)).toHaveLength(1);
 
-    // The invited, verified account accepts once.
     const accepted = await postJson(
       app,
       "/api/workspace-invitations/acceptance",
@@ -723,7 +686,6 @@ describe("workspaces", () => {
     ]);
     expect((await listing(app, memberCookie)).map((item) => item.id)).toContain(workspace.id);
 
-    // A token is accepted exactly once.
     const reused = await postJson(
       app,
       "/api/workspace-invitations/acceptance",
@@ -754,7 +716,6 @@ describe("workspaces", () => {
     expect(await problemBody(refused)).toMatchObject({ code: "email_unverified" });
     expect(await database.db.select().from(workspaceMemberships)).toHaveLength(1);
 
-    // Verification is the account's own property; once earned, the pending link works.
     await verifyHuman(unverified.id);
     const accepted = await postJson(
       app,
@@ -771,7 +732,6 @@ describe("workspaces", () => {
     await invite(app, adminCookie, workspace.id, "  New.Member@Example.COM ");
     const token = await workspaceInviteToken(sent, "new.member@example.com", "Rocket Team");
 
-    // Preview is a read: it changes nothing and works before sign-in.
     const preview = await getJson(app, `/api/workspace-invitations/preview?token=${token}`);
     expect(preview.status).toBe(200);
     expect(WorkspaceInvitationPreview.parse(await preview.json())).toEqual({
@@ -788,7 +748,7 @@ describe("workspaces", () => {
       ],
       expiresAt: expect.any(String),
     });
-    // No account and no membership exist before the POST.
+
     expect(await database.db.select().from(humans)).toHaveLength(1);
     expect(await database.db.select().from(workspaceMemberships)).toHaveLength(1);
 
@@ -827,7 +787,6 @@ describe("workspaces", () => {
       "member_joined",
     ]);
 
-    // The account is real and verified; its personal workspace is separate.
     const login = await postJson(app, "/api/auth/login", {
       email: "new.member@example.com",
       password: "new-member-password",
@@ -840,7 +799,6 @@ describe("workspaces", () => {
       "shared",
     ]);
 
-    // A structural failure leaves no partial account, membership, or consumed token.
     const [other] = await insertHuman({ email: "pending@example.com", verified: false });
     await invite(app, adminCookie, workspace.id, "pending@example.com");
     const pendingToken = await workspaceInviteToken(sent, "pending@example.com", "Rocket Team");
@@ -875,7 +833,6 @@ describe("workspaces", () => {
         .status,
     ).toBe(200);
 
-    // A member cannot appoint owners before being appointed.
     const memberAttempt = await postJson(
       app,
       `/api/workspaces/${workspace.id}/owners`,
@@ -915,7 +872,6 @@ describe("workspaces", () => {
       (await listing(app, memberCookie)).find((item) => item.id === workspace.id)?.isOwner,
     ).toBe(true);
 
-    // Appointment is idempotent and adds no duplicate event; a non-member is refused.
     const again = await postJson(
       app,
       `/api/workspaces/${workspace.id}/owners`,
@@ -953,8 +909,6 @@ describe("workspaces", () => {
       "workspace_created",
     ]);
 
-    // The database's deferred trigger refuses a last-owner deletion even when the
-    // service is bypassed, so the invariant is not only an application check.
     const rejected = await database.db
       .delete(workspaceMemberships)
       .where(eq(workspaceMemberships.workspaceId, workspace.id))
@@ -969,7 +923,6 @@ describe("workspaces", () => {
     );
     expect(await database.db.select().from(workspaceMemberships)).toHaveLength(1);
 
-    // With a second owner, one can leave and the workspace keeps its remaining owner.
     const [second] = await insertHuman({ email: "second.owner@example.com", verified: true });
     await database.db.insert(workspaceMemberships).values({
       id: randomUUID(),
@@ -1046,8 +999,6 @@ describe("workspaces", () => {
     await invite(app, adminCookie, workspace.id, INVITEE);
     const token = await workspaceInviteToken(sent, INVITEE, "Rocket Team");
 
-    // A second owner makes it valid for the inviter to leave, after which the pending
-    // offer no longer has authorization behind it.
     const [second] = await insertHuman({ email: "replacement.owner@example.com", verified: true });
     await database.db.insert(workspaceMemberships).values({
       id: randomUUID(),
@@ -1130,7 +1081,7 @@ describe("workspaces", () => {
         .select()
         .from(workspaceMemberships)
         .where(eq(workspaceMemberships.workspaceId, workspace.id)),
-    ).toHaveLength(1); // the creator only
+    ).toHaveLength(1);
   });
 
   it("supersedes a failed workspace invitation in place instead of locking the email out for seven days", async () => {
@@ -1154,7 +1105,6 @@ describe("workspaces", () => {
       7 * 24 * 60 * 60 * 1000,
     );
 
-    // The failed link can never preview or redeem.
     const token = tokenFrom(sent[0]?.text ?? "") ?? "";
     const preview = await getJson(app, `/api/workspace-invitations/preview?token=${token}`);
     expect(preview.status).toBe(400);
@@ -1166,8 +1116,6 @@ describe("workspaces", () => {
     const [stillPending] = await database.db.select().from(workspaceInvitations);
     expect(stillPending).toMatchObject({ status: "pending", declinedAt: null });
 
-    // Once SMTP recovers, re-inviting immediately supersedes the failed row in place
-    // rather than blocking for seven days.
     made.repairDelivery();
     const replacement = await invite(app, adminCookie, workspace.id, INVITEE);
     expect(replacement.status).toBe("pending");
@@ -1286,7 +1234,6 @@ describe("workspaces", () => {
       delivery: { status: "failed", attemptedAt: expect.any(String) },
     });
 
-    // A member who does not own the workspace cannot read or manage its invitations.
     const { human: member, cookie: memberCookie } = await verifiedCookie(app, INVITEE);
     await database.db.insert(workspaceMemberships).values({
       id: randomUUID(),
@@ -1353,8 +1300,6 @@ describe("workspaces", () => {
         .where(eq(workspaceMemberships.humanId, member.id)),
     ).toHaveLength(0);
 
-    // The recipient declines a second offer from the emailed link; holding the token is
-    // the capability, so no session is needed.
     const declineEmail = "decline@example.com";
     await invite(app, adminCookie, workspace.id, declineEmail);
     const declineToken = await workspaceInviteToken(sent, declineEmail, "Rocket Team");
@@ -1499,8 +1444,6 @@ describe("workspaces", () => {
     expect(refused.headers.get("content-type")).toBe("application/problem+json");
     expect(await problemBody(refused)).toMatchObject({ code: "inviter_unverified" });
 
-    // The refusal ran before any rotation: one row, still pending, same deadline, and
-    // no replacement email left the relay.
     const rows = await database.db.select().from(workspaceInvitations);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
@@ -1515,7 +1458,6 @@ describe("workspaces", () => {
       200,
     );
 
-    // The original link still accepts for its real recipient.
     const { cookie: memberCookie } = await verifiedCookie(app, INVITEE);
     const accepted = await postJson(
       app,
@@ -1626,7 +1568,6 @@ describe("workspaces", () => {
       level: "contribute",
     });
 
-    // The old offer keeps its row; the replacement carries the same project and level.
     expect(await database.db.select().from(workspaceInvitationGrants)).toHaveLength(2);
     const newToken = tokenFrom(sent.at(-1)?.text ?? "");
     expect(newToken).not.toBe(oldToken);
@@ -1690,7 +1631,7 @@ describe("workspaces", () => {
       );
       expect(fresh).toMatchObject({ status: "pending" });
     }
-    // Both previous links stop working.
+
     for (const token of [beforeToken, afterToken]) {
       expect((await getJson(app, `/api/workspace-invitations/preview?token=${token}`)).status).toBe(
         400,
@@ -1723,7 +1664,6 @@ describe("workspaces", () => {
       delivery: { status: "failed", attemptedAt: expect.any(String) },
     });
 
-    // The failed lifecycle is still resolvable: repair the relay and resend the new row.
     made.repairDelivery();
     if (failedRow === undefined) throw new Error("the replacement invitation is missing");
     const retried = await postEmpty(
@@ -1736,7 +1676,7 @@ describe("workspaces", () => {
       status: "pending",
       delivery: { status: "sent" },
     });
-    expect(sent).toHaveLength(3); // original, failed resend, successful retry
+    expect(sent).toHaveLength(3);
   });
 
   it("refuses to resend or revoke a workspace invitation that is no longer pending or expired", async () => {
@@ -1797,8 +1737,6 @@ describe("workspaces", () => {
     const workspace = await createWorkspace(app, adminCookie);
     const projectId = await createProjectDirect(workspace.id, admin.id, "Offered Project");
 
-    // An existing account sees the exact project and level before accepting, and the
-    // same transaction writes the membership and grant.
     const { human: existing, cookie: existingCookie } = await verifiedCookie(app, INVITEE);
     await invite(app, adminCookie, workspace.id, INVITEE, [{ projectId, level: "contribute" }]);
     const existingToken = await workspaceInviteToken(sent, INVITEE, "Rocket Team");
@@ -1834,7 +1772,6 @@ describe("workspaces", () => {
       grantedByHumanId: admin.id,
     });
 
-    // Registration creates the account, membership, and offered grant together.
     await invite(app, adminCookie, workspace.id, "new.project@example.com", [
       { projectId, level: "manage" },
     ]);
@@ -1884,9 +1821,6 @@ describe("workspaces", () => {
     const existingToken = await workspaceInviteToken(sent, INVITEE, "Rocket Team");
     const registrationToken = await workspaceInviteToken(sent, newEmail, "Rocket Team");
 
-    // Project transfer (#46) is out of scope, so simulate the lease changing behind an
-    // existing offer the way a future transfer would: the invitation still names it,
-    // but the project now belongs to another workspace.
     await database.db
       .update(projects)
       .set({ workspaceId: otherWorkspaceId })
@@ -1940,8 +1874,6 @@ describe("workspaces", () => {
       code: "invitation_scope_invalid",
     });
 
-    // Both tokens remain pending: the rejection rolled back the membership, account,
-    // token, and grants together.
     const pendingOffers = await database.db.select().from(workspaceInvitations);
     expect(pendingOffers.map((invitation) => invitation.status)).toEqual(["pending", "pending"]);
     expect(
@@ -1961,7 +1893,6 @@ describe("workspaces", () => {
     const [second] = await insertHuman({ email: "second.owner@example.com", verified: true });
     const [third] = await insertHuman({ email: "third.member@example.com", verified: true });
 
-    // A shared workspace created without an owner is invalid at commit.
     const orphanId = randomUUID();
     expect(
       await rejection(
@@ -1972,7 +1903,6 @@ describe("workspaces", () => {
       await database.db.select().from(workspaces).where(eq(workspaces.id, orphanId)),
     ).toHaveLength(0);
 
-    // Changing a personal workspace into a shared one without an owner is also refused.
     const [personal] = await database.db
       .select()
       .from(workspaces)
@@ -1991,7 +1921,6 @@ describe("workspaces", () => {
       .where(eq(workspaces.id, personal?.id ?? ""));
     expect(stillPersonal?.kind).toBe("personal");
 
-    // A last owner cannot be demoted by a direct update.
     const workspaceA = await directSharedWorkspace([admin.id], "Move A");
     const [aOwner] = await database.db
       .select()
@@ -2011,8 +1940,6 @@ describe("workspaces", () => {
       .where(eq(workspaceMemberships.id, aOwner?.id ?? ""));
     expect(stillOwner?.isOwner).toBe(true);
 
-    // Moving the sole owner to another workspace would empty the old one, so the old id
-    // is checked as well as the new one.
     const workspaceB = await directSharedWorkspace([second.id], "Move B");
     expect(
       await rejection(
@@ -2029,7 +1956,6 @@ describe("workspaces", () => {
         .where(eq(workspaceMemberships.workspaceId, workspaceA)),
     ).toHaveLength(1);
 
-    // A non-owner membership can move when both workspaces keep an owner.
     const moving = randomUUID();
     await database.db.insert(workspaceMemberships).values({
       id: moving,
@@ -2048,7 +1974,6 @@ describe("workspaces", () => {
         .where(eq(workspaceMemberships.id, moving)),
     ).toMatchObject([{ workspaceId: workspaceB }]);
 
-    // Deleting the memberships before the workspace is a valid transactional deletion.
     const removable = await directSharedWorkspace([admin.id], "Removable");
     await database.db.transaction(async (tx) => {
       await tx.delete(workspaceMemberships).where(eq(workspaceMemberships.workspaceId, removable));
@@ -2071,7 +1996,6 @@ describe("workspaces", () => {
     });
     const removeAs = (humanId: string) =>
       database.sql.begin("isolation level repeatable read", async (tx) => {
-        // Establish each transaction's snapshot before either one writes.
         await tx`select count(*) from workspace_memberships where workspace_id = ${workspaceId}`;
         ready += 1;
         if (ready === 2) open();
@@ -2307,7 +2231,7 @@ describe("workspaces", () => {
         if (waiting === undefined || invitation === undefined) {
           throw new Error("the blocked redemption or its invitation was not found");
         }
-        // The request had started before the deadline, then waited on the guard.
+
         expect(new Date(waiting.query_start).getTime()).toBeLessThan(
           invitation.expiresAt.getTime(),
         );
@@ -2328,13 +2252,10 @@ describe("workspaces", () => {
           .select()
           .from(workspaceMemberships)
           .where(eq(workspaceMemberships.workspaceId, workspace.id)),
-      ).toHaveLength(1); // the creator only
+      ).toHaveLength(1);
     },
   );
 
-  // #28: four independent capabilities, the delegation ceilings, inviter scope, and
-  // attributed events. Every assertion goes through the HTTP surface a client uses,
-  // against real Postgres, so a constraint or a rollback cannot be hidden by a mock.
   type CapabilityFlags = {
     canCreateProjects?: boolean;
     canInviteMembers?: boolean;
@@ -2405,7 +2326,6 @@ describe("workspaces", () => {
       }),
     );
 
-    // A single capability and a multi-capability update both work independently.
     const memberPath = `/api/workspaces/${workspace.id}/members/${member.human.id}`;
     const single = await patchJson(app, memberPath, { canCreateProjects: true }, adminCookie);
     expect(single.status).toBe(200);
@@ -2504,7 +2424,6 @@ describe("workspaces", () => {
       expect.arrayContaining(["remove_members_revoked", "manage_member_permissions_revoked"]),
     );
 
-    // An owner already holds every capability: granting one writes no event.
     const ownerNoop = await patchJson(
       app,
       `/api/workspaces/${workspace.id}/members/${admin.id}`,
@@ -2526,7 +2445,6 @@ describe("workspaces", () => {
     const ordinary = await addMember(app, workspace.id, "ordinary.delegate@example.com");
     const path = (humanId: string) => `/api/workspaces/${workspace.id}/members/${humanId}`;
 
-    // A manager cannot elevate themselves.
     const self = await patchJson(
       app,
       path(manager.human.id),
@@ -2536,7 +2454,6 @@ describe("workspaces", () => {
     expect(self.status).toBe(403);
     expect(await problemBody(self)).toMatchObject({ code: "not_workspace_owner" });
 
-    // Only owners appoint or remove permission managers, in either direction.
     const appoint = await patchJson(
       app,
       path(ordinary.human.id),
@@ -2552,7 +2469,6 @@ describe("workspaces", () => {
     );
     expect(resign.status).toBe(403);
 
-    // A manager cannot grant what they do not hold, but can grant and revoke what they do.
     const aboveCeiling = await patchJson(
       app,
       path(ordinary.human.id),
@@ -2575,11 +2491,9 @@ describe("workspaces", () => {
     );
     expect(revokeWithinCeiling.status).toBe(200);
 
-    // A manager cannot modify an owner, even with an otherwise harmless no-op grant.
     const owner = await patchJson(app, path(admin.id), { canCreateProjects: true }, manager.cookie);
     expect(owner.status).toBe(403);
 
-    // Revoking the manager capability removes all delegation authority with it.
     const removed = await patchJson(
       app,
       path(manager.human.id),
@@ -2661,8 +2575,6 @@ describe("workspaces", () => {
     expect(hidden.status).toBe(404);
     expect(await problemBody(hidden)).toMatchObject({ code: "workspace_not_found" });
 
-    // Owners keep full authority, including removing a permission manager, but not the
-    // last owner.
     expect((await deleteRequest(app, path(manager.human.id), adminCookie)).status).toBe(204);
     const last = await deleteRequest(app, path(admin.id), adminCookie);
     expect(last.status).toBe(409);
@@ -2745,8 +2657,6 @@ describe("workspaces", () => {
     const resent = await postEmpty(app, `${url}/${pending.id}/resend`, inviter.cookie);
     expect(resent.status).toBe(200);
 
-    // An owner-made offer on a project the delegate does not Manage is neither listed
-    // nor touchable by that delegate: its grant would leak a project they cannot see.
     await invite(app, adminCookie, workspace.id, "delegated.fourth@example.com", [
       { projectId: other, level: "read" },
     ]);
@@ -2762,7 +2672,6 @@ describe("workspaces", () => {
     expect((await postEmpty(app, `${url}/${foreign.id}/resend`, inviter.cookie)).status).toBe(403);
     expect((await postEmpty(app, `${url}/${foreign.id}/revoke`, inviter.cookie)).status).toBe(403);
 
-    // Without the capability, none of the invitation endpoints are available.
     expect((await getJson(app, url, noAuthority.cookie)).status).toBe(403);
     expect(
       (await postJson(app, url, { email: "delegated.fifth@example.com" }, noAuthority.cookie))
@@ -2786,9 +2695,6 @@ describe("workspaces", () => {
     });
     await grantProjectManage(managed, inviter.human.id, admin.id);
 
-    // The owner may offer any workspace project; the delegate may offer only the one
-    // they Manage. The delegate's history must not carry the other offer's project id,
-    // name, or level — all three are in the invitation summary's grants.
     await invite(app, adminCookie, workspace.id, "scope.hidden@example.com", [
       { projectId: unmanaged, level: "manage" },
     ]);
@@ -2837,7 +2743,6 @@ describe("workspaces", () => {
       return token;
     };
 
-    // The original inviter can still revoke their own dead offer after losing Manage.
     const firstEmail = "reinvite.revoke@example.com";
     await invite(app, inviter.cookie, workspace.id, firstEmail, [
       { projectId: project, level: "read" },
@@ -2861,8 +2766,6 @@ describe("workspaces", () => {
     expect((await postEmpty(app, `${url}/${own.id}/revoke`, inviter.cookie)).status).toBe(200);
     expect((await postJson(app, url, { email: firstEmail }, inviter.cookie)).status).toBe(201);
 
-    // A second dead offer need not be revoked first: creating a new invitation must
-    // supersede it rather than answering 409 invitation_pending for seven days.
     const secondEmail = "reinvite.replace@example.com";
     await grantProjectManage(project, inviter.human.id, admin.id);
     await invite(app, inviter.cookie, workspace.id, secondEmail, [
@@ -2904,7 +2807,6 @@ describe("workspaces", () => {
   it("refuses a pending invitation once the inviter loses capability or project Manage", async () => {
     const { app, sent, adminCookie, admin } = await readyApp();
 
-    // A delegate loses Invite members after sending an offer with a project grant.
     const first = await createWorkspace(app, adminCookie, "Withdraw Capability Team");
     const firstProject = await createProjectDirect(first.id, admin.id, "Withdraw Project");
     const inviter = await addMember(app, first.id, "withdraw.capability@example.com", {
@@ -2948,7 +2850,6 @@ describe("workspaces", () => {
         .where(eq(workspaceMemberships.humanId, firstHuman.id)),
     ).toHaveLength(0);
 
-    // A delegate keeps the capability but loses Manage on the offered project.
     const second = await createWorkspace(app, adminCookie, "Withdraw Manage Team");
     const secondProject = await createProjectDirect(second.id, admin.id, "Manage Project");
     const secondInviter = await addMember(app, second.id, "withdraw.manage@example.com", {
@@ -2983,7 +2884,6 @@ describe("workspaces", () => {
       .where(eq(workspaceInvitations.workspaceId, second.id));
     expect(secondInvitation).toMatchObject({ status: "pending", acceptedAt: null });
 
-    // The registration path rolls back the whole account, not just the membership.
     const third = await createWorkspace(app, adminCookie, "Withdraw Registration Team");
     const thirdInviter = await addMember(app, third.id, "withdraw.registration@example.com", {
       canInviteMembers: true,
@@ -3097,8 +2997,6 @@ describe("workspaces", () => {
     await invite(app, adminCookie, workspace.id, INVITEE, [{ projectId, level: "read" }]);
     const staleToken = await workspaceInviteToken(sent, INVITEE, name);
 
-    // Simulate #46: the offered project leaves the invited workspace. The owner is still
-    // an owner and still verified, so the old liveness check called this offer live.
     await database.db
       .update(projects)
       .set({ workspaceId: destination })
@@ -3108,8 +3006,6 @@ describe("workspaces", () => {
     expect(stale.status).toBe(409);
     expect(await problemBody(stale)).toMatchObject({ code: "invitation_scope_invalid" });
 
-    // A fresh offer to the same address must supersede the dead one, not answer 409
-    // invitation_pending while its seven-day deadline runs out.
     await invite(app, adminCookie, workspace.id, INVITEE);
     const rows = await database.db
       .select({ status: workspaceInvitations.status })
@@ -3167,7 +3063,6 @@ describe("workspaces", () => {
     const issued = CreateAgentKeyResponse.parse(await keyRes.json());
     expect((await me(issued.secret)).status).toBe(200);
 
-    // The removal revokes the key in its own transaction, with one secret-free event.
     const removed = await deleteRequest(
       app,
       `/api/workspaces/${workspace.id}/members/${member.human.id}`,
@@ -3197,7 +3092,6 @@ describe("workspaces", () => {
     expect(refused.status).toBe(401);
     expect(await problemBody(refused)).toMatchObject({ code: "key_revoked" });
 
-    // Re-invitation restores membership and project access, but never the old credential.
     await invite(app, adminCookie, workspace.id, INVITEE, [{ projectId, level: "read" }]);
     const replacementToken = (() => {
       const mail = sent.findLast(
@@ -3218,7 +3112,6 @@ describe("workspaces", () => {
     expect(stillRefused.status).toBe(401);
     expect(await problemBody(stillRefused)).toMatchObject({ code: "key_revoked" });
 
-    // A newly issued key is live, and capped at the freshly granted level.
     const newKeyRes = await postJson(
       app,
       "/api/agents/keys",
@@ -3231,7 +3124,6 @@ describe("workspaces", () => {
     expect(newMe.status).toBe(200);
     expect(await newMe.json()).toMatchObject({ projects: [{ projectId, level: "read" }] });
 
-    // Only one revocation event despite the rejoin and the second issuance.
     expect(await database.db.select().from(agentKeyEvents)).toHaveLength(3);
   });
 
@@ -3244,9 +3136,6 @@ describe("workspaces", () => {
     const agentRes = await postJson(app, "/api/agents", { name: "lock-bot" }, member.cookie);
     const agentId = Agent.parse(await agentRes.json()).id;
 
-    // Hold the installation-wide ownership lock, then start both writers. Each must
-    // queue behind it: without the lock in issueKey, its INSERT could commit after the
-    // removal's revocation UPDATE and leave a live key for a removed member.
     const release = createGate();
     const acquired = createGate();
     const holder = database.sql.begin(async (tx) => {
@@ -3267,7 +3156,7 @@ describe("workspaces", () => {
       `/api/workspaces/${workspace.id}/members/${member.human.id}`,
       adminCookie,
     );
-    // Both the issuance and the removal are blocked on the same advisory lock.
+
     await expect
       .poll(
         async () => {
@@ -3289,8 +3178,6 @@ describe("workspaces", () => {
     const [issued, removed] = await Promise.all([issuing, removing]);
     expect(removed.status).toBe(204);
 
-    // Whichever writer won the lock, no unrevoked key may survive for the removed
-    // member. If removal won first, issuance refuses the workspace outright.
     const keys = await database.db
       .select()
       .from(agentApiKeys)

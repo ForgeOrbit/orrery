@@ -1,13 +1,3 @@
-// Fallback policy and late answers (issue #42), black-box against a running Orrery through
-// a real MCP protocol client plus REST. A human Manage sets the project policy; an agent
-// asks, checks in at the one-hour boundary and reads its authorized fallback back. With
-// `require_human` the same boundary pauses the question, releases the claim and keeps the
-// issue out of ready work until a human answers. A late answer is stored as a follow-up.
-// No server code is imported; the deadline is a test fixture set inside Postgres.
-//
-// `docker compose` here follows the same COMPOSE_PROJECT_NAME the stack was started with
-// (or the default project), so this spec also runs in CI's standard `pnpm test:e2e`.
-// An isolated local run can set COMPOSE_PROJECT_NAME and custom ports via --env-file.
 import { randomUUID } from "node:crypto";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
@@ -114,7 +104,6 @@ async function newRun(client: Client): Promise<string> {
   return requiredText(field(result.data, "runId"), "the run id");
 }
 
-// Move the one-hour response deadline into database time without a real one-hour wait.
 async function expireQuestion(questionId: string): Promise<void> {
   const sql =
     `UPDATE questions SET response_deadline_at = statement_timestamp() - interval '1 second', ` +
@@ -158,7 +147,6 @@ test("fallback_allowed authorizes the fallback and keeps a checking-in claim", a
   const agentId = await createAgent(api);
   const secret = await issueKey(api, agentId, workspaceId, projectId);
 
-  // Human Manage sets the policy; an agent key is refused on the very same route.
   const allowed = await api.patch(`/api/projects/${projectId}/fallback-policy`, {
     data: { fallbackPolicy: "fallback_allowed" },
   });
@@ -173,7 +161,6 @@ test("fallback_allowed authorizes the fallback and keeps a checking-in claim", a
 
   const client = await connect(secret);
   try {
-    // No MCP tool exists for policy: an agent cannot authorize its own fallback.
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name).some((name) => name.includes("policy"))).toBe(
       false,
@@ -197,7 +184,7 @@ test("fallback_allowed authorizes the fallback and keeps a checking-in claim", a
     expect(field(asRecord(field(asked.data, "question")), "authorizedFallback")).toBeNull();
 
     await expireQuestion(questionId);
-    // Checking in at the boundary resolves the fallback and keeps this worker's claim.
+
     const renewed = await call(client, "renew_claim", { issueId });
     expect(renewed.isError).toBe(false);
 
@@ -205,7 +192,6 @@ test("fallback_allowed authorizes the fallback and keeps a checking-in claim", a
     expect(field(resolved, "status")).toBe("fallback_used");
     expect(field(resolved, "authorizedFallback")).toBe("Use the v1 endpoint");
 
-    // REST sees the same authorization, and a late human answer is a follow-up only.
     const restHistory = await api.get(`/api/issues/${issueId}/questions`);
     expect(restHistory.status()).toBe(200);
     const restQuestion = asArray(await restHistory.json()).find(
@@ -223,7 +209,6 @@ test("fallback_allowed authorizes the fallback and keeps a checking-in claim", a
     expect(field(afterLate, "status")).toBe("fallback_used");
     expect(field(afterLate, "answer")).toBeNull();
 
-    // With no live claim, Needs input is clear so the issue is ready work again.
     const stopped = await call(client, "stop_session", { issueId, outcome: "released" });
     expect(stopped.isError).toBe(false);
     const ready = await call(client, "ready_work", { projectId });
@@ -260,7 +245,7 @@ test("require_human pauses at the deadline and keeps Needs input until a human a
     );
 
     await expireQuestion(questionId);
-    // The claim was released at the deadline: there is nothing left to renew.
+
     const renewed = await call(client, "renew_claim", { issueId });
     expect(renewed.isError).toBe(true);
     expect(field(renewed.data, "code")).toBe("session_required");
@@ -275,14 +260,13 @@ test("require_human pauses at the deadline and keeps Needs input until a human a
         "status",
       ),
     ).toBe("paused");
-    // Needs input is still set: the paused issue is not offered as ready work.
+
     const beforeAnswer = await call(client, "ready_work", { projectId });
     expect(beforeAnswer.isError).toBe(false);
     expect(
       asArray(field(beforeAnswer.data, "issues")).some((item) => field(item, "id") === issueId),
     ).toBe(false);
 
-    // A human answer unblocks the issue; no fallback is ever authorized here.
     const answered = await api.post(`/api/questions/${questionId}/answer`, {
       data: { answer: "Use Postgres 18" },
     });

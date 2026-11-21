@@ -25,16 +25,9 @@ import { sessionActivitiesQuery, sessionsQuery } from "./queries.ts";
 
 const dateTime = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 
-// #96: the four v1 structured activity blocks have a closed discriminated union in the
-// contract. A renderer registry keeps each shape's presentation in one place; anything
-// unversioned or unrecognized falls back to a collapsible, inert JSON viewer below.
 type BlockType = ActivityDetailBlockV1["type"];
 type BlockRenderer = (block: ActivityDetailBlockV1) => ReactNode;
 
-// Every renderer takes the whole union and narrows on `type`. That keeps the registry
-// indexable by a runtime discriminator without an unsafe function-widening assertion.
-// Telemetry arrays can repeat values, so keys intentionally include the array position;
-// the detail is an immutable snapshot that is never reordered or filtered.
 /* eslint-disable react/no-array-index-key -- position disambiguates repeated telemetry values */
 const blockRenderers: Record<BlockType, BlockRenderer> = {
   key_value: (block) =>
@@ -133,8 +126,6 @@ function JsonFallback({ detail }: { detail: unknown }) {
 }
 
 function renderDetail(detail: SessionActivityDetail | null): ReactNode {
-  // The contract owns the v1 shape. safeParse keeps a malformed or unversioned block
-  // from reaching a renderer that assumes a valid shape; those fall back to inert JSON.
   const parsed = ActivityDetailBlockV1.safeParse(detail?.block);
   if (parsed.success) {
     const block = parsed.data;

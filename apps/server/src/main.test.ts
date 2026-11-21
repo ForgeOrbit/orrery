@@ -55,7 +55,7 @@ it("finishes an active response before exiting on SIGTERM", async () => {
       response.on("error", (error: Error) => resolve(error.message));
     });
     child.kill("SIGTERM");
-    // Keep the response blocked long enough to expose an early process exit.
+
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(child.exitCode).toBeNull();
     response.resume();

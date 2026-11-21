@@ -27,10 +27,6 @@ import { createAgentsFeature } from "../agents/index.ts";
 import { createProjectsFeature } from "../projects/index.ts";
 import { createRunsFeature, type RunsService } from "./index.ts";
 
-// Real Postgres (AGENTS.md): run identity, resume preservation, model history, and
-// child linkage are database behavior — the unique index and the stored rows are the
-// acceptance boundary. The black-black e2e suite drives the same flows over REST/MCP.
-
 const SECRET = "correct horse battery staple staple";
 const ADMIN_EMAIL = "runs-admin@example.com";
 const ADMIN_PASSWORD = "runs-admin-password";
@@ -71,14 +67,11 @@ function idOf(value: unknown, what: string): string {
   return id;
 }
 
-// A bearer request, exactly what an MCP tool or a harness hook carries. No cookie is
-// present, so an agent cannot fall back to a human session.
 const bearerRequest = (token: string) =>
   new Request("http://orrery.test/api/runs/hook", {
     headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
   });
 
-// Adapters authenticate; the service receives the identity, exactly as in production.
 const report = async (input: RunReportInput, token = secret) =>
   runsService.report(await agentAuthenticator(bearerRequest(token)), input);
 
@@ -219,7 +212,6 @@ describe("runs service against real Postgres", () => {
     expect(a.runId).not.toBe(b.runId);
     expect(a.harness).toBe("codex");
 
-    // The same native session id on a fresh handshake (a resume) reuses the run.
     const resume = await report({
       event: "run_started",
       runKey: { harness: "codex", nativeSessionId: "session-A" },
@@ -285,12 +277,10 @@ describe("runs service against real Postgres", () => {
     const parentId = parent.runId ?? "";
     const childRef = { agentId: "child-a", agentType: "general-purpose" };
 
-    // A child cannot be its own parent.
     await expect(
       report({ event: "child_started", runId: parentId, child: { ...childRef, runId: parentId } }),
     ).rejects.toMatchObject({ kind: "run_not_found" });
 
-    // A run belonging to a different agent in the same workspace is out of scope.
     const [foreignAgent] = await database.db
       .insert(agents)
       .values({ id: randomUUID(), humanId: adminHumanId, name: `foreign-${randomUUID()}` })
@@ -315,7 +305,6 @@ describe("runs service against real Postgres", () => {
       }),
     ).rejects.toMatchObject({ kind: "run_not_found" });
 
-    // A run in another workspace, even for the same agent, is out of scope.
     const otherWorkspace = await database.db.transaction(async (tx) => {
       const [created] = await tx
         .insert(workspaces)
@@ -349,7 +338,6 @@ describe("runs service against real Postgres", () => {
       }),
     ).rejects.toMatchObject({ kind: "run_not_found" });
 
-    // A child run in the same agent/workspace scope is accepted and linked by FK.
     const [sibling] = await database.db
       .insert(runRows)
       .values({
@@ -397,12 +385,11 @@ describe("runs service against real Postgres", () => {
     });
     const changed = await report({ event: "run_heartbeat", runId: first.runId, model: "gpt-7" });
     expect(changed.model).toBe("gpt-7");
-    // Repeating the model and omitting it must not add history or erase the known value.
+
     await report({ event: "run_heartbeat", runId: first.runId, model: "gpt-7" });
     const unknown = await report({ event: "run_heartbeat", runId: first.runId });
     expect(unknown.model).toBe("gpt-7");
 
-    // A run with no reported model or version stays unknown, never invented.
     const bare = await report({
       event: "run_started",
       runKey: { harness: "codex", nativeSessionId: "bare" },
@@ -436,7 +423,6 @@ describe("runs service against real Postgres", () => {
       runKey: { harness: "codex", nativeSessionId: "own-session" },
     });
 
-    // A run id belonging to a different workspace's agent is refused.
     const outsider = await database.db.transaction(async (tx) => {
       const [created] = await tx
         .insert(workspaces)
@@ -471,8 +457,6 @@ describe("runs service against real Postgres", () => {
       kind: "run_not_found",
     });
 
-    // A human who is not a member of a shared workspace cannot read its runs, through
-    // either the service or the REST route.
     const [foreignHuman] = await database.db
       .insert(humans)
       .values({

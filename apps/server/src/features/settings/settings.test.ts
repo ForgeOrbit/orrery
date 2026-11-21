@@ -25,11 +25,6 @@ import { createSettingsFeature, startupWarnings } from "./index.ts";
 import { createSettingsService } from "./service.ts";
 import type { SmtpMail, SmtpSender } from "./service.ts";
 
-// Runs against a real Postgres (see AGENTS.md): settings persistence, authorization,
-// encryption at rest, and single-use token redemption are database behavior, not mock
-// behavior. Delivery itself is faked here; the black-box e2e suite proves real delivery
-// through Mailpit.
-
 const SECRET = "correct horse battery staple staple";
 const EMAIL = "admin@example.com";
 const PASSWORD = "first-admin-password";
@@ -43,9 +38,9 @@ const SETTINGS: SmtpSettings = {
   password: SMTP_PASSWORD,
   from: "  Orrery@Example.TEST ",
 };
-// What the contract's Email normalization turns SETTINGS.from into.
+
 const FROM = "orrery@example.test";
-// The response is the one place the password must never appear.
+
 const SETTINGS_RESPONSE = {
   host: "smtp.example.test",
   port: 587,
@@ -54,15 +49,12 @@ const SETTINGS_RESPONSE = {
   hasPassword: true,
   from: FROM,
 };
-// How long a verification token lives. An implementation default (issue #22), fixed here
-// so the boundary tests can pin it.
+
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
-// The deployment's key for secrets at rest (ADR-0004). A distinct second key proves a
-// changed key cannot read a stored password.
+
 const TEST_KEY = randomBytes(32);
 const OTHER_KEY = randomBytes(32);
 
-// The request log goes to the console; tests that don't capture it stay quiet.
 const silentLogger: Logger = createLogger("error");
 
 const postJson = (app: Hono, path: string, body: unknown, cookie?: string) =>
@@ -84,13 +76,9 @@ const getJson = (app: Hono, path: string, cookie?: string) =>
 
 const problemBody = async (res: Response) => Problem.parse(await res.json());
 
-// The token as the email's one identifiable line carries it, tolerant of the CRLF the
-// SMTP wire adds on the way through a real relay.
 const tokenFrom = (text: string) =>
   text.match(/Single-use token, valid for 24 hours:\r?\n\r?\n([A-Za-z0-9_-]+)/)?.[1];
 
-// A fake SMTP sender: records what the service handed it, and can be told to fail the
-// way a real one would, with the same error codes the service classifies.
 interface SentMail {
   settings: SmtpSettings;
   mail: SmtpMail;
@@ -115,8 +103,6 @@ function createFakeSender() {
 const codedError = (code: string, message: string): Error =>
   Object.assign(new Error(message), { code });
 
-// The shared story so far: the first administrator exists (bootstrap) and is signed in.
-// These helpers are the API-level steps every test below starts from.
 async function bootstrapAdmin(app: Hono) {
   const res = await postJson(app, "/api/setup/admin", {
     secret: SECRET,
@@ -143,8 +129,6 @@ async function saveSettings(app: Hono, cookie: string, settings: SmtpSettings = 
   return res;
 }
 
-// The test email already sent: its settings saved and its token extracted from what the
-// sender was handed.
 async function issuedToken(app: Hono, fake: { sent: SentMail[] }) {
   const cookie = await adminCookie(app);
   await saveSettings(app, cookie);
@@ -155,8 +139,6 @@ async function issuedToken(app: Hono, fake: { sent: SentMail[] }) {
   return { cookie, token: token ?? "" };
 }
 
-// The raw settings service over the real database, for the deliver seam: its caller is
-// another feature, never HTTP, so no route exercises it.
 function deliverService(
   db: Database["db"],
   fake: ReturnType<typeof createFakeSender>,
@@ -202,7 +184,6 @@ describe("settings", () => {
     });
   });
 
-  // encryptionKey: null means the deployment set no key; omitted means the test key.
   function makeApp(
     setupSecret: string | undefined = SECRET,
     opts: { sendMail?: SmtpSender; log?: Logger; encryptionKey?: Buffer | null } = {},
@@ -219,16 +200,13 @@ describe("settings", () => {
       encryptionKey: opts.encryptionKey === null ? undefined : (opts.encryptionKey ?? TEST_KEY),
       sessionReader: accounts.sessionReader,
       markEmailVerified: accounts.markEmailVerified,
-      // exactOptionalPropertyTypes: pass the sender only when the test provides one,
-      // so the service's real SMTP default stays in play otherwise.
+
       ...(opts.sendMail === undefined ? {} : { sendMail: opts.sendMail }),
       log,
     });
     return createApp({ features: [accounts, settings], publicUrl: PUBLIC_URL, log });
   }
 
-  // A signed-in account that is not a system administrator, created directly because
-  // invitations are a later ticket: the point is the permission boundary, not the flow.
   async function ordinaryCookie(email = "member@example.com") {
     const [account] = await database.db
       .insert(humans)
@@ -275,8 +253,6 @@ describe("settings", () => {
       expect(put.status).toBe(403);
       expect(test.status).toBe(403);
 
-      // One read per response: the refusal's title, and the proof it never echoes the
-      // secret the ordinary account tried to save.
       const bodies = await Promise.all([get, put, test].map((r) => r.text()));
       for (const text of bodies) {
         const body = Problem.parse(JSON.parse(text));
@@ -286,8 +262,6 @@ describe("settings", () => {
       expect(bodies.join("\n")).not.toContain(SMTP_PASSWORD);
       expect(await database.db.select().from(instanceSettings)).toHaveLength(0);
 
-      // Verification is account-scoped, not administrator-scoped: an ordinary account
-      // simply has no valid token yet, and learns exactly that.
       const verify = await postJson(
         app,
         "/api/settings/email-verification",
@@ -326,7 +300,6 @@ describe("settings", () => {
       expect(JSON.parse(text)).toEqual(SETTINGS_RESPONSE);
       expect(text).not.toContain(SMTP_PASSWORD);
 
-      // At rest there is a versioned ciphertext, never the plaintext (ADR-0004).
       const [row] = await database.db.select().from(instanceSettings);
       expect(row?.smtpPasswordEncrypted).toMatch(
         /^v1:[A-Za-z0-9_-]+:[A-Za-z0-9_-]+:[A-Za-z0-9_-]+$/,
@@ -380,8 +353,6 @@ describe("settings", () => {
       await bootstrapAdmin(app);
       const cookie = await adminCookie(app);
 
-      // A password alone or a username alone is enough to refuse: neither may travel
-      // in clear text.
       const withPassword = await putJson(
         app,
         "/api/settings/smtp",
@@ -403,8 +374,6 @@ describe("settings", () => {
       expect(withUsername.status).toBe(400);
       expect(await problemBody(withUsername)).toMatchObject({ code: "insecure_smtp_credentials" });
 
-      // Security none itself is fine without credentials; the refusal is about the
-      // combination, not the mode.
       const plain = await putJson(
         app,
         "/api/settings/smtp",
@@ -428,7 +397,6 @@ describe("settings", () => {
       expect(refused.title).toContain("ORRERY_ENCRYPTION_KEY");
       expect(await database.db.select().from(instanceSettings)).toHaveLength(0);
 
-      // Without a password there is nothing to encrypt: the settings save fine.
       const withoutPassword = await putJson(
         app,
         "/api/settings/smtp",
@@ -457,13 +425,12 @@ describe("settings", () => {
         expect(res.headers.get("content-type")).toBe("application/problem+json");
         expect(await problemBody(res)).toMatchObject({ code: "validation_failed" });
       }
-      // The invalid port carries a pointer into the request body (ADR-0003).
+
       const port = await putJson(app, "/api/settings/smtp", { ...SETTINGS, port: 0 }, cookie);
       expect((await problemBody(port)).errors).toEqual([
         { pointer: "/port", detail: expect.any(String) },
       ]);
-      // A missing password key is a shape error too: the request replaces the settings
-      // wholesale, so it must say explicitly that there is none.
+
       const missing = { ...SETTINGS } as Partial<SmtpSettings>;
       delete missing.password;
       const res = await putJson(app, "/api/settings/smtp", missing, cookie);
@@ -479,7 +446,6 @@ describe("settings", () => {
       const cookie = await adminCookie(first);
       await saveSettings(first, cookie);
 
-      // A new instance holds no in-memory state: everything above lives in Postgres.
       const second = makeApp();
       const res = await getJson(second, "/api/settings/smtp", cookie);
       expect(res.status).toBe(200);
@@ -509,9 +475,9 @@ describe("settings", () => {
 
       const res = await postJson(app, "/api/settings/smtp/test", {}, cookie);
       expect(res.status).toBe(200);
-      // The sender alone sees the plaintext, and only for this send.
+
       expect(fake.sent[0]?.settings.password).toBe(SMTP_PASSWORD);
-      // The storage never did.
+
       const [row] = await database.db.select().from(instanceSettings);
       expect(row?.smtpPasswordEncrypted).not.toContain(SMTP_PASSWORD);
     });
@@ -523,8 +489,6 @@ describe("settings", () => {
       const cookie = await adminCookie(app);
       await saveSettings(app, cookie);
 
-      // A different key cannot read the stored ciphertext: 409, because the fix is on
-      // this server — re-enter the password — not on the relay.
       const rekeyed = makeApp(SECRET, { sendMail: fake.sender, encryptionKey: OTHER_KEY });
       const wrongKey = await postJson(rekeyed, "/api/settings/smtp/test", {}, cookie);
       expect(wrongKey.status).toBe(409);
@@ -532,8 +496,6 @@ describe("settings", () => {
       expect(unreadable).toMatchObject({ code: "smtp_password_unreadable" });
       expect(unreadable.title).toContain("Re-enter the password");
 
-      // No key at all cannot read it either. Either way, nothing crashes and the
-      // response says exactly what to do.
       const keyless = makeApp(SECRET, { sendMail: fake.sender, encryptionKey: null });
       const noKey = await postJson(keyless, "/api/settings/smtp/test", {}, cookie);
       expect(noKey.status).toBe(409);
@@ -587,20 +549,16 @@ describe("settings", () => {
       expect(body.sentTo).toBe(EMAIL);
       expect(body.message).toContain("token");
 
-      // The saved settings drove the send, decrypted password included.
       expect(fake.sent).toHaveLength(1);
       expect(fake.sent[0]?.settings).toEqual({ ...SETTINGS, from: FROM });
       const mail = fake.sent[0]?.mail;
       expect(mail?.to).toBe(EMAIL);
       expect(mail?.from).toBe(FROM);
 
-      // The email says how to complete verification, with no link to follow: the
-      // token is redeemed by a POST, and nothing else (issue #22 review).
       expect(mail?.text).toContain(PUBLIC_URL);
       expect(mail?.text).toContain("/api/settings/email-verification");
       expect(mail?.text).not.toContain("verify-email?token");
 
-      // The email carries a single-use token, valid for the default 24 hours.
       const token = tokenFrom(mail?.text ?? "");
       expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
       expect(mail?.text).toContain(`${PUBLIC_URL}/settings/smtp?token=${token}`);
@@ -626,8 +584,6 @@ describe("settings", () => {
           code: "smtp_unreachable",
         },
         {
-          // What nodemailer actually hands back for a refused connection: ESOCKET,
-          // with the cause in the message. The real e2e hits this exact shape.
           error: () => codedError("ESOCKET", "connect ECONNREFUSED 172.20.0.2:9265"),
           code: "smtp_unreachable",
         },
@@ -636,17 +592,14 @@ describe("settings", () => {
           code: "smtp_auth_failed",
         },
         {
-          // Node's own TLS error codes are unambiguous.
           error: () => codedError("ERR_SSL_WRONG_VERSION_NUMBER", "wrong version number"),
           code: "smtp_tls_failed",
         },
         {
-          // So is a certificate failure in the exchange, even wrapped as ESOCKET.
           error: () => codedError("ESOCKET", "unable to verify the first certificate"),
           code: "smtp_tls_failed",
         },
         {
-          // A wrapped ESOCKET that says nothing about TLS is not a TLS failure.
           error: () => codedError("ESOCKET", "some other socket quirk"),
           code: "smtp_send_failed",
         },
@@ -662,7 +615,7 @@ describe("settings", () => {
         expect(res.headers.get("content-type")).toBe("application/problem+json");
         const body = await problemBody(res);
         expect(body).toMatchObject({ status: 502, code, type: `urn:orrery:problem:${code}` });
-        // The raw error text never reaches the Problem.
+
         expect(JSON.stringify(body)).not.toContain("ECONNREFUSED");
         expect(JSON.stringify(body)).not.toContain("Authentication failed");
         expect(JSON.stringify(body)).not.toContain("relay quirk");
@@ -680,13 +633,12 @@ describe("settings", () => {
       const res = await postJson(app, "/api/settings/smtp/test", {}, cookie);
       expect(res.status).toBe(502);
 
-      // The email never left, so its token is gone too: nothing unused remains.
       const unused = await database.db
         .select()
         .from(emailVerificationTokens)
         .where(isNull(emailVerificationTokens.usedAt));
       expect(unused).toHaveLength(0);
-      // The token the unsent email carried is refused like any other.
+
       const token = tokenFrom(fake.sent[0]?.mail.text ?? "");
       const redeem = await postJson(app, "/api/settings/email-verification", { token }, cookie);
       expect(redeem.status).toBe(400);
@@ -698,7 +650,6 @@ describe("settings", () => {
         lines.push(args.join(" "));
       });
       try {
-        // The real database, with delete made to fail: everything else runs as-is.
         const failingCleanup = new Proxy(database.db, {
           get(target, property) {
             if (property === "delete") {
@@ -737,10 +688,10 @@ describe("settings", () => {
         ).rejects.toMatchObject({ kind: "smtp_unreachable" });
 
         const captured = lines.join("\n");
-        // The delivery failure and the failed cleanup both made the log...
+
         expect(captured).toContain("test email failed");
         expect(captured).toContain("token cleanup");
-        // ...as names and codes only: the cleanup error's message never does.
+
         expect(captured).not.toContain("exploded");
         expect(captured).not.toContain("secret detail");
       } finally {
@@ -766,7 +717,6 @@ describe("settings", () => {
       expect(secondToken).not.toBe("");
       expect(secondToken).not.toBe(firstToken);
 
-      // The newer issue retired the older token: one live token per account.
       const older = await postJson(
         app,
         "/api/settings/email-verification",
@@ -803,7 +753,7 @@ describe("settings", () => {
         await postJson(app, "/api/settings/email-verification", { token }, cookie);
 
         const captured = lines.join("\n");
-        // The request log itself was captured, so the absence below is meaningful.
+
         expect(captured).toContain("/api/settings/smtp");
         expect(captured).toContain("/api/settings/email-verification");
         expect(captured).not.toContain(SMTP_PASSWORD);
@@ -822,7 +772,6 @@ describe("settings", () => {
       const { cookie, token } = await issuedToken(app, fake);
       expect(token).not.toBe("");
 
-      // Bootstrap created the administrator unverified (ADR-0001), and the session says so.
       const before = await getJson(app, "/api/auth/session", cookie);
       expect(await before.json()).toEqual({
         email: EMAIL,
@@ -846,7 +795,6 @@ describe("settings", () => {
         emailVerified: true,
       });
 
-      // Single-use: the same token is worthless once redeemed.
       const again = await postJson(app, "/api/settings/email-verification", { token }, cookie);
       expect(again.status).toBe(400);
       expect(await problemBody(again)).toMatchObject({ code: "verification_token_invalid" });
@@ -873,8 +821,6 @@ describe("settings", () => {
       const [admin] = await database.db.select().from(humans).where(eq(humans.email, EMAIL));
       if (admin === undefined) throw new Error("the administrator was not found");
 
-      // Boundaries set directly in the database, just outside and inside the deadline,
-      // the way the spec asks: no test waits out a lifetime.
       await database.db.insert(emailVerificationTokens).values([
         {
           id: randomUUID(),
@@ -928,7 +874,6 @@ describe("settings", () => {
         expiresAt: sql`now() + interval '1 hour'`,
       });
 
-      // The administrator cannot redeem a token issued to someone else...
       const stolen = await postJson(
         app,
         "/api/settings/email-verification",
@@ -938,7 +883,6 @@ describe("settings", () => {
       expect(stolen.status).toBe(400);
       expect(await problemBody(stolen)).toMatchObject({ code: "verification_token_invalid" });
 
-      // ...and the attempt did not burn it: the owner redeems it fine.
       const [notConsumed] = await database.db.select().from(emailVerificationTokens);
       expect(notConsumed?.usedAt).toBeNull();
       const own = await postJson(
@@ -952,8 +896,6 @@ describe("settings", () => {
     });
   });
 
-  // The mail path other features borrow (issue #23's invitations first): settings keeps
-  // the relay, its secrets, and the From address; the caller decides the content.
   describe("deliver", () => {
     it("refuses to deliver before SMTP is configured", async () => {
       const app = makeApp();
@@ -985,8 +927,7 @@ describe("settings", () => {
         subject: "Your Orrery invitation",
         text: "Follow the link.",
       });
-      // The saved settings drove the send, decrypted password included, exactly like
-      // the test email.
+
       expect(fake.sent[0]?.settings).toEqual({ ...SETTINGS, from: FROM });
     });
 
@@ -1008,7 +949,7 @@ describe("settings", () => {
       const app = makeApp(SECRET, { sendMail: fake.sender });
       await bootstrapAdmin(app);
       await saveSettings(app, await adminCookie(app));
-      // A different key cannot read the stored ciphertext.
+
       const service = deliverService(database.db, fake, OTHER_KEY);
 
       await expect(

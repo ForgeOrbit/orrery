@@ -1,10 +1,3 @@
-// Human input through the inbox (issue #41), black-box against a running Orrery:
-// an agent with a live claim asks via REST, the owner is notified through Mailpit, an
-// agent key (including a sibling run) cannot answer, and a human answers both through
-// REST and through the web inbox. Nothing here imports server code.
-//
-//   docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { randomUUID } from "node:crypto";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { expect, request, test, type APIRequestContext } from "@playwright/test";
@@ -68,7 +61,6 @@ async function issueKey(
   return secret;
 }
 
-// A fresh API context keeps the bearer key from being helped by a human cookie jar.
 let api: APIRequestContext;
 let agentApi: APIRequestContext;
 
@@ -120,7 +112,6 @@ async function caughtQuestionEmail(client: APIRequestContext, questionText: stri
     .toBe(true);
 }
 
-// One claimable issue, run and agent key, with an open question already asked.
 async function askForInput() {
   const workspaceId = await personalWorkspaceOf(api);
   const created = await api.post(`/api/workspaces/${workspaceId}/projects`, {
@@ -175,7 +166,6 @@ test("emails the agent owner, refuses agent answerers and lets a human answer", 
 
   await caughtQuestionEmail(api, questionText);
 
-  // An agent key — including one for a sibling run of the same agent — cannot answer.
   const denied = await agentApi.post(`/api/questions/${questionId}/answer`, {
     headers: { Authorization: `Bearer ${secret}` },
     data: { answer: "agent answer" },
@@ -190,7 +180,6 @@ test("emails the agent owner, refuses agent answerers and lets a human answer", 
   if (!Array.isArray(inbox)) throw new Error("the inbox is not a list");
   expect(inbox.some((item) => field(item, "id") === questionId)).toBe(true);
 
-  // A human answers through the web inbox after signing in.
   const context = await browser.newContext();
   const page = await context.newPage();
   try {
@@ -227,8 +216,6 @@ test("emails the agent owner, refuses agent answerers and lets a human answer", 
     await context.close();
   }
 
-  // The agent reads the human's answer back over MCP; there is still no answer tool for
-  // an agent key.
   const mcp = new Client({ name: `orrery-inbox-e2e-${randomUUID()}`, version: "1" });
   await mcp.connect(
     new StreamableHTTPClientTransport(new URL("/mcp", baseUrl), {

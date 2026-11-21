@@ -1,19 +1,3 @@
-// Shared project access (issue #27), black-box against a running Orrery. The owner
-// creates a shared project, grants a member Create projects, and the member receives
-// Manage on the project they create. A direct-request matrix proves Read cannot mutate,
-// Contribute can work, Manage can configure and grant access, membership alone reveals
-// nothing, cross-workspace and personal projects stay private, and the system
-// administrator gets no project access from the role. The browser check grants access
-// through the UI and shows a Read project without mutation controls.
-//
-// Runs after smtp.spec.ts (alphabetical file order, one worker), which verified the
-// administrator, so workspace invitations can be sent. This suite still saves the catcher
-// settings and verifies the administrator when needed, so it stands on its own. It
-// creates its own accounts through the invitation flows, so no other spec's accounts are
-// assumed.
-//
-//   docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { expect, request, test, type APIRequestContext } from "@playwright/test";
 import { ADMIN_EMAIL, ADMIN_PASSWORD, recordSecret } from "./admin.ts";
 
@@ -62,31 +46,22 @@ test.beforeAll(async () => {
   await signIn(adminApi, ADMIN_EMAIL, ADMIN_PASSWORD);
   const saved = await adminApi.put("/api/settings/smtp", { data: SETTINGS });
   expect(saved.status()).toBe(200);
-  // Workspace invitations require a verified inviter. On a fresh installation the
-  // bootstrap administrator is unverified until this suite (smtp.spec.ts would do it
-  // later, but this file must stand before it).
+
   await ensureAdminVerified();
 
-  // The shared workspace and its owner.
   const created = await adminApi.post("/api/workspaces", { data: { name: "Access Lab" } });
   expect(created.status()).toBe(201);
   workspaceId = requiredText(field(await created.json(), "id"), "the workspace id");
 
-  // Two members through workspace invitations: one who receives the full matrix, one
-  // who receives a grant later. Registration creates each account, personal workspace,
-  // and membership in one flow.
   memberApi = await registeredMember(MEMBER_EMAIL, MEMBER_PASSWORD, "Access Lab");
   colleagueApi = await registeredMember(COLLEAGUE_EMAIL, COLLEAGUE_PASSWORD, "Access Lab");
   outsiderApi = await installedOutsider();
 
-  // The member's id, used for the workspace capability request.
   const members = await adminApi.get(`/api/workspaces/${workspaceId}/members`);
   expect(members.status()).toBe(200);
   memberHumanId = humanIdFor(await members.json(), MEMBER_EMAIL);
   colleagueHumanId = humanIdFor(await members.json(), COLLEAGUE_EMAIL);
 
-  // The owner's shared project, a member's project with no access yet, and the two
-  // personal projects the denial cases target.
   projectId = await createProjectAs(adminApi, workspaceId, "Access Lab Project");
   const adminWorkspaces = await adminApi.get("/api/workspaces");
   adminPersonalWorkspaceId = personalWorkspaceOf(await adminWorkspaces.json());
@@ -102,8 +77,6 @@ test.beforeAll(async () => {
     "Private Outsider Project",
   );
 
-  // Create projects is granted by the owner; the member creates a project and receives
-  // Manage. The REST matrix exercises the other levels on the owner's project.
   const capability = await adminApi.patch(
     `/api/workspaces/${workspaceId}/members/${memberHumanId}`,
     {
@@ -121,7 +94,6 @@ test.afterAll(async () => {
 });
 
 test("enforces the direct-request matrix for every level", async () => {
-  // Read: every read path succeeds; every mutation and management path is refused.
   const issue = await createIssueAs(adminApi, projectId, "Owner issue");
   const knowledge = await createKnowledgeAs(adminApi, projectId, "Owner knowledge");
 
@@ -165,8 +137,6 @@ test("enforces the direct-request matrix for every level", async () => {
     expect(await res.json()).toMatchObject({ status: 403, code: "insufficient_project_access" });
   }
 
-  // Contribute: create, edit, close/reopen, comment, and knowledge work; configuration
-  // and access management still do not.
   await grant(adminApi, projectId, MEMBER_EMAIL, "contribute");
   const memberIssue = await createIssueAs(memberApi, projectId, "Member issue");
   const memberIssueId = requiredText(field(memberIssue, "id"), "the member issue id");
@@ -204,8 +174,6 @@ test("enforces the direct-request matrix for every level", async () => {
   ).toBe(403);
   expect((await memberApi.get(`/api/projects/${projectId}/access`)).status()).toBe(403);
 
-  // Manage: rename, see grants, grant a colleague, and revoke. The colleague can read
-  // only while the grant exists.
   await grant(adminApi, projectId, MEMBER_EMAIL, "manage");
   const renamed = await memberApi.patch(`/api/projects/${projectId}`, {
     data: { name: "Access Lab Project Renamed" },
@@ -224,7 +192,6 @@ test("enforces the direct-request matrix for every level", async () => {
   expect(revoked.status()).toBe(204);
   expect((await colleagueApi.get(`/api/projects/${projectId}`)).status()).toBe(404);
 
-  // A grant to a non-member is refused; the outsider was never in this workspace.
   expect(
     (
       await memberApi.patch(`/api/projects/${projectId}/access`, {
@@ -233,14 +200,11 @@ test("enforces the direct-request matrix for every level", async () => {
     ).status(),
   ).toBe(404);
 
-  // Membership alone grants no project access; the colleague's listing stays empty and
-  // a direct fetch is the same as a missing project.
   const colleagueList = await colleagueApi.get(`/api/workspaces/${workspaceId}/projects`);
   expect(colleagueList.status()).toBe(200);
   expect(await colleagueList.json()).toEqual([]);
   expect((await colleagueApi.get(`/api/projects/${projectId}`)).status()).toBe(404);
 
-  // The member's created project is theirs to manage, and only theirs to see.
   expect(await (await memberApi.get(`/api/projects/${memberProjectId}`)).json()).toMatchObject({
     id: memberProjectId,
     accessLevel: "manage",
@@ -248,7 +212,6 @@ test("enforces the direct-request matrix for every level", async () => {
   });
   expect((await colleagueApi.get(`/api/projects/${memberProjectId}`)).status()).toBe(404);
 
-  // The owner manages every project in the workspace, including the member's.
   const ownerRename = await adminApi.patch(`/api/projects/${memberProjectId}`, {
     data: { name: "Member Project Renamed" },
   });
@@ -259,14 +222,11 @@ test("enforces the direct-request matrix for every level", async () => {
     accessLevel: "manage",
   });
 
-  // Cross-workspace denial and personal-project privacy.
   expect((await outsiderApi.get(`/api/projects/${projectId}`)).status()).toBe(404);
   expect((await outsiderApi.get(`/api/workspaces/${workspaceId}/projects`)).status()).toBe(404);
   expect((await outsiderApi.get(`/api/projects/${adminPersonalProjectId}`)).status()).toBe(404);
   expect((await memberApi.get(`/api/projects/${adminPersonalProjectId}`)).status()).toBe(404);
 
-  // The system administrator's role does not open another human's personal project or
-  // another team's shared workspace/project.
   expect((await adminApi.get(`/api/projects/${outsiderPersonalProjectId}`)).status()).toBe(404);
   expect(
     (
@@ -302,7 +262,6 @@ test("grants access in the browser and shows Read without mutation controls", as
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByText(`Signed in as ${ADMIN_EMAIL}.`)).toBeVisible();
 
-  // The owner grants the colleague Contribute through the project page.
   await page.goto(`/projects/${projectId}`);
   await page.getByRole("tab", { name: "Settings" }).click();
   await page.getByLabel("Email").fill(COLLEAGUE_EMAIL);
@@ -313,7 +272,6 @@ test("grants access in the browser and shows Read without mutation controls", as
   await expect(grantRow).toContainText("contribute");
   await expect(grantRow).toContainText(ADMIN_EMAIL);
 
-  // The owner also toggles the workspace capability in the member directory.
   await page.goto(`/workspaces/${workspaceId}`);
   await page.getByRole("tab", { name: "Members" }).click();
   const memberRow = page.locator(`li[data-member-id="${memberHumanId}"]`);
@@ -323,7 +281,6 @@ test("grants access in the browser and shows Read without mutation controls", as
   await memberRow.getByRole("button", { name: "Grant Create projects" }).click();
   await expect(memberRow).toContainText("Can create projects");
 
-  // A Read colleague sees the project but no mutation, configuration, or access form.
   const colleagueContext = await browser.newContext();
   const colleaguePage = await colleagueContext.newPage();
   try {
@@ -333,7 +290,6 @@ test("grants access in the browser and shows Read without mutation controls", as
     await colleaguePage.getByRole("button", { name: "Sign in" }).click();
     await expect(colleaguePage.getByText(`Signed in as ${COLLEAGUE_EMAIL}.`)).toBeVisible();
 
-    // Set the matrix's final grant to Read through the API, then load the project.
     await grant(adminApi, projectId, COLLEAGUE_EMAIL, "read");
     await colleaguePage.goto(`/projects/${projectId}`);
     await expect(
@@ -345,7 +301,6 @@ test("grants access in the browser and shows Read without mutation controls", as
     await expect(colleaguePage.getByRole("heading", { name: "Project settings" })).toHaveCount(0);
     await expect(colleaguePage.getByRole("heading", { name: "Project access" })).toHaveCount(0);
 
-    // The same holds on an issue: no close, edit, or comment controls.
     const firstIssue = colleaguePage.locator("[data-issue-id] a").first();
     await firstIssue.click();
     await expect(colleaguePage.getByRole("button", { name: "Close issue" })).toHaveCount(0);
@@ -356,11 +311,9 @@ test("grants access in the browser and shows Read without mutation controls", as
     await colleagueContext.close();
   }
 
-  // The cookies the server just set are secrets the logs must never contain.
   for (const cookie of await page.context().cookies()) await recordSecret(cookie.value);
 });
 
-// A signed-in API context. A failed login fails the setup, not a later assertion.
 async function newContext(): Promise<APIRequestContext> {
   return request.newContext({ baseURL: baseUrl });
 }
@@ -370,9 +323,6 @@ async function signIn(client: APIRequestContext, email: string, password: string
   expect(login.status()).toBe(200);
 }
 
-// The bootstrap administrator starts unverified. Send the installation's test email,
-// read its single-use token from the catcher, and redeem it by POST. On a rerun where an
-// earlier suite already verified the address, no mail is needed.
 async function ensureAdminVerified() {
   const session = await adminApi.get("/api/auth/session");
   expect(session.status()).toBe(200);
@@ -395,7 +345,6 @@ async function ensureAdminVerified() {
   expect(await verified.json()).toEqual({ email: ADMIN_EMAIL, emailVerified: true });
 }
 
-// The latest verification email's text, or undefined while the catcher has none yet.
 async function verificationMessageText(): Promise<string | undefined> {
   const list = await adminApi.get(`${mailpit}/api/v1/messages`);
   const body: unknown = await list.json();
@@ -537,7 +486,6 @@ function humanIdFor(value: unknown, email: string): string {
   throw new Error(`the workspace has no member ${email}`);
 }
 
-// A fresh invitation token from the catcher's copy of one email.
 async function caughtToken(
   to: string,
   kind: "installation" | "workspace",

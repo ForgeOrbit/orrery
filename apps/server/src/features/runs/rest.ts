@@ -10,10 +10,6 @@ import type { SessionReader } from "../accounts/index.ts";
 import { isAgentError, type AgentAuthenticator } from "../agents/index.ts";
 import { RunsError, type RunsErrorKind, type RunsService } from "./service.ts";
 
-// The REST hook endpoint from docs/design/harness-compatibility-proof.md. The bearer
-// header carries the agent key; it is never in the body. The adapter authenticates and
-// validates; identity, correlation, and scope are decided in service.ts.
-
 const report = createRoute({
   method: "post",
   path: "/api/runs/hook",
@@ -67,9 +63,6 @@ function isKind<K extends readonly RunsErrorKind[]>(
   return kinds.some((kind) => kind === error.kind);
 }
 
-// Thin: resolve the bearer key here (never falling back to a session cookie), call the
-// service with the identity, and map failures to RFC 9457 Problems. An agent key that
-// fails authentication keeps its own stable code and status, exactly as in projects.
 function failure<K extends readonly RunsErrorKind[]>(c: Context, error: unknown, kinds: K) {
   if (isAgentError(error)) {
     return problemResponse(c, {

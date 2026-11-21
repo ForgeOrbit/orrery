@@ -1,15 +1,3 @@
-// The shared-workspace story (issue #24), through the API and the browser: an owner
-// creates a workspace, the last owner cannot remove themselves, an existing verified
-// account accepts an invitation, a forwarded link is refused, and the browser shows the
-// joined workspace as a separate view. Black-box: HTTP and real pages against a running
-// Orrery, never server code.
-//
-// Runs after bootstrap.spec.ts and smtp.spec.ts (alphabetical file order, one worker),
-// which created and verified the administrator. SMTP is saved here again so the suite
-// delivers through the Mailpit catcher whatever earlier specs did.
-//
-//   docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { randomUUID } from "node:crypto";
 import { expect, request, test, type APIRequestContext, type APIResponse } from "@playwright/test";
 import { ADMIN_EMAIL, ADMIN_PASSWORD, recordSecret } from "./admin.ts";
@@ -33,7 +21,6 @@ const EXISTING_PASSWORD = "existing-workspace-password";
 const NEW_EMAIL = "workspace.newcomer@orrery.test";
 const NEW_PASSWORD = "new-workspace-password";
 
-// Filled by the send test below; the browser test accepts the same invitation.
 let invitationToken = "";
 let invitationWorkspaceId = "";
 
@@ -41,8 +28,7 @@ let api: APIRequestContext;
 test.beforeAll(async () => {
   for (const value of [EXISTING_PASSWORD, NEW_PASSWORD]) await recordSecret(value);
   api = await request.newContext({ baseURL: baseUrl });
-  // Playwright restarts the worker after a failed test, and a restarted worker re-runs
-  // this hook with a fresh, signed-in context.
+
   const login = await api.post("/api/auth/login", {
     data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
   });
@@ -50,10 +36,6 @@ test.beforeAll(async () => {
   const saved = await api.put("/api/settings/smtp", { data: SETTINGS });
   expect(saved.status()).toBe(200);
 
-  // The person the later workspace invitations target: an existing, verified account
-  // created through the installation invitation flow. A restarted worker re-runs this
-  // hook after a failed test, when the account may already exist; signing in proves the
-  // same credential and skips a duplicate invitation.
   const alreadyExists = await request.newContext({ baseURL: baseUrl });
   let knownAccount = false;
   try {
@@ -153,7 +135,6 @@ test("invites an existing account, and a forwarded link is refused", async () =>
   await recordSecret(token);
   invitationToken = token;
 
-  // The link's read side shows the offer without consuming it.
   const preview = await api.get(`/api/workspace-invitations/preview?token=${token}`);
   expect(preview.status()).toBe(200);
   expect(await preview.json()).toMatchObject({
@@ -170,8 +151,6 @@ test("invites an existing account, and a forwarded link is refused", async () =>
     ]),
   });
 
-  // Forwarded to the administrator's signed-in browser, the link cannot attach the
-  // membership: only the invited, verified address may accept it.
   const forwarded = await api.post("/api/workspace-invitations/acceptance", {
     data: { token },
   });
@@ -182,7 +161,6 @@ test("invites an existing account, and a forwarded link is refused", async () =>
     code: "invitation_recipient_mismatch",
   });
 
-  // The refusal left the invitation live for its real recipient.
   const stillThere = await api.get(`/api/workspace-invitations/preview?token=${token}`);
   expect(stillThere.status()).toBe(200);
 });
@@ -211,7 +189,6 @@ test("registers a new email into a workspace without a duplicate account", async
   expect(registered.status()).toBe(200);
   expect(await registered.json()).toEqual({ email: NEW_EMAIL, emailVerified: true });
 
-  // One account, verified, and a member of exactly the workspace that invited it.
   const newcomer = await request.newContext({ baseURL: baseUrl });
   try {
     const login = await newcomer.post("/api/auth/login", {
@@ -275,7 +252,6 @@ test("resends a workspace invitation, and the old link stops working", async () 
   if (newToken === undefined) throw new Error("the catcher never received the resent invitation");
   await recordSecret(newToken);
 
-  // History keeps the old row and the new one, with their separate lifecycles.
   const historyRes = await api.get(`/api/workspaces/${workspace.id}/invitations`);
   expect(historyRes.status()).toBe(200);
   const history: unknown = await historyRes.json();
@@ -283,7 +259,6 @@ test("resends a workspace invitation, and the old link stops working", async () 
   expect(history).toContainEqual(expect.objectContaining({ id, status: "revoked" }));
   expect(history).toContainEqual(expect.objectContaining({ id: freshId, status: "pending" }));
 
-  // The old link is dead; the new one shows the same scope and accepts.
   const oldPreview = await api.get(`/api/workspace-invitations/preview?token=${oldToken}`);
   expect(oldPreview.status()).toBe(400);
   expect(await oldPreview.json()).toMatchObject({ code: "invitation_invalid" });
@@ -353,8 +328,6 @@ test("revokes and declines workspace invitations", async () => {
     });
     expect(refused.status()).toBe(400);
 
-    // A fresh offer to the same address is possible once the old one is resolved; the
-    // recipient declines it from the emailed link, with no session at all.
     const reinvited = await api.post(`/api/workspaces/${workspace.id}/invitations`, {
       data: { email: EXISTING_EMAIL },
     });
@@ -404,7 +377,6 @@ test("an inviter removed as owner cannot have their invitation accepted", async 
   const RECIPIENT_PASSWORD = "authority-recipient-password";
   await recordSecret(RECIPIENT_PASSWORD);
 
-  // A real account for the recipient, through the installation invitation flow.
   const invited = await api.post("/api/invitations/installation", {
     data: { email: RECIPIENT_EMAIL },
   });
@@ -425,7 +397,6 @@ test("an inviter removed as owner cannot have their invitation accepted", async 
   expect(created.status()).toBe(201);
   const workspace = await created.json();
 
-  // An existing account joins and is appointed, so the administrator can leave.
   const memberInvite = await api.post(`/api/workspaces/${workspace.id}/invitations`, {
     data: { email: EXISTING_EMAIL },
   });
@@ -468,8 +439,6 @@ test("an inviter removed as owner cannot have their invitation accepted", async 
   });
   expect(appointed.status()).toBe(200);
 
-  // The administrator invites the recipient, then leaves; the pending offer loses its
-  // inviter's authority even though the workspace still has another owner.
   const recipientInvite = await api.post(`/api/workspaces/${workspace.id}/invitations`, {
     data: { email: RECIPIENT_EMAIL },
   });
@@ -536,8 +505,6 @@ test("workspace invite form refreshes failed delivery history without a reload",
     await page.getByLabel("Email").fill(FAILED_EMAIL);
     await page.getByRole("button", { name: "Send invitation" }).click();
 
-    // The original delivery Problem stays visible, while the history refreshes on its
-    // own to show the pending row, the separate failure, and the Resend action.
     await expect(page.getByRole("dialog").getByRole("alert")).toContainText(
       "Could not reach the SMTP server",
     );
@@ -609,7 +576,6 @@ test("owner sees invitation history and delivery separately, and resends from th
   await expect(pending).toHaveCount(1);
   await expect(pending).toContainText("Email sent");
 
-  // Revoking from the page resolves the new offer and leaves both history rows.
   await pending.getByRole("button", { name: "Revoke" }).click();
   await expect(page.locator('li[data-invitation-status="revoked"]')).toHaveCount(2);
   await expect(page.locator('li[data-invitation-status="pending"]')).toHaveCount(0);
@@ -624,13 +590,12 @@ test("accepts a workspace invitation through sign-in, then an owner appoints", a
   expect(invitationToken).not.toBe("");
   expect(invitationWorkspaceId).not.toBe("");
 
-  // Start signed out at the emailed link, exactly as a recipient would.
   await page.goto(`/workspace-invitation?token=${invitationToken}`);
   await expect(page.getByRole("heading", { name: "Join Rocket Team" })).toBeVisible();
   await expect(
     page.getByText(`Sign in with ${EXISTING_EMAIL} to join the workspace`),
   ).toBeVisible();
-  // The whole offer, before accepting: inviter, workspace, access, and deadline.
+
   await expect(page.getByText(`${ADMIN_EMAIL} invited ${EXISTING_EMAIL} to`)).toBeVisible();
   await expect(page.getByText("Offered access: workspace membership.")).toBeVisible();
   await expect(
@@ -647,23 +612,20 @@ test("accepts a workspace invitation through sign-in, then an owner appoints", a
   await page.getByLabel("Password").fill(EXISTING_PASSWORD);
   await page.getByRole("button", { name: "Sign in" }).click();
 
-  // Sign-in resumes the same invitation rather than dropping the token.
   await expect(page).toHaveURL(new RegExp(`/workspace-invitation\\?token=${invitationToken}`));
   await expect(page.getByRole("heading", { name: "Join Rocket Team" })).toBeVisible();
   await expect(page.getByText(`You are signed in as ${EXISTING_EMAIL}.`)).toBeVisible();
   await page.getByRole("button", { name: "Accept invitation" }).click();
 
-  // Acceptance leads into the workspace's own view, distinct from the personal one.
   await expect(page.getByRole("heading", { name: "Rocket Team" })).toBeVisible();
   await expect(page.getByText("Shared workspace · Member")).toBeVisible();
-  // A member gets no owner controls: no directory and no appointment action.
+
   await expect(page.getByRole("heading", { name: "Members" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Make owner" })).toHaveCount(0);
   const project = await page.request.get(`/api/projects/${projectId}`);
   expect(project.status()).toBe(200);
   expect(await project.json()).toMatchObject({ name: "Rocket Guidance" });
 
-  // The owner sees the directory and appoints the member. The role refreshes in place.
   const adminContext = await browser.newContext();
   const adminPage = await adminContext.newPage();
   try {
@@ -682,7 +644,6 @@ test("accepts a workspace invitation through sign-in, then an owner appoints", a
     await expect(memberRow).toContainText("Owner");
     await expect(memberRow.getByRole("button", { name: "Make owner" })).toHaveCount(0);
 
-    // The member's next load sees the new role and the owner-only controls.
     await page.reload();
     await expect(page.getByText("Shared workspace · Owner")).toBeVisible();
     await page.getByRole("tab", { name: "Members" }).click();
@@ -697,18 +658,15 @@ test("accepts a workspace invitation through sign-in, then an owner appoints", a
   const joined = page.locator(`li[data-workspace-id="${invitationWorkspaceId}"]`);
   await expect(joined).toContainText("Rocket Team");
   await expect(joined).toContainText("Owner");
-  // The personal workspace remains its own separate view, whatever other memberships
-  // the account has by this point.
+
   await expect(
     page.locator("main li[data-workspace-id]").filter({ hasText: "Personal" }),
   ).toHaveCount(1);
 
-  // The cookies the server just set are secrets the logs must never contain.
   for (const cookie of await page.context().cookies()) await recordSecret(cookie.value);
 });
 
 test("distinguishes an invalid invitation link from a load failure", async ({ page }) => {
-  // A network failure is not an invalid link, and must not claim one.
   await page.route("**/api/workspace-invitations/preview*", (route) => route.abort());
   await page.goto("/workspace-invitation?token=network-failure");
   await expect(page.getByRole("alert")).toHaveText(
@@ -716,14 +674,11 @@ test("distinguishes an invalid invitation link from a load failure", async ({ pa
   );
   await page.unroute("**/api/workspace-invitations/preview*");
 
-  // A real invalid-token Problem keeps its stable code, so only this case says invalid.
   await page.goto("/workspace-invitation?token=not-an-issued-token");
   await expect(page.getByRole("alert")).toHaveText(
     "This invitation is invalid, expired, or already used.",
   );
 
-  // Malformed and overlong tokens are rejected at the route boundary with the same
-  // invalid-link copy, without a server request or a connectivity message.
   let sessionRequests = 0;
   await page.route("**/api/auth/session", (route) => {
     sessionRequests += 1;
@@ -744,17 +699,11 @@ test("ignores a sign-in redirect that is not the invitation page", async ({ page
   await page.getByLabel("Password").fill(EXISTING_PASSWORD);
   await page.getByRole("button", { name: "Sign in" }).click();
 
-  // The only accepted destination is the internal invitation path; everything else
-  // lands on the normal signed-in home.
   await expect(page.getByText(`Signed in as ${EXISTING_EMAIL}.`)).toBeVisible();
   expect(new URL(page.url()).origin).toBe(new URL(baseUrl).origin);
   for (const cookie of await page.context().cookies()) await recordSecret(cookie.value);
 });
 
-// #28: delegation ceilings, withdrawal at acceptance, and Project Manage's lack of
-// workspace authority, all through direct REST requests against the running installation.
-// These tests use unique addresses so a rerun of the suite never collides with an earlier
-// member of the same workspace.
 const DELEGATION_PASSWORD = "delegated-member-password";
 const RECIPIENT_PASSWORD = "delegated-recipient-password";
 
@@ -762,8 +711,6 @@ async function freshEmail(label: string): Promise<string> {
   return `${label}.${randomUUID()}@orrery.test`;
 }
 
-// An installation invitation creates a verified account the way a real recipient does;
-// a rerun that already knows the credential just signs in again.
 async function verifiedAccount(email: string, password: string): Promise<APIRequestContext> {
   await recordSecret(password);
   const context = await request.newContext({ baseURL: baseUrl! });
@@ -804,8 +751,6 @@ async function memberIdFor(workspaceId: string, email: string): Promise<string> 
   throw new Error(`${email} is not a member`);
 }
 
-// Invites an email into a workspace and accepts it as that account, returning its member
-// id from the owner's directory and the account's own request context.
 async function joinWorkspace(
   workspaceId: string,
   workspaceName: string,
@@ -878,8 +823,6 @@ test("delegates workspace capabilities within their ceilings and protects owners
   const peerPath = (id: string) => `/api/workspaces/${workspaceId}/members/${id}`;
   const adminId = await memberIdFor(workspaceId, ADMIN_EMAIL);
 
-  // A permission manager sees the directory but cannot elevate themselves, modify an
-  // owner, appoint or remove permission managers, or grant a capability they lack.
   expect((await manager.context.get(`/api/workspaces/${workspaceId}/members`)).status()).toBe(200);
   await expectRefusal(
     await manager.context.patch(peerPath(manager.humanId), { data: { canCreateProjects: false } }),
@@ -914,7 +857,6 @@ test("delegates workspace capabilities within their ceilings and protects owners
     ).status(),
   ).toBe(200);
 
-  // Only owners remove a permission manager, even when the target is another manager.
   const secondManagerEmail = await freshEmail("delegation-second-manager");
   const secondManager = await joinWorkspace(
     workspaceId,
@@ -926,8 +868,7 @@ test("delegates workspace capabilities within their ceilings and protects owners
     canManageMemberPermissions: true,
     canInviteMembers: true,
   });
-  // Revocation has the same ceiling as granting: a manager who lacks Invite members
-  // cannot revoke it from someone who has it, nor remove another permission manager.
+
   await expectRefusal(
     await manager.context.patch(peerPath(secondManager.humanId), {
       data: { canInviteMembers: false },
@@ -943,8 +884,6 @@ test("delegates workspace capabilities within their ceilings and protects owners
     "not_workspace_owner",
   );
 
-  // Project Manage is a project level: this member has no workspace capability and no
-  // workspace operation beyond reading the project they Manage.
   const pmEmail = await freshEmail("project-only-manager");
   const projectOnly = await joinWorkspace(workspaceId, name, pmEmail, DELEGATION_PASSWORD);
   const projectCreated = await api.post(`/api/workspaces/${workspaceId}/projects`, {
@@ -1023,7 +962,6 @@ test("delegates workspace capabilities within their ceilings and protects owners
     "not_workspace_owner",
   );
 
-  // An ordinary member has none of the directory, capability, removal, or invite paths.
   const deniedUrl = `/api/workspaces/${workspaceId}/members`;
   await expectRefusal(await peer.context.get(deniedUrl), 403, "not_workspace_owner");
   await expectRefusal(
@@ -1056,7 +994,6 @@ test("delegates workspace capabilities within their ceilings and protects owners
     "project_creation_not_allowed",
   );
 
-  // A non-member never learns whether the workspace exists: every path answers 404.
   const outsiderEmail = await freshEmail("delegation-outsider");
   const outsider = await verifiedAccount(outsiderEmail, DELEGATION_PASSWORD);
   await expectRefusal(await outsider.get(deniedUrl), 404, "workspace_not_found");
@@ -1067,7 +1004,6 @@ test("delegates workspace capabilities within their ceilings and protects owners
   );
   await expectRefusal(await outsider.delete(peerPath(peer.humanId)), 404, "workspace_not_found");
 
-  // An owner's capabilities are implicit: granting is a no-op, revoking is refused.
   const ownerPath = peerPath(adminId);
   expect((await api.patch(ownerPath, { data: { canCreateProjects: true } })).status()).toBe(200);
   await expectRefusal(
@@ -1076,8 +1012,6 @@ test("delegates workspace capabilities within their ceilings and protects owners
     "workspace_owner_capability",
   );
 
-  // Only a member with Remove members can remove, and even they cannot touch an owner
-  // or a permission manager. Owners can remove both.
   const removerEmail = await freshEmail("delegation-remover");
   const remover = await joinWorkspace(workspaceId, name, removerEmail, DELEGATION_PASSWORD);
   await setCapabilities(workspaceId, remover.humanId, { canRemoveMembers: true });
@@ -1133,7 +1067,6 @@ test("a delegated inviter stays inside project scope and pending offers fail whe
   const invitationsUrl = `/api/workspaces/${workspaceId}/invitations`;
   expect((await inviter.context.get(invitationsUrl)).status()).toBe(200);
 
-  // Membership alone is always offerable; a project the delegate does not Manage is not.
   const plainEmail = await freshEmail("scoped-plain");
   expect(
     (await inviter.context.post(invitationsUrl, { data: { email: plainEmail } })).status(),
@@ -1147,9 +1080,6 @@ test("a delegated inviter stays inside project scope and pending offers fail whe
     "not_workspace_owner",
   );
 
-  // An owner's offer on a project this delegate does not Manage is neither listed for
-  // them nor resendable/revocable by them: the summary would leak the project id, name,
-  // and offered level.
   const ownerOfferEmail = await freshEmail("scoped-owner-offer");
   expect(
     (
@@ -1175,8 +1105,6 @@ test("a delegated inviter stays inside project scope and pending offers fail whe
     "not_workspace_owner",
   );
 
-  // A project Manage grant is not workspace authority, but it does authorize that
-  // project's grant in an invitation while it lasts.
   const manageGrant = await api.patch(`/api/projects/${projectId}/access`, {
     data: { email: inviterEmail, level: "manage" },
   });
@@ -1196,7 +1124,6 @@ test("a delegated inviter stays inside project scope and pending offers fail whe
   const recipientEmail = await freshEmail("scoped-recipient");
   const recipient = await verifiedAccount(recipientEmail, RECIPIENT_PASSWORD);
 
-  // A new email's registration offer is also bound to the inviter's current authority.
   const registrationEmail = await freshEmail("scoped-registration");
   const registrationPassword = "scoped-registration-password";
   await recordSecret(registrationPassword);
@@ -1217,8 +1144,6 @@ test("a delegated inviter stays inside project scope and pending offers fail whe
     throw new Error("the catcher never received the registration offer");
   await recordSecret(registrationToken);
 
-  // Withdrawing the project Manage grant leaves the invitation pending but unusable at
-  // acceptance, and the transaction rolls the token back rather than burning it.
   const revokedGrant = await api.delete(`/api/projects/${projectId}/access/${inviter.humanId}`);
   expect(revokedGrant.status()).toBe(204);
   await expectRefusal(
@@ -1234,8 +1159,6 @@ test("a delegated inviter stays inside project scope and pending offers fail whe
   if (!Array.isArray(afterManage)) throw new Error("the delegate history is not a list");
   expect(afterManage.some((row) => Reflect.get(row, "email") === registrationEmail)).toBe(false);
 
-  // The dead offer must not block the address for seven days: an authorized inviter can
-  // re-invite immediately within scope, and the new link registers normally.
   expect(
     (
       await api.post(invitationsUrl, {
@@ -1274,7 +1197,6 @@ test("a delegated inviter stays inside project scope and pending offers fail whe
     200,
   );
 
-  // Withdrawing Invite members has the same effect on a plain membership offer.
   const plainToken = await caughtToken(api, plainEmail, "workspace", name);
   if (plainToken === undefined) throw new Error("the catcher never received the plain offer");
   await recordSecret(plainToken);
@@ -1325,8 +1247,7 @@ test("a delegated member sees only the controls within their authority in the br
   await page.getByRole("tab", { name: "Members" }).click();
 
   await expect(page.getByRole("heading", { name: "Members" })).toBeVisible();
-  // The capability the delegate holds has a control; the ones they lack do not, and
-  // appointing an owner stays owner-only.
+
   await expect(page.getByRole("button", { name: "Grant Create projects" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Grant Invite members" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Grant Remove members" })).toHaveCount(0);
@@ -1338,8 +1259,6 @@ test("a delegated member sees only the controls within their authority in the br
   await expect(page.getByRole("button", { name: "Invite member", exact: true })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Invitation history" })).toHaveCount(0);
 
-  // Granting the remaining capabilities in the API makes the corresponding controls
-  // appear on the next load, without any client-side capability state.
   await setCapabilities(workspaceId, member.humanId, {
     canInviteMembers: true,
     canRemoveMembers: true,
@@ -1385,7 +1304,6 @@ function randomUUIDShort(): string {
   return randomUUID().slice(0, 8);
 }
 
-// One invitation's id from the owner's history, optionally narrowed by lifecycle state.
 async function invitationId(
   client: APIRequestContext,
   workspaceId: string,
@@ -1406,8 +1324,6 @@ async function invitationId(
   throw new Error(`no ${status ?? "matching"} invitation for ${email}`);
 }
 
-// A fresh invitation token from the catcher's copy of one email. The kind picks the link
-// path, and workspaceName narrows a workspace invitation when a recipient has several.
 async function caughtToken(
   client: APIRequestContext,
   to: string,
@@ -1418,8 +1334,6 @@ async function caughtToken(
   return tokens[0];
 }
 
-// Every matching token, for a resend where the old and new emails share a recipient and
-// subject. Order is the catcher's, so callers compare sets rather than positions.
 async function caughtTokens(
   client: APIRequestContext,
   to: string,

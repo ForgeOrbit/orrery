@@ -1,10 +1,6 @@
 import { Stack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
 
-// #96 telemetry is optional: a field the client never reports is null. Both the session
-// inspector and the agents panel use these helpers so a reported value reads the same on
-// every surface, and a null value is never shown as a fake zero.
-
 const number = new Intl.NumberFormat();
 const currency = new Intl.NumberFormat(undefined, {
   style: "currency",
@@ -19,12 +15,10 @@ export type TelemetryProps = {
   costUsdMicros: number | null;
 };
 
-/** Micro-USD to a human USD string, e.g. 12300 -> "$0.0123". */
 export function formatUsdMicros(micros: number): string {
   return currency.format(micros / 1_000_000);
 }
 
-/** dt/dd pairs for a description list; renders nothing when no value was reported. */
 export function TelemetryFacts({ inputTokens, outputTokens, costUsdMicros }: TelemetryProps) {
   return (
     <>
@@ -50,7 +44,6 @@ export function TelemetryFacts({ inputTokens, outputTokens, costUsdMicros }: Tel
   );
 }
 
-/** Compact badges for dense rows such as the agents panel. */
 export function TelemetryInline({ inputTokens, outputTokens, costUsdMicros }: TelemetryProps) {
   if (inputTokens === null && outputTokens === null && costUsdMicros === null) return null;
   return (

@@ -1,4 +1,3 @@
-// Public interface of the projects feature. Other code imports only this file.
 import type { ProjectAccessLevel } from "@orrery/contract";
 import type { Feature } from "../../platform/feature.ts";
 import type { Logger } from "../../platform/log.ts";
@@ -21,26 +20,18 @@ export type { IssueSessionGate, ProjectsErrorKind, WorkActor, WorkSessionGate } 
 
 export type ProjectsDepsWithAccounts = ProjectsDeps & {
   sessionReader: SessionReader;
-  // A narrow seam from the agents feature: both project adapters turn a request into
-  // one WorkActor, so REST and MCP share the same authorization decisions.
+
   agentAuthenticator: AgentAuthenticator;
-  // The work-sessions feature fences agent issue edits on a live session. Late-bound in
-  // features/index.ts so the two features need not import each other.
+
   sessionGate: WorkSessionGate;
-  // The same feature's trash gate: expire a lapsed lease, then report a live claim.
+
   issueSessionGate?: ProjectsDeps["issueSessionGate"];
   log?: Logger;
 };
 
-// The feature also exposes the access cleanup a workspace membership removal needs. It
-// stays on the projects side because project grants and their events are its tables;
-// workspaces calls it inside its own transaction.
 export interface ProjectsFeature extends Feature {
-  // The service is internal to this feature but exposed for same-project feature tests;
-  // the type is deliberately not re-exported from this index.
   service: ProjectsService;
-  // #98: the 30-day tombstone sweep, exposed for real-Postgres tests that drive the
-  // database-time boundary directly instead of waiting a month.
+
   purgeExpiredTrash(): Promise<number>;
   startBackgroundTasks(): void;
   revokeMemberProjectAccess(
@@ -56,8 +47,7 @@ export interface ProjectsFeature extends Feature {
     grantedByHumanId: string,
     offered: readonly { projectId: string; level: ProjectAccessLevel }[],
   ): Promise<string[]>;
-  // The agent-key ceiling: the human's current access to named projects. Agents borrow
-  // this so project levels are decided by one resolver for humans and agents alike.
+
   projectAccessCeiling(
     tx: DbTransaction,
     workspaceId: string,
@@ -72,13 +62,10 @@ export function createProjectsFeature(deps: ProjectsDepsWithAccounts): ProjectsF
     name: "projects",
     rest: createProjectsRest(service, deps.sessionReader, deps.agentAuthenticator),
     service,
-    // The project-work tools belong to this feature: they call its own service and only
-    // borrow an authenticator from agents, not the agents service itself.
+
     registerTools: createProjectsMcp(service, deps.agentAuthenticator),
     purgeExpiredTrash: () => service.purgeExpiredTrash(),
     startBackgroundTasks: () => {
-      // An unref'd hourly timer keeps the process alive only while it is serving; the
-      // sweep itself is one transaction and is safe to run concurrently with requests.
       const timer = setInterval(
         () => {
           void service.purgeExpiredTrash().catch((error: unknown) => {

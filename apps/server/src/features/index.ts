@@ -1,5 +1,3 @@
-// The feature registry: the one place that lists every feature. main.ts and the contract
-// generator use it. Add a new feature here.
 import type { Database, DbTransaction } from "../platform/db.ts";
 import type { Config } from "../platform/config.ts";
 import type { Feature } from "../platform/feature.ts";
@@ -29,9 +27,7 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     setupSecret: config.BOOTSTRAP_SECRET,
     publicUrl: config.PUBLIC_URL,
   });
-  // Settings authorizes with the accounts feature's session reader and earns its
-  // humans write, so the cookie and that table stay accounts' details. Its service
-  // defaults to the real SMTP transport; tests inject a fake.
+
   const settings = createSettingsFeature({
     db: database.db,
     publicUrl: config.PUBLIC_URL,
@@ -40,18 +36,13 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     markEmailVerified: accounts.markEmailVerified,
     log,
   });
-  // Projects owns project grants and their access events. Workspaces borrows the
-  // removal cleanup so losing a membership ends project access in the same transaction.
-  // Agents own key authentication; projects borrows only that narrow seam. The reference
-  // is filled once the agents feature is built, so neither feature imports the other's
-  // service at construction time.
+
   let authenticateAgent: AgentAuthenticator | undefined;
   const agentAuthenticator: AgentAuthenticator = (request) => {
     if (authenticateAgent === undefined) throw new Error("agent authenticator is not wired");
     return authenticateAgent(request);
   };
-  // Projects fences agent issue edits through a late-bound seam; work sessions borrows
-  // projects' one access resolver. Neither feature imports the other's service.
+
   let sessionGate: WorkSessionGate | undefined;
   const workSessionGate: WorkSessionGate = (tx, agentId, workspaceId, issueId) => {
     if (sessionGate === undefined) throw new Error("work session gate is not wired");
@@ -62,9 +53,7 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     if (trashSessionGate === undefined) throw new Error("trash session gate is not wired");
     return trashSessionGate(tx, issueId);
   };
-  // Work sessions borrow the question deadline and the atomic deadline evaluation from
-  // the inbox feature on its already issue-locked transaction, so a check-in cannot renew a
-  // claim past the one-hour deadline. Both seams are filled once the inbox is built.
+
   let questionLeaseDeadline:
     | ((tx: DbTransaction, issueId: string) => Promise<Date | null>)
     | undefined;
@@ -83,8 +72,7 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     agentAuthenticator,
     sessionGate: workSessionGate,
     issueSessionGate,
-    // A policy change freezes already-due questions through the same inbox seam a
-    // check-in uses; the closure is live by the time any request reaches a policy route.
+
     evaluateQuestionDeadline: evaluateDeadline,
     log,
   });
@@ -96,8 +84,7 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     projectAccessAtLeast,
   });
   authenticateAgent = agents.authenticator;
-  // Work sessions shares the agents authenticator and projects' access resolver; it is
-  // built after both so its gate is live before any request can reach a fenced write.
+
   const sessions = createSessionsFeature({
     db: database.db,
     sessionReader: accounts.sessionReader,
@@ -111,11 +98,9 @@ export function createFeatures(database: Database, config: Config, log: Logger):
   });
   sessionGate = (tx, agentId, workspaceId, issueId) =>
     sessions.agentHoldsSession(tx, agentId, workspaceId, issueId);
-  // #98: the trash delete gate is the same live-claim decision, late-bound for the same
-  // reason — projects is built before work sessions but only needs this one function.
+
   trashSessionGate = (tx, issueId) => sessions.issueHasLiveSession(tx, issueId);
-  // The inbox is built after work sessions (it reuses the same agent session gate) and
-  // fills the two deadline seams the sessions service calls on its locked transaction.
+
   const inbox = createInboxFeature({
     db: database.db,
     sessionReader: accounts.sessionReader,
@@ -131,12 +116,9 @@ export function createFeatures(database: Database, config: Config, log: Logger):
   return [
     createSystemFeature({ ping: database.ping }),
     accounts,
-    // Deactivation borrows only accounts' session reader: the human, key, claim, grant,
-    // membership and history writes it makes are decided in its own one service.
+
     createDeactivationFeature({ db: database.db, sessionReader: accounts.sessionReader }),
-    // Ownership recovery builds on #38's suspended former owners. It borrows accounts'
-    // human session reader (never an agent key) and settings' one mail sender, and writes
-    // ownership and both audit trails in its own single service transaction.
+
     createOwnershipFeature({
       db: database.db,
       sessionReader: accounts.sessionReader,
@@ -144,8 +126,7 @@ export function createFeatures(database: Database, config: Config, log: Logger):
       log,
     }),
     settings,
-    // Recovery borrows accounts' credential seams and settings' one mail sender. The
-    // local command uses the same service, so its policy cannot drift from the HTTP flow.
+
     createRecoveryFeature({
       db: database.db,
       accounts: {
@@ -157,9 +138,7 @@ export function createFeatures(database: Database, config: Config, log: Logger):
       publicUrl: config.PUBLIC_URL,
       log,
     }),
-    // Invitations borrows the same things from accounts (the reader, the
-    // registered-email guard, the account-creation seam, the verified mark) and sends
-    // mail only through settings' exported sender, so no second mail path exists.
+
     createInvitationsFeature({
       db: database.db,
       publicUrl: config.PUBLIC_URL,
@@ -189,16 +168,14 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     }),
     projects,
     agents,
-    // History borrows only projects' access resolver; it never imports another feature's
-    // service, and its routes use accounts' human session reader, never an agent key.
+
     createHistoryFeature({
       db: database.db,
       sessionReader: accounts.sessionReader,
       projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
         projects.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
     }),
-    // Run reporting borrows the same authenticator; the agents feature is built above,
-    // so the late-bound seam is live by the time any MCP tool or hook is called.
+
     createRunsFeature({
       db: database.db,
       sessionReader: accounts.sessionReader,
@@ -206,8 +183,7 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     }),
     sessions,
     inbox,
-    // My work is one human-only read over the same access resolver projects lends every
-    // feature. It never authenticates an agent key and writes nothing.
+
     createMyWorkFeature({
       db: database.db,
       sessionReader: accounts.sessionReader,
@@ -215,8 +191,7 @@ export function createFeatures(database: Database, config: Config, log: Logger):
         projects.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
       projectAccessAtLeast,
     }),
-    // Transfer rechecks source and destination authority in one transaction. It borrows
-    // only the human session reader; no agent key or MCP tool performs an ownership move.
+
     createTransfersFeature({
       db: database.db,
       sessionReader: accounts.sessionReader,
@@ -224,7 +199,6 @@ export function createFeatures(database: Database, config: Config, log: Logger):
   ];
 }
 
-// Every REST route definition, for contract/openapi.json.
 export const routes = [
   ...systemRoutes,
   ...accountsRoutes,

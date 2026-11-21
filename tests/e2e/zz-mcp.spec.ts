@@ -1,10 +1,3 @@
-// Agent project work through MCP and REST (issue #33), black-box against a running Orrery.
-// The same agent keys are used with a real MCP protocol client and with bearer-authenticated
-// HTTP requests, so REST and MCP must expose the same operations and the same denials. No
-// membership, project access, or installation administration is reachable by a key.
-//
-//   docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { randomUUID } from "node:crypto";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { expect, request, test, type APIRequestContext } from "@playwright/test";
@@ -29,7 +22,6 @@ const asRecord = (value: unknown): Record<string, unknown> =>
   typeof value === "object" && value !== null ? Object.fromEntries(Object.entries(value)) : {};
 const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 
-// Plain HTTP with only a bearer header: no cookie jar can accidentally authorize a call.
 const bearerRequest = (secret: string) => ({
   get: (path: string) =>
     fetch(new URL(path, baseUrl), { headers: { Authorization: `Bearer ${secret}` } }),
@@ -104,8 +96,6 @@ async function call(
   return { isError: result.isError === true, data: asRecord(result.structuredContent) };
 }
 
-// #36: a run and a claim precede any agent issue edit, close or reopen. The MCP check-in
-// tool creates the run; the claim is then held by this agent for that issue.
 async function claimIssue(client: Client, issueId: string): Promise<void> {
   const checkin = await call(client, "orrery_run_checkin", {
     event: "run_started",
@@ -211,7 +201,6 @@ test("a Contribute key runs the full issue and knowledge cycle over MCP and REST
   const client = await connect(key.secret);
   const rest = bearerRequest(key.secret);
   try {
-    // --- MCP: create, edit title/body, comment, close, reopen, knowledge create/edit.
     const createdIssue = await call(client, "create_issue", {
       projectId,
       title: "An MCP issue",
@@ -222,7 +211,6 @@ test("a Contribute key runs the full issue and knowledge cycle over MCP and REST
     expect(field(issue, "createdBy")).toMatchObject({ agentId, displayName: agentName });
     const issueId = requiredText(field(issue, "id"), "the issue id");
 
-    // Fenced: an issue edit without a live session is refused, not silently accepted.
     const unfenced = await call(client, "update_issue", { issueId, title: "No session" });
     expect(unfenced.isError).toBe(true);
     expect(unfenced.data).toMatchObject({ code: "session_required" });
@@ -268,7 +256,6 @@ test("a Contribute key runs the full issue and knowledge cycle over MCP and REST
       ]),
     );
 
-    // --- REST with the very same key: the same operations and the same agent actor.
     const restIssues = await rest.get(`/api/projects/${projectId}/issues`);
     expect(restIssues.status).toBe(200);
     const listed = asArray(await restIssues.json());
@@ -312,7 +299,6 @@ test("a Contribute key runs the full issue and knowledge cycle over MCP and REST
     expect(restEntryEdit.status).toBe(200);
     expect(field(field(await restEntryEdit.json(), "updatedBy"), "agentId")).toBe(agentId);
 
-    // MCP sees what REST wrote, through the same service.
     const afterRest = await call(client, "get_issue", { issueId: restIssueId });
     expect(field(afterRest.data.issue, "title")).toBe("Edited over REST");
   } finally {
@@ -369,7 +355,6 @@ test("an agent attaches a PR link over MCP and REST issue detail shows it", asyn
     });
     expect(unsafe.isError).toBe(true);
 
-    // The link is part of issue detail on both transports, attributed to the agent.
     const mcpDetail = await call(client, "get_issue", { issueId });
     const mcpLinks = asArray(field(mcpDetail.data.issue, "links"));
     expect(mcpLinks).toHaveLength(1);
@@ -485,7 +470,6 @@ test("a Read key inspects over MCP and REST but cannot change work on either", a
     await client.close();
   }
 
-  // A human with Read on the same project gets the identical REST denial.
   const invited = await api.post(`/api/workspaces/${workspaceId}/invitations`, {
     data: { email: MEMBER_EMAIL, projectGrants: [{ projectId, level: "read" }] },
   });
@@ -517,8 +501,7 @@ test("keys scoped to one workspace and project are denied on the other over MCP 
     data: { name: `MCP outside ${randomUUID()}` },
   });
   const outsideId = idOf(await outside.json(), "project");
-  // Workspace B is owned by the key's human owner, so a membership oracle would answer
-  // 200 with an empty list here. The key is scoped to the personal workspace A instead.
+
   const other = await api.post("/api/workspaces", { data: { name: `MCP other ${randomUUID()}` } });
   const otherId = idOf(await other.json(), "workspace");
 

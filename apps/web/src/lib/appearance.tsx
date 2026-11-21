@@ -12,7 +12,6 @@ const AppearanceContext = createContext<
 
 export function AppearanceProvider({ children }: { children: ReactNode }) {
   const appearance = useState<Appearance>(() => {
-    // index.html applies any saved override before the first paint.
     const initial = document.documentElement.dataset.theme;
     return initial === "light" || initial === "dark" ? initial : "system";
   });
@@ -78,9 +77,7 @@ export function AppearancePicker({ forceDark = false }: { forceDark?: boolean })
     try {
       if (value === "system") window.localStorage.removeItem("orrery.appearance");
       else window.localStorage.setItem("orrery.appearance", value);
-    } catch {
-      // The current tab can still change appearance when storage is unavailable.
-    }
+    } catch {}
   }
 
   const control = (

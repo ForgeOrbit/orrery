@@ -31,13 +31,6 @@ import {
 import type { SessionAccount } from "../accounts/index.ts";
 import { canAuthenticateKey, canRotateKey, effectiveAgentKeyState } from "./state-machine.ts";
 
-// The service is the only file in this feature that decides anything. rest.ts validates
-// and maps results; every rule about who may act, which workspace a key can reach, and
-// how a human's current access caps an agent lives here. Project level ranking is the
-// projects feature's, not a second copy here.
-
-// The offered lifetimes in days. "never" has no row here: its key has a null expiry and
-// skips only the time check, never the access checks.
 const VALIDITY_DAYS: Record<Exclude<AgentKeyValidity, "never">, number> = {
   "7": 7,
   "14": 14,
@@ -46,14 +39,9 @@ const VALIDITY_DAYS: Record<Exclude<AgentKeyValidity, "never">, number> = {
   "90": 90,
 };
 
-// Keys are random bearer credentials with a recognizable prefix. Only their SHA-256 is
-// stored (platform/tokens.ts); the raw secret is returned once, when the key is issued.
 const newSecret = () => `orr_ak_${randomBytes(32).toString("base64url")}`;
 const keyHintFor = (secret: string) => `${secret.slice(0, 19)}...`;
 
-// Each key computes its own expiry when it is created, in database time. Rotation uses
-// the same helper as issuance, so a replacement's deadline is independent of the source
-// key's deadline and of the source key's later revocation (#35).
 function expiryFor(validity: AgentKeyValidity) {
   return validity === AgentKeyValidity.enum.never
     ? null
@@ -112,23 +100,15 @@ function requireAccount(account: SessionAccount | null): SessionAccount {
   return account;
 }
 
-// A missing bearer credential is an authentication decision, so it belongs here beside
-// requireAccount: rest.ts only reads the header and passes what it found.
 function requireKey(token: string | null): string {
   if (token === null) throw new AgentsError("invalid_key");
   return token;
 }
 
-// Issuing a key takes the same installation-wide ownership write lock as project access
-// and workspace membership changes, and takes it first: no row lock comes before it.
-// Without it, a concurrent member removal could run its revocation UPDATE before this
-// key's INSERT committed, leaving an unrevoked key for a member who is already gone.
 async function lockWorkspaceOwnershipWrites(tx: DbTransaction) {
   await tx.execute(sql`select lock_workspace_ownership_writes()`);
 }
 
-// A project ceiling decided by the projects feature's one resolver, borrowed through
-// the feature's public interface. Agents never grow a second project-level policy.
 export type ProjectAccessCeiling = (
   tx: DbTransaction,
   workspaceId: string,
@@ -141,8 +121,6 @@ export type ProjectAccessAtLeast = (
   required: ProjectAccessLevel,
 ) => boolean;
 
-// Both resolvers are borrowed through the feature registry, so agents never imports a
-// projects internal file and projects remains free to own the one ranking rule.
 export interface AgentsDeps {
   db: PostgresJsDatabase;
   projectAccessCeiling: ProjectAccessCeiling;
@@ -161,8 +139,7 @@ export interface AgentsService {
     account: SessionAccount | null,
     input: CreateAgentKeyRequest,
   ): Promise<CreateAgentKeyResponse>;
-  // Rotation creates an overlapping replacement for one of the human's own keys. The
-  // secret is returned once here; the source key's secret is never read or exposed.
+
   rotateKey(
     account: SessionAccount | null,
     keyId: string,
@@ -170,22 +147,17 @@ export interface AgentsService {
   ): Promise<CreateAgentKeyResponse>;
   listKeys(account: SessionAccount | null, workspaceId?: string): Promise<AgentKey[]>;
   revokeKey(account: SessionAccount | null, keyId: string): Promise<AgentKey>;
-  // The owner's view and revocation of any key scoped to their workspace. The secret is
-  // never fetched or returned on this path; the owner does not need it to revoke.
+
   workspaceKeys(account: SessionAccount | null, workspaceId: string): Promise<AgentKey[]>;
   ownerRevokeKey(
     account: SessionAccount | null,
     workspaceId: string,
     keyId: string,
   ): Promise<AgentKey>;
-  // Bearer authentication: resolve the agent behind a key, capped by its human owner's
-  // current access. An optional target makes a cross-workspace request fail on the server.
+
   authenticate(token: string | null, target?: AgentKeyTarget): Promise<AgentIdentity>;
 }
 
-// The human's current authority over a shared workspace; a personal workspace's owner
-// is its personal_owner_human_id. Membership alone is enough to hold a key here —
-// project levels are still capped separately by projectAccessCeiling.
 async function humanCanUseWorkspace(
   tx: DbTransaction,
   workspaceId: string,
@@ -198,16 +170,14 @@ async function humanCanUseWorkspace(
       humanDeactivatedAt: humans.deactivatedAt,
     })
     .from(workspaces)
-    // The account itself is part of the access decision: a deactivated human cannot use
-    // any workspace, including their personal one, so a key issued just before
-    // deactivation cannot keep working afterwards (#38).
+
     .innerJoin(humans, eq(humans.id, humanId))
     .leftJoin(
       workspaceMemberships,
       and(
         eq(workspaceMemberships.workspaceId, workspaces.id),
         eq(workspaceMemberships.humanId, humanId),
-        // A suspended membership (#38) grants no workspace access to the key's human.
+
         isNull(workspaceMemberships.suspendedAt),
       ),
     )
@@ -242,8 +212,6 @@ async function requireWorkspaceOwner(
   if (!isOwner) throw new AgentsError("not_workspace_owner");
 }
 
-// Credential events identify the key without ever carrying its hash or secret. Written
-// inside the same transaction as the change, so history cannot disagree with the row.
 async function recordEvent(
   tx: DbTransaction,
   type: AgentKeyEventType,
@@ -309,7 +277,6 @@ function toKey(row: KeyRow, grants: AgentKeyProject[]): AgentKey {
   };
 }
 
-// Project grants for a set of keys, in one query, so listing many keys is not N+1.
 async function loadKeyProjects(
   tx: DbTransaction,
   keyIds: readonly string[],
@@ -338,8 +305,6 @@ async function loadKeyProjects(
   return byKey;
 }
 
-// Keys and their grants are always loaded together, with readable names: an owner
-// listing another human's keys needs the agent and project names, not raw ids.
 async function loadKeys(tx: DbTransaction, where: SQL | undefined): Promise<AgentKey[]> {
   const rows = await tx
     .select({ ...keyRowColumns(), agentName: agents.name })
@@ -359,11 +324,6 @@ async function projectKey(tx: DbTransaction, keyId: string): Promise<AgentKey> {
   return key;
 }
 
-// Revoke in database time and write the event in one transaction. Both the human owner
-// and a workspace owner go through this, so revocation has one implementation; only the
-// authorization and the workspace scope differ. The conditional update plus RETURNING
-// makes retries idempotent: an already-revoked key changes nothing and writes no second
-// audit event.
 async function revokeInTransaction(
   tx: DbTransaction,
   keyId: string,
@@ -386,13 +346,6 @@ async function revokeInTransaction(
   return key;
 }
 
-// Membership removal ends every key the removed human's agents hold in that workspace,
-// inside the removal's own transaction. agentApiKeys belongs to this feature, so the
-// workspaces feature borrows this helper through the registry instead of writing to the
-// key table itself. The conditional UPDATE ... RETURNING makes it idempotent: a key that
-// was already revoked (by its owner or an owner) changes nothing and writes no second
-// event. One secret-free event is recorded per newly revoked key, with the remover as
-// actor — the same audit shape as any other revocation.
 export async function revokeMemberWorkspaceKeys(
   tx: DbTransaction,
   workspaceId: string,
@@ -424,9 +377,6 @@ export async function revokeMemberWorkspaceKeys(
   }
 }
 
-// Bearer resolution inside one transaction: the lookup, the revocation/expiry/activity
-// checks, the dynamic human-access ceiling, and the optional target scope all see one
-// consistent snapshot.
 async function resolveKeyInTransaction(
   tx: DbTransaction,
   projectAccessCeiling: ProjectAccessCeiling,
@@ -448,14 +398,8 @@ async function resolveKeyInTransaction(
     .limit(1);
   if (row === undefined) throw new AgentsError("invalid_key");
 
-  // A deactivated owner's key never authenticates (#38). Deactivation also revokes every
-  // key in the same transaction; this independent check means a key cannot authenticate
-  // even if it somehow escaped revocation. The human row is always present (deactivation
-  // keeps the identity), so a null here is a corrupt key owner, not a deactivated one.
   if (row.humanDeactivatedAt !== null) throw new AgentsError("human_deactivated");
 
-  // Revocation wins over everything, including "Never": it is checked on every request
-  // and takes effect immediately, independently of any connection state.
   if (row.key.revokedAt !== null) {
     effectiveAgentKeyState({
       revokedAt: row.key.revokedAt,
@@ -465,14 +409,10 @@ async function resolveKeyInTransaction(
     throw new AgentsError("key_revoked");
   }
 
-  // Membership is an access check, not a transport detail: removing the human from the
-  // key's workspace stops the key immediately, even a Never key with no project grants.
   if (!(await humanCanUseWorkspace(tx, row.key.workspaceId, row.humanId))) {
     throw new AgentsError("key_workspace_inaccessible");
   }
 
-  // Expiry is evaluated in database time. "Never" has a null expiry and skips only this
-  // check; it is still subject to revocation, membership, and every access check.
   if (AgentKeyValidity.parse(row.key.validity) !== AgentKeyValidity.enum.never) {
     const [live] = await tx
       .select({ id: agentApiKeys.id })
@@ -487,15 +427,10 @@ async function resolveKeyInTransaction(
     if (!canAuthenticateKey(keyState)) throw new AgentsError("key_expired");
   }
 
-  // A key is scoped to exactly one workspace. A request naming another workspace fails
-  // here, before any project is considered.
   if (target?.workspaceId !== undefined && target.workspaceId !== row.key.workspaceId) {
     throw new AgentsError("key_out_of_scope");
   }
 
-  // Dynamic ceiling: the key's requested level is the upper bound, and the human
-  // owner's *current* project access is the lower one. If the human loses access, the
-  // effective level drops with it on the very next request — no reissue is needed.
   const grants = await loadKeyProjects(tx, [row.key.id]);
   const requested = grants.get(row.key.id) ?? [];
   const ceiling = await projectAccessCeiling(
@@ -583,8 +518,6 @@ export function createAgentsService({
       const actor = requireAccount(account);
       const validity = AgentKeyValidity.parse(input.validity ?? AgentKeyValidity.enum["90"]);
       return db.transaction(async (tx) => {
-        // Serialize with member removal and every other ownership write. The lock is
-        // taken before any row is read or written, matching projects and workspaces.
         await lockWorkspaceOwnershipWrites(tx);
         const [agent] = await tx
           .select({ id: agents.id, name: agents.name })
@@ -597,10 +530,6 @@ export function createAgentsService({
           throw new AgentsError("workspace_not_found");
         }
 
-        // The human's current access is the ceiling at issuance as well: the key cannot
-        // be created above it, so a later promotion cannot silently raise an old key.
-        // At authentication the same ceiling is re-evaluated, so a demotion or removal
-        // still caps the agent immediately without reissuing the key.
         const requested = input.projects;
         const ceiling = await projectAccessCeiling(
           tx,
@@ -661,15 +590,8 @@ export function createAgentsService({
     async rotateKey(account, keyId, input) {
       const actor = requireAccount(account);
       return db.transaction(async (tx) => {
-        // Rotation writes a new key and reads the human's current grants, so it takes
-        // the same installation-wide ownership lock as issuance and takes it first. A
-        // member removal cannot slip its revocation between this transaction's reads
-        // and the replacement's INSERT (#35, matching issueKey).
         await lockWorkspaceOwnershipWrites(tx);
 
-        // The source must be one of the human's own keys. Joining through the agent
-        // makes another human's key indistinguishable from a missing one: an id alone
-        // is not authority to mint a replacement.
         const [source] = await tx
           .select({ key: keyRowColumns(), agentName: agents.name })
           .from(agentApiKeys)
@@ -678,10 +600,6 @@ export function createAgentsService({
           .limit(1);
         if (source === undefined) throw new AgentsError("key_not_found");
 
-        // Both keys must be live at the moment of rotation, otherwise "overlap" would
-        // be a lie. A revoked key is refused outright; an expired one is checked in
-        // database time even if no sweeper has stamped it. The check is about the
-        // source's own state, independent of the requested replacement validity.
         const sourceValidity = AgentKeyValidity.parse(source.key.validity);
         let sourceExpired = false;
         if (source.key.revokedAt !== null) {
@@ -707,17 +625,10 @@ export function createAgentsService({
         });
         if (!canRotateKey(sourceState)) throw new AgentsError("source_key_expired");
 
-        // A key whose human owner can no longer use its workspace cannot be the source
-        // of a fresh credential for that workspace.
         if (!(await humanCanUseWorkspace(tx, source.key.workspaceId, actor.humanId))) {
           throw new AgentsError("workspace_not_found");
         }
 
-        // Grants: an explicit list is validated exactly like issuance (a project above
-        // the human's current access is refused). Omitted grants are preserved from
-        // the source but re-capped by the human's *current* access: a level that was
-        // lowered is clamped, and a grant whose project is no longer reachable is
-        // dropped. Removed authority can never be carried into the replacement.
         const preserved = (await loadKeyProjects(tx, [keyId])).get(keyId) ?? [];
         const requested: AgentKeyGrant[] =
           input.projects ??
@@ -744,8 +655,6 @@ export function createAgentsService({
           }
         }
 
-        // A new secret, a new id, and a new expiry computed from now(). The source
-        // key's hash is never selected, so its secret cannot be repeated here.
         const validity = input.validity ?? AgentKeyValidity.parse(source.key.validity);
         const secret = newSecret();
         const id = randomUUID();
@@ -776,8 +685,7 @@ export function createAgentsService({
             })),
           );
         }
-        // One secret-free rotation event on the replacement key. Its replacesKeyId
-        // column names the source; no secret or hash is read, stored, or returned here.
+
         await recordEvent(
           tx,
           AgentKeyEventType.enum.agent_key_rotated,
@@ -818,8 +726,6 @@ export function createAgentsService({
     async workspaceKeys(account, workspaceId) {
       const actor = requireAccount(account);
       return db.transaction(async (tx) => {
-        // The owner sees every key scoped to this workspace, whoever issued it. The
-        // query never selects token_hash, so the secret cannot leak through this view.
         await requireWorkspaceOwner(tx, workspaceId, actor.humanId);
         return loadKeys(tx, eq(agentApiKeys.workspaceId, workspaceId));
       });
@@ -829,8 +735,7 @@ export function createAgentsService({
       const actor = requireAccount(account);
       return db.transaction(async (tx) => {
         await requireWorkspaceOwner(tx, workspaceId, actor.humanId);
-        // The workspace predicate is part of the lookup: a key in another workspace is
-        // not found here, so an owner cannot affect a human's keys elsewhere.
+
         const [found] = await tx
           .select({ id: agentApiKeys.id })
           .from(agentApiKeys)
@@ -843,10 +748,7 @@ export function createAgentsService({
 
     async authenticate(token, target) {
       const presented = requireKey(token);
-      // Authentication is a read-only decision over several tables (the key, its
-      // revocation, the human's membership, expiry, and the project ceiling). One
-      // REPEATABLE READ snapshot keeps those reads consistent instead of letting a
-      // concurrent revoke, removal, or demotion tear the decision apart mid-flight.
+
       return db.transaction(
         (tx) =>
           resolveKeyInTransaction(

@@ -36,8 +36,6 @@ import {
 } from "./service.ts";
 import { createRecoveryFeature } from "./index.ts";
 
-// Runs against a real Postgres, never a mock: expiry, single-use, and session
-// invalidation are database decisions and must be proven in database time.
 const SECRET = "correct horse battery staple staple";
 const EMAIL = "admin@example.com";
 const OTHER_EMAIL = "unverified@example.com";
@@ -169,8 +167,6 @@ describe("password recovery", () => {
     const unverifiedBefore = await database.db.select().from(passwordResetTokens);
     expect(unverifiedBefore).toHaveLength(0);
 
-    // First while the administrator is unverified: no mail, same answer as an unknown
-    // address and as the existing unverified address.
     const unknown = await service.requestReset("nobody@example.com");
     const unverified = await service.requestReset(OTHER_EMAIL);
     const adminUnverified = await service.requestReset(EMAIL);
@@ -180,7 +176,6 @@ describe("password recovery", () => {
     expect(delivered).toHaveLength(0);
     expect(await database.db.select().from(passwordResetTokens)).toHaveLength(0);
 
-    // Once verified, the same address gets mail and a hash-only token row.
     await database.db
       .update(humans)
       .set({ emailVerifiedAt: sql`now()` })
@@ -242,7 +237,7 @@ describe("password recovery", () => {
     expect(refused).toMatchObject({ kind: "reset_token_invalid" });
 
     const rows = await database.db.select().from(passwordResetTokens);
-    // Redeeming one password change revokes every other outstanding link too.
+
     expect(rows.every((row) => row.usedAt !== null)).toBe(true);
   });
 
@@ -258,7 +253,7 @@ describe("password recovery", () => {
       const refused = await rejection(service.confirmReset(attempt, "another-new-password"));
       expect(refused).toMatchObject({ kind: "reset_token_invalid" });
     }
-    // The original password no longer works; the one set by the single redemption does.
+
     expect(await rejection(accounts().login({ email: EMAIL, password: PASSWORD }))).toMatchObject({
       kind: "invalid_credentials",
     });
@@ -292,12 +287,11 @@ describe("password recovery", () => {
   });
 
   it("local recovery revokes pending links and is for system administrators only", async () => {
-    const adminId = await bootstrap(false); // The bootstrap administrator is unverified.
+    const adminId = await bootstrap(false);
     const nonAdminId = await createUnverifiedHuman();
     expect((await accountByEmail(database.db, EMAIL))?.isSystemAdministrator).toBe(true);
     expect((await accountByEmail(database.db, OTHER_EMAIL))?.isSystemAdministrator).toBe(false);
 
-    // A verified administrator can have a live link outstanding when recovery runs.
     await database.db
       .update(humans)
       .set({ emailVerifiedAt: sql`now()` })
@@ -305,7 +299,6 @@ describe("password recovery", () => {
     await service.requestReset(EMAIL);
     const pending = tokenFromMail(delivered[0]);
 
-    // An ordinary human cannot use the local command as a bypass.
     const refused = await rejection(service.localRecover(OTHER_EMAIL, NEW_PASSWORD));
     expect(refused).toMatchObject({ kind: "not_system_administrator" });
     expect((await accounts().login({ email: OTHER_EMAIL, password: PASSWORD })).email).toBe(
@@ -315,7 +308,6 @@ describe("password recovery", () => {
       "password_reset_requested",
     ]);
 
-    // The administrator's local recovery needs no working relay and retires the link.
     const broken = makeService(async () => {
       throw new Error("smtp is broken");
     });
@@ -344,7 +336,7 @@ describe("password recovery", () => {
     const refused = await rejection(service.localRecover(EMAIL, NEW_PASSWORD));
     expect(refused).toBeInstanceOf(RecoveryError);
     expect(refused).toMatchObject({ kind: "account_deactivated" });
-    // No password change, no sessions ended, no credential events written.
+
     expect(
       await rejection(accounts().login({ email: EMAIL, password: NEW_PASSWORD })),
     ).toMatchObject({ kind: "invalid_credentials" });
@@ -410,7 +402,7 @@ describe("password recovery", () => {
   });
 
   it("recovers locally with broken SMTP, even for an unverified address", async () => {
-    await bootstrap(false); // A bootstrap administrator's address is unverified.
+    await bootstrap(false);
     const broken = makeService(async () => {
       throw new Error("smtp is broken");
     });
@@ -439,8 +431,7 @@ describe("password recovery", () => {
     const adminId = await bootstrap(true);
     const memberId = await createUnverifiedHuman();
     const sharedId = randomUUID();
-    // One transaction: the deferred owner check must see the owner membership before
-    // the shared workspace commits.
+
     await database.db.transaction(async (tx) => {
       await tx.insert(workspaces).values({ id: sharedId, kind: "shared", name: "Team" });
       await tx.insert(workspaceMemberships).values([

@@ -20,12 +20,6 @@ import {
 import type { DbTransaction } from "../../platform/db.ts";
 import type { SessionAccount } from "../accounts/index.ts";
 
-// My work (issue #99) is one read-only decision: what the signed-in human can act on right
-// now, across their personal workspace and every shared workspace where they still hold an
-// active membership. REST only resolves the cookie and maps errors; every scope decision is
-// here, reusing projects' one access resolver so a revoked grant or a suspended membership
-// excludes data on the very next request.
-
 export type MyWorkErrorKind = "not_signed_in" | "human_deactivated";
 
 const messages: Record<MyWorkErrorKind, string> = {
@@ -60,15 +54,8 @@ export interface MyWorkService {
   get(actor: SessionAccount | null): Promise<MyWorkResponse>;
 }
 
-// The same database-time projection as inbox/service.ts: an open question past its deadline
-// is not really open any more. With require_human it reads as paused (still actionable here);
-// with fallback_allowed it has resolved to fallback_used and must never appear. Answered and
-// already-fallback questions project to themselves and are filtered out by the same WHERE.
 const effectiveQuestionStatus = sql<string>`case when ${questions.status} = 'open' and ${questions.responseDeadlineAt} <= statement_timestamp() then case when coalesce(${issues.fallbackPolicyOverride}, ${projects.fallbackPolicy}) = 'fallback_allowed' then 'fallback_used' else 'paused' end else ${questions.status} end`;
 
-// A single screen, not a feed: bound each section so one busy workspace cannot crowd out the
-// others. Scoping happens first, per workspace, so a global LIMIT could never hide a whole
-// workspace's work.
 const PAGE = 200;
 
 const byNewest = (a: string, b: string) => b.localeCompare(a);
@@ -80,8 +67,6 @@ export function createMyWorkService(deps: MyWorkDeps): MyWorkService {
 
       return deps.db.transaction(
         async (tx) => {
-          // Recheck in the read transaction: a retained cookie is resolved by accounts
-          // already, but a deactivated account must lose access even to a stale actor object.
           const [human] = await tx
             .select({ id: humans.id, deactivatedAt: humans.deactivatedAt })
             .from(humans)
@@ -90,8 +75,6 @@ export function createMyWorkService(deps: MyWorkDeps): MyWorkService {
           if (human === undefined) throw new MyWorkError("not_signed_in");
           if (human.deactivatedAt !== null) throw new MyWorkError("human_deactivated");
 
-          // Personal workspaces have no membership row. Shared ones require a membership
-          // whose suspension is still null — a removed or suspended member sees nothing.
           const personal = await tx
             .select({ id: workspaces.id, name: workspaces.name })
             .from(workspaces)
@@ -122,8 +105,6 @@ export function createMyWorkService(deps: MyWorkDeps): MyWorkService {
               .where(eq(projects.workspaceId, scope.id));
             if (scopeProjects.length === 0) continue;
 
-            // One resolver for every level: personal owner, shared owner, explicit grant.
-            // It reads current workspaces, memberships and grants inside this transaction.
             const ceiling = await deps.projectAccessCeiling(
               tx,
               scope.id,
@@ -153,7 +134,6 @@ export function createMyWorkService(deps: MyWorkDeps): MyWorkService {
             );
             const projectKey = new Map(scopeProjects.map((row) => [row.id, row.key]));
 
-            // 1. Non-deleted, non-terminal issues assigned to this human.
             const assigned = await tx
               .select({
                 id: issues.id,
@@ -197,8 +177,6 @@ export function createMyWorkService(deps: MyWorkDeps): MyWorkService {
               })),
             );
 
-            // 2. Live sessions under agents this human owns, on readable non-deleted issues.
-            // The lease check is database time: a lapsed lease never appears here.
             const liveSessions = await tx
               .select({
                 id: workSessions.id,
@@ -262,7 +240,6 @@ export function createMyWorkService(deps: MyWorkDeps): MyWorkService {
               })),
             );
 
-            // 3. Open or paused questions on non-deleted issues the human may contribute to.
             if (actionable.size > 0) {
               const pending = await tx
                 .select({

@@ -196,11 +196,9 @@ function OrbitDiagram() {
           <path id="orrery-orbit-3" d="M 86 200 A 114 58 0 1 0 314 200 A 114 58 0 1 0 86 200" />
         </defs>
 
-        {/* Crosshair axes */}
         <line x1="200" y1="0" x2="200" y2="400" className="orbit-axis" />
         <line x1="0" y1="200" x2="400" y2="200" className="orbit-axis" />
 
-        {/* Outer tilted orbit + primary orange planet */}
         <g transform="rotate(-32 200 200)">
           <use href="#orrery-orbit-1" className="orbit-ring" />
           <g>
@@ -212,7 +210,6 @@ function OrbitDiagram() {
           </g>
         </g>
 
-        {/* Middle tilted orbit + cream moon */}
         <g transform="rotate(26 200 200)">
           <use href="#orrery-orbit-2" className="orbit-ring orbit-ring-mid" />
           <g>
@@ -224,7 +221,6 @@ function OrbitDiagram() {
           </g>
         </g>
 
-        {/* Inner tilted orbit + fast satellite */}
         <g transform="rotate(-68 200 200)">
           <use href="#orrery-orbit-3" className="orbit-ring orbit-ring-inner" />
           <circle r="2.4" className="orbit-satellite">
@@ -234,7 +230,6 @@ function OrbitDiagram() {
           </circle>
         </g>
 
-        {/* Central sun */}
         <circle cx="200" cy="200" r="11" className="orbit-sun-halo" />
         <circle cx="200" cy="200" r="5" className="orbit-sun" />
       </svg>

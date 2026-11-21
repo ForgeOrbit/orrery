@@ -20,9 +20,6 @@ export interface TitleBodyFormProps {
   onSubmit: (values: { title: string; body: string }) => Promise<void>;
 }
 
-// Shared title + Markdown form used for creating and editing issues and knowledge entries.
-// Edit call sites key the component by updatedAt so a successful save remounts it with the
-// server's values without needing an effect.
 export function TitleBodyForm({
   idPrefix,
   titleLabel,

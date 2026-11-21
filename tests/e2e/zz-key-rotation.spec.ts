@@ -1,15 +1,3 @@
-// Agent key rotation (issue #35), black-box against the running installation. A human
-// replaces a live key with an overlapping replacement: both keys work until the old one
-// is revoked, each keeps its own expiry, the old secret is never shown again, and a
-// routine password reset leaves both keys live (stories 45 and 12). REST and MCP prove
-// the same outcome; Mailpit drives the real reset email. No server code is imported.
-//
-// The `zz-` prefix runs this after recovery.spec.ts and smtp.spec.ts, which verify the
-// administrator's email and repair the relay. This suite creates and resets its own
-// verified account, so it never changes another suite's password.
-//
-//   docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { randomUUID } from "node:crypto";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { expect, request, test, type APIRequestContext } from "@playwright/test";
@@ -85,7 +73,6 @@ async function rotateKey(
   return { id: idOf(field(body, "key"), "replacement key"), secret, body };
 }
 
-// A plain bearer request: no cookie jar can accidentally authorize the call.
 const bearerGet = (path: string, secret: string) =>
   fetch(new URL(path, baseUrl), { headers: { Authorization: `Bearer ${secret}` } });
 
@@ -187,8 +174,6 @@ test.beforeAll(async () => {
   });
   expect(login.status()).toBe(200);
 
-  // A verified account of this suite's own: an installation invitation registers with a
-  // verified email and creates a personal workspace, without touching another fixture.
   for (const secret of [INITIAL_PASSWORD, RESET_PASSWORD]) await recordSecret(secret);
   const invited = await admin.post("/api/invitations/installation", {
     data: { email: OWNER_EMAIL },
@@ -225,8 +210,6 @@ test("overlap, switch the client, revoke the old key, then reset the password", 
   const agentId = await createAgent(owner, `rotation-bot-${randomUUID()}`);
   const source = await issueKey(owner, agentId, workspaceId, projectId);
 
-  // Rotation mints a distinct replacement for the same agent and workspace. The new
-  // secret is the only secret in the response; the old one is never shown again.
   const replacement = await rotateKey(owner, source.id);
   const key: unknown = field(replacement.body, "key");
   expect(replacement.id).not.toBe(source.id);
@@ -243,7 +226,6 @@ test("overlap, switch the client, revoke the old key, then reset the password", 
   expect(listed.status()).toBe(200);
   expect(JSON.stringify(await listed.json())).not.toContain(source.secret);
 
-  // Both keys work during the overlap, over REST and over MCP.
   for (const secret of [source.secret, replacement.secret]) {
     const me = await bearerGet("/api/agents/me", secret);
     expect(me.status).toBe(200);
@@ -251,8 +233,6 @@ test("overlap, switch the client, revoke the old key, then reset the password", 
     expect(await mcpCanListProjects(secret, workspaceId)).toBe(true);
   }
 
-  // Point the client at the new key and revoke the old one. The replacement is
-  // unaffected; an issue written with it is attributed to the same agent.
   const issue = await fetch(new URL(`/api/projects/${projectId}/issues`, baseUrl), {
     method: "POST",
     headers: {
@@ -273,7 +253,6 @@ test("overlap, switch the client, revoke the old key, then reset the password", 
   expect((await bearerGet("/api/agents/me", replacement.secret)).status).toBe(200);
   expect(await mcpCanListProjects(replacement.secret, workspaceId)).toBe(true);
 
-  // #31 signs out browser sessions but must not touch either agent key (story 12).
   const sessionBefore = await owner.get("/api/auth/session");
   expect(sessionBefore.status()).toBe(200);
   const asked = await owner.post("/api/auth/password-reset/request", {
@@ -288,8 +267,6 @@ test("overlap, switch the client, revoke the old key, then reset the password", 
   expect(confirmed.status()).toBe(200);
   expect((await owner.get("/api/auth/session")).status()).toBe(401);
 
-  // The replacement still authenticates over REST and MCP; the revoked source stays
-  // refused. The new password works, so the reset really happened.
   const afterReset = await bearerGet("/api/agents/me", replacement.secret);
   expect(afterReset.status).toBe(200);
   expect(await afterReset.json()).toMatchObject({ agentId, keyId: replacement.id });

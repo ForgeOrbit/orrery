@@ -133,7 +133,6 @@ const changePassword = createRoute({
   },
 });
 
-// Route definitions, for the generated OpenAPI document.
 export const routes = [
   setupStatus,
   setupAdmin,
@@ -144,8 +143,6 @@ export const routes = [
   changePassword,
 ];
 
-// Transport details rest.ts owns: the session cookie's name and its fixed attributes
-// (the service decides lifetime and Secure), and every error kind's HTTP status.
 const SESSION_COOKIE = "orrery_session";
 const fixedCookieAttributes = { httpOnly: true, sameSite: "Lax", path: "/" } as const;
 
@@ -157,17 +154,14 @@ const statusFor = {
   invalid_current_password: 401,
 } as const satisfies Record<AccountsErrorKind, number>;
 
-// An accounts error as its Problem: the error kind is the code, its message the title.
 const failure = (c: Context, error: AccountsError) =>
   problemResponse(c, { status: statusFor[error.kind], code: error.kind, title: error.message });
 
-// Thin: call the service, map the result to HTTP. No rules here.
 export function createAccountsRest(service: AccountsService) {
   const policy = service.sessionPolicy();
-  // The session route and every borrowing feature resolve sessions the same way.
+
   const readSession = createSessionReader(service);
 
-  // Validation failures answer as a validation_failed Problem, like every other error.
   const app = new OpenAPIHono({ defaultHook: validationHook });
 
   app.openapi(setupStatus, async (c) => c.json(await service.setupStatus(), 200));
@@ -176,7 +170,6 @@ export function createAccountsRest(service: AccountsService) {
     try {
       return c.json(await service.setupAdmin(c.req.valid("json")), 201);
     } catch (error) {
-      // The service only throws the three setup kinds here; anything else is a bug.
       if (error instanceof AccountsError && error.kind !== "invalid_credentials") {
         return failure(c, error);
       }
@@ -196,8 +189,6 @@ export function createAccountsRest(service: AccountsService) {
         });
         return c.json({ email }, 200);
       } catch (error) {
-        // The service decides that login failures are uniform: whatever went wrong, the
-        // only error kind login can produce is invalid_credentials.
         if (error instanceof AccountsError && error.kind === "invalid_credentials") {
           return problemResponse(c, {
             status: statusFor.invalid_credentials,
@@ -208,7 +199,7 @@ export function createAccountsRest(service: AccountsService) {
         throw error;
       }
     },
-    // The service decides that a malformed or overlong attempt is wrong credentials too.
+
     (result, c) => {
       if (result.success) return undefined;
       const rejected = rejectLogin();
@@ -238,8 +229,7 @@ export function createAccountsRest(service: AccountsService) {
     if (account === null) {
       return problemResponse(c, { status: 401, code: "not_signed_in", title: "Not signed in." });
     }
-    // The declared resource is the SessionResponse, not the service's fuller account:
-    // the client learns its email, display name, and whether that address is verified.
+
     return c.json(
       {
         email: account.email,
@@ -301,9 +291,6 @@ export function createAccountsRest(service: AccountsService) {
   return app;
 }
 
-// Resolves the signed-in account behind a request's session cookie, or null when the
-// request is not signed in. The cookie is accounts' transport detail: other features
-// borrow this reader through the feature's index instead of learning the cookie's name.
 export type SessionReader = (c: Context) => Promise<SessionAccount | null>;
 
 export function createSessionReader(service: AccountsService): SessionReader {

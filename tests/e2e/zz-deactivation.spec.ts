@@ -1,10 +1,3 @@
-// Account deactivation and reactivation (issue #38), black-box against a running Orrery.
-// A signed-in human and a live agent key prove that deactivation stops login, sessions and
-// keys across the installation, that reactivation restores personal work but not shared
-// access or old keys, and that both changes are visible in administrator history.
-//
-//   COMPOSE_PROJECT_NAME=orrery-e2e-38 docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { randomUUID } from "node:crypto";
 import { expect, request, test, type APIRequestContext } from "@playwright/test";
 import { ADMIN_EMAIL, ADMIN_PASSWORD, recordSecret } from "./admin.ts";
@@ -95,9 +88,7 @@ test.beforeAll(async () => {
   });
   expect(login.status()).toBe(200);
   expect((await admin.put("/api/settings/smtp", { data: SMTP_SETTINGS })).status()).toBe(200);
-  // A deactivatable account needs a second active administrator; create one by promoting a
-  // freshly registered human through the installation settings API would need its cookie,
-  // so instead this suite deactivates the member, never the sole bootstrap administrator.
+
   member = await request.newContext({ baseURL: baseUrl });
 });
 
@@ -152,8 +143,6 @@ test("deactivation stops login, sessions and keys; reactivation restores only pe
   expect(deactivated.status()).toBe(200);
   expect(await deactivated.json()).toMatchObject({ humanId, email: memberEmail });
 
-  // The live session and key are refused immediately, and a signed-out member cannot sign
-  // back in with the correct password.
   expect((await member.get("/api/auth/session")).status()).toBe(401);
   const refusedLogin = await member.post("/api/auth/login", {
     data: { email: memberEmail, password: MEMBER_PASSWORD },
@@ -175,7 +164,7 @@ test("deactivation stops login, sessions and keys; reactivation restores only pe
   expect(names).toContain("Personal");
   expect(names).not.toContain(name);
   expect((await member.get(`/api/workspaces/${workspaceId}`)).status()).toBe(404);
-  // Old credentials stay revoked after reactivation.
+
   const oldKey = await bearerGet(admin, "/api/agents/me", secret);
   expect(oldKey.status()).toBe(401);
   expect(await oldKey.json()).toMatchObject({ code: "key_revoked" });
@@ -188,8 +177,6 @@ test("deactivation stops login, sessions and keys; reactivation restores only pe
 });
 
 test("the last active system administrator cannot be deactivated", async () => {
-  // The bootstrap event names the administrator as its actor, which is the one stable
-  // black-box way to learn the id without an enumeration endpoint.
   const history = await admin.get("/api/installation/history");
   expect(history.status()).toBe(200);
   const bootstrap = asArray(await history.json()).find(

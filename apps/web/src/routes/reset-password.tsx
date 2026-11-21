@@ -8,9 +8,6 @@ import type { FormEvent } from "react";
 import { useState } from "react";
 import { confirmPasswordReset } from "../features/recovery/index.ts";
 
-// The page the reset email links to (issue #31). Opening it changes nothing: the token
-// is redeemed only by the POST the password form sends. A successful reset also signs
-// out the account's old browser sessions, so this page sends people back to sign in.
 export const Route = createFileRoute("/reset-password")({
   staticData: { accessPage: true },
   validateSearch: (search: Record<string, unknown>) => ({

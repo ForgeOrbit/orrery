@@ -56,9 +56,6 @@ import { Link } from "../lib/Link.tsx";
 import { Markdown } from "../lib/Markdown.tsx";
 import { PageHeader } from "../lib/PageHeader.tsx";
 
-// One issue's page: read it, edit its Markdown body, move it across states, and comment.
-// The project's effective level decides whether write controls appear; Read sees the
-// issue and its comments only. Every action refreshes the activity so history stays in step.
 export const Route = createFileRoute("/issues/$issueId")({
   validateSearch: (search: Record<string, unknown>) => {
     const parsed: { inspector?: true; session?: string } = {};
@@ -586,8 +583,6 @@ function IssuePage() {
   );
 }
 
-// Directed blocked_by edges (#86). Open blockers are called out because they keep this
-// issue out of ready work; closing one is enough to make it ready again.
 function Blockers({
   issueId,
   projectId,

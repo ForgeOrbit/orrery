@@ -1,4 +1,3 @@
-// Public interface of the human-input feature. Other code imports only this file.
 import type { Feature } from "../../platform/feature.ts";
 import type { DbTransaction } from "../../platform/db.ts";
 import type { Logger } from "../../platform/log.ts";
@@ -22,7 +21,7 @@ export type InboxFeatureDeps = Omit<InboxDeps, "deliver" | "log"> & {
 
 export interface InboxFeature extends Feature {
   service: InboxService;
-  // Work sessions borrow these on its already issue-locked transaction.
+
   questionDeadline(tx: DbTransaction, issueId: string): Promise<Date | null>;
   evaluateDeadline(tx: DbTransaction, issueId: string): Promise<void>;
 }

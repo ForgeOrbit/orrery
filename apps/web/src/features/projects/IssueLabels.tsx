@@ -10,8 +10,6 @@ import { attachIssueLabel, detachIssueLabel } from "./commands.ts";
 import { issueQuery, issuesQuery, projectActivityQuery } from "./queries.ts";
 import { LabelPill } from "./LabelPill.tsx";
 
-// An issue's labels are part of its payload; attaching or detaching replaces the issue in
-// the detail cache and invalidates the project list so every board card agrees.
 export function IssueLabels({
   issue,
   labels,

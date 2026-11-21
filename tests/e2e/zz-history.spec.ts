@@ -1,16 +1,3 @@
-// History inspection (issue #32), black-box against a running Orrery. Events written by
-// earlier slices — membership, permission delegation, project access, credential lifecycle,
-// and project activity — are read back through the new views. The matrix proves an
-// ordinary member and a system administrator are refused out-of-scope history, a bearer
-// key is never a history credential, and no response contains a credential secret.
-// Nothing here imports server code; everything goes through HTTP and the Mailpit catcher.
-//
-// Runs after bootstrap.spec.ts (alphabetical order, one worker), which creates the
-// administrator. This suite configures SMTP and verifies the administrator itself, so it
-// can send its own invitations.
-//
-//   docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { randomUUID } from "node:crypto";
 import { expect, request, test, type APIRequestContext, type APIResponse } from "@playwright/test";
 import { ADMIN_EMAIL, ADMIN_PASSWORD, recordSecret } from "./admin.ts";
@@ -115,7 +102,6 @@ function recipients(detail: unknown): string[] {
   });
 }
 
-// The latest workspace invitation token for an address in the named workspace.
 async function invitationToken(email: string, workspaceName: string): Promise<string | undefined> {
   const list = await admin.get(`${mailpit}/api/v1/messages`);
   const body = await bodyOf(list);
@@ -163,8 +149,6 @@ async function registeredMember(
   return client;
 }
 
-// An installation invitation both registers the account that owns the private workspace
-// and records the installation events the administrator reads later.
 async function installedOutsider(): Promise<APIRequestContext> {
   const invited = await admin.post("/api/invitations/installation", {
     data: { email: outsiderEmail },
@@ -260,7 +244,6 @@ test.beforeAll(async () => {
   member = await registeredMember(memberEmail, memberPassword, workspaceName);
   delegateHumanId = await memberId(delegateEmail);
 
-  // The permission event and the project access event an owner can explain later.
   const capability = await admin.patch(
     `/api/workspaces/${workspaceId}/members/${delegateHumanId}`,
     { data: { canManageMemberPermissions: true } },
@@ -280,7 +263,6 @@ test.beforeAll(async () => {
   });
   expect(delegateGrant.status()).toBe(200);
 
-  // A credential created and revoked by the owner writes two secret-free events.
   const agent = await admin.post("/api/agents", { data: { name: `history-bot-${randomUUID()}` } });
   expect(agent.status()).toBe(201);
   const agentId = idOf(await bodyOf(agent), "agent");
@@ -299,9 +281,6 @@ test.beforeAll(async () => {
   const keyId = idOf(field(issuedBody, "key"), "key");
   expect((await admin.delete(`/api/agents/keys/${keyId}`)).status()).toBe(204);
 
-  // A workspace outside every other actor's scope, owned by an outsider the installation
-  // invitation above registered. That invitation also gives the administrator a real
-  // installation event to read.
   outsider = await installedOutsider();
   const privateName = `Private Team ${randomUUID()}`;
   const privateCreated = await outsider.post("/api/workspaces", { data: { name: privateName } });
@@ -330,7 +309,7 @@ test("a workspace owner reads every access event recorded by earlier slices", as
   expect(typesOf(project)).toEqual(
     expect.arrayContaining(["project_created", "issue_created", "project_access_granted"]),
   );
-  // No history response, at any scope, carries the issued credential's secret.
+
   for (const list of [workspace, project, await events(admin, "/api/installation/history")]) {
     expect(JSON.stringify(list)).not.toContain(keySecret);
   }
@@ -395,8 +374,6 @@ test("a system administrator sees installation events but no private project or 
 });
 
 test("an agent bearer key is refused on every history route", async () => {
-  // A fresh context carries no browser cookie, so the bearer header is the only
-  // credential presented; an authenticated admin context would mask a leaked route.
   const anonymous = await newContext();
   try {
     for (const path of [

@@ -15,10 +15,6 @@ import {
 import { queryOptions } from "@tanstack/react-query";
 import { getJson } from "../../lib/api.ts";
 
-// Query definitions for this feature, shared by routes and components so they use one
-// cache key. Responses are parsed with the contract's zod schemas, so a server change
-// can't slip through.
-
 export const projectsQuery = (workspaceId: string) =>
   queryOptions({
     queryKey: ["workspaces", workspaceId, "projects"],
@@ -44,9 +40,6 @@ export const projectAccessQuery = (projectId: string) =>
       ),
   });
 
-// Project-scoped label metadata (#97). Read access is enough to list them; every mutation
-// is checked again by the server. The labels are also embedded in issues, but the board's
-// filter toolbar and the label editor need the project's full catalogue.
 export const projectLabelsQuery = (projectId: string) =>
   queryOptions({
     queryKey: ["projects", projectId, "labels"],
@@ -56,8 +49,6 @@ export const projectLabelsQuery = (projectId: string) =>
       ),
   });
 
-// The project's 30-day recoverable issues (#98). Manage only on the server; the UI hides
-// the view for lower levels and the loader never prefetches it for them.
 export const projectTrashQuery = (projectId: string) =>
   queryOptions({
     queryKey: ["projects", projectId, "trash"],
@@ -76,8 +67,6 @@ export const issuesQuery = (projectId: string) =>
       ),
   });
 
-// The ready queue (optional #84 filter), used by the board to show what an agent could
-// claim next. The server decides assignee visibility and ordering; this is a plain read.
 export const readyWorkQuery = (projectId: string, filter?: ReadyWorkFilter) =>
   queryOptions({
     queryKey: ["projects", projectId, "ready-work", filter ?? "all"],
@@ -95,8 +84,6 @@ export const issueQuery = (issueId: string) =>
       getJson(`/api/issues/${encodeURIComponent(issueId)}`, (value) => IssueDetail.parse(value)),
   });
 
-// A relation resolves to the related issues, so the page can show each blocker's current
-// status without a second shape. Read access is enough for both directions.
 export const issueBlockedByQuery = (issueId: string) =>
   queryOptions({
     queryKey: ["issues", issueId, "blocked-by"],

@@ -31,8 +31,6 @@ import { createProjectsFeature, projectAccessAtLeast } from "../projects/index.t
 import { createWorkspacesFeature } from "../workspaces/index.ts";
 import { createHistoryFeature } from "./index.ts";
 
-// Real Postgres (AGENTS.md): history is a read over the event tables earlier slices write,
-// and its scope decisions join live memberships and grants. Nothing is mocked here.
 const SECRET = "correct horse battery staple staple";
 const ADMIN_EMAIL = "admin@example.com";
 const ADMIN_PASSWORD = "first-admin-password";
@@ -247,7 +245,6 @@ describe("history visibility against real Postgres", () => {
     const outsiderCookie = await sessionFor(outsider.id);
     const otherOwnerCookie = await sessionFor(otherOwner.id);
 
-    // Workspace W1 is created through the real slice, so its creation event is recorded.
     const created = await postJson(app, "/api/workspaces", { name: "History Lab" }, adminCookie);
     expect(created.status).toBe(201);
     const workspace = Workspace.parse(await created.json());
@@ -262,8 +259,6 @@ describe("history visibility against real Postgres", () => {
       delegate.id,
     );
 
-    // An out-of-scope shared workspace with its own owner and project. It is created
-    // through the real slice too, so the owner invariant is satisfied by its transaction.
     const otherCreated = await postJson(
       app,
       "/api/workspaces",
@@ -284,7 +279,6 @@ describe("history visibility against real Postgres", () => {
       .returning();
     if (otherProject === undefined) throw new Error("the other project was not created");
 
-    // Project activity, an issue, and a project access grant all come from real slices.
     const projectResponse = await postJson(
       app,
       `/api/workspaces/${workspace.id}/projects`,
@@ -308,7 +302,6 @@ describe("history visibility against real Postgres", () => {
     );
     expect(granted.status).toBe(200);
 
-    // The delegate Manages a project; the ordinary member only Reads it.
     const delegateGrant = await patchJson(
       app,
       `/api/projects/${project.id}/access`,
@@ -317,8 +310,6 @@ describe("history visibility against real Postgres", () => {
     );
     expect(delegateGrant.status).toBe(200);
 
-    // A credential is issued and revoked through the real slice. Only the issue response
-    // ever carries the secret; keep it to prove history does not leak it.
     const agentResponse = await postJson(app, "/api/agents", { name: "Builder" }, adminCookie);
     expect(agentResponse.status).toBe(201);
     const agentId = idOf(await agentResponse.json(), "the agent id");
@@ -340,8 +331,6 @@ describe("history visibility against real Postgres", () => {
     const revoked = await deleteRequest(app, `/api/agents/keys/${keyId}`, adminCookie);
     expect(revoked.status).toBe(204);
 
-    // An installation invitation is recorded by the administration slice, giving the
-    // system administrator an installation event with no workspace content.
     const [invitation] = await database.db
       .insert(invitations)
       .values({
@@ -398,7 +387,7 @@ describe("history visibility against real Postgres", () => {
     expect(events.length).toBeGreaterThan(0);
     const kinds = new Set(events.map((event) => event.kind));
     expect(kinds).toEqual(new Set(["workspace_access", "project_access", "agent_key"]));
-    // Ordinary activity stays on the project view, scoped to the granted project.
+
     const activity = await readHistory(
       s.app,
       `/api/projects/${s.project.id}/history`,
@@ -459,7 +448,7 @@ describe("history visibility against real Postgres", () => {
     const access = events.filter((event) => event.kind === "project_access");
     expect(access.length).toBeGreaterThan(0);
     expect(access.every((event) => event.scope.id === s.project.id)).toBe(true);
-    // The delegate cannot reach a workspace they have no authority in.
+
     await expectProblem(
       await getJson(s.app, `/api/workspaces/${s.otherWorkspace.id}/history`, s.delegate.cookie),
       404,
@@ -481,7 +470,7 @@ describe("history visibility against real Postgres", () => {
     );
     expect(projectEvents.length).toBeGreaterThan(0);
     expect(projectEvents.every((event) => event.kind === "project_activity")).toBe(true);
-    // An ungranted project is indistinguishable from a missing one.
+
     await expectProblem(
       await getJson(s.app, `/api/projects/${s.otherProject.id}/history`, s.member.cookie),
       404,
@@ -506,7 +495,7 @@ describe("history visibility against real Postgres", () => {
       404,
       "project_not_found",
     );
-    // History administration is a human session boundary: a bearer key is not a session.
+
     const bearer = { headers: { authorization: "Bearer not-a-session" } };
     for (const path of [
       `/api/workspaces/${s.workspace.id}/history`,
@@ -529,8 +518,7 @@ describe("history visibility against real Postgres", () => {
       ]),
     );
     expect(events.every((event) => event.scope.kind === "installation")).toBe(true);
-    // Issuing is the inviter's act; accepting and declining are the recipient's, with the
-    // inviter named as the subject so the rendered sentence reads in the right direction.
+
     const issued = events.find((event) => event.id.startsWith(`${s.invitation.id}:`));
     expect(issued).toMatchObject({
       actor: { humanId: s.admin.id, email: s.admin.email },
@@ -548,7 +536,7 @@ describe("history visibility against real Postgres", () => {
     });
     expect(JSON.stringify(events)).not.toContain(s.otherWorkspace.id);
     expect(JSON.stringify(events)).not.toContain(s.otherProject.id);
-    // The administrator role alone grants nothing in a workspace they do not belong to.
+
     await expectProblem(
       await getJson(s.app, `/api/workspaces/${s.otherWorkspace.id}/history`, s.adminCookie),
       404,
@@ -559,7 +547,7 @@ describe("history visibility against real Postgres", () => {
       404,
       "project_not_found",
     );
-    // An ordinary account is refused installation history outright.
+
     await expectProblem(
       await getJson(s.app, "/api/installation/history", s.member.cookie),
       403,
@@ -581,7 +569,7 @@ describe("history visibility against real Postgres", () => {
       s.delegate.cookie,
     );
     expect(delegateEvents.some((event) => event.kind === "project_access")).toBe(true);
-    // Workflows that never record an event cannot invent one: a stale id is still 404.
+
     await expectProblem(
       await getJson(s.app, `/api/projects/${randomUUID()}/history`, s.adminCookie),
       404,
@@ -598,8 +586,6 @@ describe("history visibility against real Postgres", () => {
       .limit(1);
     if (personal === undefined) throw new Error("the administrator has no personal workspace");
 
-    // A key issued in the personal workspace is recorded there, just as one in a shared
-    // workspace is. The owner can read it; another human gets the same 404 as a missing id.
     const projectResponse = await postJson(
       s.app,
       `/api/workspaces/${personal.id}/projects`,

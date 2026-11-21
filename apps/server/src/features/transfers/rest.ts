@@ -18,9 +18,6 @@ import { TransfersError, type TransfersErrorKind, type TransfersService } from "
 
 const projectParams = z.object({ projectId: z.string().min(1).max(200) });
 
-// A transfer is an ownership decision, not project work. Only a human session is
-// accepted; there is deliberately no bearer-key path and no MCP tool for it.
-
 const previewTransfer = createRoute({
   method: "post",
   path: "/api/projects/{projectId}/transfer/preview",
@@ -156,7 +153,7 @@ const statusFor = {
   workspace_not_found: 404,
   destination_authority_required: 403,
   same_workspace: 400,
-  // A bad, expired or spent token must not confirm that an authorization ever existed.
+
   transfer_invalid: 404,
   transfer_stale: 409,
   source_authority_lost: 409,

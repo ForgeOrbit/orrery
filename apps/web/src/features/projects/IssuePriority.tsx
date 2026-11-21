@@ -17,8 +17,6 @@ const PRIORITY_LABELS: Record<IssuePriority, string> = {
   none: "None",
 };
 
-// A board badge is a plain label: readers always see the current importance, even when
-// they cannot change it.
 export function PriorityBadge({ priority }: { priority: IssuePriority }) {
   return <Badge data-issue-priority={priority} label={PRIORITY_LABELS[priority]} />;
 }
@@ -51,9 +49,6 @@ function MoveDownIcon() {
   );
 }
 
-// Move one card within its own priority group. Crossing groups by changing sortOrder would
-// have no visible effect, so the caller passes the already-filtered group and the card's
-// index in it. `up` goes toward smaller sortOrder, `down` toward larger.
 function midpointWithinGroup(
   group: Issue[],
   index: number,
@@ -63,19 +58,16 @@ function midpointWithinGroup(
   const neighbour = group[index + delta];
   if (neighbour === undefined) return undefined;
   const beyond = group[index + 2 * delta];
-  // With no second neighbour, step out by a full spacing so there is room to land between.
+
   const beyondOrder = beyond?.sortOrder ?? neighbour.sortOrder + delta * ISSUE_SORT_STEP;
-  // Equal adjacent positions have no midpoint; a one-unit step still breaks the tie.
+
   if (beyond !== undefined && neighbour.sortOrder === beyond.sortOrder) {
     return direction === "up" ? neighbour.sortOrder - 1 : neighbour.sortOrder + 1;
   }
-  // Add the half-gap to the neighbour rather than averaging the two: (a + b) / 2 can
-  // overflow to Infinity for large positions, while a + (b - a) / 2 cannot.
+
   return neighbour.sortOrder + (beyondOrder - neighbour.sortOrder) / 2;
 }
 
-// The Contribute controls for the issue list & properties rail: set importance, or move a
-// card one slot within its priority group.
 export function IssuePriorityControls({
   issue,
   issues,

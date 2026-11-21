@@ -27,26 +27,19 @@ import {
 } from "./service.ts";
 import type { SmtpMail, SmtpSender } from "../settings/index.ts";
 
-// Runs against a real Postgres (see AGENTS.md): token redemption, seven-day expiry,
-// and the one-account-one-workspace transaction are database behavior, not mock
-// behavior. Delivery is faked at the transport here; the black-box e2e suite proves
-// real delivery through Mailpit.
-
 const SECRET = "correct horse battery staple staple";
 const EMAIL = "admin@example.com";
 const PASSWORD = "first-admin-password";
 const PUBLIC_URL = "http://orrery.test";
-// One normalization: trim, then lowercase (the contract's Email schema).
+
 const INVITEE_INPUT = "  Member@Example.COM ";
 const INVITEE = "member@example.com";
 const INVITEE_PASSWORD = "invited-person-password";
-// Seven days, fixed here so the boundary tests can pin it.
+
 const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-// The request log goes to the console; tests that don't capture it stay quiet.
 const silentLogger: Logger = createLogger("error");
 
-// The settings that make deliver() work. No credentials, so no encryption key is needed.
 const SETTINGS: SmtpSettings = {
   host: "smtp.example.test",
   port: 587,
@@ -75,14 +68,8 @@ const getJson = (app: Hono, path: string, cookie?: string) =>
 
 const problemBody = async (res: Response) => Problem.parse(await res.json());
 
-// The invitation token as the emailed link carries it, tolerant of nothing else on the
-// line.
 const tokenFrom = (text: string) => text.match(/\/register\?token=([A-Za-z0-9_-]+)/)?.[1];
 
-// A fake SMTP transport: records every message the service handed it — including the
-// ones it then refuses, so a failed delivery's would-be token can be checked — and can
-// be told to fail the way a real one would, with the same error codes the sender
-// classifies.
 function createFakeTransport() {
   const sent: SmtpMail[] = [];
   let failure: (() => Error) | undefined;
@@ -95,7 +82,7 @@ function createFakeTransport() {
     failWith(errorFactory: () => Error) {
       failure = errorFactory;
     },
-    // The relay is repaired: deliveries succeed again.
+
     repair() {
       failure = undefined;
     },
@@ -106,7 +93,6 @@ function createFakeTransport() {
 const codedError = (code: string, message: string): Error =>
   Object.assign(new Error(message), { code });
 
-// The shared story so far: the first administrator exists (bootstrap) and is signed in.
 async function bootstrapAdmin(app: Hono) {
   const res = await postJson(app, "/api/setup/admin", {
     secret: SECRET,
@@ -158,8 +144,6 @@ describe("invitations", () => {
     });
   });
 
-  // A signed-in account that is not a system administrator, created directly: the point
-  // is the permission boundary, not the flow.
   async function ordinaryCookie(email = "other@example.com") {
     const [account] = await database.db
       .insert(humans)
@@ -176,8 +160,6 @@ describe("invitations", () => {
     return `orrery_session=${token}`;
   }
 
-  // Wired like features/index.ts wires them, so the seams under test are the real ones:
-  // only the SMTP transport is faked.
   function makeApp(opts: { smtp?: SmtpSender; log?: Logger } = {}) {
     const log = opts.log ?? silentLogger;
     const accounts = createAccountsFeature({
@@ -191,8 +173,7 @@ describe("invitations", () => {
       encryptionKey: undefined,
       sessionReader: accounts.sessionReader,
       markEmailVerified: accounts.markEmailVerified,
-      // exactOptionalPropertyTypes: pass the sender only when the test provides one,
-      // so the service's real SMTP default stays in play otherwise.
+
       ...(opts.smtp === undefined ? {} : { sendMail: opts.smtp }),
       log,
     });
@@ -213,8 +194,6 @@ describe("invitations", () => {
     });
   }
 
-  // The app with SMTP saved and the fake transport armed: the state every invitation
-  // test starts from.
   async function armedApp() {
     const fake = createFakeTransport();
     const app = makeApp({ smtp: fake.sender });
@@ -223,8 +202,8 @@ describe("invitations", () => {
     const saved = await putJson(app, "/api/settings/smtp", SETTINGS, cookie);
     expect(saved.status).toBe(200);
     return { app, cookie, fake };
-  } // armedApp, plus one invitation already sent to INVITEE: the token from the email
-  // it sent, ready to redeem.
+  }
+
   async function invitedApp() {
     const armed = await armedApp();
     const res = await postJson(
@@ -289,8 +268,6 @@ describe("invitations", () => {
       expect(res.headers.get("content-type")).toBe("application/problem+json");
       expect(await problemBody(res)).toMatchObject({ status: 409, code: "smtp_unconfigured" });
 
-      // The invitation is recorded with its failed delivery: it never redeems, and it
-      // does not block the retry once SMTP is configured.
       const [row] = await database.db.select().from(invitations);
       expect(row).toMatchObject({ email: INVITEE, status: "pending", deliveryStatus: "failed" });
       expect(fake.sent).toHaveLength(0);
@@ -308,7 +285,6 @@ describe("invitations", () => {
       const invitation = InstallationInvitation.parse(await res.json());
       expect(invitation).toEqual({ email: INVITEE, status: "pending" });
 
-      // The email carries the link, addressed to the invited email.
       expect(fake.sent).toHaveLength(1);
       const mail = fake.sent[0];
       const token = tokenFrom(mail?.text ?? "");
@@ -318,7 +294,6 @@ describe("invitations", () => {
       expect(mail?.text).toContain(`${PUBLIC_URL}/register?token=${token}`);
       expect(mail?.text).toContain(INVITEE);
 
-      // The stored row keeps only the hash, and the expiry is exactly seven days.
       const [row] = await database.db.select().from(invitations);
       if (row === undefined) throw new Error("the invitation was not stored");
       expect(row.email).toBe(INVITEE);
@@ -329,7 +304,7 @@ describe("invitations", () => {
       expect(row.expiresAt.getTime() - row.createdAt.getTime()).toBe(INVITATION_TTL_MS);
       const [admin] = await database.db.select().from(humans).where(eq(humans.email, EMAIL));
       expect(row.invitedByHumanId).toBe(admin?.id);
-      // The delivery is recorded separately from the lifecycle: the email left.
+
       expect(row.deliveryStatus).toBe("sent");
       expect(row.deliveryAttemptedAt).not.toBeNull();
     });
@@ -353,7 +328,7 @@ describe("invitations", () => {
       const res = await postJson(app, "/api/invitations/installation", { email: EMAIL }, cookie);
       expect(res.status).toBe(409);
       expect(await problemBody(res)).toMatchObject({ status: 409, code: "account_exists" });
-      expect(await database.db.select().from(invitations)).toHaveLength(1); // the one from invitedApp
+      expect(await database.db.select().from(invitations)).toHaveLength(1);
       expect(fake.sent).toHaveLength(1);
     });
 
@@ -370,7 +345,7 @@ describe("invitations", () => {
       expect(await problemBody(res)).toMatchObject({ status: 409, code: "invitation_pending" });
       expect(await database.db.select().from(invitations)).toHaveLength(1);
       expect(fake.sent).toHaveLength(1);
-      // A still-valid invitation is not superseded: it stays pending and live.
+
       const [row] = await database.db.select().from(invitations);
       expect(row?.status).toBe("pending");
       expect(row?.deliveryStatus).toBe("sent");
@@ -381,8 +356,6 @@ describe("invitations", () => {
       const [admin] = await database.db.select().from(humans).where(eq(humans.email, EMAIL));
       if (admin === undefined) throw new Error("the administrator was not found");
 
-      // A pending invitation whose seven days have passed, whose email did leave:
-      // placed directly, the way the boundary fixtures are.
       await database.db.insert(invitations).values({
         id: randomUUID(),
         email: INVITEE,
@@ -402,7 +375,6 @@ describe("invitations", () => {
       );
       expect(res.status).toBe(201);
 
-      // The stale row expired in place, in the new invitation's transaction.
       const rows = await database.db
         .select()
         .from(invitations)
@@ -413,7 +385,6 @@ describe("invitations", () => {
       expect(live).toHaveLength(1);
       expect(live[0]?.tokenHash).not.toBe(tokenHash("stale-token"));
 
-      // The old token never redeems, whatever its row says.
       const stale = await postJson(app, "/api/invitations/installation/registration", {
         token: "stale-token",
         password: INVITEE_PASSWORD,
@@ -421,7 +392,6 @@ describe("invitations", () => {
       expect(stale.status).toBe(400);
       expect(await problemBody(stale)).toMatchObject({ code: "invitation_invalid" });
 
-      // The fresh token registers.
       const fresh = tokenFrom(fake.sent[0]?.text ?? "");
       expect(fresh).not.toBe("");
       const ok = await postJson(app, "/api/invitations/installation/registration", {
@@ -438,10 +408,6 @@ describe("invitations", () => {
       const [admin] = await database.db.select().from(humans).where(eq(humans.email, EMAIL));
       if (admin === undefined) throw new Error("the administrator was not found");
 
-      // No attempt recorded — the crash window between creating an invitation and
-      // trying to send it. Just inside the grace window the email may still be in
-      // flight, so the safe answer is the same 409 as a delivered one, never a silent
-      // supersede.
       await database.db.insert(invitations).values({
         id: randomUUID(),
         email: INVITEE,
@@ -469,9 +435,6 @@ describe("invitations", () => {
       const [admin] = await database.db.select().from(humans).where(eq(humans.email, EMAIL));
       if (admin === undefined) throw new Error("the administrator was not found");
 
-      // No attempt recorded, and long enough ago that any send has certainly finished
-      // or died: the row is stale, not in flight. A still-live stale row is revoked by
-      // replacement, never marked expired at a deadline that has not arrived.
       await database.db.insert(invitations).values({
         id: randomUUID(),
         email: INVITEE,
@@ -490,8 +453,6 @@ describe("invitations", () => {
       );
       expect(res.status).toBe(201);
 
-      // The live stale row was revoked now; exactly one pending row remains, the new
-      // one. Delivery stays unknown on the old row, and no future expiry is invented.
       const rows = await database.db
         .select()
         .from(invitations)
@@ -505,7 +466,6 @@ describe("invitations", () => {
       expect(live).toHaveLength(1);
       expect(live[0]?.tokenHash).not.toBe(tokenHash("unknown-delivery-stale"));
 
-      // The old token can no longer redeem, even though its delivery was never recorded.
       const oldToken = await postJson(app, "/api/invitations/installation/registration", {
         token: "unknown-delivery-stale",
         password: INVITEE_PASSWORD,
@@ -513,7 +473,6 @@ describe("invitations", () => {
       expect(oldToken.status).toBe(400);
       expect(await problemBody(oldToken)).toMatchObject({ code: "invitation_invalid" });
 
-      // The fresh token registers.
       const fresh = tokenFrom(fake.sent[0]?.text ?? "");
       expect(fresh).not.toBe("");
       const ok = await postJson(app, "/api/invitations/installation/registration", {
@@ -601,12 +560,10 @@ describe("invitations", () => {
     });
 
     it("settles two concurrent invitations for the same email with one winner", async () => {
-      // The state the service calls need: the administrator and a live database.
       await armedApp();
       const [admin] = await database.db.select().from(humans).where(eq(humans.email, EMAIL));
       if (admin === undefined) throw new Error("the administrator was not found");
 
-      // The service seam, because two HTTP requests cannot share one app call site.
       const service = createInvitationsService({
         db: database.db,
         publicUrl: PUBLIC_URL,
@@ -643,8 +600,6 @@ describe("invitations", () => {
       const [admin] = await database.db.select().from(humans).where(eq(humans.email, EMAIL));
       if (admin === undefined) throw new Error("the administrator was not found");
 
-      // One expired invitation, the row both requests try to replace. Placed directly,
-      // like the other boundary fixtures.
       await database.db.insert(invitations).values({
         id: randomUUID(),
         email: INVITEE,
@@ -655,8 +610,6 @@ describe("invitations", () => {
         deliveryStatus: "sent",
       });
 
-      // Two administrators (or one, twice) re-invite the same email at once. The
-      // expired row is free to supersede, so only the partial unique index decides.
       const results = await Promise.all([
         postJson(app, "/api/invitations/installation", { email: INVITEE_INPUT }, cookie),
         postJson(app, "/api/invitations/installation", { email: INVITEE_INPUT }, cookie),
@@ -665,7 +618,6 @@ describe("invitations", () => {
       expect(statuses.filter((status) => status === 201)).toHaveLength(1);
       expect(statuses.filter((status) => status === 409)).toHaveLength(1);
 
-      // The loser answers the same Problem as any other pending invitation.
       const conflict = results.find((res) => res.status === 409);
       if (conflict === undefined) throw new Error("expected one conflict");
       expect(conflict.headers.get("content-type")).toBe("application/problem+json");
@@ -674,8 +626,6 @@ describe("invitations", () => {
         code: "invitation_pending",
       });
 
-      // Exactly one new pending row: the expired row was superseded once, never twice,
-      // and only the winner sent an email.
       const rows = await database.db
         .select()
         .from(invitations)
@@ -708,14 +658,11 @@ describe("invitations", () => {
         type: "urn:orrery:problem:smtp_unreachable",
       });
 
-      // The invitation is recorded, with its delivery failure separate from its
-      // lifecycle: pending, but the email never left.
       const [row] = await database.db.select().from(invitations);
       if (row === undefined) throw new Error("the failed invitation was not recorded");
       expect(row).toMatchObject({ email: INVITEE, status: "pending", deliveryStatus: "failed" });
       expect(row.deliveryAttemptedAt).not.toBeNull();
 
-      // A link whose email never left must not redeem.
       const token = tokenFrom(fake.sent[0]?.text ?? "");
       expect(token).not.toBe("");
       const redeem = await postJson(app, "/api/invitations/installation/registration", {
@@ -725,8 +672,6 @@ describe("invitations", () => {
       expect(redeem.status).toBe(400);
       expect(await problemBody(redeem)).toMatchObject({ code: "invitation_invalid" });
 
-      // And it does not block a fresh invitation: the live failed row is revoked by
-      // replacement, while its delivery stays failed and no future expiry is invented.
       fake.repair();
       const res = await postJson(
         app,
@@ -749,7 +694,6 @@ describe("invitations", () => {
       expect(live).toHaveLength(1);
       expect(live[0]?.deliveryStatus).toBe("sent");
 
-      // The superseded token is dead too; the fresh one registers.
       const oldToken = await postJson(app, "/api/invitations/installation/registration", {
         token: token ?? "",
         password: INVITEE_PASSWORD,
@@ -786,7 +730,7 @@ describe("invitations", () => {
         });
 
         const captured = lines.join("\n");
-        // The request log itself was captured, so the absence below is meaningful.
+
         expect(captured).toContain("/api/invitations/installation");
         expect(captured).not.toContain(token);
         expect(captured).not.toContain(INVITEE_PASSWORD);
@@ -812,7 +756,6 @@ describe("invitations", () => {
         emailVerified: true,
       });
 
-      // Exactly one account appeared, bound to the invited email, verified, ordinary.
       expect(await database.db.select().from(humans)).toHaveLength(humansBefore.length + 1);
       const [human] = await database.db.select().from(humans).where(eq(humans.email, INVITEE));
       expect(human).toMatchObject({ email: INVITEE, isSystemAdministrator: false });
@@ -820,7 +763,6 @@ describe("invitations", () => {
       expect(human?.passwordHash).toMatch(/^scrypt\$/);
       expect(human?.passwordHash).not.toContain(INVITEE_PASSWORD);
 
-      // Exactly one personal workspace appeared, owned by the new human.
       expect(await database.db.select().from(workspaces)).toHaveLength(workspacesBefore.length + 1);
       const [workspace] = await database.db
         .select()
@@ -831,12 +773,10 @@ describe("invitations", () => {
         personalOwnerHumanId: human?.id,
       });
 
-      // The invitation is accepted, exactly once.
       const [row] = await database.db.select().from(invitations);
       expect(row).toMatchObject({ email: INVITEE, status: "accepted" });
       expect(row?.acceptedAt).not.toBeNull();
 
-      // The account works: the invited person signs in with the password they chose.
       const login = await postJson(app, "/api/auth/login", {
         email: INVITEE,
         password: INVITEE_PASSWORD,
@@ -860,8 +800,6 @@ describe("invitations", () => {
       const [admin] = await database.db.select().from(humans).where(eq(humans.email, EMAIL));
       if (admin === undefined) throw new Error("the administrator was not found");
 
-      // The crash window: the send may have happened, but recording it did not. Holding
-      // the token proves the email arrived, so only a known failure refuses redemption.
       await database.db.insert(invitations).values({
         id: randomUUID(),
         email: INVITEE,
@@ -878,7 +816,6 @@ describe("invitations", () => {
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ email: INVITEE, emailVerified: true });
 
-      // One account and one personal workspace, exactly like a recorded delivery.
       const [human] = await database.db.select().from(humans).where(eq(humans.email, INVITEE));
       expect(human?.emailVerifiedAt).not.toBeNull();
       expect(await database.db.select().from(workspaces)).toHaveLength(2);
@@ -889,16 +826,13 @@ describe("invitations", () => {
     it("changes nothing on a mere link visit: GET never consumes the token", async () => {
       const { app, token } = await invitedApp();
 
-      // The browser link, the API path, and the registration path: no GET route exists
-      // for registration, and the management listing is a read that does not consume it.
       const page = await app.request(`/register?token=${token}`);
-      expect(page.status).toBe(404); // no static app is mounted in this suite
+      expect(page.status).toBe(404);
       const apiList = await app.request("/api/invitations/installation");
-      expect(apiList.status).toBe(401); // no session in this request
+      expect(apiList.status).toBe(401);
       const apiGet = await app.request("/api/invitations/installation/registration");
       expect(apiGet.status).toBe(404);
 
-      // The invitation survived every visit: it still registers.
       const res = await postJson(app, "/api/invitations/installation/registration", {
         token,
         password: INVITEE_PASSWORD,
@@ -928,7 +862,7 @@ describe("invitations", () => {
         code: "invitation_invalid",
         type: "urn:orrery:problem:invitation_invalid",
       });
-      // The reuse changed nothing: no second account or workspace.
+
       expect(await database.db.select().from(humans)).toHaveLength(humansAfterFirst.length);
     });
 
@@ -942,7 +876,7 @@ describe("invitations", () => {
       });
       expect(res.status).toBe(400);
       expect(await problemBody(res)).toMatchObject({ code: "invitation_invalid" });
-      expect(await database.db.select().from(humans)).toHaveLength(1); // only the administrator
+      expect(await database.db.select().from(humans)).toHaveLength(1);
     });
 
     it("refuses an expired invitation and accepts one just inside the seven days", async () => {
@@ -951,9 +885,6 @@ describe("invitations", () => {
       const [admin] = await database.db.select().from(humans).where(eq(humans.email, EMAIL));
       if (admin === undefined) throw new Error("the administrator was not found");
 
-      // Boundaries set directly in the database, just outside and inside the deadline,
-      // the way the spec asks: no test waits out a lifetime. Expiry is evaluated in
-      // database time, in the redemption's own conditional update. Both emails left.
       await database.db.insert(invitations).values([
         {
           id: randomUUID(),
@@ -981,7 +912,7 @@ describe("invitations", () => {
       });
       expect(expired.status).toBe(400);
       expect(await problemBody(expired)).toMatchObject({ code: "invitation_invalid" });
-      // The refused attempt consumed nothing.
+
       const [expiredRow] = await database.db
         .select()
         .from(invitations)
@@ -1007,7 +938,6 @@ describe("invitations", () => {
       expect(res.status).toBe(400);
       expect(await problemBody(res)).toMatchObject({ code: "validation_failed" });
 
-      // The invitation is still redeemable with a real password.
       const retry = await postJson(app, "/api/invitations/installation/registration", {
         token,
         password: INVITEE_PASSWORD,
@@ -1018,8 +948,7 @@ describe("invitations", () => {
     it("refuses an invited email that already has an account, changing nothing", async () => {
       const app = makeApp();
       await bootstrapAdmin(app);
-      // A pending invitation for a registered email: unreachable through the flows
-      // (creation refuses one), so placed directly, like the boundary fixtures.
+
       const [admin] = await database.db.select().from(humans).where(eq(humans.email, EMAIL));
       if (admin === undefined) throw new Error("the administrator was not found");
       await database.db.insert(invitations).values({
@@ -1039,8 +968,6 @@ describe("invitations", () => {
       expect(res.status).toBe(409);
       expect(await problemBody(res)).toMatchObject({ status: 409, code: "account_exists" });
 
-      // The transaction rolled back whole: the invitation is still pending, and no
-      // second workspace appeared.
       const [row] = await database.db.select().from(invitations);
       expect(row?.status).toBe("pending");
       expect(row?.acceptedAt).toBeNull();
@@ -1066,7 +993,6 @@ describe("invitations", () => {
       expect(statuses.filter((s) => s === 200)).toHaveLength(1);
       expect(statuses.filter((s) => s === 400)).toHaveLength(1);
 
-      // One account, one workspace, one acceptance — the loser changed nothing.
       const invitedHumans = await database.db
         .select()
         .from(humans)
@@ -1083,7 +1009,6 @@ describe("invitations", () => {
       const { app, token } = await invitedApp();
       const before = await database.db.select().from(humans);
 
-      // A token that was never issued registers nobody.
       const garbage = await postJson(app, "/api/invitations/installation/registration", {
         token: "not-a-token",
         password: INVITEE_PASSWORD,
@@ -1091,7 +1016,6 @@ describe("invitations", () => {
       expect(garbage.status).toBe(400);
       expect(await database.db.select().from(humans)).toHaveLength(before.length);
 
-      // And the working invitation is the only way in: it still registers.
       const res = await postJson(app, "/api/invitations/installation/registration", {
         token,
         password: INVITEE_PASSWORD,
@@ -1243,7 +1167,7 @@ describe("invitations", () => {
       }
       const anonymous = await getJson(app, "/api/invitations/installation");
       expect(anonymous.status).toBe(401);
-      // Nothing was changed or sent.
+
       const [row] = await database.db.select().from(invitations);
       expect(row?.status).toBe("pending");
       expect(fake.sent).toHaveLength(1);
@@ -1276,9 +1200,8 @@ describe("invitations", () => {
       });
       expect(registration.status).toBe(400);
       expect(await problemBody(registration)).toMatchObject({ code: "invitation_invalid" });
-      expect(await database.db.select().from(humans)).toHaveLength(1); // the administrator only
+      expect(await database.db.select().from(humans)).toHaveLength(1);
 
-      // Repeating the revoke is a conflict, not a second transition.
       const again = await postJson(
         app,
         `/api/invitations/installation/${invitation.id}/revoke`,
@@ -1453,7 +1376,7 @@ describe("invitations", () => {
         );
         expect(fresh).toMatchObject({ status: "pending" });
       }
-      // Both old links stop working.
+
       for (const token of fake.sent.slice(0, 2).map((mail) => tokenFrom(mail.text) ?? "")) {
         const oldAttempt = await postJson(app, "/api/invitations/installation/registration", {
           token,
@@ -1488,7 +1411,6 @@ describe("invitations", () => {
         delivery: { status: "failed", attemptedAt: expect.any(String) },
       });
 
-      // The failed lifecycle is still resolvable: repair the relay and resend the new row.
       fake.repair();
       if (failedRow === undefined) throw new Error("the replacement invitation is missing");
       const retried = await postJson(

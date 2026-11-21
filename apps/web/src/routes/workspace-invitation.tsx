@@ -20,10 +20,6 @@ import {
 } from "../features/workspaces/index.ts";
 import { ApiProblemError } from "../lib/api.ts";
 
-// The page a workspace invitation email links to. Opening it (GET) changes nothing: the
-// token is consumed only by the accept POST (existing account) or the registration POST
-// (new account). A signed-in account whose address does not match the invitation is
-// refused in the page and again by the server.
 export const Route = createFileRoute("/workspace-invitation")({
   staticData: { accessPage: true },
   validateSearch: (search: Record<string, unknown>) => ({
@@ -55,8 +51,6 @@ function InvalidInvitationLink() {
   );
 }
 
-// The loader sends the failure it actually saw. Only an invitation Problem gets the
-// invalid-link copy; a network failure or an installation error gets a different message.
 function InvitationLoadError({ error }: { error: unknown }) {
   const invalid = error instanceof ApiProblemError && error.code === "invitation_invalid";
   if (invalid) return <InvalidInvitationLink />;
@@ -93,8 +87,6 @@ function WorkspaceInvitationPage() {
     );
   }
   if (!WorkspaceInvitationToken.safeParse(token).success) {
-    // Malformed and overlong values never reach the API; they are invalid links, not a
-    // server or connection failure.
     return <InvalidInvitationLink />;
   }
   return <Invitation token={token} />;
@@ -147,9 +139,6 @@ function Invitation({ token }: { token: string }) {
   return <AcceptInvitation token={token} preview={preview} />;
 }
 
-// The offer, before anything is accepted: the workspace, who invited the person, the
-// actual project grants offered, and when it expires. The server rechecks every project
-// against the workspace at acceptance.
 function InvitationScope({ preview }: { preview: WorkspaceInvitationPreview }) {
   const projects = preview.grants.filter((grant) => grant.kind === "project_access");
   return (
@@ -185,8 +174,6 @@ function InvitationScope({ preview }: { preview: WorkspaceInvitationPreview }) {
   );
 }
 
-// Holding the emailed link is the capability to decline. Once declined, the same link
-// stops working; a reload shows the ordinary invalid-link answer.
 function DeclineInvitation({ token }: { token: string }) {
   const [declined, setDeclined] = useState(false);
   const [error, setError] = useState<string>();
@@ -292,8 +279,6 @@ function AcceptInvitation({
   );
 }
 
-// A new address chooses a password here: the server creates the account, its personal
-// workspace, the verified mark, and the membership in one transaction.
 function NewAccountForm({ token }: { token: string }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -314,9 +299,7 @@ function NewAccountForm({ token }: { token: string }) {
         setCreatedEmail(account.email);
         return;
       }
-      // Registration already returns the verified account. Set it infallibly: a
-      // transient session-endpoint failure must not strand a consumed token in the
-      // generic error path. Clear first so no pre-registration null cache survives.
+
       queryClient.clear();
       const session: Session = {
         signedIn: true,

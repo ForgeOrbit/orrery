@@ -293,9 +293,6 @@ const getIssue = createRoute({
   },
 });
 
-// #98: trash routes. There is deliberately no MCP counterpart — agents cannot delete or
-// restore issues, and every project-work REST route below still authenticates a bearer key
-// only so the service can refuse it with the same 403 a human gate would produce.
 const deleteIssue = createRoute({
   method: "delete",
   path: "/api/issues/{issueId}",
@@ -834,7 +831,6 @@ const updateKnowledge = createRoute({
   },
 });
 
-// Route definitions, for the generated OpenAPI document.
 export const routes = [
   listProjects,
   createProject,
@@ -873,7 +869,6 @@ export const routes = [
   updateKnowledge,
 ];
 
-// Transport details rest.ts owns: every projects error kind's HTTP status.
 const statusFor = {
   not_signed_in: 401,
   workspace_not_found: 404,
@@ -919,8 +914,7 @@ const workspaceCreateKinds = [
 ] as const;
 const projectReadKinds = ["not_signed_in", "project_not_found"] as const;
 const projectWriteKinds = [...projectReadKinds, "insufficient_project_access"] as const;
-// Only PATCH /api/projects/{id} can answer with an immutable-key conflict; other
-// project routes do not declare a 409 response.
+
 const projectUpdateKinds = [...projectWriteKinds, "project_key_immutable"] as const;
 const accessKinds = [
   ...projectWriteKinds,
@@ -938,8 +932,7 @@ const issueWriteKinds = [
   "cross_project_parent",
   "subtask_depth_exceeded",
 ] as const;
-// #98: delete is the only human-write route where an agent must get a precise 403; every
-// other fenced failure is a conflict with a live session.
+
 const issueDeleteKinds = [
   ...issueReadKinds,
   "insufficient_project_access",
@@ -956,7 +949,7 @@ const trashListKinds = [
   "project_not_found",
   "insufficient_project_access",
 ] as const;
-// Creating an issue can name a parent, so it can answer with a missing or invalid parent.
+
 const issueCreateKinds = [
   ...projectWriteKinds,
   "issue_not_found",
@@ -983,11 +976,9 @@ const issueLabelWriteKinds = [
   "label_not_found",
   "insufficient_project_access",
 ] as const;
-// Comments, creation and knowledge stay unfenced (#20), so their failure set has no
-// session_required and their routes need no 409 response.
+
 const commentWriteKinds = [...issueReadKinds, "insufficient_project_access"] as const;
-// Dependency edges, like comments, are unfenced: no live session is needed, so the
-// failure set has no session_required and the routes need no session 409.
+
 const dependencyWriteKinds = [
   ...issueReadKinds,
   "insufficient_project_access",
@@ -1000,11 +991,7 @@ const linkRemoveKinds = [...commentWriteKinds, "issue_link_not_found"] as const;
 const knowledgeReadKinds = ["not_signed_in", "knowledge_entry_not_found"] as const;
 const knowledgeWriteKinds = [...knowledgeReadKinds, "insufficient_project_access"] as const;
 
-// Thin: resolve the session, call the service, map the result to HTTP. The service
-// decides who may do what; every error is a Problem built through platform/problem.ts.
 function failure<K extends readonly ProjectsErrorKind[]>(c: Context, error: unknown, kinds: K) {
-  // A bearer key that fails to authenticate is always a 401 with the agent's stable
-  // code; there is no silent fallback to a human session on a project-work route.
   if (isAgentError(error)) {
     return problemResponse(c, {
       status: 401,
@@ -1028,9 +1015,7 @@ export function createProjectsRest(
   agentAuthenticator: AgentAuthenticator,
 ) {
   const app = new OpenAPIHono({ defaultHook: validationHook });
-  // One actor path for REST and MCP: a bearer key authenticates as an agent, otherwise
-  // a browser session acts as a human. An invalid key throws here and becomes a 401;
-  // it never falls back to the cookie. Project administration routes do not use this.
+
   const workActor = async (c: Context): Promise<WorkActor | null> => {
     const identity = await agentAuthenticator(c.req.raw);
     if (identity !== null) return { kind: "agent", identity };
@@ -1080,8 +1065,6 @@ export function createProjectsRest(
     }
   });
 
-  // Both policy routes use only the human session reader: an agent bearer key is never
-  // resolved here, so no key can change the policy that authorizes its own fallback.
   app.openapi(setProjectFallbackPolicy, async (c) => {
     try {
       const { projectId } = c.req.valid("param");

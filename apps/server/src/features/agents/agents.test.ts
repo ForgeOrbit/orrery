@@ -45,10 +45,6 @@ import { createSessionsFeature, type SessionsService } from "../work-sessions/in
 import { createAgentsFeature, type AgentAuthenticator } from "./index.ts";
 import { createAgentsService } from "./service.ts";
 
-// Real Postgres (AGENTS.md): key scoping, revocation, expiry, the dynamic human-access
-// ceiling, and credential audit events are database behavior. The black-box e2e suite
-// repeats the externally visible flows against the built server.
-
 const SECRET = "correct horse battery staple staple";
 const ADMIN_EMAIL = "admin@example.com";
 const ADMIN_PASSWORD = "first-admin-password";
@@ -139,9 +135,6 @@ async function makeApp(): Promise<Hono> {
   });
 }
 
-// #36 fences an agent's issue edits on a live session. The project-work test app wires the
-// real gate through the same late-bound seam as production, so a test must claim a run
-// before an agent can edit, close or reopen an issue.
 async function makeProjectWorkApp() {
   const accounts = createAccountsFeature({
     db: database.db,
@@ -192,7 +185,6 @@ async function makeProjectWorkApp() {
   return { app, projects: projectsFeature.service, sessions: sessionsFeature.service };
 }
 
-// A run row plus a claim: the fixture an #33 test needs before an agent may edit an issue.
 async function claimIssue(
   sessions: SessionsService,
   identity: AgentIdentity,
@@ -213,8 +205,6 @@ async function claimIssue(
   await sessions.claim({ kind: "agent", identity }, { issueId, runId: run.id });
 }
 
-// The real feature wiring for bearer-backed project REST routes: projects borrows the
-// agents authenticator through one late-bound seam, as features/index.ts does.
 async function makeBearerApp() {
   const accounts = createAccountsFeature({
     db: database.db,
@@ -251,8 +241,6 @@ async function makeBearerApp() {
   };
 }
 
-// Rotation also has to survive a password reset and appear in the owner's history, so
-// this app wires the real recovery and history features alongside agents.
 async function makeRotationApp() {
   const accounts = createAccountsFeature({
     db: database.db,
@@ -305,8 +293,7 @@ async function makeRotationApp() {
   });
   return {
     app,
-    // Drive the real recovery REST flow, with an in-memory mail catcher, so the proof
-    // covers #31's endpoints rather than a hand-rolled password change.
+
     resetPassword: async (email: string, password: string) => {
       const asked = await postJson(app, "/api/auth/password-reset/request", { email });
       expect(asked.status).toBe(200);
@@ -395,8 +382,6 @@ async function insertHuman(email: string) {
   return human;
 }
 
-// Direct session fixture: the token is the only place the secret lives; the row keeps
-// its hash, exactly like the accounts feature's own sessions.
 async function createSession(humanId: string) {
   const token = randomBytes(32).toString("base64url");
   await database.db.insert(browserSessions).values({
@@ -408,7 +393,6 @@ async function createSession(humanId: string) {
   return `orrery_session=${token}`;
 }
 
-// Bootstrap already creates the administrator's personal workspace.
 async function personalWorkspaceOf(humanId: string) {
   const [workspace] = await database.db
     .select()
@@ -428,8 +412,6 @@ async function personalWorkspace(humanId: string) {
 }
 
 async function sharedWorkspace(name: string, ownerHumanId: string) {
-  // The owner membership and the workspace commit together: a deferred trigger refuses
-  // a shared workspace that would have no owner at the end of the statement.
   return database.db.transaction(async (tx) => {
     const [workspace] = await tx
       .insert(workspaces)
@@ -565,11 +547,7 @@ afterAll(async () => {
 });
 
 afterEach(async () => {
-  // Deletes in FK-safe order, matching the other feature tests: workspace_memberships
-  // is protected by a trigger and cannot be truncated.
   await database.db.transaction(async (tx) => {
-    // Work sessions reference issues and runs; #36's fixture claims one before an agent
-    // may edit an issue, so they go before both.
     await tx.execute(sql`delete from work_sessions`);
     await tx.execute(sql`delete from agent_key_events`);
     await tx.execute(sql`delete from account_recovery_events`);
@@ -578,12 +556,12 @@ afterEach(async () => {
     await tx.execute(sql`delete from agent_api_keys`);
     await tx.execute(sql`delete from project_access_events`);
     await tx.execute(sql`delete from project_access_grants`);
-    // Content that now carries an agent actor must go before the agent rows it names.
+
     await tx.execute(sql`delete from project_activity`);
     await tx.execute(sql`delete from knowledge_entries`);
     await tx.execute(sql`delete from issue_comments`);
     await tx.execute(sql`delete from issues`);
-    // The claim fixture inserts a run; it names the agent, so it goes first.
+
     await tx.execute(sql`delete from run_children`);
     await tx.execute(sql`delete from run_model_changes`);
     await tx.execute(sql`delete from runs`);
@@ -624,8 +602,6 @@ describe("workspace-scoped agent API keys", () => {
       .set({ deactivatedAt: sql`now()` })
       .where(eq(humans.id, admin.id));
 
-    // Call the service directly with the identity a session read before deactivation
-    // would have carried: the transaction rechecks the account and refuses the issuance.
     const service = createAgentsService({
       db: database.db,
       projectAccessCeiling: async () => new Map([[p.id, "manage" as const]]),
@@ -683,7 +659,6 @@ describe("workspace-scoped agent API keys", () => {
       projects: [{ projectId: p.id, level: "manage" }],
     });
 
-    // Only the hash is stored, and no listing can recover the secret.
     const [stored] = await database.db
       .select({ tokenHash: agentApiKeys.tokenHash })
       .from(agentApiKeys)
@@ -738,7 +713,6 @@ describe("workspace-scoped agent API keys", () => {
     );
     await expectProblem(out, 403, "insufficient_agent_access");
 
-    // A key cannot even be issued with a project from a different workspace.
     const bad = await postJson(
       app,
       "/api/agents/keys",
@@ -807,8 +781,6 @@ describe("workspace-scoped agent API keys", () => {
     await grant(p.id, member.id, "contribute");
     const agentId = await makeAgent(app, memberCookie, "member-bot");
 
-    // Issuing above the human's current access is refused, so a later promotion cannot
-    // silently raise an old key.
     const tooHigh = await postJson(
       app,
       "/api/agents/keys",
@@ -837,7 +809,6 @@ describe("workspace-scoped agent API keys", () => {
       projects: [{ projectId: p.id, projectName: "Team project", level: "contribute" }],
     });
 
-    // Demotion takes effect on the very next request, without reissuing the key.
     await setGrant(p.id, member.id, "read");
     me = await getJson(app, "/api/agents/me?projectId=" + p.id, undefined, issued.secret);
     expect(await me.json()).toMatchObject({ projects: [{ projectId: p.id, level: "read" }] });
@@ -846,7 +817,6 @@ describe("workspace-scoped agent API keys", () => {
     const denied = await getJson(app, "/api/agents/me?projectId=" + p.id, undefined, issued.secret);
     await expectProblem(denied, 403, "insufficient_agent_access");
 
-    // Never skips expiry only: leaving the workspace still stops a Never key immediately.
     await removeMembership(workspace.id, member.id);
     const removed = await getJson(
       app,
@@ -884,8 +854,6 @@ describe("workspace-scoped agent API keys", () => {
       projects: [{ projectId: ownProject.id, level: "manage" }],
     });
 
-    // The owner sees keys in the workspace without any secret, and can revoke one that
-    // belongs to another human.
     const listed = await getJson(app, `/api/workspaces/${team.id}/agent-keys`, adminCookie);
     expect(listed.status).toBe(200);
     const listedBody = await listed.json();
@@ -901,7 +869,7 @@ describe("workspace-scoped agent API keys", () => {
       adminCookie,
     );
     expect(ownerRevoke.status).toBe(204);
-    // A retry is idempotent: it answers 204 but writes no second revocation event.
+
     const repeatOwnerRevoke = await deleteRequest(
       app,
       `/api/workspaces/${team.id}/agent-keys/${teamKey.key.id}`,
@@ -909,13 +877,11 @@ describe("workspace-scoped agent API keys", () => {
     );
     expect(repeatOwnerRevoke.status).toBe(204);
 
-    // The revoked key fails; the human's key in another workspace still works.
     const refused = await getJson(app, "/api/agents/me", undefined, teamKey.secret);
     await expectProblem(refused, 401, "key_revoked");
     const unaffected = await getJson(app, "/api/agents/me", undefined, ownKey.secret);
     expect(unaffected.status).toBe(200);
 
-    // The owner cannot reach a key outside their workspace at all.
     const elsewhere = await deleteRequest(
       app,
       `/api/workspaces/${team.id}/agent-keys/${ownKey.key.id}`,
@@ -923,7 +889,6 @@ describe("workspace-scoped agent API keys", () => {
     );
     await expectProblem(elsewhere, 404, "key_not_found");
 
-    // The human can revoke their own remaining key.
     const ownRevoke = await deleteRequest(app, `/api/agents/keys/${ownKey.key.id}`, memberCookie);
     expect(ownRevoke.status).toBe(204);
     const repeatOwnRevoke = await deleteRequest(
@@ -968,8 +933,6 @@ describe("workspace-scoped agent API keys", () => {
       projects: [{ projectId: inScope.id, level: "read" }],
     });
 
-    // A writer that bypasses the service cannot bind a key to a project in another
-    // workspace: the trigger is the database-level second line of defence.
     const error = await rejection(
       database.db.insert(agentApiKeyProjects).values({
         id: randomUUID(),
@@ -1045,7 +1008,7 @@ describe("workspace-scoped agent API keys", () => {
         displayName: identity.name,
       });
       expect(issue.createdBy.humanId).toBeFalsy();
-      // An agent's issue edit, close and reopen require a live session it holds (#36).
+
       await claimIssue(sessions, identity, issue.id);
       const editedIssue = await projectsService.updateIssue(actor, issue.id, {
         title: "Edited by the agent",
@@ -1147,7 +1110,6 @@ describe("workspace-scoped agent API keys", () => {
       const identity = await identityFor(app, key.secret);
       const actor = { kind: "agent" as const, identity };
 
-      // Inspection through the same service the MCP tools call succeeds.
       expect(await projectsService.listProjects(actor, workspace.id)).toHaveLength(1);
       expect((await projectsService.getProject(actor, projectId)).id).toBe(projectId);
       expect(await projectsService.listIssues(actor, projectId)).toHaveLength(1);
@@ -1164,8 +1126,6 @@ describe("workspace-scoped agent API keys", () => {
       ]);
       for (const error of denials) expectProjectsError(error, "insufficient_project_access");
 
-      // The equivalent human Read denial over REST has the same stable code. A bearer
-      // key is never accepted by the human REST routes at all.
       const other = await insertHuman("rest-reader@example.com");
       const memberCookie = await createSession(other.id);
       await membership(workspace.id, other.id);
@@ -1242,8 +1202,7 @@ describe("workspace-scoped agent API keys", () => {
       const admin = await adminId();
       const cookie = await cookieFor(app, ADMIN_EMAIL, ADMIN_PASSWORD);
       const scopedWorkspace = await personalWorkspaceOf(admin);
-      // Workspace B is one the key's human owner is a member of (its owner), so a
-      // membership oracle would answer 200 here instead of denying the out-of-scope key.
+
       const otherWorkspace = await sharedWorkspace("Other owned team", admin);
       const created = await postJson(
         app,
@@ -1265,7 +1224,7 @@ describe("workspace-scoped agent API keys", () => {
         await rejection(projectsService.listProjects(actor, otherWorkspace.id)),
         "workspace_not_found",
       );
-      // The same denial over REST, with the same bearer key.
+
       const rest = await getJson(
         app,
         `/api/workspaces/${otherWorkspace.id}/projects`,
@@ -1273,7 +1232,7 @@ describe("workspace-scoped agent API keys", () => {
         key.secret,
       );
       await expectProblem(rest, 404, "workspace_not_found");
-      // Sanity: the in-scope listing still works.
+
       const inScope = await getJson(
         app,
         `/api/workspaces/${scopedWorkspace.id}/projects`,
@@ -1317,7 +1276,6 @@ describe("workspace-scoped agent API keys", () => {
       });
       expect(issue.id).toBeTruthy();
 
-      // A dynamic human-access demotion caps the key on its very next request.
       await setGrant(projectId, member.id, "read");
       identity = await identityFor(app, key.secret);
       expect(identity.projects).toMatchObject([{ projectId, level: "read" }]);
@@ -1328,9 +1286,6 @@ describe("workspace-scoped agent API keys", () => {
       );
       expect((await projectsService.listIssues(actor, projectId)).length).toBe(1);
 
-      // Removing the workspace member ends every key they own immediately. The real
-      // removal endpoint also revokes their project grants in the same transaction; this
-      // test deletes the membership directly, so mirror that cleanup here.
       await removeMembership(team.id, member.id);
       await removeGrant(projectId, member.id);
       await expectProblem(
@@ -1339,7 +1294,6 @@ describe("workspace-scoped agent API keys", () => {
         "key_workspace_inaccessible",
       );
 
-      // Rejoining starts fresh: the old grant does not silently return.
       await membership(team.id, member.id);
       const rejoined = await identityFor(app, key.secret);
       expect(rejoined.projects).toEqual([]);
@@ -1352,7 +1306,6 @@ describe("workspace-scoped agent API keys", () => {
         "project_not_found",
       );
 
-      // Revocation is independent of membership and takes effect on the next call.
       const revoked = await deleteRequest(app, `/api/agents/keys/${key.key.id}`, memberCookie);
       expect(revoked.status).toBe(204);
       await expectProblem(
@@ -1380,8 +1333,6 @@ describe("workspace-scoped agent API keys", () => {
         projects: [{ projectId: p.id, level: "contribute" }],
       });
 
-      // Omitted options preserve the source's validity and grants. The replacement is a
-      // distinct key that names its source but never its secret.
       const replacement = await rotate(app, cookie, source.key.id);
       expect(replacement.key.id).not.toBe(source.key.id);
       expect(replacement.secret).not.toBe(source.secret);
@@ -1403,7 +1354,6 @@ describe("workspace-scoped agent API keys", () => {
       expect(listing).not.toContain(source.secret);
       expect(listing).not.toContain(replacement.secret);
 
-      // Both keys work during the overlap, as the same agent in the same workspace.
       expect(await identityFor(app, source.secret)).toMatchObject({
         agentId,
         keyId: source.key.id,
@@ -1413,8 +1363,6 @@ describe("workspace-scoped agent API keys", () => {
         keyId: replacement.key.id,
       });
 
-      // Update one client to the new key, then revoke the old one. The replacement is
-      // unaffected, and the old secret cannot be used any more.
       const revoked = await deleteRequest(app, `/api/agents/keys/${source.key.id}`, cookie);
       expect(revoked.status).toBe(204);
       await expectProblem(
@@ -1427,7 +1375,6 @@ describe("workspace-scoped agent API keys", () => {
         keyId: replacement.key.id,
       });
 
-      // One secret-free event per lifecycle step, including the rotation on the new key.
       const events = await database.db.select().from(agentKeyEvents);
       expect(events).toHaveLength(3);
       expect(events.map((event) => event.type)).toEqual(
@@ -1455,8 +1402,6 @@ describe("workspace-scoped agent API keys", () => {
       const p = await project(workspace.id, "Timed rotation", admin.id);
       const agentId = await makeAgent(app, cookie, "expiry-bot");
 
-      // The replacement's deadline is computed from now, not copied from a source that
-      // is about to expire, even though its validity is preserved when not overridden.
       const source = await issueKey(app, cookie, {
         agentId,
         workspaceId: workspace.id,
@@ -1479,7 +1424,6 @@ describe("workspace-scoped agent API keys", () => {
       expect(days).toBeGreaterThan(80);
       expect(days).toBeLessThanOrEqual(91);
 
-      // Letting the source key expire refuses only that key.
       await database.db
         .update(agentApiKeys)
         .set({ expiresAt: sql`now() - interval '1 second'` })
@@ -1493,8 +1437,6 @@ describe("workspace-scoped agent API keys", () => {
         200,
       );
 
-      // The reverse: expiring a replacement leaves a Never source key working, and a
-      // replacement can shorten a Never key without touching it.
       const never = await issueKey(app, cookie, {
         agentId,
         workspaceId: workspace.id,
@@ -1534,8 +1476,6 @@ describe("workspace-scoped agent API keys", () => {
         projects: [{ projectId: p.id, level: "contribute" }],
       });
 
-      // A preserved grant is clamped when the human's level drops; it never keeps the
-      // authority the human no longer has (story 46).
       await setGrant(p.id, member.id, "read");
       const capped = await rotate(app, memberCookie, source.key.id);
       expect(capped.key.projects).toMatchObject([{ projectId: p.id, level: "read" }]);
@@ -1543,8 +1483,6 @@ describe("workspace-scoped agent API keys", () => {
         { projectId: p.id, level: "read" },
       ]);
 
-      // Explicit grants are validated exactly like issuance: above current access or
-      // outside the workspace is refused with the same stable code.
       await expectProblem(
         await postJson(
           app,
@@ -1572,7 +1510,6 @@ describe("workspace-scoped agent API keys", () => {
       });
       expect(explicit.key.projects).toMatchObject([{ projectId: p.id, level: "read" }]);
 
-      // Losing the grant entirely drops it from a preserved set; rotation still succeeds.
       await removeGrant(p.id, member.id);
       const none = await rotate(app, memberCookie, source.key.id);
       expect(none.key.projects).toEqual([]);
@@ -1618,7 +1555,6 @@ describe("workspace-scoped agent API keys", () => {
         "source_key_expired",
       );
 
-      // Another human's key is not a rotation source even if the id is known.
       const team = await sharedWorkspace("Foreign rotation team", admin.id);
       const teamProject = await project(team.id, "Team", admin.id);
       const member = await insertHuman(MEMBER_EMAIL);
@@ -1637,7 +1573,6 @@ describe("workspace-scoped agent API keys", () => {
         "key_not_found",
       );
 
-      // Once the owner leaves the workspace, they cannot mint a replacement there.
       await removeMembership(team.id, member.id);
       await expectProblem(
         await postJson(app, `/api/agents/keys/${foreign.key.id}/rotate`, {}, memberCookie),
@@ -1645,8 +1580,6 @@ describe("workspace-scoped agent API keys", () => {
         "workspace_not_found",
       );
 
-      // None of the refusals wrote a key or a rotation event: three keys were created
-      // and one was revoked, but nothing was rotated.
       expect(await database.db.select().from(agentApiKeys)).toHaveLength(3);
       const events = await database.db.select().from(agentKeyEvents);
       expect(events).toHaveLength(4);
@@ -1661,8 +1594,7 @@ describe("workspace-scoped agent API keys", () => {
       if (admin === undefined) throw new Error("the admin was not found");
       const workspace = await personalWorkspaceOf(admin.id);
       const p = await project(workspace.id, "Audit project", admin.id);
-      // Bootstrap leaves the administrator's email unverified; recovery only mails a
-      // verified address, so verify it through the same accounts seam as the app.
+
       await database.db
         .update(humans)
         .set({ emailVerifiedAt: sql`now()` })
@@ -1676,15 +1608,12 @@ describe("workspace-scoped agent API keys", () => {
       });
       const replacement = await rotate(app, cookie, source.key.id);
 
-      // #31 signs out browser sessions, but story 12 requires every agent key to
-      // survive a routine password reset — both source and replacement stay live.
       await resetPassword(ADMIN_EMAIL, "a-brand-new-password");
       expect((await getJson(app, "/api/agents/keys", cookie)).status).toBe(401);
       expect(await identityFor(app, source.secret)).toMatchObject({ agentId });
       expect(await identityFor(app, replacement.secret)).toMatchObject({ agentId });
       const newCookie = await cookieFor(app, ADMIN_EMAIL, "a-brand-new-password");
 
-      // #32 surfaces the new event to the owner, with the agent as subject and no secret.
       const history = await getJson(app, `/api/workspaces/${workspace.id}/history`, newCookie);
       expect(history.status).toBe(200);
       const historyBody = await history.json();

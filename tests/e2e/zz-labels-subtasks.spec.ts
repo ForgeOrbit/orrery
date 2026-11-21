@@ -1,8 +1,3 @@
-// #97 black-box proof: project-scoped labels and one-level subtasks over REST and MCP
-// against a running Orrery. The same payload shapes are asserted on both transports.
-//
-//   docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { randomUUID } from "node:crypto";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { expect, request, test, type APIRequestContext } from "@playwright/test";
@@ -127,7 +122,6 @@ test("REST manages labels, one-level subtasks, and the ready queue", async () =>
     expect.arrayContaining([parentId, subtaskId]),
   );
 
-  // Error kinds for every new rule map to their real status, never a 500.
   const selfParent = await api.patch(`/api/issues/${subtaskId}`, {
     data: { parentIssueId: subtaskId },
   });
@@ -225,8 +219,6 @@ test("MCP manages labels and one-level subtasks with the same shapes", async () 
       expect.arrayContaining([parentId, subtaskId]),
     );
 
-    // The subtask is independently claimable end-to-end: no session on the parent is
-    // needed, and the claim is a real active work session on the subtask itself.
     const claim = await call(client, "claim_issue", {
       issueId: subtaskId,
       runId: await newRun(client),

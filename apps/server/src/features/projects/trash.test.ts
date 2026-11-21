@@ -37,10 +37,6 @@ import {
   type WorkActor,
 } from "./service.ts";
 
-// Real Postgres, real migrations: trash state, lease expiry and the 30-day boundary are
-// database behavior. This file drives the projects service seam and the black-box REST
-// surface against the same database.
-
 const silentLogger = createLogger("error");
 
 let pg: StartedPostgreSqlContainer;
@@ -96,8 +92,7 @@ async function seed(): Promise<Fixture> {
     { id: otherHumanId, email: `${otherHumanId}@example.com`, passwordHash: "x" },
   ]);
   const workspaceId = randomUUID();
-  // The owner guard is a deferred constraint: the workspace and its owner membership
-  // must commit in the same transaction.
+
   await database.db.transaction(async (tx) => {
     await tx.insert(workspaces).values({
       id: workspaceId,
@@ -158,8 +153,6 @@ function agentIdentity(f: Fixture, projectId = f.projectId): AgentIdentity {
   };
 }
 
-// The same decision work-sessions uses to decide whether a work session is live, exposed
-// as the narrow seam projects borrows. Expiring a lapsed lease is part of that decision.
 async function liveSessionGate(tx: DbTransaction, issueId: string) {
   await tx
     .update(workSessions)
@@ -197,7 +190,7 @@ function makeService(
     sessionReader: async () => null,
     agentAuthenticator: async () => null,
     sessionGate: async () => true,
-    // The work-sessions seam: materialize a lapsed lease, then report a live claim.
+
     issueSessionGate: gate,
   }).service;
 }
@@ -440,7 +433,6 @@ describe("issue trash", () => {
     expect(ready).toContain(dependent.id);
     expect(ready).not.toContain(blocker.id);
 
-    // The issue number survives the trash cycle, so ORR-N identifiers never repeat.
     const row = first(
       await database.db
         .select({ number: issues.number })
@@ -464,7 +456,6 @@ describe("issue trash", () => {
     });
     await service.addBlockedBy(manager, fresh.id, { blockedByIssueId: old.id });
 
-    // Exactly 29 days: still restorable. Exactly 31 days: purged.
     await database.db.execute(
       sql`update issues set deleted_at = statement_timestamp() - interval '29 days', deleted_by_human_id = ${f.humanId} where id = ${old.id}`,
     );
@@ -547,7 +538,7 @@ describe("issue trash", () => {
       },
     );
     expect((await inbox.list(manager)).map((q) => q.id)).toContain(question.id);
-    // Release the question's claim first: a delete refuses a live work session.
+
     await database.db.execute(
       sql`update work_sessions set lease_expires_at = statement_timestamp() - interval '1 minute' where issue_id = ${questionIssue.id}`,
     );
@@ -701,7 +692,6 @@ describe("issue trash", () => {
     });
     expect(agentRestore.status).toBe(403);
 
-    // A human session exercises the successful path and the two remaining new codes.
     const cookie = await humanCookie(f.humanId);
 
     const claimed = await service.createIssue(actor, f.projectId, { title: "Claimed" });

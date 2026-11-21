@@ -1,10 +1,3 @@
-// #106 black-box browser proof for the M4 rich-content surfaces: safe GFM Markdown and
-// Mermaid in issue descriptions/comments, the four v1 activity block renderers with a
-// collapsible JSON fallback, and optional token/cost display that never shows fake zeroes.
-// Drives the real image like a person would; nothing here imports server or web code.
-//
-//   docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { randomUUID } from "node:crypto";
 import { expect, request, test, type APIRequestContext, type Browser } from "@playwright/test";
 import { ADMIN_EMAIL, ADMIN_PASSWORD, recordSecret } from "./admin.ts";
@@ -58,9 +51,6 @@ async function newIssue(projectId: string, body: string): Promise<string> {
   return requiredText(field(await res.json(), "id"), "the issue id");
 }
 
-// An agent key issues the bearer calls that create a run, claim the issue, report
-// telemetry and append activities. Keeping this separate from the human cookie jar
-// mirrors how a real agent feeds the sidecar.
 async function agentFor(projectId: string, workspaceId: string) {
   const agentRes = await api.post("/api/agents", {
     data: { name: `rich-agent-${randomUUID()}` },
@@ -177,7 +167,6 @@ test("renders GFM Markdown and Mermaid safely in issue bodies and comments", asy
     await page.goto(`/issues/${issueId}`);
     const bodyRoot = page.locator("[data-issue-body] [data-markdown]");
 
-    // GFM features in the description.
     await expect(bodyRoot.locator("table th")).toHaveText(["Feature", "Status"]);
     await expect(bodyRoot.locator("table td")).toContainText(["tables", "yes"]);
     await expect(bodyRoot.locator('input[type="checkbox"]')).toHaveCount(2);
@@ -187,18 +176,15 @@ test("renders GFM Markdown and Mermaid safely in issue bodies and comments", asy
     await expect(bodyRoot.locator("[data-code-block] code")).toContainText("const answer = 42;");
     await expect(bodyRoot.locator('a[href="https://example.com"]')).toBeVisible();
 
-    // Fenced Mermaid becomes an actual SVG, rendered asynchronously without useEffect.
     await expect(bodyRoot.locator("[data-mermaid] svg")).toBeVisible({ timeout: 15_000 });
 
-    // Raw HTML is inert: no script/img from the source reaches the DOM and no handler ran.
     await expect(bodyRoot.locator("script")).toHaveCount(0);
     await expect(bodyRoot.locator("img[onerror]")).toHaveCount(0);
-    // Entity-decoded control characters and data: URLs cannot become link targets.
+
     await expect(bodyRoot.locator('a[href^="javascript:"], a[href^="data:"]')).toHaveCount(0);
     await expect(bodyRoot).toContainText(`Raw marker ${marker}.`);
     expect(await page.evaluate(() => Reflect.get(globalThis, "orreryXssMarker"))).toBeUndefined();
 
-    // Comments use the same safe renderer.
     const comment = page.locator("[data-comment-body] [data-markdown]");
     await expect(comment.locator("table th")).toHaveText(["A", "B"]);
     await expect(comment.locator("del")).toHaveText("gone");
@@ -262,9 +248,7 @@ test("renders v1 activity blocks, JSON fallback and optional cost telemetry", as
     });
     expect(res.status).toBe(201);
   }
-  // Custom harness telemetry without a v1 block takes the collapsible JSON fallback.
-  // A present block is validated by the contract, so an unversioned block can only
-  // arrive as legacy data; the UI guards for that defensively.
+
   const custom = await agent.post(`/api/issues/${issueId}/work-sessions/activities`, {
     kind: "thought",
     summary: "Custom detail",
@@ -272,7 +256,6 @@ test("renders v1 activity blocks, JSON fallback and optional cost telemetry", as
   });
   expect(custom.status).toBe(201);
 
-  // A second session that never reported telemetry must hide every telemetry field.
   const nullIssueId = await newIssue(projectId, "No telemetry");
   const { sessionId: nullSessionId } = await claim(agent, nullIssueId);
 
@@ -300,23 +283,20 @@ test("renders v1 activity blocks, JSON fallback and optional cost telemetry", as
       "1 skipped",
     );
 
-    // The fallback is collapsed until the reader opens it, then shows inert JSON.
     const fallback = inspector.locator('[data-activity-block="json"]');
     await expect(fallback).toHaveCount(1);
     await fallback.getByRole("button", { name: "Raw activity detail (JSON)" }).click();
     await expect(fallback.locator("[data-activity-detail]")).toContainText('"tool": "edit"');
-    // Reported telemetry is shown, formatted as dollars, on the inspector.
+
     await expect(inspector.locator("[data-telemetry-input-tokens]")).toHaveText("100");
     await expect(inspector.locator("[data-telemetry-output-tokens]")).toHaveText("20");
     await expect(inspector.locator("[data-telemetry-cost]")).toHaveText("$0.0123");
 
-    // The agents panel shows the same reported cost on the live-session row.
     await page.goto(`/workspaces/${workspaceId}`);
     await page.getByRole("tab", { name: /Agents/ }).click();
     const reportedRow = page.locator(`[data-agent-session-id="${sessionId}"]`);
     await expect(reportedRow.locator("[data-telemetry-cost]")).toHaveText("cost: $0.0123");
 
-    // A session with no reported values shows no telemetry anywhere: no fake zeroes.
     await page.goto(`/issues/${nullIssueId}?inspector=true`);
     await expect(page.locator("[data-session-inspector] [data-telemetry-cost]")).toHaveCount(0);
     await expect(

@@ -12,7 +12,6 @@ export function TextField({
   width = "min(100%, 40rem)",
   ...props
 }: TextFieldProps) {
-  // Preserve the native constraints on the input Astryx renders.
   const constraints = { required, minLength, maxLength };
   return <TextInput {...props} {...constraints} width={width} />;
 }

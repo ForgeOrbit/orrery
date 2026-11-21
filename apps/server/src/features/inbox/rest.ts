@@ -18,10 +18,6 @@ import { isAgentError, type AgentAuthenticator } from "../agents/index.ts";
 import type { WorkActor } from "../projects/index.ts";
 import { InboxError, type InboxErrorKind, type InboxService } from "./service.ts";
 
-// Thin REST adapter for human input (#41, fallback policy and late answers in #42). Every
-// policy decision is in service.ts. Success responses are the bare resource (ADR-0003):
-// object wrappers belong only in MCP.
-
 const askBody = AskForInputInput;
 const answerBody = AnswerQuestionInput;
 const questionParams = QuestionParams;
@@ -132,7 +128,6 @@ function isKind<K extends readonly InboxErrorKind[]>(
   return kinds.some((kind) => kind === error.kind);
 }
 
-// The kinds array narrows the problem status to exactly the failures each route declares.
 function failure<K extends readonly InboxErrorKind[]>(c: Context, error: unknown, kinds: K) {
   if (isAgentError(error)) {
     return problemResponse(c, { status: 401, code: error.kind, title: error.message });
@@ -174,8 +169,6 @@ export function createInboxRest(
 ) {
   const app = new OpenAPIHono({ defaultHook: validationHook });
 
-  // Reads use either actor. Mutations resolve the bearer key first: an agent key is passed
-  // through as an agent actor so the service refuses it, never falling back to a cookie.
   const workActor = async (c: Context): Promise<WorkActor | null> => {
     const identity = await authenticate(c.req.raw);
     if (identity !== null) return { kind: "agent", identity };

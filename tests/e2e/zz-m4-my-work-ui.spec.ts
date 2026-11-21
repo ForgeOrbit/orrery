@@ -1,11 +1,3 @@
-// Cross-workspace My work UI (issue #107), black-box against a running Orrery: a signed-in
-// human sees one page with assigned issues, live sessions under their own agents and
-// questions needing input from two workspaces. Rows link to their issue and to the filtered
-// Inbox, the endpoint's 3-5s poll refreshes the view, and terminal, trashed, answered and
-// telemetry-less items never appear as actionable work. Nothing here imports server code.
-//
-//   docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { randomUUID } from "node:crypto";
 import { expect, request, test, type APIRequestContext } from "@playwright/test";
 import { ADMIN_EMAIL, ADMIN_PASSWORD, recordSecret } from "./admin.ts";
@@ -143,7 +135,7 @@ test.beforeAll(async () => {
     data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
   });
   expect(login.status()).toBe(200);
-  // Agent calls use bearer keys in a separate context so a human cookie can never help them.
+
   agentApi = await request.newContext({ baseURL: baseUrl });
 });
 
@@ -257,7 +249,6 @@ test("renders the three sections across workspaces, links work and excludes stal
     sharedQuestion,
   );
 
-  // An answered question is resolved and must never appear as actionable work.
   const answeredRunId = await newRun(agentApi, sharedKey);
   await claim(agentApi, sharedKey, answeredIssue.id, answeredRunId);
   const answeredQuestion = `Already answered ${randomUUID()}?`;
@@ -296,7 +287,6 @@ test("renders the three sections across workspaces, links work and excludes stal
     ).toBeVisible();
     await expect(page.getByRole("heading", { level: 2, name: "Needs input" })).toBeVisible();
 
-    // Both workspaces show up with their <KEY>-<NUMBER> identifiers and issue links.
     const personalAssignedRow = assignedSection.locator(
       `[data-my-work-issue-id="${personalAssigned.id}"]`,
     );
@@ -322,7 +312,7 @@ test("renders the three sections across workspaces, links work and excludes stal
     await expect(personalSessionRow).toContainText("$0.00075 cost");
     await expect(sharedSessionRow).toContainText(sharedSession.identifier);
     await expect(sharedSessionRow).toContainText("Stop requested");
-    // Telemetry is optional: a session with no reported totals shows no fake zeroes.
+
     await expect(sharedSessionRow).not.toContainText("tokens");
 
     await expect(
@@ -332,19 +322,16 @@ test("renders the three sections across workspaces, links work and excludes stal
       questionsSection.locator(`[data-my-work-question-id="${sharedQuestionId}"]`),
     ).toContainText(sharedQuestion);
 
-    // Terminal, trashed and already-answered work is not actionable and never appears.
     await expect(page.getByText(doneIssue.identifier)).toHaveCount(0);
     await expect(page.getByText(trashedIssue.identifier)).toHaveCount(0);
     await expect(page.getByText(answeredQuestion)).toHaveCount(0);
 
-    // The issue link navigates client-side to the real issue page.
     await sharedAssignedRow
       .getByRole("link", { name: new RegExp(sharedAssigned.identifier) })
       .click();
     await expect(page).toHaveURL(`/issues/${sharedAssigned.id}`);
     await expect(page.getByRole("heading", { level: 1, name: sharedAssigned.title })).toBeVisible();
 
-    // The question link lands on the Inbox pre-filtered to its issue, question included.
     await page.goto("/my-work");
     await questionsSection
       .locator(`[data-my-work-question-id="${sharedQuestionId}"]`)
@@ -355,7 +342,6 @@ test("renders the three sections across workspaces, links work and excludes stal
       sharedQuestion,
     );
 
-    // The page polls: closing an assignment or answering a question drops the row on its own.
     await page.goto("/my-work");
     expect(
       (await api.patch(`/api/issues/${sharedAssigned.id}`, { data: { status: "done" } })).status(),

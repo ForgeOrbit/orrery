@@ -13,9 +13,6 @@ import {
   registerThroughInvitation,
 } from "../features/invitations/index.ts";
 
-// The page the invitation email links to (issue #23). Opening it changes nothing: the
-// token is redeemed only by the POST the password form sends, and choosing a password
-// is what completes registration.
 export const Route = createFileRoute("/register")({
   staticData: { accessPage: true },
   validateSearch: (search: Record<string, unknown>) => ({
@@ -30,8 +27,7 @@ function RegisterPage() {
   const navigate = useNavigate();
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string>();
-  // Set when registration succeeded but the follow-up sign-in failed: the account
-  // exists, so the form is gone and the person is sent to sign in.
+
   const [createdEmail, setCreatedEmail] = useState<string>();
   const [declined, setDeclined] = useState(false);
   const [declining, setDeclining] = useState(false);
@@ -56,19 +52,14 @@ function RegisterPage() {
     setError(undefined);
     try {
       const account = await registerThroughInvitation({ token, password });
-      // Registered: sign straight in with the credentials just chosen, so following
-      // the invitation is one flow, ending inside the new personal workspace.
+
       try {
         await signIn({ email: account.email, password });
       } catch {
-        // The account was created and the invitation consumed; a resubmit would fail
-        // with invitation_invalid. Tell the person, and send them to sign in.
         setCreatedEmail(account.email);
         return;
       }
-      // Registration already returns the verified account. Set it infallibly: a
-      // transient session-endpoint failure must not strand a consumed token in the
-      // generic error path. Clear first so no pre-registration null cache survives.
+
       queryClient.clear();
       const session: Session = {
         signedIn: true,

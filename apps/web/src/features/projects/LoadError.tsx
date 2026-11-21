@@ -3,8 +3,6 @@ import { Text } from "@astryxdesign/core/Text";
 import { Link } from "../../lib/Link.tsx";
 import { ApiProblemError } from "../../lib/api.ts";
 
-// The one failure page for a project, issue, or knowledge entry. A 401 asks the reader to
-// sign in; a 404 keeps the resource's existence private; anything else is a load failure.
 type Resource = "project" | "board" | "issue" | "knowledge" | "workspace" | "history" | "trash";
 
 const labels: Record<Resource, { title: string; noun: string }> = {

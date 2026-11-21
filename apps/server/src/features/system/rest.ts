@@ -21,10 +21,8 @@ const readyz = createRoute({
   },
 });
 
-// Route definitions, for the generated OpenAPI document.
 export const routes = [healthz, readyz];
 
-// Thin: call the service, map the result to HTTP. No rules here.
 export function createSystemRest(service: SystemService) {
   const app = new OpenAPIHono();
   app.openapi(healthz, (c) => c.json(service.health(), 200));

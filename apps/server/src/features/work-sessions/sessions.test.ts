@@ -43,10 +43,6 @@ import { createAgentsFeature, type AgentAuthenticator } from "../agents/index.ts
 import { createProjectsFeature, ProjectsError, type WorkSessionGate } from "../projects/index.ts";
 import { createSessionsFeature, SessionsError, type SessionsService } from "./index.ts";
 
-// Real Postgres (AGENTS.md): claims, leases, expiry and the unique index are database
-// behavior. These tests use database time for every boundary and race real transactions;
-// the black-box zz-sessions.spec.ts drives the same public operations through MCP.
-
 const SECRET = "correct horse battery staple staple";
 const ADMIN_EMAIL = "sessions-admin@example.com";
 const ADMIN_PASSWORD = "sessions-admin-password";
@@ -102,8 +98,6 @@ async function expectProblem(res: Response, status: number, code: string) {
   expect(Problem.parse(await res.json())).toMatchObject({ status, code });
 }
 
-// The stable code from either feature's error; an unexpected error cannot masquerade as a
-// session denial. Bounds the assertions without narrowing `unknown` by unsafe assertion.
 function errorKind(error: unknown): string {
   if (error instanceof SessionsError || error instanceof ProjectsError) return error.kind;
   return "unexpected_error";
@@ -170,7 +164,6 @@ afterAll(async () => {
 
 afterEach(async () => {
   await database.db.transaction(async (tx) => {
-    // Activities have a deliberate no-action FK to their session: cleanup must go first.
     await tx.execute(sql`delete from work_session_activities`);
     await tx.execute(sql`delete from work_sessions`);
     await tx.execute(sql`delete from agent_key_events`);
@@ -282,7 +275,6 @@ async function newRun(identity: AgentIdentity): Promise<string> {
   return run.id;
 }
 
-// A human actor in the bootstrap fixture's personal workspace, used to request stops.
 function humanActor(f: Fixture) {
   return {
     kind: "human" as const,
@@ -311,7 +303,6 @@ async function humanIssue(f: Fixture, title: string) {
   );
 }
 
-// A second registered agent in the same workspace, with its own key and project grant.
 async function registerSecondAgent(f: Fixture) {
   const created = await postJson("/api/agents", { name: `other-agent-${randomUUID()}` }, f.cookie);
   expect(created.status).toBe(201);
@@ -360,7 +351,6 @@ function rejection(promise: Promise<unknown>): Promise<unknown> {
   );
 }
 
-// #94: read the persisted issue state, not just the returned view.
 async function issueStatus(issueId: string) {
   const [row] = await database.db
     .select({ status: issues.status, closedAt: issues.closedAt })
@@ -405,7 +395,7 @@ describe("work sessions against real Postgres", () => {
     expect(stopped).toMatchObject({ status: "completed" });
     expect(stopped.endedAt).not.toBeNull();
     expect(await activeCount(issue.id)).toBe(0);
-    // #94: completing a session is a handoff to review, not a return to the ready queue.
+
     expect(await issueStatus(issue.id)).toMatchObject({ status: "review", closedAt: null });
     expect(await sessionsService.readyWork({ kind: "agent", identity }, f.projectId)).toEqual([]);
   });
@@ -417,8 +407,6 @@ describe("work sessions against real Postgres", () => {
     const runA = await newRun(identity);
     const runB = await newRun(identity);
 
-    // The same agent racing two distinct runs must produce one active session: a second
-    // run is a different worker for the same issue, not a helper joining the first.
     const results = await Promise.allSettled([
       sessionsService.claim({ kind: "agent", identity }, { issueId: issue.id, runId: runA }),
       sessionsService.claim({ kind: "agent", identity }, { issueId: issue.id, runId: runB }),
@@ -431,7 +419,6 @@ describe("work sessions against real Postgres", () => {
     expect(errorKind(rejected?.reason)).toBe("issue_claimed");
     expect(await activeCount(issue.id)).toBe(1);
 
-    // Even bypassing the service, Postgres refuses a second active row for the issue.
     const winner = results.find(
       (result): result is PromiseFulfilledResult<WorkSession> => result.status === "fulfilled",
     )?.value;
@@ -469,14 +456,11 @@ describe("work sessions against real Postgres", () => {
     await sessionsService.claim({ kind: "agent", identity }, { issueId: b.id, runId });
     await sessionsService.progress({ kind: "agent", identity }, a.id, "Halfway through");
 
-    // Just before the deadline in DB time a check-in still works.
     await setLease(b.id, "statement_timestamp() + interval '1 second'");
     await expect(sessionsService.renew({ kind: "agent", identity }, b.id)).resolves.toMatchObject({
       status: "active",
     });
 
-    // Just after, the lease has lapsed: renewal is refused, progress survives, and the
-    // other issue's claim is untouched.
     await setLease(a.id, "statement_timestamp() - interval '1 second'");
     const error = await rejection(sessionsService.renew({ kind: "agent", identity }, a.id));
     expect(error).toBeInstanceOf(SessionsError);
@@ -500,8 +484,7 @@ describe("work sessions against real Postgres", () => {
     await setLease(issue.id, "statement_timestamp() - interval '1 second'");
 
     const actor = { kind: "agent" as const, identity };
-    // Every fenced issue write is refused while the lease is lapsed: title, body and
-    // closure, even with no other claimant. None may become an implicit fresh claim.
+
     const staleWrites = [
       () => projectsService.updateIssue(actor, issue.id, { title: "Stale edit" }),
       () => projectsService.updateIssue(actor, issue.id, { body: "Stale body" }),
@@ -528,7 +511,6 @@ describe("work sessions against real Postgres", () => {
     expect(await activeCount(issue.id)).toBe(0);
     expect((await sessionsService.getSession(actor, issue.id)).progress).toBe("before lapse");
 
-    // An explicit reacquisition is allowed; a stale write never did it implicitly.
     await expect(sessionsService.claim(actor, { issueId: issue.id, runId })).resolves.toMatchObject(
       { status: "active" },
     );
@@ -538,8 +520,6 @@ describe("work sessions against real Postgres", () => {
     const f = await bootstrap();
     const issue = await humanIssue(f, "Rotated issue");
 
-    // A second key for the same agent with the same scope is the rotation case: it renews
-    // the very same session because the session follows the agent, not the key.
     const second = await postJson(
       "/api/agents/keys",
       {
@@ -564,9 +544,6 @@ describe("work sessions against real Postgres", () => {
       sessionsService.renew({ kind: "agent", identity: replacement }, issue.id),
     ).resolves.toMatchObject({ id: session.id, status: "active" });
 
-    // A shared-workspace member's grant can be lowered. Renewal and fenced writes re-check
-    // the human's current level inside their transaction, so Read stops both immediately.
-    // Owner membership and workspace commit together (the deferred owner trigger).
     const [team] = await database.db.transaction(async (tx) => {
       const [created] = await tx
         .insert(workspaces)
@@ -614,8 +591,7 @@ describe("work sessions against real Postgres", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
-    // The agent belongs to the member: a session fixture lets the member register it and
-    // issue a key, so the dynamic human-access ceiling is the member's grant.
+
     const memberToken = randomBytes(32).toString("base64url");
     await database.db.insert(browserSessions).values({
       id: randomUUID(),
@@ -662,8 +638,6 @@ describe("work sessions against real Postgres", () => {
       { issueId: memberIssue.id, runId: memberRun },
     );
 
-    // Race the renewal against the downgrade; either order is safe, but no renewal may
-    // succeed once the Read grant is committed.
     const downgrade = database.db
       .update(projectAccessGrants)
       .set({ level: "read" })
@@ -706,8 +680,6 @@ describe("work sessions against real Postgres", () => {
     expect(sessions.every((session) => session.runId === runId)).toBe(true);
     expect(new Set(sessions.map((session) => session.issueId)).size).toBe(3);
 
-    // A helper on the same issue, same agent and run, joins the existing coordinated
-    // session instead of registering a second one.
     const helper = await sessionsService.claim(
       { kind: "agent", identity },
       { issueId: parentIssues[0]!.id, runId },
@@ -715,7 +687,6 @@ describe("work sessions against real Postgres", () => {
     expect(helper.id).toBe(sessions[0]!.id);
     expect(await activeCount(parentIssues[0]!.id)).toBe(1);
 
-    // A subagent with its own identity and run claims a different issue independently.
     const other = await postJson("/api/agents", { name: `subagent-${randomUUID()}` }, f.cookie);
     const otherId = idOf(await other.json(), "agent");
     const otherKey = await postJson(
@@ -773,8 +744,7 @@ describe("work sessions against real Postgres", () => {
     const ready = await sessionsService.readyWork({ kind: "agent", identity }, f.projectId);
     expect(ready.map((item) => item.id)).toEqual([plain.id]);
     await setLease(claimed.id, "statement_timestamp() - interval '1 second'");
-    // #94: a lapsed lease ends the work even with no check-in. Ready work materializes
-    // the expiry itself, so the crashed worker's issue is immediately claimable again.
+
     expect((await issueStatus(claimed.id)).status).toBe("in_progress");
     const afterExpiry = await sessionsService.readyWork({ kind: "agent", identity }, f.projectId);
     expect((await issueStatus(claimed.id)).status).toBe("todo");
@@ -805,8 +775,6 @@ describe("work sessions against real Postgres", () => {
     const after = await sessionsService.readyWork({ kind: "agent", identity }, f.projectId);
     expect(after.map((item) => item.id)).toContain(downstream.id);
 
-    // Removing the edge changes nothing for a closed blocker, but proves both reads use
-    // the live dependency state rather than a cached snapshot.
     await projectsService.removeBlockedBy(human, downstream.id, blocker.id);
     const afterRemoval = await sessionsService.readyWork({ kind: "agent", identity }, f.projectId);
     expect(afterRemoval.map((item) => item.id)).toContain(downstream.id);
@@ -828,7 +796,6 @@ describe("work sessions against real Postgres", () => {
     expect(ready).toContain(first.id);
     expect(ready).toContain(second.id);
 
-    // Claiming one subtask does not reserve its sibling or the parent.
     await sessionsService.claim(agent, { issueId: first.id, runId: run });
     const afterClaim = (await sessionsService.readyWork(agent, f.projectId)).map((item) => item.id);
     expect(afterClaim).not.toContain(first.id);
@@ -845,7 +812,6 @@ describe("work sessions against real Postgres", () => {
     const subtask = await humanIssue(f, "Open subtask");
     await projectsService.updateIssue(humanActor(f), subtask.id, { parentIssueId: parent.id });
 
-    // The open subtask is not an ordering edge: the parent stays ready and claimable.
     expect((await sessionsService.readyWork(agent, f.projectId)).map((i) => i.id)).toContain(
       parent.id,
     );
@@ -854,8 +820,6 @@ describe("work sessions against real Postgres", () => {
     expect((await issueStatus(parent.id)).status).toBe("done");
     expect((await issueStatus(subtask.id)).status).toBe("todo");
 
-    // An explicit dependency from the parent to its subtask DOES block it: blocked_by is
-    // the single ordering mechanism, so only then is the parent withheld from ready work.
     await projectsService.addBlockedBy(humanActor(f), parent.id, { blockedByIssueId: subtask.id });
     expect((await sessionsService.readyWork(agent, f.projectId)).map((i) => i.id)).not.toContain(
       parent.id,
@@ -872,13 +836,11 @@ describe("work sessions against real Postgres", () => {
       blockedByIssueId: blocker.id,
     });
 
-    // Review is a non-terminal handoff and still blocks.
     await projectsService.updateIssue(humanActor(f), blocker.id, { status: "review" });
     expect((await sessionsService.readyWork(agent, f.projectId)).map((i) => i.id)).not.toContain(
       downstream.id,
     );
 
-    // Cancelling is terminal: it sets closed_at and frees the dependent immediately.
     await projectsService.updateIssue(humanActor(f), blocker.id, { status: "cancelled" });
     expect((await issueStatus(blocker.id)).closedAt).not.toBeNull();
     expect((await sessionsService.readyWork(agent, f.projectId)).map((i) => i.id)).toContain(
@@ -896,8 +858,6 @@ describe("work sessions against real Postgres", () => {
       input: { priority?: "urgent" | "high" | "medium" | "low" | "none"; sortOrder?: number } = {},
     ) => projectsService.createIssue(human, f.projectId, { title, ...input });
 
-    // Priority dominates position: each card here has a larger sortOrder than the one
-    // before it, so only the priority ranking produces this order.
     const urgent = await make("Urgent", { priority: "urgent", sortOrder: 100_000 });
     const high = await make("High", { priority: "high", sortOrder: 200_000 });
     const medium = await make("Medium", { priority: "medium", sortOrder: 300_000 });
@@ -913,8 +873,6 @@ describe("work sessions against real Postgres", () => {
       none.id,
     ]);
 
-    // Within one priority, the smaller sortOrder wins; equal positions fall back to
-    // creation time, which is set explicitly here to make the tie unambiguous.
     const earlier = await make("Earlier", { priority: "urgent", sortOrder: 10 });
     const later = await make("Later", { priority: "urgent", sortOrder: 10 });
     await database.db
@@ -959,7 +917,6 @@ describe("work sessions against real Postgres", () => {
       c.id,
     ]);
 
-    // Move C between A and B. Only C's row changes; its siblings keep their positions.
     await projectsService.updateIssue(human, c.id, { sortOrder: 50 });
     expect((await sessionsService.readyWork(actor, f.projectId)).map((i) => i.id)).toEqual([
       a.id,
@@ -981,8 +938,6 @@ describe("work sessions against real Postgres", () => {
     const identity = await identityFor(f.secret);
     const actor = { kind: "agent" as const, identity };
 
-    // Creation is unfenced (#20), so an agent may triage a new card's importance and
-    // position immediately; changing an existing card stays fenced on a live session.
     const issue = await projectsService.createIssue(actor, f.projectId, {
       title: "Agent triage",
       priority: "high",
@@ -1038,7 +993,6 @@ describe("work sessions against real Postgres", () => {
     expect(stop.status).toBe(200);
     expect(WorkSession.parse(await stop.json()).status).toBe("released");
 
-    // A fenced REST edit without a live session is a Problem, not a silent write.
     const edit = await postJson(
       `/api/issues/${issue.id}/work-sessions/renew`,
       {},
@@ -1049,10 +1003,6 @@ describe("work sessions against real Postgres", () => {
     expect(identity.agentId).toBe(f.agentId);
   });
 
-  // #40 black-box service coverage. These tests drive the public service methods against
-  // real Postgres, in database time, so interruption, resume and reacquisition exercise the
-  // same row locks, partial unique index and lazy lease expiry production relies on.
-
   it("reports progress and retains it across interruption, distinguishing a live claim from an expired one on resume", async () => {
     const f = await bootstrap();
     const identity = await identityFor(f.secret);
@@ -1061,7 +1011,6 @@ describe("work sessions against real Postgres", () => {
     const actor = { kind: "agent" as const, identity };
     const claim = await sessionsService.claim(actor, { issueId: issue.id, runId });
 
-    // While the lease is live, resume clearly reports an active claim with the progress.
     await sessionsService.progress(actor, issue.id, "Drafted the plan");
     const live = await sessionsService.resume(actor, { issueId: issue.id, runId });
     expect(live).toMatchObject({
@@ -1071,8 +1020,6 @@ describe("work sessions against real Postgres", () => {
       session: { id: claim.id, status: "active", progress: "Drafted the plan" },
     });
 
-    // The client is interrupted and the five-minute lease lapses. Resume is a pure read:
-    // it reports the claim as expired with the progress intact, without renewing it.
     await setLease(issue.id, "statement_timestamp() - interval '1 second'");
     const interrupted = await sessionsService.resume(actor, { issueId: issue.id, runId });
     expect(interrupted).toMatchObject({
@@ -1083,14 +1030,12 @@ describe("work sessions against real Postgres", () => {
       .select({ status: workSessions.status })
       .from(workSessions)
       .where(eq(workSessions.id, claim.id));
-    expect(raw?.status).toBe("active"); // resume did not resurrect or even materialize it
+    expect(raw?.status).toBe("active");
 
-    // No session for another run of the same agent: disposition "none".
     const otherRun = await newRun(identity);
     const none = await sessionsService.resume(actor, { issueId: issue.id, runId: otherRun });
     expect(none).toMatchObject({ disposition: "none", session: null });
 
-    // A stale completion on the expired session is refused and does not become a claim.
     const staleStop = await rejection(sessionsService.stop(actor, issue.id, "completed"));
     expect(errorKind(staleStop)).toBe("session_required");
     expect(await activeCount(issue.id)).toBe(0);
@@ -1120,8 +1065,7 @@ describe("work sessions against real Postgres", () => {
       issueId: issue.id,
       progress: "Halfway through",
     });
-    // A reacquired row is fresh: it never inherits the expired row's reported totals,
-    // which stay on that row instead of being double-counted in list_work_sessions (#96).
+
     expect(reacquired).toMatchObject({
       inputTokens: null,
       outputTokens: null,
@@ -1137,10 +1081,9 @@ describe("work sessions against real Postgres", () => {
       outputTokens: 10,
       costUsdMicros: 200,
     });
-    expect(reacquired.id).not.toBe(original.id); // a fresh session, not a resurrected lease
+    expect(reacquired.id).not.toBe(original.id);
     expect(await activeCount(issue.id)).toBe(1);
 
-    // A replacement key with the same agent, workspace and scope sees the same session.
     const second = await postJson(
       "/api/agents/keys",
       {
@@ -1159,7 +1102,6 @@ describe("work sessions against real Postgres", () => {
     expect(retry.id).toBe(reacquired.id);
     expect(await activeCount(issue.id)).toBe(1);
 
-    // A plain claim retry after reconnect is idempotent for the same run too.
     const claimRetry = await sessionsService.claim(actor, { issueId: issue.id, runId });
     expect(claimRetry.id).toBe(reacquired.id);
     expect(await activeCount(issue.id)).toBe(1);
@@ -1180,7 +1122,6 @@ describe("work sessions against real Postgres", () => {
     expect(errorKind(blocked)).toBe("issue_blocked");
     expect(await activeCount(issue.id)).toBe(0);
 
-    // Once input has arrived the very same run may reacquire, with progress preserved.
     await database.db.update(issues).set({ needsInput: false }).where(eq(issues.id, issue.id));
     await expect(
       sessionsService.reacquire(actor, { issueId: issue.id, runId }),
@@ -1219,15 +1160,12 @@ describe("work sessions against real Postgres", () => {
     await sessionsService.progress(stale, issue.id, "Original progress");
     await setLease(issue.id, "statement_timestamp() - interval '1 second'");
 
-    // The replacement worker legitimately claims the released issue.
     const replacementSession = await sessionsService.claim(current, {
       issueId: issue.id,
       runId: otherRun,
     });
     expect(replacementSession).toMatchObject({ status: "active", agentId: otherId });
 
-    // The original run cannot reacquire over a live claim, and none of its stale writes
-    // become a fresh claim: renewal, progress, fenced edit/close and completion all fail.
     const reacquireError = await rejection(
       sessionsService.reacquire(stale, { issueId: issue.id, runId: firstRun }),
     );
@@ -1246,9 +1184,9 @@ describe("work sessions against real Postgres", () => {
     expect(await activeCount(issue.id)).toBe(1);
     const [row] = await database.db.select().from(issues).where(eq(issues.id, issue.id));
     expect(row?.title).toBe("Contested issue");
-    // #94: the replacement worker's claim moved the issue to in_progress.
+
     expect(row?.status).toBe("in_progress");
-    // The original progress lives on its expired session; the replacement has none.
+
     const history = await sessionsService.listSessions(current, issue.id);
     expect(history).toEqual(
       expect.arrayContaining([
@@ -1272,12 +1210,10 @@ describe("work sessions against real Postgres", () => {
     await sessionsService.progress(actor, issue.id, "Original progress");
     await setLease(issue.id, "statement_timestamp() - interval '1 second'");
 
-    // The same run reacquires a brand-new session S2 carrying the progress.
     const s2 = await sessionsService.reacquire(actor, { issueId: issue.id, runId: run1 });
     expect(s2.id).not.toBe(s1.id);
     expect(s2).toMatchObject({ status: "active", progress: "Original progress" });
 
-    // A delayed call named S1 is refused even though this very agent holds live S2.
     for (const stale of [
       () => sessionsService.renew(actor, issue.id, s1.id),
       () => sessionsService.progress(actor, issue.id, "Stale overwrite", s1.id),
@@ -1286,7 +1222,7 @@ describe("work sessions against real Postgres", () => {
       const error = await rejection(stale());
       expect(errorKind(error)).toBe("session_required");
     }
-    // Positive control: naming the live session succeeds, and the stale writes changed nothing.
+
     await expect(sessionsService.renew(actor, issue.id, s2.id)).resolves.toMatchObject({
       id: s2.id,
       status: "active",
@@ -1294,7 +1230,6 @@ describe("work sessions against real Postgres", () => {
     expect((await sessionsService.getSession(actor, issue.id)).progress).toBe("Original progress");
     expect(await activeCount(issue.id)).toBe(1);
 
-    // Now S2 lapses and a different run of the SAME agent claims S3. Both old ids stay fenced.
     await setLease(issue.id, "statement_timestamp() - interval '1 second'");
     const run2 = await newRun(identity);
     const s3 = await sessionsService.claim(actor, { issueId: issue.id, runId: run2 });
@@ -1351,7 +1286,6 @@ describe("work sessions against real Postgres", () => {
     expect(errorKind(blocked)).toBe("issue_blocked");
     expect(await activeCount(issue.id)).toBe(0);
 
-    // Reopening makes the very same expired claim available again, with progress intact.
     await projectsService.updateIssue(
       {
         kind: "human",
@@ -1429,12 +1363,10 @@ describe("work sessions against real Postgres", () => {
       f.secret,
     );
     expect(reacquired.status).toBe(201);
-    // ADR-0003: the bare session, not a `{ session }` wrapper.
+
     const current = WorkSession.parse(await reacquired.clone().json());
     expect(current).toMatchObject({ status: "active", progress: "REST progress" });
 
-    // A sessionId fence in the REST body refuses a call naming the expired session and
-    // accepts one naming the live session. An omitted body still works (#36 callers).
     const staleFenced = await postJson(
       `/api/issues/${issue.id}/work-sessions/stop`,
       { outcome: "completed", sessionId: originalId },
@@ -1466,10 +1398,6 @@ describe("work sessions against real Postgres", () => {
   });
 });
 
-// #82: a human stop request is a signal on a live session, not a new status. These tests
-// drive the service and its REST adapter against real Postgres so the atomic write, the
-// database-time liveness check and the activity record are proved on the same rows the
-// agent's heartbeat reads.
 describe("human stop requests on active work sessions (#82)", () => {
   it("sets the stop fields atomically, records activity and surfaces the signal on heartbeat and progress", async () => {
     const f = await bootstrap();
@@ -1502,7 +1430,6 @@ describe("human stop requests on active work sessions (#82)", () => {
     expect(row?.stopRequestedAt).toBeInstanceOf(Date);
     expect(row?.endedAt).toBeNull();
 
-    // The agent detects the signal on its next renew and progress check-in.
     const renewed = await sessionsService.renew(agent, issue.id);
     expect(renewed).toMatchObject({
       id: claim.id,
@@ -1513,7 +1440,6 @@ describe("human stop requests on active work sessions (#82)", () => {
     const progressed = await sessionsService.progress(agent, issue.id, "Writing a handoff");
     expect(progressed).toMatchObject({ stopRequested: true, progress: "Writing a handoff" });
 
-    // The request is in the permanent project activity feed, in the same transaction.
     const activity = await database.db
       .select()
       .from(projectActivity)
@@ -1530,7 +1456,6 @@ describe("human stop requests on active work sessions (#82)", () => {
       summary: "Wrong direction",
     });
 
-    // REST reads expose the same fields as the bare resource (ADR-0003).
     const current = await getJson(`/api/issues/${issue.id}/work-sessions`, f.cookie);
     expect(current.status).toBe(200);
     expect(WorkSession.parse(await current.json())).toMatchObject({
@@ -1538,7 +1463,6 @@ describe("human stop requests on active work sessions (#82)", () => {
       stopReason: "Wrong direction",
     });
 
-    // The lease is still the backstop: acknowledging the stop ends the session normally.
     const ended = await sessionsService.stop(agent, issue.id, "completed");
     expect(ended).toMatchObject({ status: "completed", stopRequested: true });
   });
@@ -1551,14 +1475,11 @@ describe("human stop requests on active work sessions (#82)", () => {
     const agent = { kind: "agent" as const, identity };
     await sessionsService.claim(agent, { issueId: issue.id, runId });
 
-    // A second issue with no session cannot be stopped.
     const other = await humanIssue(f, "No session issue");
     expect(errorKind(await rejection(sessionsService.requestStop(humanActor(f), other.id)))).toBe(
       "session_not_active",
     );
 
-    // Agents are refused at both layers with one stable code, and a missing actor at REST
-    // cannot fall back to a browser session.
     expect(errorKind(await rejection(sessionsService.requestStop(agent, issue.id)))).toBe(
       "agents_cannot_request_stop",
     );
@@ -1578,8 +1499,6 @@ describe("human stop requests on active work sessions (#82)", () => {
       "human_sign_in_required",
     );
 
-    // A human outside the workspace gets the same 404 as a missing issue: a stop probe
-    // must never reveal that an issue exists.
     const outsider = {
       kind: "human" as const,
       account: {
@@ -1593,9 +1512,6 @@ describe("human stop requests on active work sessions (#82)", () => {
       "issue_not_found",
     );
 
-    // A Read human inside a shared workspace is refused the Contribute-level action.
-    // Grants are only legal on shared projects, so build that workspace with its owner
-    // in one transaction (the deferred owner guard checks at commit).
     const readerId = randomUUID();
     const readerEmail = `reader-${readerId}@example.com`;
     await database.db.insert(humans).values({
@@ -1678,8 +1594,6 @@ describe("human stop requests on active work sessions (#82)", () => {
       "insufficient_access",
     );
 
-    // A live lease lapses in database time; the expired session rejects the request and
-    // no stop fields are written to it.
     await setLease(issue.id, "statement_timestamp() - interval '1 second'");
     expect(errorKind(await rejection(sessionsService.requestStop(humanActor(f), issue.id)))).toBe(
       "session_not_active",
@@ -1730,7 +1644,6 @@ describe("human stop requests on active work sessions (#82)", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.summary).toBe("First reason");
 
-    // The shared contract normalizes a whitespace-only reason before it reaches a route.
     expect(RequestStopWorkSessionInput.parse({ issueId: issue.id, reason: "   " }).reason).toBe(
       undefined,
     );
@@ -1756,14 +1669,13 @@ describe("human stop requests on active work sessions (#82)", () => {
     expect(errorKind(await rejection(sessionsService.requestStop(outsider, issue.id)))).toBe(
       "issue_not_found",
     );
-    // The refused, unauthorized call left the lapsed row untouched: no pre-authz expiry.
+
     const [before] = await database.db
       .select({ status: workSessions.status })
       .from(workSessions)
       .where(eq(workSessions.issueId, issue.id));
     expect(before?.status).toBe("active");
 
-    // An authorized call commits that expiry while refusing the inactive session.
     expect(errorKind(await rejection(sessionsService.requestStop(humanActor(f), issue.id)))).toBe(
       "session_not_active",
     );
@@ -1773,7 +1685,6 @@ describe("human stop requests on active work sessions (#82)", () => {
       .where(eq(workSessions.issueId, issue.id));
     expect(after?.status).toBe("expired");
 
-    // A deactivated caller is refused like a non-member even with a live session.
     const liveIssue = await humanIssue(f, "Deactivated stop issue");
     const liveRun = await newRun(identity);
     await sessionsService.claim(
@@ -1802,22 +1713,19 @@ describe("human stop requests on active work sessions (#82)", () => {
     expect(await sessionsService.activeSessions(humanActor(f), f.workspaceId)).toEqual([
       expect.objectContaining({ id: claim.id, projectId: f.projectId, status: "active" }),
     ]);
-    // REST answers with the bare array (ADR-0003), carrying the project id the UI needs.
+
     const res = await getJson(`/api/workspaces/${f.workspaceId}/work-sessions/active`, f.cookie);
     expect(res.status).toBe(200);
     expect(ActiveWorkSessionsResponse.parse(await res.json())).toEqual([
       expect.objectContaining({ id: claim.id, projectId: f.projectId }),
     ]);
 
-    // A lapsed lease drops out of the live listing in database time without a write.
     await setLease(issue.id, "statement_timestamp() - interval '1 second'");
     expect(await sessionsService.activeSessions(humanActor(f), f.workspaceId)).toEqual([]);
   });
 });
 
 describe("ephemeral session activities (#83)", () => {
-  // Activities are append-only, tied to the one live session the calling agent holds, and
-  // kept in their own table so expiry/completion never erase the trail.
   it("lets only the live holder append activities and keeps them after expiry", async () => {
     const f = await bootstrap();
     const identity = await identityFor(f.secret);
@@ -1849,7 +1757,6 @@ describe("ephemeral session activities (#83)", () => {
     });
     expect(action).toMatchObject({ kind: "action", detail: null });
 
-    // A different agent, even with Contribute on the same project, holds no session.
     const otherAgent = await postJson(
       "/api/agents",
       { name: `activity-other-${randomUUID()}` },
@@ -1883,7 +1790,6 @@ describe("ephemeral session activities (#83)", () => {
       ),
     ).toBe("session_required");
 
-    // A fence naming another session never falls through to the live one.
     expect(
       errorKind(
         await rejection(
@@ -1897,8 +1803,6 @@ describe("ephemeral session activities (#83)", () => {
       ),
     ).toBe("session_required");
 
-    // Once the lease lapses, neither a plain nor a correctly fenced append is accepted:
-    // an expired session is never revived and the two existing entries are untouched.
     await setLease(issue.id, "statement_timestamp() - interval '1 second'");
     for (const fenced of [false, true]) {
       expect(
@@ -1932,7 +1836,6 @@ describe("ephemeral session activities (#83)", () => {
       .where(eq(issueComments.issueId, issue.id));
     expect(comments).toHaveLength(0);
 
-    // Completion is equally harmless to the recorded trail.
     const secondIssue = await humanIssue(f, "Completed activity issue");
     const secondRun = await newRun(identity);
     const second = await sessionsService.claim(
@@ -1966,7 +1869,6 @@ describe("ephemeral session activities (#83)", () => {
       { issueId: issue.id, kind: "thought", summary: "Visible to readers" },
     );
 
-    // A human in the project and a Read-scoped agent key can both read the timeline.
     expect(await sessionsService.listActivities(humanActor(f), issue.id, session.id)).toHaveLength(
       1,
     );
@@ -1990,14 +1892,12 @@ describe("ephemeral session activities (#83)", () => {
       ),
     ).toHaveLength(1);
 
-    // A session id from a different issue is indistinguishable from a missing one.
     expect(
       errorKind(
         await rejection(sessionsService.listActivities(humanActor(f), issue.id, randomUUID())),
       ),
     ).toBe("session_not_found");
 
-    // A human outside the workspace gets the same 404 as a missing issue.
     const outsider = {
       kind: "human" as const,
       account: {
@@ -2010,7 +1910,7 @@ describe("ephemeral session activities (#83)", () => {
     expect(
       errorKind(await rejection(sessionsService.listActivities(outsider, issue.id, session.id))),
     ).toBe("issue_not_found");
-    // An agent key scoped to another workspace cannot reach the issue either.
+
     const [otherWorkspace] = await database.db.transaction(async (tx) => {
       const [created] = await tx
         .insert(workspaces)
@@ -2054,7 +1954,6 @@ describe("ephemeral session activities (#83)", () => {
       ),
     ).toBe("issue_not_found");
 
-    // REST exposes the same boundary: the bare array to a reader, 404 to a stranger.
     const res = await getJson(
       `/api/issues/${issue.id}/work-sessions/${session.id}/activities`,
       f.cookie,
@@ -2079,13 +1978,11 @@ describe("ephemeral session activities (#83)", () => {
       { kind: "agent", identity },
       { issueId: issue.id, kind: "thought", summary: "Before deactivation" },
     );
-    // The owner reads the trail before deactivation.
+
     expect(await sessionsService.listActivities(humanActor(f), issue.id, session.id)).toHaveLength(
       1,
     );
 
-    // A deactivation that committed first is re-read inside the activity read's transaction:
-    // neither the human nor its agent can use a stale identity to inspect the timeline.
     await database.db
       .update(humans)
       .set({ deactivatedAt: sql`statement_timestamp()` })
@@ -2118,7 +2015,7 @@ describe("ephemeral session activities (#83)", () => {
       summary: "REST update",
       detail: { tool: "edit" },
     });
-    // An oversized structured payload is a validation Problem, never a huge JSONB row.
+
     const oversized = await postJson(
       `/api/issues/${issue.id}/work-sessions/activities`,
       { kind: "thought", summary: "Too large", detail: { blob: "x".repeat(64_001) } },
@@ -2134,8 +2031,6 @@ describe("ephemeral session activities (#83)", () => {
   });
 });
 
-// #84: assignment is a pull-queue hint but the claim is authoritative. These tests prove
-// the strict policy and the ready-work filter/order against real rows and transactions.
 describe("agent assignment and the ready queue (#84)", () => {
   it("refuses claims on work reserved for a human or another agent", async () => {
     const f = await bootstrap();
@@ -2163,7 +2058,6 @@ describe("agent assignment and the ready queue (#84)", () => {
     expect(await activeCount(humanOwned.id)).toBe(0);
     expect(await activeCount(otherOwned.id)).toBe(0);
 
-    // The same refusal crosses both transports as an RFC 9457 Problem with a stable code.
     await expectProblem(
       await postJson(
         `/api/issues/${humanOwned.id}/work-sessions`,
@@ -2205,7 +2099,7 @@ describe("agent assignment and the ready queue (#84)", () => {
       { issueId: mine.id, runId: mineRun },
     );
     expect(claimed.status).toBe("active");
-    // An idempotent retry by the same run joins the existing session.
+
     expect(
       (
         await sessionsService.claim(
@@ -2271,7 +2165,7 @@ describe("agent assignment and the ready queue (#84)", () => {
     expect(
       (await sessionsService.readyWork(agent, f.projectId, "unassigned")).map((i) => i.id),
     ).toEqual([unassigned.id]);
-    // Humans see all ready work under `all`, but may narrow to their own assignments.
+
     expect(
       (await sessionsService.readyWork(humanActor(f), f.projectId, "all")).map((i) => i.id),
     ).toEqual([humanOwned.id, mineUrgent.id, unassigned.id, mineLow.id, otherOwned.id]);
@@ -2281,7 +2175,6 @@ describe("agent assignment and the ready queue (#84)", () => {
       ),
     ).toEqual([humanOwned.id]);
 
-    // The query filter is available over REST as well as MCP.
     const rest = await getJson(
       `/api/projects/${f.projectId}/ready-work?filter=assignedToMe`,
       undefined,
@@ -2292,8 +2185,6 @@ describe("agent assignment and the ready queue (#84)", () => {
     expect(rows.map((row) => row.id)).toEqual([mineUrgent.id, mineLow.id]);
   });
 
-  // #94: the six-state workflow is driven by the work-session lifecycle. Every write
-  // below is asserted against the issue row in the same real Postgres instance.
   it("moves todo -> in_progress on claim and back on release or lease expiry", async () => {
     const f = await bootstrap();
     const identity = await identityFor(f.secret);
@@ -2308,8 +2199,6 @@ describe("agent assignment and the ready queue (#84)", () => {
     await sessionsService.stop(agent, issue.id, "released");
     expect((await issueStatus(issue.id)).status).toBe("todo");
 
-    // A five-minute lease lapse is materialized on the next check-in; it returns the
-    // issue to the ready queue even when the operation that noticed it is refused.
     await sessionsService.claim(agent, { issueId: issue.id, runId: run });
     await setLease(issue.id, "statement_timestamp() - interval '1 second'");
     await rejection(sessionsService.renew(agent, issue.id));
@@ -2332,8 +2221,6 @@ describe("agent assignment and the ready queue (#84)", () => {
       blocked.id,
     );
 
-    // Default completion is a non-terminal handoff. closedAt stays null and the
-    // dependent remains blocked while the blocker sits in review.
     await sessionsService.claim(agent, { issueId: blocker.id, runId: await newRun(identity) });
     await sessionsService.stop(agent, blocker.id, "completed");
     expect(await issueStatus(blocker.id)).toMatchObject({ status: "review", closedAt: null });
@@ -2341,10 +2228,8 @@ describe("agent assignment and the ready queue (#84)", () => {
       blocked.id,
     );
 
-    // Close the first blocker too; review is non-terminal and still blocks.
     await projectsService.updateIssue(humanActor(f), blocker.id, { status: "done" });
 
-    // An explicit done outcome closes a blocker and unblocks the dependent.
     const doneIssue = await humanIssue(f, "Closed directly");
     await projectsService.addBlockedBy(humanActor(f), blocked.id, {
       blockedByIssueId: doneIssue.id,
@@ -2403,9 +2288,6 @@ describe("agent assignment and the ready queue (#84)", () => {
   });
 });
 
-// #96: telemetry totals are overwritten only when reported, and a `block` is validated only
-// when present. Both are proved against real rows so the contract's validation and the
-// database's non-negative CHECK constraints are exercised together.
 describe("cumulative session telemetry and v1 activity blocks (#96)", () => {
   it("overwrites reported totals on renew/progress/complete and preserves omitted fields", async () => {
     const f = await bootstrap();
@@ -2428,21 +2310,18 @@ describe("cumulative session telemetry and v1 activity blocks (#96)", () => {
     });
     expect(renewed).toMatchObject({ inputTokens: 100, outputTokens: 20, costUsdMicros: null });
 
-    // A retry of the same cumulative totals writes the same values, never a sum.
     const retried = await sessionsService.renew(actor, issue.id, undefined, {
       inputTokens: 100,
       outputTokens: 20,
     });
     expect(retried).toMatchObject({ inputTokens: 100, outputTokens: 20, costUsdMicros: null });
 
-    // Progress reports a higher input total and the first cost; output is preserved.
     const progressed = await sessionsService.progress(actor, issue.id, "Halfway", undefined, {
       inputTokens: 250,
       costUsdMicros: 750,
     });
     expect(progressed).toMatchObject({ inputTokens: 250, outputTokens: 20, costUsdMicros: 750 });
 
-    // A check-in that omits telemetry entirely leaves every stored total untouched.
     expect(await sessionsService.progress(actor, issue.id, "Still going")).toMatchObject({
       inputTokens: 250,
       outputTokens: 20,
@@ -2454,7 +2333,6 @@ describe("cumulative session telemetry and v1 activity blocks (#96)", () => {
       costUsdMicros: 750,
     });
 
-    // Completion reports final input and cost totals; output carries forward.
     const stopped = await sessionsService.stop(actor, issue.id, "completed", undefined, {
       inputTokens: 400,
       costUsdMicros: 1200,
@@ -2466,7 +2344,6 @@ describe("cumulative session telemetry and v1 activity blocks (#96)", () => {
       costUsdMicros: 1200,
     });
 
-    // A session that never reported telemetry keeps all three null through every write.
     const quiet = await humanIssue(f, "Quiet issue");
     await sessionsService.claim(actor, { issueId: quiet.id, runId: await newRun(identity) });
     expect(await sessionsService.renew(actor, quiet.id)).toMatchObject({
@@ -2507,7 +2384,7 @@ describe("cumulative session telemetry and v1 activity blocks (#96)", () => {
         runId: await newRun(identity),
       },
     );
-    // The CHECK constraints are the backstop for any writer that bypasses the contract.
+
     for (const [column, constraint] of [
       ["inputTokens", "work_sessions_input_tokens_nonnegative"],
       ["outputTokens", "work_sessions_output_tokens_nonnegative"],
@@ -2524,7 +2401,7 @@ describe("cumulative session telemetry and v1 activity blocks (#96)", () => {
       }
       expect(rootCause(updateError)).toMatchObject({ code: "23514", constraint_name: constraint });
     }
-    // Zero and positive totals remain writable.
+
     await database.db
       .update(workSessions)
       .set({ inputTokens: 0, outputTokens: 0, costUsdMicros: 0 })
@@ -2565,12 +2442,12 @@ describe("cumulative session telemetry and v1 activity blocks (#96)", () => {
         false,
       );
     }
-    // Without a block, arbitrary JSON passes through as before #83.
+
     expect(SessionActivityDetail.parse({ tool: "edit", nested: { n: 1 } })).toEqual({
       tool: "edit",
       nested: { n: 1 },
     });
-    // The 64000-character size bound still applies to a detail carrying a block.
+
     expect(
       SessionActivityDetail.safeParse({ block: blocks[0], blob: "x".repeat(64_001) }).success,
     ).toBe(false);
@@ -2583,7 +2460,7 @@ describe("cumulative session telemetry and v1 activity blocks (#96)", () => {
       issueId: issue.id,
       runId: await newRun(identity),
     });
-    // Parse gives a mutable, typed block from the readonly fixture literal.
+
     const testResults = ActivityDetailBlockV1.parse(blocks[3]);
     const withBlock = await sessionsService.logActivity(actor, {
       issueId: issue.id,

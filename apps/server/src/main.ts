@@ -18,7 +18,6 @@ const migrationsDir = fileURLToPath(new URL("../../../db/migrations", import.met
 const applied = await migrate(database.sql, migrationsDir);
 if (applied.length > 0) log.info("migrations applied", { applied });
 
-// Each feature decides what to warn about at startup; main only reports it.
 for (const warning of [
   ...(await accountWarnings({ db: database.db, setupSecret: config.BOOTSTRAP_SECRET })),
   ...(await settingsWarnings({ db: database.db, encryptionKey: config.ORRERY_ENCRYPTION_KEY })),
@@ -27,7 +26,7 @@ for (const warning of [
 }
 
 const features = createFeatures(database, config, log);
-// #98: start each feature's recurring maintenance (the 30-day trash sweep) once at boot.
+
 for (const feature of features) feature.startBackgroundTasks?.();
 
 const app = createApp({

@@ -25,8 +25,6 @@ import { TextField } from "../lib/fields.tsx";
 import { Link } from "../lib/Link.tsx";
 import { PageHeader } from "../lib/PageHeader.tsx";
 
-// Home: authenticated workspace directory. Unauthenticated visitors go straight to /setup
-// (on a fresh installation) or /signin.
 export const Route = createFileRoute("/")({
   loader: async ({ context }) => {
     const [, session, setup] = await Promise.all([
@@ -194,8 +192,6 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
   );
 }
 
-// System administrators only. The query returns null for any other account, so the
-// section is absent rather than a refused request; the server enforces the same rule.
 function InstallationInvitations() {
   const { data: invitations } = useSuspenseQuery(installationInvitationsQuery);
   const queryClient = useQueryClient();

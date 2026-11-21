@@ -1,8 +1,6 @@
 import type { AgentKeyValidity } from "@orrery/contract";
 import { defineStateMachine } from "../../platform/state-machine.ts";
 
-// Explicit Agent API Key state machine (verified by docs/formal/AgentKeyLifecycle.tla).
-// Previously completely implicit across revokedAt, expiresAt, and validity columns.
 export type AgentKeyState = "active" | "expired" | "revoked";
 
 export const agentKeyMachine = defineStateMachine<AgentKeyState>("AgentKey", {

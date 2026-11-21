@@ -13,9 +13,6 @@ import { createIssue } from "./commands.ts";
 import { issueQuery, issuesQuery, projectActivityQuery, readyWorkQuery } from "./queries.ts";
 import { issueStatusLabels } from "./issue-status.ts";
 
-// #97: subtasks are ordinary issues in the same project with a one-level parent pointer.
-// The project's issue list already carries them, so counts and the child list are derived
-// during render — no extra endpoint and no effect.
 export function subtasksOf(issues: Issue[], parentId: string): Issue[] {
   return issues.filter((issue) => issue.parentIssueId === parentId);
 }

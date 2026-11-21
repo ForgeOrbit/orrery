@@ -1,4 +1,3 @@
-// Public interface of the runs feature. Other code imports only this file.
 import type { Feature } from "../../platform/feature.ts";
 import type { SessionReader } from "../accounts/index.ts";
 import type { AgentAuthenticator } from "../agents/index.ts";
@@ -23,7 +22,7 @@ export function createRunsFeature(deps: RunsFeatureDeps): RunsFeature {
   const service = createRunsService({ db: deps.db });
   return {
     name: "runs",
-    // The adapters own authentication; the service decides everything after identity.
+
     rest: createRunsRest(service, deps.sessionReader, deps.authenticate),
     registerTools: createRunsMcp(service, deps.authenticate),
     service,

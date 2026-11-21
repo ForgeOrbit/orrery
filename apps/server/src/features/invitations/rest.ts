@@ -147,7 +147,6 @@ const registerInstallation = createRoute({
   },
 });
 
-// Route definitions, for the generated OpenAPI document.
 export const routes = [
   inviteInstallation,
   listInstallationInvitations,
@@ -157,12 +156,6 @@ export const routes = [
   registerInstallation,
 ];
 
-// Transport details rest.ts owns: every invitations error kind's HTTP status. Delivery
-// failures keep their settings codes and statuses through the shared map, so the reason
-// says where the send failed, not which route asked for it.
-// Transport details rest.ts owns: every invitations error kind's HTTP status. Delivery
-// failures keep their settings codes and statuses through the shared map, so the reason
-// says where the send failed, not which route asked for it.
 const statusFor = {
   not_signed_in: 401,
   not_admin: 403,
@@ -174,7 +167,6 @@ const statusFor = {
   inviter_not_authorized: 403,
 } as const satisfies Record<InvitationsErrorKind, number>;
 
-// The kinds each route's service calls can throw: a route answers exactly these.
 const inviteKinds = ["not_signed_in", "not_admin", "account_exists", "invitation_pending"] as const;
 const listKinds = ["not_signed_in", "not_admin"] as const;
 const resendKinds = [
@@ -198,8 +190,6 @@ const registrationKinds = [
   "account_exists",
 ] as const;
 
-// True when the error's kind is one of the route's kinds. A type guard is the honest
-// way to narrow; no assertions.
 function isKind<K extends readonly InvitationsErrorKind[]>(
   error: InvitationsError,
   kinds: K,
@@ -207,8 +197,6 @@ function isKind<K extends readonly InvitationsErrorKind[]>(
   return kinds.some((kind) => kind === error.kind);
 }
 
-// Map the invitation kinds a route answers to their Problem. Undefined means the error
-// is not one of them; the caller decides whether another mapper owns it.
 function invitationFailure<K extends readonly InvitationsErrorKind[]>(
   c: Context,
   error: unknown,
@@ -230,8 +218,6 @@ function failure<K extends readonly InvitationsErrorKind[]>(c: Context, error: u
   throw error;
 }
 
-// The sending routes also answer every delivery failure with settings' own code and
-// status, so a client can tell the reasons apart wherever the send happened.
 function sendFailure<K extends readonly InvitationsErrorKind[]>(
   c: Context,
   error: unknown,
@@ -244,12 +230,7 @@ function sendFailure<K extends readonly InvitationsErrorKind[]>(
   throw error;
 }
 
-// Thin: resolve the session, call the service, map the result to HTTP. The service
-// decides who may do what; this layer only carries it, and every error is a Problem
-// built through platform/problem.ts (ADR-0003). A kind the route does not answer is a
-// programming error: it stays a 500 instead of silently gaining a status.
 export function createInvitationsRest(service: InvitationsService, sessionReader: SessionReader) {
-  // Validation failures answer as a validation_failed Problem, like every other error.
   const app = new OpenAPIHono({ defaultHook: validationHook });
 
   app.openapi(inviteInstallation, async (c) => {

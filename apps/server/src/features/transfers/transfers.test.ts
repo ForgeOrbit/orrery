@@ -44,10 +44,6 @@ import { createSessionsFeature, type SessionsService } from "../work-sessions/in
 import { createWorkspacesFeature } from "../workspaces/index.ts";
 import { createTransfersFeature } from "./index.ts";
 
-// Real Postgres (AGENTS.md): transfer authority rechecks, the database-time live-work
-// gate, lock ordering, key/grant cleanup and event placement are database behavior.
-// The REST seam is the public interface; zz-transfer.spec.ts repeats the flow black-box.
-
 const SECRET = "correct horse battery staple staple";
 const ADMIN_EMAIL = "transfer-admin@example.com";
 const ADMIN_PASSWORD = "transfer-admin-password";
@@ -393,8 +389,6 @@ beforeAll(async () => {
 }, 120_000);
 
 beforeEach(async () => {
-  // afterEach wipes the installation, so each test starts from a freshly bootstrapped
-  // first administrator and their personal workspace.
   const [admin] = await database.db
     .select({ id: humans.id })
     .from(humans)
@@ -424,8 +418,7 @@ afterEach(async () => {
     await tx.execute(sql`delete from run_children`);
     await tx.execute(sql`delete from run_model_changes`);
     await tx.execute(sql`delete from runs`);
-    // #94: completing a session now records agent-attributed project activity, so the
-    // activity rows must go before the agents they name.
+
     await tx.execute(sql`delete from project_activity`);
     await tx.execute(sql`delete from agents`);
     await tx.execute(sql`delete from project_access_events`);
@@ -468,8 +461,6 @@ const patchJson = (path: string, body: unknown, cookie: string) =>
     body: JSON.stringify(body),
   });
 
-// A shared workspace owns the source project (#46). The caller is its owner, so the
-// source authority check exercises the membership path rather than personal ownership.
 async function sharedSource(name: string) {
   const cookie = await cookieFor(ADMIN_EMAIL, ADMIN_PASSWORD);
   const [admin] = await database.db
@@ -675,7 +666,6 @@ describe("personal-to-shared project transfer against real Postgres", () => {
     const res = await complete(s.cookie, s.project.id, dest.workspaceId);
     expect(res.status).toBe(200);
 
-    // Source keys no longer see the moved project.
     const identity = await identityFor(secret);
     expect(identity.projects.map((grant) => grant.projectId)).not.toContain(s.project.id);
     expect(await database.db.select().from(agentApiKeyProjects)).toHaveLength(0);
@@ -687,7 +677,6 @@ describe("personal-to-shared project transfer against real Postgres", () => {
     );
     expect(refused.status).toBeGreaterThanOrEqual(400);
 
-    // Identity and authored history survive the move.
     const after = await getProject(s.cookie, s.project.id);
     expect(after).toMatchObject({
       id: s.project.id,
@@ -702,7 +691,6 @@ describe("personal-to-shared project transfer against real Postgres", () => {
     expect(stringsOf(await afterActivity.json(), "type")).toContain("issue_created");
     expect(await database.db.select().from(projectActivity)).not.toHaveLength(0);
 
-    // Destination owners and the receiver hold Manage; receipt and grant events are its own.
     const grants = await database.db
       .select({ level: projectAccessGrants.level })
       .from(projectAccessGrants)
@@ -732,8 +720,7 @@ describe("personal-to-shared project transfer against real Postgres", () => {
     const s = await source();
     const dest = await createSharedWorkspace(s.cookie, "Offer Team", ADMIN_EMAIL);
     const authorization = await authorize(s.cookie, s.project.id, dest.workspaceId);
-    // A shared-to-shared move (#46) can leave real offers behind; for a personal project
-    // the API cannot create one, so place the offer directly and prove the generic cleanup.
+
     const [invitation] = await database.db
       .insert(workspaceInvitations)
       .values({
@@ -797,7 +784,6 @@ describe("personal-to-shared project transfer against real Postgres", () => {
       "workspace_not_found",
     );
 
-    // The authorizer is not a destination member either, so the receiver must be one.
     const authorization = await authorize(s.cookie, s.project.id, dest.workspaceId);
     await expectProblem(
       await postJson("/api/transfers/preview", { token: authorization.token }, outsiderCookie),
@@ -1008,7 +994,7 @@ describe("shared-to-shared project transfer against real Postgres", () => {
 
   it("authorizes a shared source; a separate Create projects member previews and accepts", async () => {
     const sourceW1 = await sharedSource("W1 Two Party");
-    // A destination owned by someone else keeps the two parties genuinely separate.
+
     const destinationOwner = await insertHuman("shared-dest-owner@example.com");
     const ownerCookie = await sessionFor(destinationOwner.id);
     const destW2 = await createSharedWorkspace(
@@ -1023,7 +1009,6 @@ describe("shared-to-shared project transfer against real Postgres", () => {
     await addMembership(destW2.workspaceId, plain.id, false);
     const plainCookie = await sessionFor(plain.id);
 
-    // The source owner is not a destination member, so the authorization carries no PII.
     const authorization = await authorize(sourceW1.cookie, sourceW1.project.id, destW2.workspaceId);
     expect(authorization.preview).toBeNull();
     expect(authorization.authorizedByHumanId).toBe(sourceW1.humanId);
@@ -1149,7 +1134,7 @@ describe("shared-to-shared project transfer against real Postgres", () => {
     expect(await getProject(sourceW1.cookie, sourceW1.project.id)).toMatchObject({
       workspaceId: sourceW1.workspaceId,
     });
-    // The old W1 key and the old W1 read grant are still gone after returning to W1.
+
     expect(await database.db.select().from(agentApiKeyProjects)).toHaveLength(0);
     const identity = await identityFor(secret);
     expect(identity.projects.map((grant) => grant.projectId)).not.toContain(sourceW1.project.id);
@@ -1174,8 +1159,6 @@ describe("shared-to-shared project transfer against real Postgres", () => {
     const destW2 = await createSharedWorkspace(sourceW1.cookie, "W2 Lost Owner", ADMIN_EMAIL);
     const authorization = await authorize(sourceW1.cookie, sourceW1.project.id, destW2.workspaceId);
 
-    // Keep the shared workspace valid by appointing a successor before demoting the
-    // authorizer, then remove the authorizer's ownership before acceptance.
     const successor = await insertHuman("shared-successor@example.com");
     await database.db.insert(workspaceMemberships).values({
       id: randomUUID(),
@@ -1193,8 +1176,6 @@ describe("shared-to-shared project transfer against real Postgres", () => {
         ),
       );
 
-    // Destination membership is gated first: a stranger holding the token still gets a
-    // missing-authorization 404, never a hint that the source owner was demoted.
     const stranger = await insertHuman("lost-owner-stranger@example.com");
     const strangerCookie = await sessionFor(stranger.id);
     await expectProblem(await accept(strangerCookie, authorization.token), 404, "transfer_invalid");
@@ -1203,8 +1184,7 @@ describe("shared-to-shared project transfer against real Postgres", () => {
       409,
       "source_authority_lost",
     );
-    // The demoted authorizer no longer has project access through ownership, so read the
-    // stored row rather than through the HTTP project view.
+
     const [stored] = await database.db
       .select({ workspaceId: projects.workspaceId })
       .from(projects)
@@ -1232,8 +1212,7 @@ describe("shared-to-shared project transfer against real Postgres", () => {
       })
       .returning();
     if (invitation === undefined) throw new Error("the invitation was not created");
-    // Invitation redemption rechecks that the inviter can still invite, which needs a
-    // verified mailbox. Bootstrap does not verify the first administrator's email.
+
     await database.db
       .update(humans)
       .set({ emailVerifiedAt: sql`now()` })
@@ -1293,7 +1272,6 @@ describe("shared-to-shared project transfer against real Postgres", () => {
       200,
     );
 
-    // The received project keeps its authored activity but none of W1's access changes.
     const after = await readHistory(
       sourceW1.cookie,
       `/api/projects/${sourceW1.project.id}/history`,
@@ -1303,7 +1281,6 @@ describe("shared-to-shared project transfer against real Postgres", () => {
     expect(after.some((event) => event.type === "project_access_granted")).toBe(true);
     expect(after.some((event) => event.subject?.email === member.email)).toBe(false);
 
-    // W1 still reads its own access-change events; W2 reads only its receipt.
     const w1History = await readHistory(
       sourceW1.cookie,
       `/api/workspaces/${sourceW1.workspaceId}/history`,
@@ -1317,7 +1294,6 @@ describe("shared-to-shared project transfer against real Postgres", () => {
     expect(w2History.map((event) => event.type)).toContain("project_transfer_received");
     expect(w2History.some((event) => event.type === "project_access_granted")).toBe(true);
 
-    // The row scopes themselves never changed: W1's events are still W1's.
     const stored = await database.db
       .select({
         id: projectAccessEvents.id,
@@ -1356,8 +1332,7 @@ describe("shared-to-shared project transfer against real Postgres", () => {
       409,
       "project_key_conflict",
     );
-    // Nothing committed: the direct-flow authorization rolls back with the conflict,
-    // the project stays put and keeps its key, and its issue identifier is unchanged.
+
     const pending = await database.db
       .select({ id: projectTransferAuthorizations.id })
       .from(projectTransferAuthorizations)
@@ -1425,8 +1400,7 @@ describe("shared-to-shared project transfer against real Postgres", () => {
     if (admin === undefined) throw new Error("no admin");
     const personal = await personalWorkspaceId(admin.id);
     const moved = await createProjectWithKey(cookie, personal, "Moved project", "ORR");
-    // ORR2 is free in the destination but already taken in the source. A separate key
-    // UPDATE would hit the source's unique index before the workspaceId moved.
+
     await createProjectWithKey(cookie, personal, "Source neighbour", "ORR2");
     const dest = await createSharedWorkspace(cookie, "Destination with ORR", ADMIN_EMAIL);
     await createProjectWithKey(cookie, dest.workspaceId, "Destination project", "ORR");
@@ -1449,7 +1423,6 @@ describe("shared-to-shared project transfer against real Postgres", () => {
     await database.db.update(projects).set({ key: "FREE" }).where(eq(projects.id, s.project.id));
     const dest = await createSharedWorkspace(s.cookie, "No collision Team", ADMIN_EMAIL);
 
-    // A key rename is only a collision-resolution tool, not an ordinary update path.
     await expectProblem(
       await completeWithKey(s.cookie, s.project.id, dest.workspaceId, "OTHER"),
       409,
@@ -1459,7 +1432,7 @@ describe("shared-to-shared project transfer against real Postgres", () => {
       workspaceId: s.workspaceId,
       key: "FREE",
     });
-    // Without the extra key the transfer still succeeds.
+
     const res = await complete(s.cookie, s.project.id, dest.workspaceId);
     expect(res.status).toBe(200);
     expect(await getProject(s.cookie, s.project.id)).toMatchObject({

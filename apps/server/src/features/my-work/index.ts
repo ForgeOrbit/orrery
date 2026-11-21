@@ -1,4 +1,3 @@
-// Public interface of the cross-workspace My work feature. Other code imports only this file.
 import type { Feature } from "../../platform/feature.ts";
 import type { SessionReader } from "../accounts/index.ts";
 import { createMyWorkRest, routes } from "./rest.ts";

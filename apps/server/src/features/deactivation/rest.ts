@@ -55,7 +55,6 @@ const reactivate = createRoute({
   },
 });
 
-// Route definitions, for the generated OpenAPI document.
 export const routes = [deactivate, reactivate];
 
 const statusFor = {
@@ -99,7 +98,6 @@ function failure<K extends readonly DeactivationErrorKind[]>(c: Context, error: 
   throw error;
 }
 
-// Thin: validate, resolve the session, call the service, map the result. No policy here.
 export function createDeactivationRest(service: DeactivationService, sessionReader: SessionReader) {
   const app = new OpenAPIHono({ defaultHook: validationHook });
 

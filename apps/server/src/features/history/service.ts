@@ -27,32 +27,12 @@ import {
 import type { SessionAccount } from "../accounts/index.ts";
 import { projectAccessAtLeast } from "../projects/index.ts";
 
-// The projects feature's access ceiling, borrowed through its public interface. The same
-// resolver decides a project's own reads and its history visibility.
 type ProjectAccessCeiling = (
   tx: DbTransaction,
   workspaceId: string,
   humanId: string,
   projectIds: readonly string[],
 ) => Promise<Map<string, ProjectAccessLevel | null>>;
-
-// The service is the only file in this feature that decides anything. rest.ts stays thin:
-// it resolves the session, calls one of these three methods, and maps the result.
-//
-// Scope policy (issue #32, user stories 82-85):
-// - A workspace's owner sees membership, permission, credential, and project access
-//   events in that workspace. A delegated permission manager sees membership/permission
-//   events in the workspace and project access events only for projects they Manage;
-//   credential history stays with the owner. A non-member answers 404, so a history
-//   route cannot enumerate workspaces.
-// - A human with any granted level on a project sees its attributed activity. Project
-//   access history needs Manage (which a workspace owner holds implicitly). A project
-//   outside the caller's access answers 404, exactly like the project itself.
-// - A system administrator sees installation-level access events only. The administrator
-//   role alone grants no workspace or project history, and the installation events carry
-//   no workspace or project content.
-// No event table stores a secret, and none of these projections selects a hash, token, or
-// password, so a history read cannot return one.
 
 export type HistoryErrorKind =
   | "not_signed_in"
@@ -85,10 +65,6 @@ function requireAccount(account: SessionAccount | null): SessionAccount {
   return account;
 }
 
-// The actors are stable identities. A human's email is the label readers already see in
-// project activity; an agent is named itself, never by its owner. A deactivated human
-// keeps that label and is marked `deactivated` (#38), so history never says "unknown" for
-// an author whose account was suspended.
 function humanActor(
   id: string | null,
   email: string | null,
@@ -122,9 +98,6 @@ function sortNewestFirst(events: HistoryEvent[]): HistoryEvent[] {
   );
 }
 
-// An installation invitation's lifecycle is already persisted as status plus timestamps.
-// Each recorded transition becomes one history event; the bootstrap row becomes another.
-// These codes are view-level names for stored facts, not a new source of truth.
 const INSTALLATION_TYPE = {
   bootstrap: "installation_bootstrap",
   invited: "installation_invitation_created",
@@ -187,7 +160,7 @@ async function loadKeyEvents(db: Db, workspaceId: string, workspaceName: string)
     .leftJoin(actorHuman, eq(actorHuman.id, agentKeyEvents.actorHumanId))
     .where(eq(agentKeyEvents.workspaceId, workspaceId))
     .orderBy(desc(agentKeyEvents.createdAt), desc(agentKeyEvents.id));
-  // No key, hash, or secret is selected: an audit read never exposes a credential.
+
   const scope: Scope = { kind: "workspace", id: workspaceId, name: workspaceName };
   return rows.map((row): HistoryEvent => ({
     id: row.id,
@@ -205,12 +178,9 @@ async function loadKeyEvents(db: Db, workspaceId: string, workspaceName: string)
 
 async function loadProjectAccessEvents(
   db: Db,
-  // #46: only the events this workspace owned are readable here. A project transferred
-  // in from another workspace keeps that workspace's grant/revoke history strictly there,
-  // and a project that left still leaves its old events in the source's workspace history.
+
   workspaceId: string,
-  // Project history narrows to one project; workspace history passes no ids so it reads
-  // every event the workspace ever owned, including projects that have since moved out.
+
   projectIds?: readonly string[],
 ): Promise<HistoryEvent[]> {
   if (projectIds !== undefined && projectIds.length === 0) return [];
@@ -251,7 +221,7 @@ async function loadProjectAccessEvents(
     id: row.id,
     kind: "project_access",
     type: row.type,
-    // The project is the narrowest scope the reader was authorized for.
+
     scope: {
       kind: "project",
       id: row.projectId,
@@ -370,8 +340,7 @@ async function loadInstallationEvents(db: Db): Promise<HistoryEvent[]> {
       });
     };
     add(INSTALLATION_TYPE.invited, row.createdAt, inviterActor, inviteeActor);
-    // Accepting and declining are the recipient's acts: they are the actor and the
-    // inviter is the subject. Issuing, expiry, and revocation stay the inviter's acts.
+
     if (row.status === InvitationStatus.enum.accepted)
       add(INSTALLATION_TYPE.accepted, row.acceptedAt, inviteeActor, inviterActor);
     if (row.status === InvitationStatus.enum.declined)
@@ -384,11 +353,6 @@ async function loadInstallationEvents(db: Db): Promise<HistoryEvent[]> {
   return events;
 }
 
-// Installation-wide account status changes (#38). The events are stored in the same
-// secret-free account event table as password recovery; only the two deactivation codes
-// and #43's ownership recovery code are read here. The actor is the administrator who
-// made the change, the subject the account it concerned. Both labels stay stable after
-// deactivation, and the recovery event carries no workspace or project content.
 async function loadAccountStatusEvents(db: Db): Promise<HistoryEvent[]> {
   const subjectHuman = alias(humans, "history_account_subject");
   const actorHuman = alias(humans, "history_account_actor");
@@ -411,9 +375,7 @@ async function loadAccountStatusEvents(db: Db): Promise<HistoryEvent[]> {
       inArray(accountRecoveryEvents.type, [
         "account_deactivated",
         "account_reactivated",
-        // #43: recovery is an installation-wide administrative act. The stored event
-        // names only the actor and promoted human, so installation history shows it
-        // without any workspace or project content.
+
         "workspace_ownership_recovered",
       ]),
     )
@@ -425,7 +387,7 @@ async function loadAccountStatusEvents(db: Db): Promise<HistoryEvent[]> {
     type: row.type,
     scope,
     createdAt: row.createdAt.toISOString(),
-    // Older events have no actor column; fall back to the subject so the label is stable.
+
     actor: humanActor(
       row.actorId ?? row.subjectId,
       row.actorEmail ?? row.subjectEmail,
@@ -440,8 +402,7 @@ async function loadAccountStatusEvents(db: Db): Promise<HistoryEvent[]> {
 
 export interface HistoryDeps {
   db: PostgresJsDatabase;
-  // The same project-level resolver every human-facing project route uses, so a history
-  // read can never grant itself more project authority than the project itself.
+
   projectAccessCeiling: ProjectAccessCeiling;
 }
 
@@ -481,12 +442,10 @@ export function createHistoryService({ db, projectAccessCeiling }: HistoryDeps):
 
           const personal = row.kind === WorkspaceKind.enum.personal;
           const isOwner = personal ? row.personalOwnerId === actor.humanId : row.isOwner === true;
-          // A personal workspace belongs to one human; a shared one to its members. Anyone
-          // else gets the same 404 as a missing id, so history cannot enumerate workspaces.
+
           const inScope = personal ? row.personalOwnerId === actor.humanId : row.isOwner !== null;
           if (!inScope) throw new HistoryError("workspace_not_found");
-          // Credential history is the owner's; a delegate's authority is permission
-          // management plus the projects they Manage.
+
           if (!isOwner && row.canManageMemberPermissions !== true) {
             throw new HistoryError("workspace_history_forbidden");
           }
@@ -496,8 +455,7 @@ export function createHistoryService({ db, projectAccessCeiling }: HistoryDeps):
           ];
           if (isOwner) {
             events.push(...(await loadKeyEvents(tx, workspaceId, row.name)));
-            // Every access change this workspace ever owned, including projects that
-            // have since moved away (#46).
+
             events.push(...(await loadProjectAccessEvents(tx, workspaceId)));
           } else {
             const managed = await tx
@@ -544,12 +502,9 @@ export function createHistoryService({ db, projectAccessCeiling }: HistoryDeps):
         },
         { isolationLevel: "repeatable read", accessMode: "read only" },
       );
-      // No current access is the same answer as no such project. Membership alone, a
-      // stale grant after removal, and another workspace's project all look identical.
+
       if (level === null) throw new HistoryError("project_not_found");
 
-      // Every granted level follows ordinary project activity. Only Manage (which an
-      // owner holds implicitly) additionally sees who changed the project's access.
       const events = await loadProjectActivity(db, projectId, project.name);
       if (projectAccessAtLeast(level, ProjectAccessLevel.enum.manage)) {
         events.push(...(await loadProjectAccessEvents(db, project.workspaceId, [projectId])));
@@ -560,8 +515,7 @@ export function createHistoryService({ db, projectAccessCeiling }: HistoryDeps):
     async installationHistory(account) {
       const actor = requireAccount(account);
       if (!actor.isSystemAdministrator) throw new HistoryError("not_system_administrator");
-      // Installation events are derived from the installation's own records only; a
-      // workspace or project the administrator does not belong to never appears here.
+
       return sortNewestFirst([
         ...(await loadInstallationEvents(db)),
         ...(await loadAccountStatusEvents(db)),

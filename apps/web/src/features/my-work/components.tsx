@@ -16,14 +16,8 @@ import { issueStatusLabels, PriorityBadge } from "../projects/index.ts";
 import { Link } from "../../lib/Link.tsx";
 import { ApiProblemError } from "../../lib/api.ts";
 
-// The three read-only sections of the cross-workspace My work page. Rows, not cards: each
-// item is one issue, session or question, and every row carries the workspace and project
-// it came from so a person can tell which of their contexts needs attention. All data is
-// already scoped by GET /api/my-work; this file only presents it.
-
 const number = new Intl.NumberFormat();
-// Cost arrives in micro-dollars. Keep up to six decimals so a small reported cost never
-// rounds to a fake "$0.00" — the same reason null telemetry is hidden entirely.
+
 const currency = new Intl.NumberFormat(undefined, {
   style: "currency",
   currency: "USD",
@@ -186,8 +180,6 @@ function QuestionRow({ question }: { question: MyWorkQuestion }) {
   );
 }
 
-// RFC 9457 Problem Details are rendered from the typed error, never guessed from the
-// HTTP status: the title, detail and stable code all come from the server's Problem.
 export function MyWorkErrorState({ error }: { error: unknown }) {
   const problem = error instanceof ApiProblemError ? error.problem : undefined;
 

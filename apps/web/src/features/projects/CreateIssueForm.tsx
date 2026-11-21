@@ -30,7 +30,7 @@ export function CreateIssueForm({
       mentionIssues={projectIssues}
       onSubmit={async ({ title, body }) => {
         const issue = await createIssue(projectId, { title, body });
-        // A new issue has no links yet; seed the detail cache the loader will read.
+
         queryClient.setQueryData<IssueDetail>(issueQuery(issue.id).queryKey, {
           ...issue,
           links: [],

@@ -2,9 +2,6 @@ import { queryOptions } from "@tanstack/react-query";
 import { HistoryResponse } from "@orrery/contract";
 import { getJson } from "../../lib/api.ts";
 
-// Query definitions for the history views, shared by routes and components so they use one
-// cache key. Responses are parsed with the contract's zod schemas, so a server change
-// cannot slip through as an unchecked object.
 export const workspaceHistoryQuery = (workspaceId: string) =>
   queryOptions({
     queryKey: ["history", "workspace", workspaceId],
@@ -23,9 +20,6 @@ export const projectHistoryQuery = (projectId: string) =>
       ),
   });
 
-// Installation history is administrator-only. A signed-in ordinary account gets 403 and
-// an anonymous one 401; both are normal states for the optional admin section, so null
-// says "this account does not manage installation history" without a second client check.
 export const installationHistoryQuery = queryOptions({
   queryKey: ["history", "installation"],
   queryFn: async () => {

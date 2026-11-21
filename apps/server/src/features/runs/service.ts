@@ -23,11 +23,6 @@ import type { DbTransaction } from "../../platform/db.ts";
 import type { SessionAccount } from "../accounts/index.ts";
 import { nextChildRunStatus, nextRunStatus } from "./state-machine.ts";
 
-// The service is the only file in this feature that decides anything. rest.ts and
-// mcp.ts authenticate the bearer key through agents' narrow seam, validate input with
-// the shared contract, call here with the resulting identity, and map results. No run
-// identity is ever derived from an MCP transport session id or a reported name.
-
 export type RunsErrorKind = "not_signed_in" | "run_not_found" | "workspace_not_found";
 
 const messages: Record<RunsErrorKind, string> = {
@@ -56,12 +51,8 @@ export interface RunsDeps {
 }
 
 export interface RunsService {
-  // Record a hook event or an MCP check-in. A run is keyed by the authenticated agent,
-  // the key's workspace, and the harness's native session id; an explicit runId wins
-  // when present. Concurrent clients sharing one key stay distinct; a resume reuses
-  // the existing row. Absent metadata is stored as null, never guessed.
   report(identity: AgentIdentity | null, input: RunReportInput): Promise<RunReportResponse>;
-  // The human workspace view: every run in one workspace with history and children.
+
   listWorkspaceRuns(account: SessionAccount | null, workspaceId: string): Promise<RunDetail[]>;
 }
 
@@ -127,9 +118,6 @@ function toDetail(
   };
 }
 
-// The human's right to read this workspace's runs. A personal workspace belongs to its
-// one owner; a shared workspace requires membership. This is the same boundary the
-// workspaces feature applies to its own reads, and it is decided here, in the service.
 async function humanCanReadWorkspace(
   db: PostgresJsDatabase,
   workspaceId: string,
@@ -172,9 +160,6 @@ async function applyChildUpdate(
     .where(eq(runChildren.id, childId));
 }
 
-// Repeated reports for the same named child update its row in place; children with no
-// reported identity are anonymous observations and each gets its own row. A named child
-// run must be in the same agent/workspace scope and cannot be the parent itself.
 async function recordChild(
   tx: DbTransaction,
   identity: AgentIdentity,
@@ -208,8 +193,7 @@ async function recordChild(
   }
 
   const anonymous = agentId === null && childRunId === null;
-  // Match a nullable attribution field exactly: a reported id matches only that id, and
-  // an absent one matches only NULL, never a `''` sentinel.
+
   const byAgentId =
     agentId === null ? isNull(runChildren.agentId) : eq(runChildren.agentId, agentId);
   const byAgentType =
@@ -219,8 +203,6 @@ async function recordChild(
   const match = and(eq(runChildren.runId, runId), byAgentId, byAgentType, byChildRunId);
 
   if (!anonymous) {
-    // Lock an existing child row so a concurrent `child_ended` or model report cannot
-    // be lost to a second INSERT ... ON CONFLICT DO NOTHING.
     const [existing] = await tx.select().from(runChildren).where(match).limit(1).for("update");
     if (existing !== undefined) {
       await applyChildUpdate(tx, existing.id, model, ended, at);
@@ -244,8 +226,6 @@ async function recordChild(
     .onConflictDoNothing()
     .returning();
   if (created === undefined && !anonymous) {
-    // Another reporter inserted the same named child first; apply this report to the
-    // winner under its row lock instead of silently dropping the update.
     const [raced] = await tx.select().from(runChildren).where(match).limit(1).for("update");
     if (raced !== undefined) await applyChildUpdate(tx, raced.id, model, ended, at);
   }
@@ -255,16 +235,13 @@ export function createRunsService({ db }: RunsDeps): RunsService {
   return {
     async report(identity, input) {
       if (identity === null) throw new RunsError("not_signed_in");
-      // #29's check-in contract sends `reported: { model, harnessVersion }` and may
-      // omit `at` in favour of a check-in timestamp. Both shapes resolve identically.
+
       const observedAt = input.at ?? input.checkIn?.at ?? new Date().toISOString();
       const at = new Date(observedAt);
       const reportedModel = input.model ?? input.reported?.model ?? null;
       const harnessVersion = input.harnessVersion ?? input.reported?.harnessVersion ?? null;
       const runKey = input.runKey ?? undefined;
 
-      // One transaction for the whole mutation: the row lock makes the model comparison
-      // and the child upsert atomic, so two concurrent A→B reports write one history row.
       return db.transaction(async (tx) => {
         let row: RunRow | undefined;
         let inserted = false;
@@ -283,9 +260,6 @@ export function createRunsService({ db }: RunsDeps): RunsService {
             .for("update");
           if (row === undefined) throw new RunsError("run_not_found");
         } else if (runKey !== undefined) {
-          // The partial unique index enforces identity in the database, so two
-          // concurrent check-ins with the same key race safely: one inserts, the other
-          // reads the winner. Two native session ids under one key produce two runs.
           const [created] = await tx
             .insert(runs)
             .values({
@@ -321,8 +295,6 @@ export function createRunsService({ db }: RunsDeps): RunsService {
           }
           if (row === undefined) throw new RunsError("run_not_found");
         } else {
-          // No identity was reported: accept the observation but record nothing. Never
-          // borrow a transport session id or collapse unrelated conversations.
           return {
             runId: null,
             accepted: true,
@@ -332,8 +304,6 @@ export function createRunsService({ db }: RunsDeps): RunsService {
           };
         }
 
-        // Re-read under FOR UPDATE, including for the row this transaction just
-        // inserted, so every decision below sees one consistent, locked snapshot.
         const [locked] = await tx
           .select()
           .from(runs)
@@ -355,7 +325,6 @@ export function createRunsService({ db }: RunsDeps): RunsService {
           updates.status = RunStatus.enum.ended;
           updates.endedAt = at;
         } else if (nextStatus === RunStatus.enum.active && row.status === RunStatus.enum.ended) {
-          // A resumed conversation reuses the run and reactivates it.
           updates.status = RunStatus.enum.active;
           updates.endedAt = null;
         }
@@ -375,8 +344,6 @@ export function createRunsService({ db }: RunsDeps): RunsService {
           .returning();
         row = updated ?? row;
 
-        // Only a real change is history: a repeated report of the same model writes no
-        // event, and an absent model never overwrites a known one with `unknown`.
         if (modelChanged && !inserted) {
           await tx.insert(runModelChanges).values({
             id: randomUUID(),

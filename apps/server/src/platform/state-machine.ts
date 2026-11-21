@@ -1,7 +1,3 @@
-// Feature-agnostic explicit finite-state machine primitive.
-// Keeps transition tables declarative, erasable-TS compatible, and verifiable
-// against the TLA+ specifications in docs/formal/.
-
 export type TransitionTable<State extends string> = Readonly<Record<State, readonly State[]>>;
 
 export class InvalidStateTransitionError extends Error {

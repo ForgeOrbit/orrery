@@ -6,7 +6,6 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDb, type Sql } from "./db.ts";
 import { migrate } from "./migrate.ts";
 
-// Runs against a real Postgres: migrations and claim races must never be tested against mocks.
 describe("migrate", () => {
   let pg: StartedPostgreSqlContainer;
   let sql: Sql;

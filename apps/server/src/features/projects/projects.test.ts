@@ -41,10 +41,6 @@ import { migrate } from "../../platform/migrate.ts";
 import { createAccountsFeature } from "../accounts/index.ts";
 import { createProjectsFeature } from "./index.ts";
 
-// Runs against a real Postgres (see AGENTS.md): issue numbers, activity, and authorship
-// are database behavior, not mock behavior. The black-box e2e suite proves the same cycle
-// through a running server.
-
 const SECRET = "correct horse battery staple staple";
 const EMAIL = "admin@example.com";
 const PASSWORD = "first-admin-password";
@@ -116,8 +112,6 @@ async function cookieFor(app: Hono, email: string, password: string) {
 let databaseForHelpers: Database;
 const currentDatabase = () => databaseForHelpers;
 
-// Drizzle wraps the driver's error; the root's message (the PostgresError's) carries the
-// constraint name. Resolves with that, or the stringified error.
 async function rejection(promise: Promise<unknown>): Promise<string> {
   const error = await promise.then(
     () => {
@@ -217,8 +211,6 @@ describe("projects", () => {
     });
   });
 
-  // Wired like features/index.ts: accounts owns the session and bootstrap; projects owns
-  // the project content and activity.
   function makeApp() {
     const accounts = createAccountsFeature({
       db: database.db,
@@ -271,8 +263,6 @@ describe("projects", () => {
       closedAt: null,
     });
 
-    // Unauthenticated requests cannot list or fetch the project, its issues, comments,
-    // activity, or knowledge, and cannot create anything.
     const anonymous = [
       await getJson(app, `/api/workspaces/${workspaceId}/projects`),
       await getJson(app, `/api/projects/${project.id}`),
@@ -294,7 +284,6 @@ describe("projects", () => {
       expect(await problemBody(res)).toMatchObject({ status: 401, code: "not_signed_in" });
     }
 
-    // The administrator's own listing still returns the project.
     const visible = await getJson(app, `/api/workspaces/${workspaceId}/projects`, adminCookie);
     expect(visible.status).toBe(200);
     expect(ProjectsResponse.parse(await visible.json())).toEqual([project]);
@@ -308,7 +297,6 @@ describe("projects", () => {
       body: "Draft the **release notes** for the next version.",
     });
 
-    // Authorship is stored, not inferred from the session at read time.
     const [createdRow] = await database.db.select().from(issues).where(eq(issues.id, created.id));
     expect(createdRow).toMatchObject({
       projectId: project.id,
@@ -321,7 +309,6 @@ describe("projects", () => {
       closedAt: null,
     });
 
-    // Edit: title and body change; the last editor is recorded.
     const edited = await patchJson(
       app,
       `/api/issues/${created.id}`,
@@ -339,7 +326,6 @@ describe("projects", () => {
     });
     expect(editedIssue.updatedAt >= created.updatedAt).toBe(true);
 
-    // Comment: an ordinary discussion entry, with its author.
     const commented = await postJson(
       app,
       `/api/issues/${created.id}/comments`,
@@ -363,7 +349,6 @@ describe("projects", () => {
     expect(comments.status).toBe(200);
     expect(IssueCommentsResponse.parse(await comments.json())).toEqual([comment]);
 
-    // Close: closedAt is set, and an edit while closed leaves it untouched.
     const closed = await patchJson(
       app,
       `/api/issues/${created.id}`,
@@ -387,7 +372,6 @@ describe("projects", () => {
     expect(stillClosed.status).toBe("done");
     expect(stillClosed.closedAt).toBe(closedAt);
 
-    // Reopen: closedAt is cleared.
     const reopened = await patchJson(
       app,
       `/api/issues/${created.id}`,
@@ -399,7 +383,6 @@ describe("projects", () => {
     expect(reopenedIssue.status).toBe("todo");
     expect(reopenedIssue.closedAt).toBeNull();
 
-    // A repeated close is a no-op: no new event, no changed timestamp.
     const closeAgain = await patchJson(
       app,
       `/api/issues/${created.id}`,
@@ -409,7 +392,6 @@ describe("projects", () => {
     expect(closeAgain.status).toBe(200);
     expect(Issue.parse(await closeAgain.json()).status).toBe("todo");
 
-    // The activity feed has one event per real change, in order, each with its actor.
     const activity = await activityFor(app, adminCookie, project.id);
     expect(activity.map((event) => event.type)).toEqual([
       "project_created",
@@ -430,7 +412,6 @@ describe("projects", () => {
     expect(activity[3]).toMatchObject({ summary: "Write the final release notes" });
     expect(activity[4]).toMatchObject({ summary: "Write the final release notes" });
 
-    // The events are persisted, not just returned.
     const eventRows = await database.db
       .select()
       .from(projectActivity)
@@ -439,7 +420,6 @@ describe("projects", () => {
     expect(eventRows.map((row) => row.type)).toEqual(activity.map((event) => event.type));
     for (const row of eventRows) expect(row.actorHumanId).toBe(admin.id);
 
-    // The issue and its history survive a fresh read.
     const fetched = await getJson(app, `/api/issues/${created.id}`, adminCookie);
     expect(fetched.status).toBe(200);
     expect(Issue.parse(await fetched.json())).toMatchObject({
@@ -470,7 +450,6 @@ describe("projects", () => {
     );
     expect(numbers.toSorted((a, b) => a - b)).toEqual([1, 2, 3, 4, 5]);
 
-    // A different project starts its own numbering at 1.
     const firstInOther = await createIssue(app, adminCookie, other.id, { title: "Other first" });
     expect(firstInOther.number).toBe(1);
 
@@ -485,7 +464,6 @@ describe("projects", () => {
     const { app, adminCookie, workspaceId } = await readyApp();
     const project = await createProject(app, adminCookie, workspaceId);
 
-    // Defaults: priority is neutral and the first card is spaced by 65535 from zero.
     const plain = await createIssue(app, adminCookie, project.id, { title: "Plain" });
     expect(plain).toMatchObject({ priority: "none", sortOrder: 65535 });
 
@@ -501,8 +479,6 @@ describe("projects", () => {
       sortOrder: 10,
     });
 
-    // Priority dominates position: urgent (42) precedes low (10), which precedes the
-    // unprioritized card even though its sortOrder is larger.
     const listed = await getJson(app, `/api/projects/${project.id}/issues`, adminCookie);
     expect(listed.status).toBe(200);
     expect(IssuesResponse.parse(await listed.json()).map((issue) => issue.id)).toEqual([
@@ -511,8 +487,6 @@ describe("projects", () => {
       plain.id,
     ]);
 
-    // A human may reprioritize and reorder freely; a priority edit is activity, a pure
-    // reorder is not (otherwise dragging a card would drown the feed).
     const updated = await patchJson(
       app,
       `/api/issues/${plain.id}`,
@@ -533,7 +507,6 @@ describe("projects", () => {
       low.id,
     ]);
 
-    // A no-op request writes neither a new timestamp nor a new activity event.
     const before = await activityFor(app, adminCookie, project.id);
     const noop = await patchJson(
       app,
@@ -545,9 +518,6 @@ describe("projects", () => {
     expect(Issue.parse(await noop.json()).updatedAt).toBe(updatedIssue.updatedAt);
     expect((await activityFor(app, adminCookie, project.id)).length).toBe(before.length);
 
-    // The database repeats the enum: a bypassing writer cannot store an unknown priority.
-    // Raw SQL here is deliberate — the typed insert would reject the value before it ever
-    // reached the constraint this test is checking.
     const writerId = await adminId();
     expect(
       await rejection(
@@ -560,8 +530,6 @@ describe("projects", () => {
       ),
     ).toContain("issues_priority");
 
-    // A position must be finite. Postgres orders NaN above Infinity, so bounding the value
-    // on both sides rejects NaN as well as both infinities — including from a raw writer.
     for (const nonFinite of [
       "'Infinity'::double precision",
       "'-Infinity'::double precision",
@@ -636,7 +604,6 @@ describe("projects", () => {
     expect(fetched.status).toBe(200);
     expect(KnowledgeEntry.parse(await fetched.json())).toEqual(editedEntry);
 
-    // A no-op edit returns the entry unchanged and records nothing.
     const noop = await patchJson(
       app,
       `/api/knowledge/${entry.id}`,
@@ -700,7 +667,6 @@ describe("projects", () => {
       ).toContain("project_activity_target_matches_type");
     }
 
-    // The same shape with a matching target still inserts.
     await database.db.insert(projectActivity).values({
       id: randomUUID(),
       projectId: project.id,
@@ -782,7 +748,6 @@ describe("projects", () => {
     expect(blankKnowledge.status).toBe(400);
     expect(await problemBody(blankKnowledge)).toMatchObject({ code: "validation_failed" });
 
-    // Nothing invalid was stored.
     expect(await database.db.select().from(projects)).toHaveLength(1);
     expect(await database.db.select().from(issues)).toHaveLength(1);
     expect(await database.db.select().from(issueComments)).toHaveLength(0);
@@ -809,9 +774,6 @@ describe("projects", () => {
       });
     });
 
-    // The owner sees every project in the workspace and creates one; the owner's
-    // effective level is Manage. A non-owner member's ceiling is covered in
-    // access.test.ts, which owns the #27 access matrix.
     const empty = await getJson(app, `/api/workspaces/${sharedId}/projects`, adminCookie);
     expect(empty.status).toBe(200);
     expect(await empty.json()).toEqual([]);
@@ -843,7 +805,6 @@ describe("projects", () => {
       body: "Original body",
     });
 
-    // Race a close with a title edit and a second close on the same issue.
     const [close1, editTitle, close2] = await Promise.all([
       patchJson(app, `/api/issues/${issue.id}`, { status: "done" }, adminCookie),
       patchJson(app, `/api/issues/${issue.id}`, { title: "Updated title" }, adminCookie),
@@ -879,7 +840,6 @@ describe("projects", () => {
       createdBy: { humanId: admin.id, email: EMAIL },
     });
 
-    // Re-adding is a no-op: one edge, one activity event.
     expect((await addDependency(app, adminCookie, downstream.id, blocker.id)).status).toBe(201);
     const rows = await database.db
       .select()
@@ -905,7 +865,7 @@ describe("projects", () => {
       (await deleteJson(app, `/api/issues/${downstream.id}/blocked-by/${blocker.id}`, adminCookie))
         .status,
     ).toBe(204);
-    // A repeated removal is a no-op, so a retry cannot write a second event.
+
     expect(
       (await deleteJson(app, `/api/issues/${downstream.id}/blocked-by/${blocker.id}`, adminCookie))
         .status,
@@ -944,7 +904,6 @@ describe("projects", () => {
     expect(cycle.status).toBe(409);
     expect(await problemBody(cycle)).toMatchObject({ status: 409, code: "dependency_cycle" });
 
-    // The database constraint is the final word, even for a writer that skips the service.
     const constraint = await rejection(
       database.db.insert(issueDependencies).values({
         id: randomUUID(),
@@ -965,9 +924,6 @@ describe("projects", () => {
     const c = await createIssue(app, adminCookie, project.id, { title: "C" });
     const d = await createIssue(app, adminCookie, project.id, { title: "D" });
 
-    // A -> B and C -> D on their own are acyclic. Racing B -> C and D -> A closes the
-    // four-node cycle; the project-level lock must serialize the two checks so the
-    // second writer sees the first edge and refuses it.
     expect((await addDependency(app, adminCookie, a.id, b.id)).status).toBe(201);
     expect((await addDependency(app, adminCookie, c.id, d.id)).status).toBe(201);
     const raced = await Promise.all([
@@ -1022,7 +978,6 @@ describe("projects", () => {
     expect(doc.status).toBe(201);
     expect((await detail()).links.map((entry) => entry.kind)).toEqual(["pr", "doc"]);
 
-    // The same URL twice on one issue is a clean conflict from the unique index.
     const duplicate = await postJson(
       app,
       `/api/issues/${issue.id}/links`,
@@ -1031,7 +986,6 @@ describe("projects", () => {
     );
     await expectProblem(duplicate, 409, "issue_link_exists");
 
-    // Non-web schemes are refused by the shared contract before any write.
     for (const scheme of ["javascript:alert(1)", "file:///etc/passwd"]) {
       const rejected = await postJson(
         app,
@@ -1065,8 +1019,6 @@ describe("projects", () => {
     expect(afterRemoval.filter((entry) => entry.type === "issue_link_removed")).toHaveLength(1);
   });
 
-  // #84: board assignment is a pull-queue hint stored as one identity. The tests exercise
-  // the real workspace key/membership rows the service validates against.
   async function seedAgent(workspaceId: string, humanId: string, name: string) {
     const agentId = randomUUID();
     await database.db.insert(agents).values({
@@ -1136,7 +1088,6 @@ describe("projects", () => {
       .where(eq(issues.id, issue.id));
     expect(afterClear).toEqual({ type: null, id: null });
 
-    // An unrelated edit must not resurrect a cleared assignment.
     const kept = await patchIssue(app, issue.id, { title: "Still unassigned" }, adminCookie);
     expect(Issue.parse(await kept.json()).assignee).toBeNull();
   });
@@ -1174,7 +1125,7 @@ describe("projects", () => {
       404,
       "assignee_not_found",
     );
-    // None of the refusals wrote a partial assignee.
+
     const [row] = await database.db
       .select({ type: issues.assigneeType, id: issues.assigneeId })
       .from(issues)
@@ -1226,7 +1177,6 @@ describe("projects", () => {
       "validation_failed",
     );
 
-    // Existing callers that only send a name still get a valid, workspace-unique key.
     const first = await createProject(app, adminCookie, workspaceId, "Alpha Beta");
     const second = await createProject(app, adminCookie, workspaceId, "Alpha Beta");
     expect(first.key).toMatch(/^[A-Z][A-Z0-9]{1,9}$/);
@@ -1344,7 +1294,6 @@ describe("projects", () => {
     expect(after.filter((entry) => entry.type === "issue_edited")).toHaveLength(1);
   });
 
-  // #94: new work is ready work by default; backlog is the explicit triage queue.
   it("defaults new issues to todo, allows backlog at creation, and enforces the six-state closedAt invariant", async () => {
     const { app, adminCookie, workspaceId } = await readyApp();
     const project = await createProject(app, adminCookie, workspaceId, "Workflow");
@@ -1358,7 +1307,6 @@ describe("projects", () => {
     });
     expect(staged).toMatchObject({ status: "backlog", closedAt: null });
 
-    // Both terminal states set closedAt; every other state clears it.
     const done = await patchJson(app, `/api/issues/${ready.id}`, { status: "done" }, adminCookie);
     expect(done.status).toBe(200);
     const doneIssue = Issue.parse(await done.json());
@@ -1381,7 +1329,6 @@ describe("projects", () => {
     );
     expect(Issue.parse(await cancelled.json()).closedAt).not.toBeNull();
 
-    // The database rejects an unknown status and a terminal status without closedAt.
     const probe = await createIssue(app, adminCookie, project.id, { title: "Constraint probe" });
     expect(
       await rejection(

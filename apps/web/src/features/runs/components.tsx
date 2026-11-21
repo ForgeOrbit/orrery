@@ -7,11 +7,6 @@ import type { RunChild, RunDetail, RunModelChange } from "@orrery/contract";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { workspaceRunsQuery } from "./queries.ts";
 
-// The workspace's runs (issue #34). Every reported value is optional: the UI says
-// `unknown` rather than inventing a harness, model, or child identity. A run is an agent
-// conversation, not a key or a transport session, so two clients sharing one key appear
-// as two distinct runs here and a resumed conversation appears once.
-
 const unknown = (value: string | null | undefined) => value ?? "unknown";
 
 function ModelHistory({ changes }: { changes: readonly RunModelChange[] }) {

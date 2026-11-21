@@ -8,8 +8,6 @@ import { useState } from "react";
 import { createFirstAdministrator, setupStatusQuery } from "../features/accounts/index.ts";
 import { TextField } from "../lib/fields.tsx";
 
-// Initial setup: the installer creates the first system administrator, protected by the
-// deployment's bootstrap secret. The page only exists while setup is open.
 export const Route = createFileRoute("/setup")({
   staticData: { accessPage: true },
   beforeLoad: async ({ context }) => {
@@ -35,7 +33,7 @@ function SetupPage() {
     setError(undefined);
     try {
       await createFirstAdministrator({ secret, email, password });
-      // The server closed setup; keep the query cache in step before navigating.
+
       queryClient.setQueryData(setupStatusQuery.queryKey, { setupComplete: true });
       await navigate({ to: "/signin" });
     } catch (cause) {

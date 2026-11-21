@@ -43,11 +43,6 @@ import {
 } from "../work-sessions/index.ts";
 import { createWorkspacesFeature } from "./index.ts";
 
-// Issue #37 against a real Postgres: a departure ends the departing human's agents' active
-// claims, revokes their keys and grants, and cannot be undone by a racing renewal or by
-// re-invitation. Everything here is database behavior; the black-box
-// zz-member-removal.spec.ts repeats the public surface against the running image.
-
 const SECRET = "correct horse battery staple staple";
 const EMAIL = "removal-admin@example.com";
 const PASSWORD = "removal-admin-password";
@@ -387,8 +382,6 @@ type Fixture = {
   issueId: string;
 };
 
-// Everything the departure tests need except the claim itself, so a claim can be raced
-// against removal from a precisely controlled starting point.
 async function fixtureSetup(workspaceName = "Removal Team"): Promise<Fixture> {
   const setup = await postJson("/api/setup/admin", {
     secret: SECRET,
@@ -397,7 +390,7 @@ async function fixtureSetup(workspaceName = "Removal Team"): Promise<Fixture> {
   });
   expect(setup.status).toBe(201);
   const adminCookie = await signIn(EMAIL, PASSWORD);
-  // The inviter must have a verified mailbox (#20); bootstrap does not verify it.
+
   await database.db
     .update(humans)
     .set({ emailVerifiedAt: sql`now()` })
@@ -474,8 +467,6 @@ async function sessionRow(issueId: string) {
   return row;
 }
 
-// Poll pg_stat_activity for a transaction already blocked on an issue row lock, so the
-// claim-vs-removal race below is a deterministic interleaving rather than a timing guess.
 async function waitForIssueLockWait(minimum = 1) {
   await expect
     .poll(
@@ -494,9 +485,6 @@ async function waitForIssueLockWait(minimum = 1) {
     .toBeGreaterThanOrEqual(minimum);
 }
 
-// Distinguish the two possible serializations: a removal blocked on the claim's membership
-// key-share lock (fixed) or a removal that already committed (buggy, when the claim never
-// locked the membership).
 async function waitForMembershipDeleteLockWait() {
   await expect
     .poll(
@@ -541,8 +529,6 @@ describe("member removal and voluntary leave against real Postgres (#37)", () =>
     expect(ended?.status).toBe("released");
     expect(ended?.endedAt).toBeInstanceOf(Date);
 
-    // The identity was resolved before removal. The renewal arrives with a valid key shape,
-    // but the membership recheck inside its transaction must refuse it.
     await expect(
       sessionsService.renew({ kind: "agent", identity: f.identity }, f.issueId),
     ).rejects.toMatchObject({ kind: "insufficient_access" });
@@ -596,9 +582,7 @@ describe("member removal and voluntary leave against real Postgres (#37)", () =>
         );
       const [removalResult, renewalResult] = await Promise.all([removal, renewal]);
       expect(removalResult.status).toBe(204);
-      // A renewal that wins the issue lock may extend the lease before removal reaches
-      // that issue, but removal then ends the claim. A renewal that starts after removal
-      // is refused by the membership recheck. Either way the claim is not retained.
+
       expect(["renewed", "insufficient_access"]).toContain(renewalResult);
       const ended = await sessionRow(f.issueId);
       expect(ended?.status).toBe("released");
@@ -610,9 +594,6 @@ describe("member removal and voluntary leave against real Postgres (#37)", () =>
     const f = await fixtureSetup("Claim Race Team");
     const runId = await newRun(f.identity);
 
-    // Hold the issue row lock so the claim is parked at lockIssue before removal starts.
-    // With membership locked first, removal's DELETE waits for the claim to commit and its
-    // release pass then sees the committed session; without that lock it would miss it.
     let releaseHolder!: () => void;
     const release = new Promise<void>((resolve) => {
       releaseHolder = resolve;
@@ -640,12 +621,7 @@ describe("member removal and voluntary leave against real Postgres (#37)", () =>
         `/api/workspaces/${f.workspaceId}/members/${f.memberHumanId}`,
         f.adminCookie,
       );
-      // Two distinct serializations to wait for before releasing the holder:
-      // - fixed: removal is blocked at the membership DELETE by the claim's key-share lock;
-      // - buggy: removal has passed its (empty) release read and now also waits on the
-      //   issue lock, so two transactions are queued behind the held issue row.
-      // Releasing earlier lets removal see the committed claim in both variants and hides
-      // the write-skew this test must catch.
+
       await Promise.race([
         waitForIssueLockWait(2).then(() => "both-on-issue"),
         waitForMembershipDeleteLockWait().then(() => "blocked-at-membership"),
@@ -764,8 +740,6 @@ describe("member removal and voluntary leave against real Postgres (#37)", () =>
       level: "read",
     });
 
-    // Personal work is a project and issue in the member's own personal workspace, which
-    // removal must never touch.
     const [memberPersonal] = await database.db
       .select()
       .from(workspaces)
@@ -828,7 +802,6 @@ describe("member removal and voluntary leave against real Postgres (#37)", () =>
       ).status,
     ).toBe(204);
 
-    // Re-invite with a different level: acceptance applies only the freshly offered grant.
     expect(
       (
         await postJson(

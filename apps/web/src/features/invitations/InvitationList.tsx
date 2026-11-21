@@ -4,10 +4,6 @@ import { Section } from "@astryxdesign/core/Section";
 import { Button } from "@astryxdesign/core/Button";
 import type { InvitationSummary } from "@orrery/contract";
 
-// One invitation history list, shared by installation administration and a workspace's
-// owner view. It shows the recipient, inviter, target, offered grants, every lifecycle
-// timestamp, and email delivery as a fact separate from the lifecycle. Actions are only
-// offered when the caller passed handlers: recipients use their emailed link instead.
 const statusLabels: Record<InvitationSummary["status"], string> = {
   pending: "Pending",
   accepted: "Accepted",

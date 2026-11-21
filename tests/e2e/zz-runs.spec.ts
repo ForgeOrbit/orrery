@@ -1,10 +1,3 @@
-// Runs and child workers (issue #34), black-box against a running Orrery. A scripted
-// MCP client plays two harness conversations sharing one agent key, a child worker, a
-// resume, and a model change; REST is then used to verify what was persisted and what a
-// human sees. No server code is imported.
-//
-//   docker compose --profile mail-test up -d --build --wait
-//   ORRERY_URL=http://localhost:8080 pnpm test:e2e
 import { randomUUID } from "node:crypto";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { expect, request, test, type APIRequestContext } from "@playwright/test";
@@ -52,7 +45,6 @@ async function issueKey(
   return secret;
 }
 
-// A fresh client per conversation: the MCP transport session id is never run identity.
 async function connect(secret: string): Promise<Client> {
   const client = new Client({ name: `orrery-runs-e2e-${randomUUID()}`, version: "1" });
   await client.connect(
@@ -94,7 +86,7 @@ test("two clients sharing a key stay distinct; resume reuses a run; children and
     const first = await checkin(a, {
       event: "run_started",
       runKey: { harness: "codex", nativeSessionId: sessionA },
-      // Issue #29's MCP shape: reported metadata is nested, not top-level.
+
       reported: { model: "gpt-6.2-sol", harnessVersion: "0.171.0" },
     });
     expect(first.isError).toBe(false);
@@ -108,10 +100,9 @@ test("two clients sharing a key stay distinct; resume reuses a run; children and
     expect(second.isError).toBe(false);
     const runB = requiredText(field(second.data, "runId"), "run B id");
     expect(runB).not.toBe(runA);
-    // No model was reported by client B: it stays unknown, never copied from A.
+
     expect(field(second.data, "model")).toBeNull();
 
-    // A child worker reports on the parent's run with harness attribution only.
     const childId = `child-${randomUUID()}`;
     const child = await checkin(b, {
       event: "child_started",
@@ -122,8 +113,6 @@ test("two clients sharing a key stay distinct; resume reuses a run; children and
     expect(child.isError).toBe(false);
     expect(field(child.data, "runId")).toBe(runB);
 
-    // A fresh handshake for the same native session id is a resume, not a new run.
-    // An explicit runId with `runKey: null` (also from #29) correlates identically.
     const resumedClient = await connect(secret);
     try {
       const resumed = await checkin(resumedClient, {
@@ -144,14 +133,11 @@ test("two clients sharing a key stay distinct; resume reuses a run; children and
       await resumedClient.close();
     }
 
-    // Model changes over a run are recorded; an absent report does not erase them.
     const changed = await checkin(a, { event: "run_heartbeat", runId: runA, model: "gpt-7" });
     expect(field(changed.data, "model")).toBe("gpt-7");
     const unchanged = await checkin(a, { event: "run_heartbeat", runId: runA });
     expect(field(unchanged.data, "model")).toBe("gpt-7");
 
-    // Human view through REST: two runs, one child, one model change, and `unknown`
-    // represented as null for the run that never reported a model.
     const listed = await api.get(`/api/workspaces/${workspaceId}/runs`);
     expect(listed.status()).toBe(200);
     const body: unknown = await listed.json();
@@ -167,7 +153,6 @@ test("two clients sharing a key stay distinct; resume reuses a run; children and
     expect(asArray(field(secondRun, "children"))).toHaveLength(1);
     expect(field(asArray(field(secondRun, "children"))[0], "agentId")).toBe(childId);
 
-    // A harness hook posting with the same key correlates to the same run over REST.
     const hook = await api.post("/api/runs/hook", {
       data: {
         schema: "orrery.run.hook.v1",

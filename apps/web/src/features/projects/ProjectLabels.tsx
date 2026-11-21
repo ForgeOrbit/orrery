@@ -15,8 +15,6 @@ import { LabelPill } from "./LabelPill.tsx";
 const messageOf = (cause: unknown, fallback: string) =>
   cause instanceof Error ? cause.message : fallback;
 
-// #97 project label management. The server owns uniqueness and permissions; this section
-// simply offers the same operations a Contribute human is allowed to perform.
 export function ProjectLabels({
   projectId,
   labels,
