@@ -1,7 +1,7 @@
 # Orrery docs
 
-> **Status:** the MVP is runnable today — M0, M1 and the core of M2–M4 ship in the product. The
-> [Shared vault (M5, #6)](https://github.com/forge-orbit/orrery/issues/6) and
+> **Status:** the MVP is runnable today — M0–M3 are complete and M4's backend is live while the M4
+> UI pass is underway. [Shared vault (M5, #6)](https://github.com/forge-orbit/orrery/issues/6) and
 > [Release polish (M6, #7)](https://github.com/forge-orbit/orrery/issues/7) are next. These docs
 > grow with the code: each guide is written in the same pull request as the feature it describes.
 
