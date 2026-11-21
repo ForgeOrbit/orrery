@@ -20,7 +20,7 @@ import {
   type WorkspaceCapability,
   type WorkspaceMember,
 } from "@orrery/contract";
-import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import type { FormEvent } from "react";
 import { useState } from "react";
@@ -30,6 +30,7 @@ import { InvitationList } from "../features/invitations/index.ts";
 import { createProject, projectQuery, projectsQuery } from "../features/projects/index.ts";
 import { RunsSection, workspaceRunsQuery } from "../features/runs/index.ts";
 import { activeSessionsQuery as workspaceActiveSessionsQuery } from "../features/work-sessions/index.ts";
+import { WebhooksSection, workspaceWebhooksQuery } from "../features/webhooks/index.ts";
 import {
   appointWorkspaceOwner,
   inviteWorkspaceMember,
@@ -82,7 +83,7 @@ function mayRemove(workspace: Workspace, member: WorkspaceMember): boolean {
   return workspace.isOwner || (!member.isOwner && !member.canManageMemberPermissions);
 }
 
-type WorkspaceTab = "projects" | "agents" | "runs" | "members";
+type WorkspaceTab = "projects" | "agents" | "runs" | "members" | "webhooks";
 
 export const Route = createFileRoute("/workspaces/$workspaceId")({
   loader: async ({ context, params }) => {
@@ -100,6 +101,9 @@ export const Route = createFileRoute("/workspaces/$workspaceId")({
       ...(mayInvite(workspace)
         ? [context.queryClient.ensureQueryData(workspaceInvitationsQuery(params.workspaceId))]
         : []),
+      ...(workspace.isOwner
+        ? [context.queryClient.ensureQueryData(workspaceWebhooksQuery(params.workspaceId))]
+        : []),
     ];
     await Promise.all(loads);
   },
@@ -112,13 +116,21 @@ function WorkspacePage() {
   const { data: projects } = useSuspenseQuery(projectsQuery(workspaceId));
   const { data: agents } = useSuspenseQuery(agentsQuery);
   const { data: runs } = useSuspenseQuery(workspaceRunsQuery(workspaceId));
+  const webhooksQuery = useQuery({
+    ...workspaceWebhooksQuery(workspaceId),
+    enabled: workspace.isOwner,
+  });
   const [tab, setTab] = useState<WorkspaceTab>("projects");
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
 
   const canCreate = workspace.isOwner || workspace.canCreateProjects;
   const showMembersTab = mayManageMembers(workspace) || mayInvite(workspace);
-  const activeTab: WorkspaceTab = tab === "members" && !showMembersTab ? "projects" : tab;
+  const showWebhooksTab = workspace.isOwner;
+  const activeTab: WorkspaceTab =
+    (tab === "members" && !showMembersTab) || (tab === "webhooks" && !showWebhooksTab)
+      ? "projects"
+      : tab;
 
   return (
     <main>
@@ -174,7 +186,8 @@ function WorkspacePage() {
             value === "projects" ||
             value === "agents" ||
             value === "runs" ||
-            value === "members"
+            value === "members" ||
+            value === "webhooks"
           ) {
             setTab(value);
           }
@@ -203,6 +216,18 @@ function WorkspacePage() {
           endContent={<Badge label={runs.length} />}
         />
         {showMembersTab && <Tab value="members" label="Members" panelId="panel-members" />}
+        {showWebhooksTab && (
+          <Tab
+            value="webhooks"
+            label="Webhooks"
+            panelId="panel-webhooks"
+            endContent={
+              webhooksQuery.data !== undefined ? (
+                <Badge label={webhooksQuery.data.items.length} />
+              ) : undefined
+            }
+          />
+        )}
       </TabList>
 
       {activeTab === "projects" && (
@@ -233,6 +258,12 @@ function WorkspacePage() {
             <WorkspaceMembers workspaceId={workspace.id} workspace={workspace} />
           )}
           {mayInvite(workspace) && <WorkspaceInvitations workspaceId={workspace.id} />}
+        </section>
+      )}
+
+      {activeTab === "webhooks" && showWebhooksTab && (
+        <section id="panel-webhooks" role="tabpanel" className="tab-panel">
+          <WebhooksSection workspaceId={workspace.id} projects={projects} />
         </section>
       )}
 

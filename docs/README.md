@@ -1,9 +1,8 @@
 # Orrery docs
 
-> **Status:** the MVP is runnable today — M0–M4 are complete, and the M6 operator/agent guides and
-> GHCR GitHub Releases are live. In-app notifications and outgoing webhooks
-> ([M6, #7](https://github.com/forge-orbit/orrery/issues/7)) and the
-> [Shared vault (M5, #6)](https://github.com/forge-orbit/orrery/issues/6) are still planned. These
+> **Status:** the MVP is runnable today — M0–M4 and M6 (in-app notifications, outgoing webhooks,
+> operator/agent guides, and GHCR GitHub Releases) are complete. The
+> [Shared vault (M5, #6)](https://github.com/forge-orbit/orrery/issues/6) is planned next. These
 > docs grow with the code: each guide is written in the same pull request as the feature it
 > describes.
 
