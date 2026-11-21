@@ -535,11 +535,19 @@ function WorkspaceMembers({
   async function onCapability(humanId: string, capability: WorkspaceCapability, enabled: boolean) {
     setUpdating(humanId);
     setError(undefined);
+    const membersKey = workspaceMembersQuery(workspaceId).queryKey;
+    const previous = queryClient.getQueryData<WorkspaceMember[]>(membersKey);
+    queryClient.setQueryData<WorkspaceMember[]>(membersKey, (current) =>
+      current?.map((candidate) =>
+        candidate.humanId === humanId ? { ...candidate, [capability]: enabled } : candidate,
+      ),
+    );
     try {
       await updateWorkspaceMember(workspaceId, humanId, { [capability]: enabled });
       await refresh();
       toast({ body: "Member permissions updated." });
     } catch (cause) {
+      if (previous !== undefined) queryClient.setQueryData(membersKey, previous);
       const msg = cause instanceof Error ? cause.message : "Could not change the capability.";
       setError(msg);
       toast({ body: msg, type: "error" });

@@ -278,9 +278,14 @@ test("grants access in the browser and shows Read without mutation controls", as
   await expect(memberRow.locator('[data-capability="canCreateProjects"]')).toBeVisible();
   await memberRow.getByRole("button", { name: "Permissions" }).click();
   const permissionsDialog = page.getByRole("dialog");
-  await permissionsDialog.getByRole("checkbox", { name: "Create projects" }).uncheck();
+  const createProjectsCheckbox = permissionsDialog.getByRole("checkbox", {
+    name: "Create projects",
+  });
+  await createProjectsCheckbox.click();
+  await expect(createProjectsCheckbox).not.toBeChecked();
   await expect(memberRow.locator('[data-capability="canCreateProjects"]')).toHaveCount(0);
-  await permissionsDialog.getByRole("checkbox", { name: "Create projects" }).check();
+  await createProjectsCheckbox.click();
+  await expect(createProjectsCheckbox).toBeChecked();
   await expect(memberRow.locator('[data-capability="canCreateProjects"]')).toBeVisible();
   await page.keyboard.press("Escape");
 
