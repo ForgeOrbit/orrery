@@ -209,7 +209,7 @@ test("emails the agent owner, refuses agent answerers and lets a human answer", 
     await expect(card).toContainText(questionText);
     await card.getByRole("textbox", { name: "Answer" }).fill("Use the v2 endpoint");
     await card.getByRole("button", { name: "Answer question" }).click();
-    await expect(card.locator("[data-question-status]")).toHaveText(/answered/);
+    await expect(card.locator("[data-question-status]")).toHaveText(/answered/i);
     await expect(card.locator("[data-question-answer]")).toContainText("Use the v2 endpoint");
   } finally {
     for (const cookie of await context.cookies()) await recordSecret(cookie.value);

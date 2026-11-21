@@ -1504,8 +1504,7 @@
 
 [data-session-state],
 [data-session-status],
-[data-inspector-session-status],
-[data-question-status] {
+[data-inspector-session-status] {
   display: inline-block;
   padding: 0.1rem 0.4rem;
   border-radius: var(--orrery-radius);
@@ -1659,6 +1658,12 @@
 .question-context a {
   color: var(--orrery-text);
   font-weight: 680;
+  text-decoration: none;
+}
+
+.question-context a:hover {
+  color: var(--orrery-accent);
+  text-decoration: underline;
 }
 
 .question-context .issue-key {
@@ -1696,6 +1701,10 @@
   margin: 0 0 0.625rem;
   color: var(--orrery-muted);
   white-space: pre-wrap;
+}
+
+.question-outcome dd[data-question-answer] {
+  color: var(--orrery-text);
 }
 
 .answer-form {
@@ -2078,7 +2087,7 @@
 @media (max-width: 62rem) {
   .issue-layout {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-areas: "body" "inspector";
+    grid-template-areas: "inspector" "body";
     gap: 1rem;
   }
 }
@@ -2245,6 +2254,14 @@
   margin-block: 0.25rem;
   padding-inline-start: 1.15rem;
   font-size: 0.8125rem;
+}
+
+.activity-json-pre {
+  max-block-size: 18rem;
+  overflow: auto;
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--orrery-radius);
+  background: var(--orrery-recessed);
 }
 
 .activity-checklist li[data-checked="true"] {

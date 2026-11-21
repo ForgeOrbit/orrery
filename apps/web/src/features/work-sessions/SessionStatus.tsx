@@ -1,13 +1,18 @@
-import { Text } from "@astryxdesign/core/Text";
-import { Stack } from "@astryxdesign/core/Stack";
-import { TextField } from "../../lib/fields.tsx";
+import { AlertDialog } from "@astryxdesign/core/AlertDialog";
+import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
+import { Card } from "@astryxdesign/core/Card";
+import { Stack } from "@astryxdesign/core/Stack";
+import { Text } from "@astryxdesign/core/Text";
+import { useToast } from "@astryxdesign/core/Toast";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { FormEvent } from "react";
 import { useState } from "react";
+import { TextField } from "../../lib/fields.tsx";
+import { formatDateTime, formatFullDateTime, relativeTime } from "../../lib/time.ts";
 import { projectActivityQuery } from "../projects/index.ts";
 import { requestStop } from "./commands.ts";
-import { sessionQuery } from "./queries.ts";
+import { sessionQuery, sessionsQuery } from "./queries.ts";
 
 export function SessionStatus({
   issueId,
@@ -26,66 +31,129 @@ export function SessionStatus({
   const status = stopping ? "stopping" : session.status;
 
   return (
-    <Stack className="session-status" data-session-id={session.id}>
-      <Text type="inherit" color="inherit" data-session-status={status}>
-        {status}
-      </Text>
-      {session.stopRequested && session.stopRequestedAt !== null && (
-        <Text type="inherit" color="inherit" data-stop-requested-at={session.stopRequestedAt}>
-          {" "}
-          · stop requested at {session.stopRequestedAt}
-          {session.stopReason !== null && <> · “{session.stopReason}”</>}
-        </Text>
-      )}
-      {canContribute && session.status === "active" && !stopping && (
-        <StopAgentForm issueId={issueId} projectId={projectId} />
-      )}
-    </Stack>
+    <Card className="session-status" padding={3} data-session-id={session.id}>
+      <Stack gap={2}>
+        <Stack direction="horizontal" gap={1.5} vAlign="center" wrap="wrap">
+          <Text type="supporting" weight="semibold" color="secondary">
+            Work session
+          </Text>
+          <Text type="inherit" color="inherit" data-session-status={status}>
+            {status}
+          </Text>
+        </Stack>
+        {session.stopRequested && session.stopRequestedAt !== null && (
+          <Text
+            as="p"
+            display="block"
+            type="supporting"
+            color="secondary"
+            data-stop-requested-at={session.stopRequestedAt}
+          >
+            Stop requested{" "}
+            <time
+              dateTime={session.stopRequestedAt}
+              title={formatFullDateTime(session.stopRequestedAt)}
+            >
+              {relativeTime(session.stopRequestedAt)} ({formatDateTime(session.stopRequestedAt)})
+            </time>
+            {session.stopReason !== null && <> · “{session.stopReason}”</>}
+          </Text>
+        )}
+        {canContribute && session.status === "active" && !stopping && (
+          <StopAgentForm
+            issueId={issueId}
+            projectId={projectId}
+            workspaceId={session.workspaceId}
+          />
+        )}
+      </Stack>
+    </Card>
   );
 }
 
-function StopAgentForm({ issueId, projectId }: { issueId: string; projectId: string }) {
+function StopAgentForm({
+  issueId,
+  projectId,
+  workspaceId,
+}: {
+  issueId: string;
+  projectId: string;
+  workspaceId: string;
+}) {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [reason, setReason] = useState("");
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
 
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+  function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setConfirmOpen(true);
+  }
+
+  async function onConfirmStop() {
     setSubmitting(true);
     setError(undefined);
     try {
       const updated = await requestStop(issueId, reason);
       queryClient.setQueryData(sessionQuery(issueId).queryKey, updated);
-      await queryClient.invalidateQueries({
-        queryKey: projectActivityQuery(projectId).queryKey,
-      });
+      setConfirmOpen(false);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: sessionsQuery(issueId).queryKey }),
+        queryClient.invalidateQueries({ queryKey: ["workspaces", workspaceId, "work-sessions"] }),
+        queryClient.invalidateQueries({ queryKey: projectActivityQuery(projectId).queryKey }),
+      ]);
+      toast({ body: "Stop requested for active agent session." });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not request a stop.");
+      setConfirmOpen(false);
+      const msg = cause instanceof Error ? cause.message : "Could not request a stop.";
+      setError(msg);
+      toast({ body: msg, type: "error" });
     } finally {
       setSubmitting(false);
     }
   }
 
   return (
-    <form className="stop-agent-form" onSubmit={(event) => void onSubmit(event)}>
-      {" "}
-      <TextField
-        label="Reason (optional)"
-        id={`stop-reason-${issueId}`}
-        htmlName="reason"
-        value={reason}
-        maxLength={2000}
-        onChange={setReason}
-        placeholder="Why should the agent stop?"
-      />{" "}
-      <Button type="submit" isDisabled={submitting} label="Stop agent" variant="destructive" />
-      {error !== undefined && (
-        <Text type="inherit" color="inherit" role="alert">
-          {" "}
-          {error}
-        </Text>
-      )}
-    </form>
+    <>
+      <form className="stop-agent-form" onSubmit={onSubmit}>
+        <Stack gap={2} hAlign="start">
+          <TextField
+            label="Reason (optional)"
+            id={`stop-reason-${issueId}`}
+            htmlName="reason"
+            value={reason}
+            maxLength={2000}
+            onChange={setReason}
+            placeholder="Why should the agent stop?"
+            width="100%"
+          />
+          <Button
+            type="submit"
+            size="sm"
+            isDisabled={submitting}
+            isLoading={submitting}
+            label="Stop agent"
+            variant="destructive"
+          />
+          {error !== undefined && <Banner status="error" role="alert" title={error} />}
+        </Stack>
+      </form>
+      <AlertDialog
+        isOpen={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title="Stop active agent session?"
+        description={
+          reason.trim() === ""
+            ? "The agent will be signalled to wrap up and release its claim on this issue."
+            : `The agent will be signalled to stop with reason: “${reason.trim()}”.`
+        }
+        actionLabel="Stop agent"
+        actionVariant="destructive"
+        isActionLoading={submitting}
+        onAction={() => void onConfirmStop()}
+      />
+    </>
   );
 }

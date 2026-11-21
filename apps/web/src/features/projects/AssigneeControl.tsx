@@ -1,10 +1,10 @@
-import { Button } from "@astryxdesign/core/Button";
+import { Banner } from "@astryxdesign/core/Banner";
 import { Selector } from "@astryxdesign/core/Selector";
+import { Stack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
 import { useToast } from "@astryxdesign/core/Toast";
+import type { Assignee, Issue, IssueDetail } from "@orrery/contract";
 import { useQueryClient } from "@tanstack/react-query";
-import type { Assignee, Issue } from "@orrery/contract";
-import type { FormEvent } from "react";
 import { useState } from "react";
 import { updateIssue } from "./commands.ts";
 import { issueQuery, issuesQuery, projectActivityQuery } from "./queries.ts";
@@ -22,17 +22,20 @@ export function AssigneeControl({
 }) {
   const queryClient = useQueryClient();
   const toast = useToast();
-  const [value, setValue] = useState(currentValue(issue));
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
+  const value = currentValue(issue);
 
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function onChange(nextValue: string) {
+    if (nextValue === value) return;
     setSaving(true);
     setError(undefined);
-    const chosen = candidates.find((candidate) => candidate.value === value);
+    const chosen = candidates.find((candidate) => candidate.value === nextValue);
     try {
-      await updateIssue(issue.id, { assignee: chosen?.assignee ?? null });
+      const updated = await updateIssue(issue.id, { assignee: chosen?.assignee ?? null });
+      queryClient.setQueryData<IssueDetail>(issueQuery(issue.id).queryKey, (old) =>
+        old === undefined ? old : { ...old, ...updated },
+      );
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: issueQuery(issue.id).queryKey }),
         queryClient.invalidateQueries({ queryKey: issuesQuery(issue.projectId).queryKey }),
@@ -42,42 +45,46 @@ export function AssigneeControl({
       ]);
       toast({ body: chosen ? `Assigned to ${chosen.label}.` : "Assignee cleared." });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not change the assignee.");
+      const msg = cause instanceof Error ? cause.message : "Could not change the assignee.";
+      setError(msg);
+      toast({ body: msg, type: "error" });
     } finally {
       setSaving(false);
     }
   }
 
+  if (!canContribute) {
+    return (
+      <Stack gap={0.5}>
+        <Text type="supporting" weight="semibold" color="secondary">
+          Assignee
+        </Text>
+        <Text type="body" color={issue.assignee === null ? "secondary" : "primary"}>
+          {currentLabel(issue)}
+        </Text>
+      </Stack>
+    );
+  }
+
   return (
-    <form className="assignee-control" onSubmit={(event) => void onSubmit(event)}>
-      {" "}
+    <Stack gap={1.5} className="assignee-control">
       <Selector
         label="Assignee"
         id={`assignee-${issue.id}`}
+        size="sm"
         value={value}
-        isDisabled={!canContribute || saving}
-        onChange={setValue}
+        isDisabled={saving}
+        onChange={(nextValue) => void onChange(nextValue)}
         options={[
           { value: "", label: "Unassigned" },
           ...candidates.map((candidate) => ({ value: candidate.value, label: candidate.label })),
-          ...(issue.assignee !== null && !candidates.some((c) => c.value === currentValue(issue))
-            ? [{ value: currentValue(issue), label: currentLabel(issue) }]
+          ...(issue.assignee !== null && !candidates.some((c) => c.value === value)
+            ? [{ value, label: currentLabel(issue) }]
             : []),
         ]}
-      />{" "}
-      <Button
-        type="submit"
-        isDisabled={!canContribute || saving}
-        label="Save assignee"
-        variant="primary"
       />
-      {error !== undefined && (
-        <Text type="inherit" color="inherit" role="alert">
-          {" "}
-          {error}
-        </Text>
-      )}
-    </form>
+      {error !== undefined && <Banner status="error" role="alert" title={error} />}
+    </Stack>
   );
 }
 

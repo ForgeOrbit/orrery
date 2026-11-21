@@ -1,21 +1,25 @@
+import { Badge } from "@astryxdesign/core/Badge";
 import { Banner } from "@astryxdesign/core/Banner";
+import { Button } from "@astryxdesign/core/Button";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Heading } from "@astryxdesign/core/Heading";
 import { List, ListItem } from "@astryxdesign/core/List";
 import { Section } from "@astryxdesign/core/Section";
 import { Stack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
+import { Token } from "@astryxdesign/core/Token";
 import {
   type MyWorkActiveSession,
   type MyWorkAssignedIssue,
   type MyWorkQuestion,
   type MyWorkResponse,
 } from "@orrery/contract";
-import type { ReactNode } from "react";
-import { issueStatusLabels, PriorityBadge } from "../projects/index.ts";
+import { type ReactNode, useRef } from "react";
+import { ApiProblemError } from "../../lib/api.ts";
 import { HarnessBadge } from "../../lib/harness.tsx";
 import { Link } from "../../lib/Link.tsx";
-import { ApiProblemError } from "../../lib/api.ts";
+import { formatFullDateTime, relativeCountdown } from "../../lib/time.ts";
+import { issueStatusLabels, PriorityBadge } from "../projects/index.ts";
 
 const number = new Intl.NumberFormat();
 
@@ -27,8 +31,12 @@ const currency = new Intl.NumberFormat(undefined, {
 
 export function MyWorkSections({ work }: { work: MyWorkResponse }) {
   return (
-    <Stack className="section-stack">
-      <MyWorkSection title="Assigned to me" section="assigned-issues">
+    <Stack className="section-stack" gap={3}>
+      <MyWorkSection
+        title="Assigned to me"
+        section="assigned-issues"
+        count={work.assignedIssues.length}
+      >
         {work.assignedIssues.length === 0 ? (
           <EmptyState
             title="Nothing assigned to you"
@@ -37,7 +45,7 @@ export function MyWorkSections({ work }: { work: MyWorkResponse }) {
             headingLevel={3}
           />
         ) : (
-          <List hasDividers>
+          <List hasDividers aria-label="Assigned to me">
             {work.assignedIssues.map((issue) => (
               <AssignedIssueRow key={issue.id} issue={issue} />
             ))}
@@ -45,7 +53,11 @@ export function MyWorkSections({ work }: { work: MyWorkResponse }) {
         )}
       </MyWorkSection>
 
-      <MyWorkSection title="My active agent sessions" section="active-sessions">
+      <MyWorkSection
+        title="My active agent sessions"
+        section="active-sessions"
+        count={work.activeAgentSessions.length}
+      >
         {work.activeAgentSessions.length === 0 ? (
           <EmptyState
             title="No active agent sessions"
@@ -54,7 +66,7 @@ export function MyWorkSections({ work }: { work: MyWorkResponse }) {
             headingLevel={3}
           />
         ) : (
-          <List hasDividers>
+          <List hasDividers aria-label="My active agent sessions">
             {work.activeAgentSessions.map((session) => (
               <ActiveSessionRow key={session.sessionId} session={session} />
             ))}
@@ -62,7 +74,11 @@ export function MyWorkSections({ work }: { work: MyWorkResponse }) {
         )}
       </MyWorkSection>
 
-      <MyWorkSection title="Needs input" section="needs-input">
+      <MyWorkSection
+        title="Needs input"
+        section="needs-input"
+        count={work.needsInputQuestions.length}
+      >
         {work.needsInputQuestions.length === 0 ? (
           <EmptyState
             title="No questions need your input"
@@ -71,7 +87,7 @@ export function MyWorkSections({ work }: { work: MyWorkResponse }) {
             headingLevel={3}
           />
         ) : (
-          <List hasDividers>
+          <List hasDividers aria-label="Questions needing input">
             {work.needsInputQuestions.map((question) => (
               <QuestionRow key={question.id} question={question} />
             ))}
@@ -85,37 +101,55 @@ export function MyWorkSections({ work }: { work: MyWorkResponse }) {
 function MyWorkSection({
   title,
   section,
+  count,
   children,
 }: {
   title: string;
   section: string;
+  count: number;
   children: ReactNode;
 }) {
   return (
     <Section className="page-section" data-my-work-section={section} padding={3}>
-      <Heading level={2} color="inherit">
-        {title}
-      </Heading>
-      {children}
+      <Stack gap={2}>
+        <Stack direction="horizontal" gap={1.5} vAlign="center">
+          <Heading level={2} color="inherit">
+            {title}
+          </Heading>
+          <Badge label={count} />
+        </Stack>
+        {children}
+      </Stack>
     </Section>
   );
 }
 
 function AssignedIssueRow({ issue }: { issue: MyWorkAssignedIssue }) {
+  const linkRef = useRef<HTMLAnchorElement>(null);
   return (
     <ListItem
       data-my-work-issue-id={issue.id}
       itemKey={issue.id}
+      interactiveRef={linkRef}
       label={
-        <Link to="/issues/$issueId" params={{ issueId: issue.id }}>
-          {issue.identifier} {issue.title}
+        <Link ref={linkRef} to="/issues/$issueId" params={{ issueId: issue.id }}>
+          <Stack as="span" direction="horizontal" gap={1.5} vAlign="center" wrap="wrap">
+            <Text as="span" className="issue-key" type="inherit" color="inherit">
+              {issue.identifier}
+            </Text>{" "}
+            <Text as="span" type="body" weight="semibold" color="primary">
+              {issue.title}
+            </Text>
+          </Stack>
         </Link>
       }
       description={
-        <Text type="supporting" color="inherit">
-          {issue.workspaceName} · {issue.projectName} · {issueStatusLabels[issue.status]}
-          {issue.needsInput ? " · Needs input" : ""}
-        </Text>
+        <Stack as="span" direction="horizontal" gap={1.5} vAlign="center" wrap="wrap">
+          <Text as="span" type="supporting" color="secondary">
+            {issue.workspaceName} · {issue.projectName} · {issueStatusLabels[issue.status]}
+          </Text>
+          {issue.needsInput && <Token label="Needs input" color="orange" size="sm" />}
+        </Stack>
       }
       endContent={<PriorityBadge priority={issue.priority} />}
     />
@@ -123,6 +157,7 @@ function AssignedIssueRow({ issue }: { issue: MyWorkAssignedIssue }) {
 }
 
 function ActiveSessionRow({ session }: { session: MyWorkActiveSession }) {
+  const linkRef = useRef<HTMLAnchorElement>(null);
   const telemetry = [
     session.inputTokens === null ? undefined : `${number.format(session.inputTokens)} input tokens`,
     session.outputTokens === null
@@ -137,24 +172,42 @@ function ActiveSessionRow({ session }: { session: MyWorkActiveSession }) {
     <ListItem
       data-my-work-session-id={session.sessionId}
       itemKey={session.sessionId}
+      interactiveRef={linkRef}
       label={
-        <Link to="/issues/$issueId" params={{ issueId: session.issueId }}>
-          {session.issueIdentifier} {session.issueTitle}
+        <Link
+          ref={linkRef}
+          to="/issues/$issueId"
+          params={{ issueId: session.issueId }}
+          search={{ inspector: true, session: session.sessionId }}
+        >
+          <Stack as="span" direction="horizontal" gap={1.5} vAlign="center" wrap="wrap">
+            <Text as="span" className="issue-key" type="inherit" color="inherit">
+              {session.issueIdentifier}
+            </Text>{" "}
+            <Text as="span" type="body" weight="semibold" color="primary">
+              {session.issueTitle}
+            </Text>
+          </Stack>
         </Link>
       }
       description={
-        <Text type="supporting" color="inherit">
-          {session.workspaceName} · {session.projectName} · {session.agentName} · Harness{" "}
-          <HarnessBadge harness={session.harness} empty="unknown" /> · Model{" "}
-          {session.model ?? "unknown"}
-          {telemetry.length > 0 ? ` · ${telemetry.join(" · ")}` : ""}
-        </Text>
+        <Stack as="span" gap={0.5}>
+          <Text as="span" type="supporting" color="secondary">
+            {session.workspaceName} · {session.projectName} · {session.agentName} · Harness{" "}
+            <HarnessBadge harness={session.harness} empty="unknown" /> · Model{" "}
+            {session.model ?? "unknown"}
+            {telemetry.length > 0 ? ` · ${telemetry.join(" · ")}` : ""}
+          </Text>
+          {session.progress !== "" && (
+            <Text as="span" type="supporting" color="secondary">
+              {session.progress}
+            </Text>
+          )}
+        </Stack>
       }
       endContent={
         session.stopRequestedAt === null ? undefined : (
-          <Text type="inherit" color="inherit" data-session-status="stopping">
-            Stop requested
-          </Text>
+          <Token label="Stop requested" color="orange" size="sm" data-session-status="stopping" />
         )
       }
     />
@@ -166,15 +219,32 @@ function QuestionRow({ question }: { question: MyWorkQuestion }) {
     <ListItem
       data-my-work-question-id={question.id}
       itemKey={question.id}
-      label={question.question}
+      label={
+        <Stack as="span" direction="horizontal" gap={1.5} vAlign="center" wrap="wrap">
+          <Token
+            label={question.status === "paused" ? "Paused" : "Needs input"}
+            color="orange"
+            size="sm"
+          />{" "}
+          <Text as="span" type="body" weight="semibold" color="primary">
+            {question.question}
+          </Text>
+        </Stack>
+      }
       description={
-        <Text type="supporting" color="inherit">
+        <Text as="span" type="supporting" color="secondary">
           {question.workspaceName} · {question.projectName} · {question.issueIdentifier}{" "}
-          {question.issueTitle} · {question.agentName} · {question.status}
+          {question.issueTitle} · {question.agentName} · Due{" "}
+          <time
+            dateTime={question.responseDeadlineAt}
+            title={formatFullDateTime(question.responseDeadlineAt)}
+          >
+            {relativeCountdown(question.responseDeadlineAt)}
+          </time>
         </Text>
       }
       endContent={
-        <Link to="/inbox" search={{ issue: question.issueId }}>
+        <Link to="/inbox" search={{ issue: question.issueId }} color="accent" hasUnderline>
           Answer in Inbox
         </Link>
       }
@@ -182,7 +252,7 @@ function QuestionRow({ question }: { question: MyWorkQuestion }) {
   );
 }
 
-export function MyWorkErrorState({ error }: { error: unknown }) {
+export function MyWorkErrorState({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
   const problem = error instanceof ApiProblemError ? error.problem : undefined;
 
   return (
@@ -193,6 +263,7 @@ export function MyWorkErrorState({ error }: { error: unknown }) {
       <Banner
         container="section"
         status="error"
+        role="alert"
         title={problem?.title ?? "Could not load My work"}
         description={
           problem === undefined
@@ -200,12 +271,12 @@ export function MyWorkErrorState({ error }: { error: unknown }) {
             : (problem.errors?.[0]?.detail ?? problem.detail)
         }
         collapsible={false}
+        endContent={
+          onRetry === undefined ? undefined : (
+            <Button type="button" size="sm" variant="secondary" label="Retry" onClick={onRetry} />
+          )
+        }
       />
-      <Text as="p" display="block" type="inherit" color="inherit" role="alert">
-        {problem === undefined
-          ? "Could not load My work. Please try again."
-          : `Problem: ${problem.code} (${problem.status})`}
-      </Text>
     </main>
   );
 }

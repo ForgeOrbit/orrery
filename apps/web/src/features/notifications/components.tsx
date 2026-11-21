@@ -10,24 +10,15 @@ import type { ReactNode } from "react";
 import { useRef } from "react";
 import { ApiProblemError } from "../../lib/api.ts";
 import { Link } from "../../lib/Link.tsx";
+import { formatFullDateTime, relativeTime } from "../../lib/time.ts";
+
+export { relativeTime };
 
 const kindTokens: Record<NotificationKind, { label: string; color: "blue" | "orange" | "red" }> = {
   handoff: { label: "Handoff", color: "blue" },
   needs_input: { label: "Needs input", color: "orange" },
   session_expired: { label: "Session expired", color: "red" },
 };
-
-export function relativeTime(value: string, now: number = Date.now()): string {
-  const ms = now - new Date(value).getTime();
-  if (Number.isNaN(ms)) return value;
-  const seconds = Math.max(0, Math.round(ms / 1000));
-  if (seconds < 60) return "just now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
 
 export function NotificationRow({
   notification,
@@ -58,7 +49,7 @@ export function NotificationRow({
             if (unread) onRead(notification.id);
           }}
         >
-          <Stack as="span" direction="horizontal" gap={2} wrap="wrap">
+          <Stack as="span" direction="horizontal" gap={2} vAlign="center" wrap="wrap">
             <Token label={kind.label} color={kind.color} size="sm" data-notification-kind-label />{" "}
             <Text
               as="span"
@@ -71,7 +62,8 @@ export function NotificationRow({
             </Text>{" "}
             <Text
               as="span"
-              type="supporting"
+              type="body"
+              {...(unread ? { weight: "semibold" as const } : {})}
               color={unread ? "primary" : "secondary"}
               data-notification-summary
             >
@@ -81,16 +73,33 @@ export function NotificationRow({
         </Link>
       }
       description={
-        <Text as="span" type="supporting" color={unread ? "primary" : "secondary"}>
-          {notification.issue.title} · {notification.project.key} ·{" "}
+        <Text as="span" type="supporting" color="secondary">
+          {notification.issue.title} · {notification.project.name} ({notification.project.key}) ·{" "}
           <time
             dateTime={notification.createdAt}
-            title={new Date(notification.createdAt).toLocaleString()}
+            title={formatFullDateTime(notification.createdAt)}
           >
             {time}
           </time>{" "}
           · {unread ? "Unread" : "Read"}
         </Text>
+      }
+      endContent={
+        unread ? (
+          <Stack
+            onClick={(event) => {
+              event.stopPropagation();
+            }}
+          >
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              label="Mark read"
+              onClick={() => onRead(notification.id)}
+            />
+          </Stack>
+        ) : undefined
       }
     />
   );

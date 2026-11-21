@@ -1,11 +1,11 @@
-import { Heading } from "@astryxdesign/core/Heading";
-import { Text } from "@astryxdesign/core/Text";
-import { Card } from "@astryxdesign/core/Card";
-import { Stack } from "@astryxdesign/core/Stack";
-import { Selector } from "@astryxdesign/core/Selector";
-import { Button } from "@astryxdesign/core/Button";
 import { Badge } from "@astryxdesign/core/Badge";
+import { Banner } from "@astryxdesign/core/Banner";
+import { Button } from "@astryxdesign/core/Button";
+import { Card } from "@astryxdesign/core/Card";
 import { Collapsible } from "@astryxdesign/core/Collapsible";
+import { Heading } from "@astryxdesign/core/Heading";
+import { Selector } from "@astryxdesign/core/Selector";
+import { Stack } from "@astryxdesign/core/Stack";
 import {
   Table,
   TableBody,
@@ -14,17 +14,18 @@ import {
   TableHeaderCell,
   TableRow,
 } from "@astryxdesign/core/Table";
+import { Text } from "@astryxdesign/core/Text";
+import { useToast } from "@astryxdesign/core/Toast";
 import { ActivityDetailBlockV1, type SessionActivityDetail } from "@orrery/contract";
 import { useQuery } from "@tanstack/react-query";
 import { Fragment, useId, useState, type ReactNode } from "react";
 import { HarnessBadge } from "../../lib/harness.tsx";
-import { TelemetryFacts } from "../../lib/telemetry.tsx";
 import { Link } from "../../lib/Link.tsx";
+import { TelemetryFacts } from "../../lib/telemetry.tsx";
+import { formatDateTime, formatFullDateTime } from "../../lib/time.ts";
 import { isPendingQuestion, issueQuestionsQuery, QuestionDetails } from "../inbox/index.ts";
 import { workspaceRunsQuery } from "../runs/index.ts";
 import { sessionActivitiesQuery, sessionsQuery } from "./queries.ts";
-
-const dateTime = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 
 type BlockType = ActivityDetailBlockV1["type"];
 type BlockRenderer = (block: ActivityDetailBlockV1) => ReactNode;
@@ -44,24 +45,26 @@ const blockRenderers: Record<BlockType, BlockRenderer> = {
     ) : null,
   table: (block) =>
     block.type === "table" ? (
-      <Table className="activity-table" data-activity-block-kind="table">
-        <TableHeader>
-          <TableRow>
-            {block.columns.map((column, index) => (
-              <TableHeaderCell key={`${column}-${index}`}>{column}</TableHeaderCell>
-            ))}
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {block.rows.map((row, rowIndex) => (
-            <TableRow key={`${row.join("|")}-${rowIndex}`}>
-              {row.map((cell, cellIndex) => (
-                <TableCell key={`${cell}-${cellIndex}`}>{cell}</TableCell>
+      <Stack className="markdown-table-wrap">
+        <Table className="activity-table" data-activity-block-kind="table">
+          <TableHeader>
+            <TableRow>
+              {block.columns.map((column, index) => (
+                <TableHeaderCell key={`${column}-${index}`}>{column}</TableHeaderCell>
               ))}
             </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+          </TableHeader>
+          <TableBody>
+            {block.rows.map((row, rowIndex) => (
+              <TableRow key={`${row.join("|")}-${rowIndex}`}>
+                {row.map((cell, cellIndex) => (
+                  <TableCell key={`${cell}-${cellIndex}`}>{cell}</TableCell>
+                ))}
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </Stack>
     ) : null,
   checklist: (block) =>
     block.type === "checklist" ? (
@@ -92,14 +95,16 @@ const blockRenderers: Record<BlockType, BlockRenderer> = {
           <ul>
             {block.cases.map((testCase, index) => (
               <li key={`${testCase.name}-${index}`} data-test-status={testCase.status}>
-                <Text type="inherit" color="inherit">
-                  {testCase.name} — {testCase.status}
-                </Text>
-                {testCase.message !== undefined && (
-                  <Text type="supporting" color="secondary">
-                    {testCase.message}
+                <Stack gap={0.5}>
+                  <Text type="inherit" color="inherit">
+                    {testCase.name} — {testCase.status}
                   </Text>
-                )}
+                  {testCase.message !== undefined && (
+                    <Text as="p" display="block" type="supporting" color="secondary">
+                      {testCase.message}
+                    </Text>
+                  )}
+                </Stack>
               </li>
             ))}
           </ul>
@@ -120,7 +125,9 @@ function JsonFallback({ detail }: { detail: unknown }) {
           </Text>
         }
       >
-        <pre data-activity-detail>{JSON.stringify(detail, null, 2)}</pre>
+        <pre className="activity-json-pre" data-activity-detail>
+          {JSON.stringify(detail, null, 2)}
+        </pre>
       </Collapsible>
     </Stack>
   );
@@ -137,6 +144,26 @@ function renderDetail(detail: SessionActivityDetail | null): ReactNode {
     );
   }
   return <JsonFallback detail={detail} />;
+}
+
+function ShortId({ value, label }: { value: string; label: string }) {
+  const toast = useToast();
+
+  async function onCopy() {
+    try {
+      await navigator.clipboard.writeText(value);
+      toast({ body: `Copied ${label}.` });
+    } catch {
+      toast({ body: `Could not copy ${label}.`, type: "error" });
+    }
+  }
+
+  return (
+    <Stack direction="horizontal" gap={1} vAlign="center" wrap="wrap">
+      <code title={value}>{value.slice(0, 8)}</code>
+      <Button type="button" variant="ghost" size="sm" label="Copy" onClick={() => void onCopy()} />
+    </Stack>
+  );
 }
 
 export function SessionInspector({
@@ -220,21 +247,20 @@ export function SessionInspectorDetails({
   );
   const displayStatus =
     selected?.stopRequested && selected.status === "active" ? "stopping" : selected?.status;
+  const activityList = activities.data ?? [];
 
   return (
     <Stack className="inspector-content">
       {sessions.isPending && (
-        <Text as="p" display="block" type="inherit" color="inherit" role="status">
+        <Text as="p" display="block" type="supporting" role="status">
           Loading work sessions…
         </Text>
       )}
       {sessions.isError && (
-        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
-          Could not load work sessions.
-        </Text>
+        <Banner status="error" role="alert" title="Could not load work sessions." />
       )}
       {sessions.isSuccess && selected === undefined && (
-        <Text as="p" display="block" type="inherit" color="inherit">
+        <Text as="p" display="block" type="supporting">
           No work sessions recorded for this issue.
         </Text>
       )}
@@ -247,10 +273,16 @@ export function SessionInspectorDetails({
             onChange={setPickedId}
             options={list.map((session) => ({
               value: session.id,
-              label: `${session.status} · ${dateTime.format(new Date(session.createdAt))}`,
+              label: `${session.status} · ${formatDateTime(session.createdAt)}`,
             }))}
           />
-          <Stack className="inspector-session-label" direction="horizontal" gap={1} wrap="wrap">
+          <Stack
+            className="inspector-session-label"
+            direction="horizontal"
+            gap={1}
+            vAlign="center"
+            wrap="wrap"
+          >
             <strong>{run?.agentName ?? "Agent work session"}</strong>
             <Text type="inherit" color="inherit" data-inspector-session-status={displayStatus}>
               {displayStatus}
@@ -286,11 +318,11 @@ export function SessionInspectorDetails({
             <dd>{run?.model ?? "Unknown"}</dd>
             <dt>Run</dt>
             <dd>
-              <code>{selected.runId}</code>
+              <ShortId value={selected.runId} label="run ID" />
             </dd>
             <dt>Session</dt>
             <dd>
-              <code>{selected.id}</code>
+              <ShortId value={selected.id} label="session ID" />
             </dd>
             <TelemetryFacts
               inputTokens={selected.inputTokens}
@@ -302,32 +334,38 @@ export function SessionInspectorDetails({
             Session activity
           </Heading>
           {activities.isPending && (
-            <Text as="p" display="block" type="inherit" color="inherit" role="status">
+            <Text as="p" display="block" type="supporting" role="status">
               Loading session activity…
             </Text>
           )}
           {activities.isError && (
-            <Text as="p" display="block" type="inherit" color="inherit" role="alert">
-              Could not load session activity.
-            </Text>
+            <Banner status="error" role="alert" title="Could not load session activity." />
           )}
-          <ol data-activity-timeline>
-            {activities.data?.length === 0 && <li>No activities recorded yet.</li>}
-            {activities.data?.map((activity) => (
-              <li
-                key={activity.id}
-                data-activity-id={activity.id}
-                data-activity-kind={activity.kind}
-              >
-                <time dateTime={activity.createdAt}>
-                  {dateTime.format(new Date(activity.createdAt))}
-                </time>
-                <strong>{activity.kind}</strong>
-                <Stack data-activity-summary>{activity.summary}</Stack>
-                {activity.detail !== null && renderDetail(activity.detail)}
-              </li>
-            ))}
-          </ol>
+          {activities.isSuccess && activityList.length === 0 ? (
+            <Text as="p" display="block" type="supporting" color="secondary">
+              No activities recorded yet.
+            </Text>
+          ) : (
+            <ol data-activity-timeline>
+              {activityList.map((activity) => (
+                <li
+                  key={activity.id}
+                  data-activity-id={activity.id}
+                  data-activity-kind={activity.kind}
+                >
+                  <time
+                    dateTime={activity.createdAt}
+                    title={formatFullDateTime(activity.createdAt)}
+                  >
+                    {formatDateTime(activity.createdAt)}
+                  </time>
+                  <strong>{activity.kind}</strong>
+                  <Stack data-activity-summary>{activity.summary}</Stack>
+                  {activity.detail !== null && renderDetail(activity.detail)}
+                </li>
+              ))}
+            </ol>
+          )}
         </>
       )}
     </Stack>

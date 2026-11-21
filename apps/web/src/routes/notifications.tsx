@@ -156,21 +156,14 @@ function NotificationsPage() {
             <>
               <NotificationsList notifications={notifications} onRead={onRead} />
               {(feed.isFetchNextPageError || feed.hasNextPage) && (
-                <Stack
-                  direction="horizontal"
-                  gap={2}
-                  hAlign="center"
-                  paddingBlockStart={4}
-                  wrap="wrap"
-                >
-                  {feed.isFetchNextPageError && (
+                <Stack gap={2} hAlign="center" paddingBlockStart={4}>
+                  {feed.isFetchNextPageError ? (
                     <NotificationsErrorState
                       error={feed.error}
                       isCompact
                       onRetry={() => void feed.fetchNextPage()}
                     />
-                  )}
-                  {feed.hasNextPage && (
+                  ) : (
                     <Button
                       label="Load more"
                       variant="secondary"

@@ -308,6 +308,7 @@ test("clicking Stop agent in the browser transitions the session badge to stoppi
     await expect(badge).toHaveText("active");
     await page.getByLabel("Reason (optional)").fill("Browser reason");
     await page.getByRole("button", { name: "Stop agent" }).click();
+    await page.getByRole("alertdialog").getByRole("button", { name: "Stop agent" }).click();
     await expect(badge).toHaveText("stopping");
 
     await page.goto(`/workspaces/${workspaceId}`);
@@ -686,7 +687,6 @@ test("the board and agents panel show assignment, live session state and the sid
     await page.goto(`/issues/${issueId}`);
     await page.getByRole("combobox", { name: "Assignee" }).click();
     await page.getByRole("option", { name: `Agent · ${agentName}`, exact: true }).click();
-    await page.getByRole("button", { name: "Save assignee" }).click();
     await expect
       .poll(async () => {
         const res = await api.get(`/api/issues/${issueId}`);
