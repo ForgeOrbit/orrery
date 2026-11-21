@@ -41,7 +41,31 @@ terminals and subagents use that one URL; the key identifies the agent, not the 
 
 ## Setup
 
-These steps configure one machine. Repeat them for each agent identity that should report runs.
+### Recommended: install the Claude Code plugin
+
+The easiest way to wire both the lifecycle hooks and static `/mcp` endpoint is the installable
+plugin from [`forge-orbit/orrery-integrations`](https://github.com/forge-orbit/orrery-integrations):
+
+1. Create an agent in Orrery, issue it a workspace-scoped API key, and export `ORRERY_URL` and
+   `ORRERY_API_KEY` (or `ORRERY_API_KEY_FILE`) in the environment Claude Code inherits:
+
+   ```sh
+   export ORRERY_URL="https://orrery.example.com"
+   export ORRERY_API_KEY="<the agent API key secret>"
+   # or: export ORRERY_API_KEY_FILE=/path/to/secret-file
+   ```
+
+2. Add the marketplace and install the plugin in Claude Code:
+
+   ```text
+   /plugin marketplace add forge-orbit/orrery-integrations
+   /plugin install orrery@orrery
+   ```
+
+### Manual setup (from this checkout)
+
+If you prefer to point directly at the local script in this repository instead of installing the
+plugin, repeat these steps for each agent identity that should report runs:
 
 1. In Orrery, create an agent and issue it a workspace-scoped API key. Copy the secret into your
    shell environment, or into a file readable only by you. Never commit it.

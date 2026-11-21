@@ -46,14 +46,37 @@ transport session.
 
 ## Setup
 
-### 1. Create an agent key
+### Recommended: install the Codex plugin
+
+The easiest way to wire both the lifecycle hooks and static `/mcp` endpoint is the installable
+plugin from [`forge-orbit/orrery-integrations`](https://github.com/forge-orbit/orrery-integrations):
+
+1. Create an agent in Orrery, issue it a workspace-scoped API key, and export `ORRERY_URL` and
+   `ORRERY_API_KEY` (or `ORRERY_API_KEY_FILE`) in the environment Codex inherits:
+
+   ```sh
+   export ORRERY_URL="https://orrery.example.com"
+   export ORRERY_API_KEY="<the agent API key secret>"
+   # or: export ORRERY_API_KEY_FILE=/path/to/secret-file
+   ```
+
+2. Add `forge-orbit/orrery-integrations` as a Codex plugin marketplace
+   (`.agents/plugins/marketplace.json`), install `orrery` from `/plugins`, and open `/hooks` to
+   review and trust its lifecycle hooks.
+
+### Manual setup (from this checkout)
+
+If you prefer to point directly at `scripts/codex-run-hook.mjs` in this repository instead of
+installing the plugin:
+
+#### 1. Create an agent key
 
 Create an agent in Orrery and issue it an API key for the workspace whose runs you want to
 see. Copy the one-time secret into your secret manager or shell environment — it is shown only
 once. The bearer key identifies the agent and scopes the workspace; it never goes in the hook
 body, a log line, or a committed file.
 
-### 2. Install the hook
+#### 2. Install the hook
 
 Point Codex at the committed script. A user-level `hooks.json` (`$CODEX_HOME/hooks.json`,
 normally `~/.codex/hooks.json`) that watches the lifecycle looks like this:
@@ -82,7 +105,7 @@ Non-managed hooks must be reviewed and trusted. In the interactive CLI, open `/h
 and trust them. For automation that already vets its hook sources, pass
 `--dangerously-bypass-hook-trust` on the `codex exec` command.
 
-### 3. Supply configuration to the hook
+#### 3. Supply configuration to the hook
 
 Export these in the environment that launches `codex`:
 
@@ -98,7 +121,7 @@ The key is read at run time from the environment or that local file. Never write
 `hooks.json`, `config.toml`, the repository, or a committed log. Keep the secret file outside
 the worktree and restrict its permissions.
 
-### 4. Configure the static MCP endpoint
+#### 4. Configure the static MCP endpoint
 
 The same agent key authenticates the agent's normal work through one static MCP URL. In
 `$CODEX_HOME/config.toml`:
