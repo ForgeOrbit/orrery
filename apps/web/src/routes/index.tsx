@@ -1,12 +1,13 @@
-import { Heading } from "@astryxdesign/core/Heading";
-import { Text } from "@astryxdesign/core/Text";
-import { Section } from "@astryxdesign/core/Section";
-import { TextField } from "../lib/fields.tsx";
 import { Button } from "@astryxdesign/core/Button";
+import { Drawer, DrawerHeader } from "@astryxdesign/core/Drawer";
+import { Heading } from "@astryxdesign/core/Heading";
+import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
+import { Section } from "@astryxdesign/core/Section";
+import { Stack } from "@astryxdesign/core/Stack";
+import { Text } from "@astryxdesign/core/Text";
+import type { InvitationSummary } from "@orrery/contract";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
-import { Link } from "../lib/Link.tsx";
-import type { InvitationSummary } from "@orrery/contract";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { sessionQuery, setupStatusQuery } from "../features/accounts/index.ts";
@@ -19,11 +20,13 @@ import {
 } from "../features/invitations/index.ts";
 import { readinessQuery } from "../features/system/index.ts";
 import { createWorkspace, workspaceQuery, workspacesQuery } from "../features/workspaces/index.ts";
+import { TextField } from "../lib/fields.tsx";
+import { Link } from "../lib/Link.tsx";
+import { PageHeader } from "../lib/PageHeader.tsx";
 
-// Home: server readiness, who is signed in, their workspaces, and — on a fresh
-// installation — the way in.
+// Home: authenticated workspace directory. Unauthenticated visitors go straight to /setup
+// (on a fresh installation) or /signin.
 export const Route = createFileRoute("/")({
-  // The loads start together before the component renders, so there is no request waterfall.
   loader: async ({ context }) => {
     const [, session, setup] = await Promise.all([
       context.queryClient.ensureQueryData(readinessQuery),
@@ -40,71 +43,106 @@ export const Route = createFileRoute("/")({
   },
   component: Home,
   errorComponent: () => (
-    <Text as="p" display="block" type="inherit" color="inherit">
-      Server: unreachable
-    </Text>
+    <main>
+      <Text as="p" display="block" type="inherit" color="inherit">
+        Server: unreachable
+      </Text>
+    </main>
   ),
 });
 
 function Home() {
   const { data: health } = useSuspenseQuery(readinessQuery);
   const { data: session } = useSuspenseQuery(sessionQuery);
-  const { data: setup } = useSuspenseQuery(setupStatusQuery);
   const { data: workspaces } = useSuspenseQuery(workspacesQuery);
+  const [createOpen, setCreateOpen] = useState(false);
+
+  if (!session.signedIn) return null;
 
   return (
     <main>
-      <Heading level={1} color="inherit">
-        Orrery
-      </Heading>
-      <Text as="p" display="block" type="inherit" color="inherit">
-        Server: {health.status} ({health.version})
-      </Text>
-      {session.signedIn ? (
-        <>
-          <Text as="p" display="block" type="inherit" color="inherit">
-            Signed in as {session.email}.
-          </Text>
-          <Section className="page-section" padding={0}>
-            <Heading level={2} color="inherit">
-              Your workspaces
-            </Heading>
-            <ul>
-              {workspaces.map((workspace) => (
-                <li key={workspace.id} data-workspace-id={workspace.id}>
-                  <Link to="/workspaces/$workspaceId" params={{ workspaceId: workspace.id }}>
-                    {workspace.name}
-                  </Link>{" "}
-                  <Text type="inherit" color="inherit">
-                    {workspace.kind === "personal"
-                      ? "Personal"
-                      : workspace.isOwner
-                        ? "Owner"
-                        : "Member"}
-                  </Text>
-                </li>
-              ))}
-            </ul>
-          </Section>
-          <CreateWorkspaceForm />
-          <InstallationInvitations />
-        </>
-      ) : setup.setupComplete ? (
-        <Text as="p" display="block" type="inherit" color="inherit">
-          <Link to="/signin">Sign in</Link> to continue.
-        </Text>
-      ) : (
-        <Text as="p" display="block" type="inherit" color="inherit">
-          New installation? <Link to="/setup">Set up Orrery</Link>.
-        </Text>
-      )}
+      <PageHeader
+        title="Workspaces"
+        badge={`${health.status} · ${health.version}`}
+        subtitle={`Signed in as ${session.email}.`}
+        actions={
+          <Button
+            type="button"
+            label="New workspace"
+            variant="primary"
+            size="sm"
+            onClick={() => setCreateOpen(true)}
+          />
+        }
+      />
+
+      <Section padding={0}>
+        <Stack direction="horizontal" className="section-toolbar">
+          <Heading level={2} color="inherit">
+            Your workspaces
+          </Heading>
+        </Stack>
+        <ul className="entity-grid">
+          {workspaces.map((workspace) => (
+            <li key={workspace.id} data-workspace-id={workspace.id} className="entity-card">
+              <Stack direction="horizontal" className="entity-card-top">
+                <Link
+                  to="/workspaces/$workspaceId"
+                  params={{ workspaceId: workspace.id }}
+                  className="entity-card-title"
+                >
+                  {workspace.name}
+                </Link>
+                <span className="meta-pill">
+                  {workspace.kind === "personal"
+                    ? "Personal"
+                    : workspace.isOwner
+                      ? "Owner"
+                      : "Member"}
+                </span>
+              </Stack>
+              <Stack direction="horizontal" className="entity-card-meta">
+                <Text type="supporting">
+                  {workspace.kind === "personal" ? "Private workspace" : "Shared team workspace"}
+                </Text>
+                <Link to="/workspaces/$workspaceId" params={{ workspaceId: workspace.id }}>
+                  Open
+                </Link>
+              </Stack>
+            </li>
+          ))}
+        </ul>
+      </Section>
+
+      <InstallationInvitations />
+
+      <Drawer
+        isOpen={createOpen}
+        onOpenChange={setCreateOpen}
+        purpose="form"
+        label="Create a shared workspace"
+        width="26rem"
+      >
+        <Layout
+          height="auto"
+          header={
+            <DrawerHeader
+              title="Create a shared workspace"
+              onOpenChange={setCreateOpen}
+              hasDivider
+            />
+          }
+        >
+          <LayoutContent>
+            <CreateWorkspaceForm onCreated={() => setCreateOpen(false)} />
+          </LayoutContent>
+        </Layout>
+      </Drawer>
     </main>
   );
 }
 
-// A small owner-creating form: the signed-in human names a shared workspace and becomes
-// its first owner. The workspace detail page is where invitations start.
-function CreateWorkspaceForm() {
+function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [name, setName] = useState("");
@@ -120,6 +158,7 @@ function CreateWorkspaceForm() {
       await queryClient.ensureQueryData(workspaceQuery(workspace.id));
       await queryClient.invalidateQueries({ queryKey: workspacesQuery.queryKey });
       setName("");
+      onCreated();
       await navigate({
         to: "/workspaces/$workspaceId",
         params: { workspaceId: workspace.id },
@@ -132,28 +171,24 @@ function CreateWorkspaceForm() {
   }
 
   return (
-    <Section className="page-section" padding={0}>
-      <Heading level={2} color="inherit">
-        Create a shared workspace
-      </Heading>
-      <form onSubmit={(event) => void onSubmit(event)}>
-        <TextField
-          label="Workspace name"
-          id="workspace-name"
-          htmlName="name"
-          value={name}
-          onChange={setName}
-          required
-          maxLength={120}
-        />
-        {error !== undefined && (
-          <Text as="p" display="block" type="inherit" color="inherit" role="alert">
-            {error}
-          </Text>
-        )}
-        <Button type="submit" isDisabled={submitting} label="Create workspace" variant="primary" />
-      </form>
-    </Section>
+    <form onSubmit={(event) => void onSubmit(event)}>
+      <TextField
+        label="Workspace name"
+        id="workspace-name"
+        htmlName="name"
+        value={name}
+        onChange={setName}
+        required
+        maxLength={120}
+        placeholder="e.g. Core Engineering"
+      />
+      {error !== undefined && (
+        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+          {error}
+        </Text>
+      )}
+      <Button type="submit" isDisabled={submitting} label="Create workspace" variant="primary" />
+    </form>
   );
 }
 
@@ -164,8 +199,10 @@ function InstallationInvitations() {
   const queryClient = useQueryClient();
   const [email, setEmail] = useState("");
   const [error, setError] = useState<string>();
+  const [inviteError, setInviteError] = useState<string>();
   const [busyId, setBusyId] = useState<string>();
   const [inviting, setInviting] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
 
   if (invitations === null) return null;
 
@@ -175,16 +212,15 @@ function InstallationInvitations() {
   async function onInvite(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setInviting(true);
-    setError(undefined);
+    setInviteError(undefined);
     try {
       await inviteInstallation({ email });
       setEmail("");
+      setInviteOpen(false);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not send the invitation.");
+      setInviteError(cause instanceof Error ? cause.message : "Could not send the invitation.");
     } finally {
       setInviting(false);
-      // A failed send still created the pending row with a failed delivery; refresh so
-      // the history shows it beside the original error without a manual reload.
       await reload();
     }
   }
@@ -198,50 +234,33 @@ function InstallationInvitations() {
       setError(cause instanceof Error ? cause.message : "Could not change the invitation.");
     } finally {
       setBusyId(undefined);
-      // A failed delivery still created the new pending row; reload so it is visible
-      // beside its lifecycle status.
       await reload();
     }
   }
 
   return (
     <Section className="page-section" padding={0}>
-      <Heading level={2} color="inherit">
-        Installation invitations
-      </Heading>
-      <Text as="p" display="block" type="inherit" color="inherit">
-        <Link to="/settings/smtp">Configure SMTP</Link>
-      </Text>
-      <Text as="p" display="block" type="inherit" color="inherit">
-        <Link to="/history/installation">View installation history</Link>
-      </Text>
-      <form onSubmit={(event) => void onInvite(event)}>
-        <TextField
-          label="Email"
-          id="installation-invite-email"
-          htmlName="email"
-          type="email"
-          value={email}
-          onChange={setEmail}
-          required
-          autoComplete="off"
-        />
-        {error !== undefined && (
-          <Text as="p" display="block" type="inherit" color="inherit" role="alert">
-            {error}
-          </Text>
-        )}
-        <Button
-          type="submit"
-          isDisabled={inviting}
-          label="Send installation invitation"
-          variant="primary"
-        />
-      </form>
+      <Stack direction="horizontal" className="section-toolbar">
+        <Heading level={2} color="inherit">
+          Installation administration
+        </Heading>
+        <Stack direction="horizontal" className="page-header-actions">
+          <Link to="/settings/smtp">Configure SMTP</Link>
+          <Link to="/history/installation">Installation history</Link>
+          <Button
+            type="button"
+            label="Invite person"
+            variant="secondary"
+            size="sm"
+            onClick={() => setInviteOpen(true)}
+          />
+        </Stack>
+      </Stack>
       <InvitationList
         invitations={invitations}
         emptyMessage="No installation invitations yet."
         {...(busyId === undefined ? {} : { busyId })}
+        {...(error === undefined ? {} : { error })}
         onResend={(invitation) =>
           run(invitation, () => resendInstallationInvitation(invitation.id))
         }
@@ -249,6 +268,52 @@ function InstallationInvitations() {
           run(invitation, () => revokeInstallationInvitation(invitation.id))
         }
       />
+
+      <Drawer
+        isOpen={inviteOpen}
+        onOpenChange={setInviteOpen}
+        purpose="form"
+        label="Send installation invitation"
+        width="26rem"
+      >
+        <Layout
+          height="auto"
+          header={
+            <DrawerHeader
+              title="Invite someone to Orrery"
+              onOpenChange={setInviteOpen}
+              hasDivider
+            />
+          }
+        >
+          <LayoutContent>
+            <form onSubmit={(event) => void onInvite(event)}>
+              <TextField
+                label="Email"
+                id="installation-invite-email"
+                htmlName="email"
+                type="email"
+                value={email}
+                onChange={setEmail}
+                required
+                autoComplete="off"
+                placeholder="teammate@example.com"
+              />
+              {inviteError !== undefined && (
+                <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+                  {inviteError}
+                </Text>
+              )}
+              <Button
+                type="submit"
+                isDisabled={inviting}
+                label="Send installation invitation"
+                variant="primary"
+              />
+            </form>
+          </LayoutContent>
+        </Layout>
+      </Drawer>
     </Section>
   );
 }

@@ -526,20 +526,22 @@ test("workspace invite form refreshes failed delivery history without a reload",
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByText(`Signed in as ${ADMIN_EMAIL}.`)).toBeVisible();
   await page.goto(`/workspaces/${workspace.id}`);
-  await expect(
-    page.getByRole("heading", { name: "Invite someone to SMTP Failure Team" }),
-  ).toBeVisible();
+  await page.getByRole("tab", { name: "Members" }).click();
 
   await api.put("/api/settings/smtp", {
     data: { ...SETTINGS, host: "127.0.0.1", port: 1 },
   });
   try {
+    await page.getByRole("button", { name: "Invite member" }).click();
     await page.getByLabel("Email").fill(FAILED_EMAIL);
     await page.getByRole("button", { name: "Send invitation" }).click();
 
     // The original delivery Problem stays visible, while the history refreshes on its
     // own to show the pending row, the separate failure, and the Resend action.
-    await expect(page.getByRole("alert")).toContainText("Could not reach the SMTP server");
+    await expect(page.getByRole("dialog").getByRole("alert")).toContainText(
+      "Could not reach the SMTP server",
+    );
+    await page.keyboard.press("Escape");
     await expect(page.getByRole("heading", { name: "Invitation history" })).toBeVisible();
     const row = page.locator("li[data-invitation-id]").filter({ hasText: FAILED_EMAIL });
     await expect(row).toContainText("Pending");
@@ -580,6 +582,7 @@ test("owner sees invitation history and delivery separately, and resends from th
   await expect(page.getByText(`Signed in as ${ADMIN_EMAIL}.`)).toBeVisible();
 
   await page.goto(`/workspaces/${workspace.id}`);
+  await page.getByRole("tab", { name: "Members" }).click();
   await expect(page.getByRole("heading", { name: "Invitation history" })).toBeVisible();
   const row = page.locator("li[data-invitation-id]").filter({ hasText: HISTORY_EMAIL });
   await expect(row).toContainText("Pending");
@@ -671,6 +674,7 @@ test("accepts a workspace invitation through sign-in, then an owner appoints", a
     await expect(adminPage.getByText(`Signed in as ${ADMIN_EMAIL}.`)).toBeVisible();
 
     await adminPage.goto(`/workspaces/${invitationWorkspaceId}`);
+    await adminPage.getByRole("tab", { name: "Members" }).click();
     await expect(adminPage.getByRole("heading", { name: "Members" })).toBeVisible();
     const memberRow = adminPage.locator("li[data-member-id]").filter({ hasText: EXISTING_EMAIL });
     await expect(memberRow).toContainText("Member");
@@ -681,6 +685,7 @@ test("accepts a workspace invitation through sign-in, then an owner appoints", a
     // The member's next load sees the new role and the owner-only controls.
     await page.reload();
     await expect(page.getByText("Shared workspace · Owner")).toBeVisible();
+    await page.getByRole("tab", { name: "Members" }).click();
     await expect(page.getByRole("heading", { name: "Members" })).toBeVisible();
   } finally {
     for (const cookie of await adminContext.cookies()) await recordSecret(cookie.value);
@@ -1317,6 +1322,7 @@ test("a delegated member sees only the controls within their authority in the br
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByText(`Signed in as ${memberEmail}.`)).toBeVisible();
   await page.goto(`/workspaces/${workspaceId}`);
+  await page.getByRole("tab", { name: "Members" }).click();
 
   await expect(page.getByRole("heading", { name: "Members" })).toBeVisible();
   // The capability the delegate holds has a control; the ones they lack do not, and
@@ -1329,7 +1335,7 @@ test("a delegated member sees only the controls within their authority in the br
   );
   await expect(page.getByRole("button", { name: "Make owner" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Remove member" })).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: `Invite someone to ${name}` })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Invite member", exact: true })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Invitation history" })).toHaveCount(0);
 
   // Granting the remaining capabilities in the API makes the corresponding controls
@@ -1339,9 +1345,10 @@ test("a delegated member sees only the controls within their authority in the br
     canRemoveMembers: true,
   });
   await page.reload();
+  await page.getByRole("tab", { name: "Members" }).click();
   await expect(page.getByRole("button", { name: "Grant Invite members" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Grant Remove members" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: `Invite someone to ${name}` })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Invite member", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Invitation history" })).toBeVisible();
   const peerRow = page.locator("li[data-member-id]").filter({ hasText: otherEmail });
   await expect(peerRow.getByRole("button", { name: "Remove member", exact: true })).toBeVisible();
@@ -1355,6 +1362,7 @@ test("a delegated member sees only the controls within their authority in the br
     await adminPage.getByRole("button", { name: "Sign in" }).click();
     await expect(adminPage.getByText(`Signed in as ${ADMIN_EMAIL}.`)).toBeVisible();
     await adminPage.goto(`/workspaces/${workspaceId}`);
+    await adminPage.getByRole("tab", { name: "Members" }).click();
     await expect(adminPage.getByRole("button", { name: "Make owner" }).first()).toBeVisible();
   } finally {
     for (const cookie of await adminBrowser.cookies()) await recordSecret(cookie.value);

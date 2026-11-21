@@ -1,9 +1,9 @@
-import { Heading } from "@astryxdesign/core/Heading";
 import { Text } from "@astryxdesign/core/Text";
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import { sessionQuery } from "../features/accounts/index.ts";
 import { MyWorkErrorState, MyWorkSections, myWorkQuery } from "../features/my-work/index.ts";
+import { PageHeader } from "../lib/PageHeader.tsx";
 
 // One daily home screen across workspaces (issue #107). The endpoint decides what is in
 // scope; this page only polls it and renders the three sections. No useEffect: data comes
@@ -24,10 +24,8 @@ export const Route = createFileRoute("/my-work")({
 function MyWorkLoadingState() {
   return (
     <main data-my-work-loading>
-      <Heading level={1} color="inherit">
-        My work
-      </Heading>
-      <Text as="p" display="block" type="inherit" color="inherit" role="status">
+      <PageHeader title="My work" />
+      <Text as="p" display="block" type="supporting" role="status">
         Loading your work…
       </Text>
     </main>
@@ -43,12 +41,10 @@ function MyWorkPage() {
 
   return (
     <main data-my-work-page>
-      <Heading level={1} color="inherit">
-        My work
-      </Heading>
-      <Text as="p" display="block" type="inherit" color="inherit">
-        Your assignments, live agent sessions, and questions across all your workspaces.
-      </Text>
+      <PageHeader
+        title="My work"
+        subtitle="Your assignments, live agent sessions, and questions across all your workspaces."
+      />
       <MyWorkSections work={work.data} />
     </main>
   );

@@ -1,13 +1,18 @@
-import { Heading } from "@astryxdesign/core/Heading";
-import { Text } from "@astryxdesign/core/Text";
-import { Section } from "@astryxdesign/core/Section";
-import { TextField } from "../lib/fields.tsx";
+import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
+import { Drawer, DrawerHeader } from "@astryxdesign/core/Drawer";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
+import { Heading } from "@astryxdesign/core/Heading";
+import { Icon } from "@astryxdesign/core/Icon";
+import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
+import { Section } from "@astryxdesign/core/Section";
 import { Selector } from "@astryxdesign/core/Selector";
+import { Stack } from "@astryxdesign/core/Stack";
+import { Tab, TabList } from "@astryxdesign/core/TabList";
+import { Text } from "@astryxdesign/core/Text";
+import { ProjectAccessLevel, type Project, type ProjectActivityType } from "@orrery/contract";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { Link } from "../lib/Link.tsx";
-import { ProjectAccessLevel, type Project, type ProjectActivityType } from "@orrery/contract";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import {
@@ -32,11 +37,10 @@ import {
   TitleBodyForm,
   updateProject,
 } from "../features/projects/index.ts";
+import { TextField } from "../lib/fields.tsx";
+import { Link } from "../lib/Link.tsx";
+import { PageHeader } from "../lib/PageHeader.tsx";
 
-// One project's view: its issues, its basic Markdown knowledge, and the activity that
-// records who did what. The effective level decides which controls exist: Read sees the
-// content, Contribute changes work, and Manage configures the project and its access.
-// The server enforces every level; this only avoids offering buttons that would fail.
 export const Route = createFileRoute("/projects/$projectId")({
   loader: async ({ context, params }) => {
     const project = await context.queryClient.ensureQueryData(projectQuery(params.projectId));
@@ -87,6 +91,8 @@ const activityLabels: Record<ProjectActivityType, string> = {
   knowledge_edited: "edited knowledge",
 };
 
+type ProjectTab = "issues" | "knowledge" | "labels" | "activity" | "settings";
+
 function ProjectPage() {
   const { projectId } = Route.useParams();
   const { data: project } = useSuspenseQuery(projectQuery(projectId));
@@ -95,114 +101,284 @@ function ProjectPage() {
   const { data: knowledge } = useSuspenseQuery(knowledgeEntriesQuery(project.id));
   const canContribute = project.accessLevel !== "read";
   const canManage = project.accessLevel === "manage";
+  const [tab, setTab] = useState<ProjectTab>("issues");
+  const [newIssueOpen, setNewIssueOpen] = useState(false);
+  const [newKnowledgeOpen, setNewKnowledgeOpen] = useState(false);
+  const activeTab: ProjectTab = tab === "settings" && !canManage ? "issues" : tab;
 
   return (
     <main>
-      <Text as="p" display="block" type="inherit" color="inherit">
-        <Link to="/workspaces/$workspaceId" params={{ workspaceId: project.workspaceId }}>
-          Back to workspace
-        </Link>{" "}
-        ·{" "}
-        <Link to="/history/project/$projectId" params={{ projectId: project.id }}>
-          View history
-        </Link>{" "}
-        ·{" "}
-        <Link to="/board/$projectId" params={{ projectId: project.id }} data-board-link>
-          Board
-        </Link>
-        {canManage && (
+      <PageHeader
+        breadcrumbs={[
+          <Link
+            key="workspace"
+            to="/workspaces/$workspaceId"
+            params={{ workspaceId: project.workspaceId }}
+          >
+            Back to workspace
+          </Link>,
+        ]}
+        title={project.name}
+        badge={project.key}
+        subtitle={
           <>
-            {" · "}
-            <Link to="/trash/$projectId" params={{ projectId: project.id }} data-trash-link>
-              Trash
-            </Link>
+            Access:{" "}
+            <Text type="inherit" color="inherit" data-project-access-level={project.accessLevel}>
+              {project.accessLevel}
+            </Text>{" "}
+            · created by {project.createdBy.displayName}
           </>
-        )}
-      </Text>
-      <Heading level={1} color="inherit">
-        {project.name}
-      </Heading>
-      <Text as="p" display="block" type="inherit" color="inherit">
-        Project ·{" "}
-        <Text type="inherit" color="inherit" data-project-access-level={project.accessLevel}>
-          {project.accessLevel}
-        </Text>{" "}
-        · created by {project.createdBy.displayName}
-      </Text>
+        }
+        actions={
+          <>
+            <Link to="/board/$projectId" params={{ projectId: project.id }} data-board-link>
+              Board
+            </Link>
+            {canManage && (
+              <Link to="/trash/$projectId" params={{ projectId: project.id }} data-trash-link>
+                Trash
+              </Link>
+            )}
+            <Link to="/history/project/$projectId" params={{ projectId: project.id }}>
+              View history
+            </Link>
+            {canContribute && (
+              <Button
+                type="button"
+                label="New issue"
+                variant="primary"
+                size="sm"
+                onClick={() => setNewIssueOpen(true)}
+              />
+            )}
+          </>
+        }
+      />
 
-      {canManage && <ProjectSettings key={project.name} project={project} />}
+      <TabList
+        value={activeTab}
+        onChange={(value) => {
+          if (
+            value === "issues" ||
+            value === "knowledge" ||
+            value === "labels" ||
+            value === "activity" ||
+            value === "settings"
+          ) {
+            setTab(value);
+          }
+        }}
+        role="tablist"
+        aria-label="Project sections"
+        size="sm"
+        hasDivider
+      >
+        <Tab
+          value="issues"
+          label="Issues"
+          panelId="panel-issues"
+          endContent={<Badge label={issues.length} />}
+        />
+        <Tab
+          value="knowledge"
+          label="Knowledge"
+          panelId="panel-knowledge"
+          endContent={<Badge label={knowledge.length} />}
+        />
+        <Tab
+          value="labels"
+          label="Labels"
+          panelId="panel-labels"
+          endContent={<Badge label={labels.length} />}
+        />
+        <Tab value="activity" label="Activity" panelId="panel-activity" />
+        {canManage && <Tab value="settings" label="Settings" panelId="panel-settings" />}
+      </TabList>
 
-      <Section className="page-section" padding={0}>
-        <Heading level={2} color="inherit">
-          Issues
-        </Heading>
-        {issues.length === 0 ? (
-          <Text as="p" display="block" type="inherit" color="inherit">
-            No issues yet.
-          </Text>
-        ) : (
-          <ul>
-            {issues.map((issue) => (
-              <li key={issue.id} data-issue-id={issue.id}>
-                <Link to="/issues/$issueId" params={{ issueId: issue.id }}>
-                  <Text as="span" className="issue-key" data-issue-identifier={issue.identifier}>
-                    {issue.identifier}
-                  </Text>{" "}
-                  {issue.title}
-                </Link>{" "}
-                <PriorityBadge priority={issue.priority} />{" "}
-                <Text type="inherit" color="inherit" data-issue-status={issue.status}>
-                  {issueStatusLabels[issue.status]}
-                </Text>{" "}
-                {issue.labels.map((label) => (
-                  <LabelPill key={label.id} label={label} />
-                ))}{" "}
-                {canContribute && (
-                  <IssuePriorityControls issue={issue} issues={issues} projectId={project.id} />
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-        {canContribute && <CreateIssueForm projectId={project.id} />}
-      </Section>
+      {activeTab === "issues" && (
+        <section id="panel-issues" role="tabpanel" className="tab-panel">
+          {issues.length === 0 ? (
+            <Stack className="empty-panel">
+              <EmptyState
+                title="No issues yet"
+                description="Create your first issue or open the Board to start staging work."
+                icon={<Icon icon="viewColumns" size="lg" />}
+                headingLevel={2}
+                actions={
+                  canContribute ? (
+                    <Button
+                      label="New issue"
+                      variant="primary"
+                      onClick={() => setNewIssueOpen(true)}
+                    />
+                  ) : undefined
+                }
+              />
+            </Stack>
+          ) : (
+            <ul className="row-list">
+              {issues.map((issue) => (
+                <li key={issue.id} data-issue-id={issue.id} className="row-item">
+                  <Stack direction="horizontal" className="row-item-main">
+                    <Text as="span" className="issue-key" data-issue-identifier={issue.identifier}>
+                      {issue.identifier}
+                    </Text>
+                    <Link
+                      to="/issues/$issueId"
+                      params={{ issueId: issue.id }}
+                      className="row-item-title"
+                    >
+                      {issue.title}
+                    </Link>
+                    {issue.labels.map((label) => (
+                      <LabelPill key={label.id} label={label} />
+                    ))}
+                  </Stack>
+                  <Stack direction="horizontal" className="row-item-meta">
+                    <PriorityBadge priority={issue.priority} />
+                    <span className="meta-pill" data-issue-status={issue.status}>
+                      {issueStatusLabels[issue.status]}
+                    </span>
+                    {canContribute && (
+                      <IssuePriorityControls issue={issue} issues={issues} projectId={project.id} />
+                    )}
+                  </Stack>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
 
-      <ProjectLabels projectId={project.id} labels={labels} canContribute={canContribute} />
+      {activeTab === "knowledge" && (
+        <section id="panel-knowledge" role="tabpanel" className="tab-panel">
+          <Stack direction="horizontal" className="section-toolbar">
+            <Heading level={2} color="inherit">
+              Knowledge
+            </Heading>
+            {canContribute && (
+              <Button
+                type="button"
+                label="New document"
+                variant="primary"
+                size="sm"
+                onClick={() => setNewKnowledgeOpen(true)}
+              />
+            )}
+          </Stack>
+          {knowledge.length === 0 ? (
+            <Stack className="empty-panel">
+              <EmptyState
+                title="No knowledge entries yet"
+                description="Capture architecture notes and decisions for humans and agents."
+                headingLevel={3}
+                actions={
+                  canContribute ? (
+                    <Button
+                      label="New document"
+                      variant="primary"
+                      onClick={() => setNewKnowledgeOpen(true)}
+                    />
+                  ) : undefined
+                }
+              />
+            </Stack>
+          ) : (
+            <ul className="row-list">
+              {knowledge.map((entry) => (
+                <li key={entry.id} data-knowledge-id={entry.id} className="row-item">
+                  <Link
+                    to="/knowledge/$entryId"
+                    params={{ entryId: entry.id }}
+                    className="row-item-title"
+                  >
+                    {entry.title}
+                  </Link>
+                  <Text type="supporting">by {entry.updatedBy.displayName}</Text>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
 
-      <Section className="page-section" padding={0}>
-        <Heading level={2} color="inherit">
-          Knowledge
-        </Heading>
-        {knowledge.length === 0 ? (
-          <Text as="p" display="block" type="inherit" color="inherit">
-            No knowledge entries yet.
-          </Text>
-        ) : (
-          <ul>
-            {knowledge.map((entry) => (
-              <li key={entry.id} data-knowledge-id={entry.id}>
-                <Link to="/knowledge/$entryId" params={{ entryId: entry.id }}>
-                  {entry.title}
-                </Link>{" "}
-                <Text type="inherit" color="inherit">
-                  by {entry.updatedBy.displayName}
-                </Text>
-              </li>
-            ))}
-          </ul>
-        )}
-        {canContribute && <CreateKnowledgeForm projectId={project.id} />}
-      </Section>
+      {activeTab === "labels" && (
+        <section id="panel-labels" role="tabpanel" className="tab-panel">
+          <ProjectLabels projectId={project.id} labels={labels} canContribute={canContribute} />
+        </section>
+      )}
 
-      {canManage && project.workspaceKind === "shared" && <ProjectAccess projectId={project.id} />}
+      {activeTab === "activity" && (
+        <section id="panel-activity" role="tabpanel" className="tab-panel">
+          <Activity projectId={project.id} />
+        </section>
+      )}
 
-      <Activity projectId={project.id} />
+      {activeTab === "settings" && canManage && (
+        <section id="panel-settings" role="tabpanel" className="tab-panel">
+          <ProjectSettings key={project.name} project={project} />
+          {project.workspaceKind === "shared" && <ProjectAccess projectId={project.id} />}
+        </section>
+      )}
+
+      {canContribute && (
+        <Drawer
+          isOpen={newIssueOpen}
+          onOpenChange={setNewIssueOpen}
+          purpose="form"
+          label="New issue"
+          width="28rem"
+        >
+          <Layout
+            height="auto"
+            header={
+              <DrawerHeader
+                title="New issue"
+                subtitle={project.name}
+                onOpenChange={setNewIssueOpen}
+                hasDivider
+              />
+            }
+          >
+            <LayoutContent>
+              <CreateIssueForm projectId={project.id} />
+            </LayoutContent>
+          </Layout>
+        </Drawer>
+      )}
+
+      {canContribute && (
+        <Drawer
+          isOpen={newKnowledgeOpen}
+          onOpenChange={setNewKnowledgeOpen}
+          purpose="form"
+          label="New knowledge document"
+          width="30rem"
+        >
+          <Layout
+            height="auto"
+            header={
+              <DrawerHeader
+                title="New knowledge document"
+                subtitle={project.name}
+                onOpenChange={setNewKnowledgeOpen}
+                hasDivider
+              />
+            }
+          >
+            <LayoutContent>
+              <CreateKnowledgeForm
+                projectId={project.id}
+                onCreated={() => setNewKnowledgeOpen(false)}
+              />
+            </LayoutContent>
+          </Layout>
+        </Drawer>
+      )}
     </main>
   );
 }
 
-// Manage's project setting: the name. The form is keyed by the server's name at the call
-// site, so a successful save remounts it with the committed value without an effect.
 function ProjectSettings({ project }: { project: Project }) {
   const queryClient = useQueryClient();
   const [name, setName] = useState(project.name);
@@ -253,9 +429,6 @@ function ProjectSettings({ project }: { project: Project }) {
   );
 }
 
-// Manage's access grants. Workspace owners are implicit and are not rows here. The grant
-// form takes an email because the workspace member directory stays owner-only; the
-// server resolves it within this project's workspace and refuses anyone outside it.
 function ProjectAccess({ projectId }: { projectId: string }) {
   const { data: grants } = useSuspenseQuery(projectAccessQuery(projectId));
   const queryClient = useQueryClient();
@@ -302,22 +475,25 @@ function ProjectAccess({ projectId }: { projectId: string }) {
         Project access
       </Heading>
       {grants.length === 0 ? (
-        <Text as="p" display="block" type="inherit" color="inherit">
+        <Text as="p" display="block" type="supporting">
           No one else has explicit access yet.
         </Text>
       ) : (
-        <ul>
+        <ul className="row-list">
           {grants.map((grant) => (
-            <li key={grant.humanId} data-project-access-for={grant.email}>
-              {grant.email}{" "}
-              <Text type="inherit" color="inherit" data-access-level={grant.level}>
-                {grant.level}
-              </Text>{" "}
-              <Text type="inherit" color="inherit">
-                granted by {grant.grantedBy.email}
-              </Text>{" "}
+            <li key={grant.humanId} data-project-access-for={grant.email} className="row-item">
+              <Stack direction="horizontal" className="row-item-main">
+                <Text type="inherit" color="inherit" className="row-item-title">
+                  {grant.email}
+                </Text>
+                <span className="meta-pill" data-access-level={grant.level}>
+                  {grant.level}
+                </span>
+                <Text type="supporting">granted by {grant.grantedBy.email}</Text>
+              </Stack>
               <Button
                 type="button"
+                size="sm"
                 onClick={() => void onRevoke(grant.humanId)}
                 isDisabled={saving}
                 label="Revoke access"
@@ -365,7 +541,13 @@ function ProjectAccess({ projectId }: { projectId: string }) {
   );
 }
 
-function CreateKnowledgeForm({ projectId }: { projectId: string }) {
+function CreateKnowledgeForm({
+  projectId,
+  onCreated,
+}: {
+  projectId: string;
+  onCreated: () => void;
+}) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -385,6 +567,7 @@ function CreateKnowledgeForm({ projectId }: { projectId: string }) {
           queryClient.invalidateQueries({ queryKey: knowledgeEntriesQuery(projectId).queryKey }),
           queryClient.invalidateQueries({ queryKey: projectActivityQuery(projectId).queryKey }),
         ]);
+        onCreated();
         await navigate({ to: "/knowledge/$entryId", params: { entryId: entry.id } });
       }}
     />
@@ -393,25 +576,24 @@ function CreateKnowledgeForm({ projectId }: { projectId: string }) {
 
 function Activity({ projectId }: { projectId: string }) {
   const { data: activity } = useSuspenseQuery(projectActivityQuery(projectId));
+  if (activity.length === 0) {
+    return (
+      <Stack className="empty-panel">
+        <EmptyState title="No activity yet" headingLevel={3} />
+      </Stack>
+    );
+  }
   return (
-    <Section className="page-section" padding={0}>
-      <Heading level={2} color="inherit">
-        Activity
-      </Heading>
-      {activity.length === 0 ? (
-        <Text as="p" display="block" type="inherit" color="inherit">
-          No activity yet.
-        </Text>
-      ) : (
-        <ul>
-          {activity.map((event) => (
-            <li key={event.id} data-activity-type={event.type}>
-              {event.actor.displayName} {activityLabels[event.type]} “{event.summary}”{" "}
-              <time dateTime={event.createdAt}>{event.createdAt}</time>
-            </li>
-          ))}
-        </ul>
-      )}
-    </Section>
+    <ul className="row-list">
+      {activity.map((event) => (
+        <li key={event.id} data-activity-type={event.type} className="row-item">
+          <Text type="inherit" color="inherit">
+            <strong>{event.actor.displayName}</strong> {activityLabels[event.type]} “{event.summary}
+            ”
+          </Text>
+          <time dateTime={event.createdAt}>{event.createdAt}</time>
+        </li>
+      ))}
+    </ul>
   );
 }

@@ -8,6 +8,7 @@ import type { Question } from "@orrery/contract";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import { Link } from "../lib/Link.tsx";
+import { PageHeader } from "../lib/PageHeader.tsx";
 import { type FormEvent, useState } from "react";
 import { sessionQuery } from "../features/accounts/index.ts";
 import {
@@ -54,15 +55,21 @@ function InboxPage() {
 
   return (
     <main className="inbox-page">
-      <Heading level={1} color="inherit">
-        Inbox
-      </Heading>
+      <PageHeader
+        title="Inbox"
+        badge={open.length > 0 ? `${open.length} pending` : undefined}
+        subtitle="Questions from agents waiting for your direction."
+        actions={
+          issue !== undefined ? (
+            <Link to="/inbox" search={{}} color="accent" hasUnderline>
+              View all questions
+            </Link>
+          ) : undefined
+        }
+      />
       {issue !== undefined && (
-        <Text as="p" display="block" type="inherit" color="inherit">
-          Showing questions for one issue.{" "}
-          <Link to="/inbox" search={{}} color="accent" hasUnderline>
-            View all questions
-          </Link>
+        <Text as="p" display="block" type="supporting">
+          Showing questions for one issue.
         </Text>
       )}
       <QuestionList title="Needs an answer" questions={open} empty="No questions need an answer." />

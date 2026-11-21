@@ -1,14 +1,16 @@
-import { Heading } from "@astryxdesign/core/Heading";
-import { Text } from "@astryxdesign/core/Text";
-import { Section } from "@astryxdesign/core/Section";
-import { Stack } from "@astryxdesign/core/Stack";
-import { TextField } from "../lib/fields.tsx";
+import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
+import { Drawer, DrawerHeader } from "@astryxdesign/core/Drawer";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
+import { Heading } from "@astryxdesign/core/Heading";
+import { Icon } from "@astryxdesign/core/Icon";
+import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
+import { Section } from "@astryxdesign/core/Section";
 import { Selector } from "@astryxdesign/core/Selector";
-import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { Link } from "../lib/Link.tsx";
+import { Stack } from "@astryxdesign/core/Stack";
+import { Tab, TabList } from "@astryxdesign/core/TabList";
+import { Text } from "@astryxdesign/core/Text";
 import {
   ProjectAccessLevel,
   workspaceCapabilities,
@@ -17,6 +19,8 @@ import {
   type WorkspaceCapability,
   type WorkspaceMember,
 } from "@orrery/contract";
+import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { sessionQuery } from "../features/accounts/index.ts";
@@ -37,13 +41,9 @@ import {
   workspaceQuery,
   workspacesQuery,
 } from "../features/workspaces/index.ts";
-
-// One workspace's own view. Every workspace lists the projects the caller can access.
-// A shared workspace shows its members only to callers with member-management or removal
-// authority, and its invite form and invitation history only to owners and delegated
-// inviters. Which controls appear is a user-experience decision; the server enforces the
-// same boundary for every client (#33). No client state is a capability: the effective
-// capabilities come from the Workspace response on every load.
+import { TextField } from "../lib/fields.tsx";
+import { Link } from "../lib/Link.tsx";
+import { PageHeader } from "../lib/PageHeader.tsx";
 
 const capabilityLabels: Record<WorkspaceCapability, string> = {
   canCreateProjects: "Create projects",
@@ -63,9 +63,6 @@ function mayInvite(workspace: Workspace): boolean {
   return workspace.kind === "shared" && (workspace.isOwner || workspace.canInviteMembers);
 }
 
-// Owners can change any capability on a non-owner. A permission manager can change only
-// the capabilities they hold, on someone else, and never appoint or remove a permission
-// manager. An owner's own authority is implicit, so it has no controls.
 function changeableCapabilities(
   workspace: Workspace,
   member: WorkspaceMember,
@@ -79,12 +76,12 @@ function changeableCapabilities(
   );
 }
 
-// Owners may remove anyone except the last owner (a server-side check). A delegated
-// remover cannot remove an owner or a permission manager, including themselves.
 function mayRemove(workspace: Workspace, member: WorkspaceMember): boolean {
   if (!workspace.isOwner && !workspace.canRemoveMembers) return false;
   return workspace.isOwner || (!member.isOwner && !member.canManageMemberPermissions);
 }
+
+type WorkspaceTab = "projects" | "agents" | "runs" | "members";
 
 export const Route = createFileRoute("/workspaces/$workspaceId")({
   loader: async ({ context, params }) => {
@@ -111,80 +108,257 @@ export const Route = createFileRoute("/workspaces/$workspaceId")({
 function WorkspacePage() {
   const { workspaceId } = Route.useParams();
   const { data: workspace } = useSuspenseQuery(workspaceQuery(workspaceId));
+  const { data: projects } = useSuspenseQuery(projectsQuery(workspaceId));
+  const { data: agents } = useSuspenseQuery(agentsQuery);
+  const { data: runs } = useSuspenseQuery(workspaceRunsQuery(workspaceId));
+  const [tab, setTab] = useState<WorkspaceTab>("projects");
+  const [createProjectOpen, setCreateProjectOpen] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
+
+  const canCreate = workspace.isOwner || workspace.canCreateProjects;
+  const showMembersTab = mayManageMembers(workspace) || mayInvite(workspace);
+  const activeTab: WorkspaceTab = tab === "members" && !showMembersTab ? "projects" : tab;
 
   return (
     <main>
-      <Text as="p" display="block" type="inherit" color="inherit">
-        <Link to="/">All workspaces</Link>
-      </Text>
-      <Heading level={1} color="inherit">
-        {workspace.name}
-      </Heading>
-      <Text as="p" display="block" type="inherit" color="inherit">
-        {workspace.kind === "personal"
-          ? "Personal workspace"
-          : `Shared workspace · ${workspace.isOwner ? "Owner" : "Member"}`}
-      </Text>
-      {(workspace.isOwner || workspace.canManageMemberPermissions) && (
-        <Text as="p" display="block" type="inherit" color="inherit">
-          <Link to="/history/workspace/$workspaceId" params={{ workspaceId: workspace.id }}>
-            View access history
-          </Link>
-        </Text>
-      )}
-      <Projects
-        workspaceId={workspace.id}
-        canCreate={workspace.isOwner || workspace.canCreateProjects}
+      <PageHeader
+        breadcrumbs={[
+          <Link key="workspaces" to="/">
+            Workspaces
+          </Link>,
+        ]}
+        title={workspace.name}
+        badge={
+          workspace.kind === "personal"
+            ? "Personal workspace"
+            : `Shared workspace · ${workspace.isOwner ? "Owner" : "Member"}`
+        }
+        actions={
+          <>
+            {(workspace.isOwner || workspace.canManageMemberPermissions) && (
+              <Link to="/history/workspace/$workspaceId" params={{ workspaceId: workspace.id }}>
+                Access history
+              </Link>
+            )}
+            {mayInvite(workspace) && (
+              <Button
+                type="button"
+                label="Invite member"
+                variant="secondary"
+                size="sm"
+                onClick={() => setInviteOpen(true)}
+              />
+            )}
+            {canCreate && (
+              <Button
+                type="button"
+                label="New project"
+                variant="primary"
+                size="sm"
+                onClick={() => setCreateProjectOpen(true)}
+              />
+            )}
+          </>
+        }
       />
-      <AgentsSection workspaceId={workspace.id} isOwner={workspace.isOwner} />
-      <RunsSection workspaceId={workspace.id} />
-      {mayManageMembers(workspace) && (
-        <WorkspaceMembers workspaceId={workspace.id} workspace={workspace} />
+
+      <TabList
+        value={activeTab}
+        onChange={(value) => {
+          if (
+            value === "projects" ||
+            value === "agents" ||
+            value === "runs" ||
+            value === "members"
+          ) {
+            setTab(value);
+          }
+        }}
+        role="tablist"
+        aria-label="Workspace sections"
+        size="sm"
+        hasDivider
+      >
+        <Tab
+          value="projects"
+          label="Projects"
+          panelId="panel-projects"
+          endContent={<Badge label={projects.length} />}
+        />
+        <Tab
+          value="agents"
+          label="Agents"
+          panelId="panel-agents"
+          endContent={<Badge label={agents.length} />}
+        />
+        <Tab
+          value="runs"
+          label="Runs"
+          panelId="panel-runs"
+          endContent={<Badge label={runs.length} />}
+        />
+        {showMembersTab && <Tab value="members" label="Members" panelId="panel-members" />}
+      </TabList>
+
+      {activeTab === "projects" && (
+        <section id="panel-projects" role="tabpanel" className="tab-panel">
+          <Projects
+            workspaceId={workspace.id}
+            canCreate={canCreate}
+            onCreateClick={() => setCreateProjectOpen(true)}
+          />
+        </section>
       )}
+
+      {activeTab === "agents" && (
+        <section id="panel-agents" role="tabpanel" className="tab-panel">
+          <AgentsSection workspaceId={workspace.id} isOwner={workspace.isOwner} />
+        </section>
+      )}
+
+      {activeTab === "runs" && (
+        <section id="panel-runs" role="tabpanel" className="tab-panel">
+          <RunsSection workspaceId={workspace.id} />
+        </section>
+      )}
+
+      {activeTab === "members" && showMembersTab && (
+        <section id="panel-members" role="tabpanel" className="tab-panel">
+          {mayManageMembers(workspace) && (
+            <WorkspaceMembers workspaceId={workspace.id} workspace={workspace} />
+          )}
+          {mayInvite(workspace) && <WorkspaceInvitations workspaceId={workspace.id} />}
+        </section>
+      )}
+
+      <Drawer
+        isOpen={createProjectOpen}
+        onOpenChange={setCreateProjectOpen}
+        purpose="form"
+        label="New project"
+        width="26rem"
+      >
+        <Layout
+          height="auto"
+          header={
+            <DrawerHeader
+              title="New project"
+              subtitle={workspace.name}
+              onOpenChange={setCreateProjectOpen}
+              hasDivider
+            />
+          }
+        >
+          <LayoutContent>
+            <CreateProjectForm
+              workspaceId={workspace.id}
+              onCreated={() => setCreateProjectOpen(false)}
+            />
+          </LayoutContent>
+        </Layout>
+      </Drawer>
+
       {mayInvite(workspace) && (
-        <>
-          <InviteMemberForm workspaceId={workspace.id} workspace={workspace} />
-          <WorkspaceInvitations workspaceId={workspace.id} />
-        </>
+        <Drawer
+          isOpen={inviteOpen}
+          onOpenChange={setInviteOpen}
+          purpose="form"
+          label={`Invite someone to ${workspace.name}`}
+          width="28rem"
+        >
+          <Layout
+            height="auto"
+            header={
+              <DrawerHeader
+                title={`Invite to ${workspace.name}`}
+                onOpenChange={setInviteOpen}
+                hasDivider
+              />
+            }
+          >
+            <LayoutContent>
+              <InviteMemberForm workspaceId={workspace.id} workspace={workspace} />
+            </LayoutContent>
+          </Layout>
+        </Drawer>
       )}
     </main>
   );
 }
 
-// The projects the caller can access in this workspace. A shared member sees only their
-// granted projects, so an empty list does not mean the workspace has none; the create
-// form appears only when the server says the caller holds Create projects.
-function Projects({ workspaceId, canCreate }: { workspaceId: string; canCreate: boolean }) {
+function Projects({
+  workspaceId,
+  canCreate,
+  onCreateClick,
+}: {
+  workspaceId: string;
+  canCreate: boolean;
+  onCreateClick: () => void;
+}) {
   const { data: projects } = useSuspenseQuery(projectsQuery(workspaceId));
+
+  if (projects.length === 0) {
+    return (
+      <Stack className="empty-panel">
+        <EmptyState
+          title="No projects yet"
+          description={
+            canCreate
+              ? "Create a project to organize issues, board columns, and agent work sessions."
+              : "No projects have been shared with you yet."
+          }
+          icon={<Icon icon="viewColumns" size="lg" />}
+          headingLevel={2}
+          actions={
+            canCreate ? (
+              <Button label="Create project" variant="primary" onClick={onCreateClick} />
+            ) : undefined
+          }
+        />
+      </Stack>
+    );
+  }
+
   return (
-    <Section className="page-section" padding={0}>
-      <Heading level={2} color="inherit">
-        Projects
-      </Heading>
-      {projects.length === 0 ? (
-        <Text as="p" display="block" type="inherit" color="inherit">
-          {canCreate ? "No projects yet." : "No projects have been shared with you yet."}
-        </Text>
-      ) : (
-        <ul>
-          {projects.map((project) => (
-            <li key={project.id} data-project-id={project.id}>
+    <ul className="entity-grid">
+      {projects.map((project) => (
+        <li key={project.id} data-project-id={project.id} className="entity-card">
+          <Stack direction="horizontal" className="entity-card-top">
+            <Link
+              to="/projects/$projectId"
+              params={{ projectId: project.id }}
+              className="entity-card-title"
+            >
+              {project.name}
+            </Link>
+            <span className="issue-key">{project.key}</span>
+          </Stack>
+          <Stack direction="horizontal" className="entity-card-meta">
+            <Text type="supporting" data-project-access-level={project.accessLevel}>
+              {project.accessLevel}
+            </Text>
+            <Stack direction="horizontal" className="page-header-actions">
+              <Link to="/board/$projectId" params={{ projectId: project.id }}>
+                Board
+              </Link>
               <Link to="/projects/$projectId" params={{ projectId: project.id }}>
-                {project.name}
-              </Link>{" "}
-              <Text type="inherit" color="inherit" data-project-access-level={project.accessLevel}>
-                {project.accessLevel}
-              </Text>
-            </li>
-          ))}
-        </ul>
-      )}
-      {canCreate && <CreateProjectForm workspaceId={workspaceId} />}
-    </Section>
+                Issues
+              </Link>
+            </Stack>
+          </Stack>
+        </li>
+      ))}
+    </ul>
   );
 }
 
-function CreateProjectForm({ workspaceId }: { workspaceId: string }) {
+function CreateProjectForm({
+  workspaceId,
+  onCreated,
+}: {
+  workspaceId: string;
+  onCreated: () => void;
+}) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [name, setName] = useState("");
@@ -200,6 +374,7 @@ function CreateProjectForm({ workspaceId }: { workspaceId: string }) {
       queryClient.setQueryData(projectQuery(project.id).queryKey, project);
       await queryClient.invalidateQueries({ queryKey: projectsQuery(workspaceId).queryKey });
       setName("");
+      onCreated();
       await navigate({ to: "/projects/$projectId", params: { projectId: project.id } });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not create the project.");
@@ -218,6 +393,7 @@ function CreateProjectForm({ workspaceId }: { workspaceId: string }) {
         onChange={setName}
         required
         maxLength={120}
+        placeholder="e.g. Web Platform"
       />
       {error !== undefined && (
         <Text as="p" display="block" type="inherit" color="inherit" role="alert">
@@ -229,10 +405,6 @@ function CreateProjectForm({ workspaceId }: { workspaceId: string }) {
   );
 }
 
-// The member directory, shown only to callers whose authority needs it. Every capability
-// is shown as an effective value; controls appear only where the caller can change that
-// capability on that target. Appointing is always owner-only. Each action refreshes the
-// member roles, the caller's workspace capabilities, and the caller's workspace list.
 function WorkspaceMembers({
   workspaceId,
   workspace,
@@ -306,56 +478,66 @@ function WorkspaceMembers({
           {error}
         </Text>
       )}
-      <ul>
+      <ul className="row-list">
         {members.map((member) => (
-          <li key={member.humanId} data-member-id={member.humanId}>
-            {member.email}{" "}
-            <Text type="inherit" color="inherit">
-              {member.isOwner ? "Owner" : "Member"}
-            </Text>{" "}
-            {workspaceCapabilities.map((capability) => (
-              <Text
-                type="inherit"
-                color="inherit"
-                key={capability}
-                data-capability={capability}
-                data-enabled={String(member[capability])}
-              >
-                {member[capability]
-                  ? `Can ${capabilityLabels[capability].toLowerCase()}`
-                  : `Cannot ${capabilityLabels[capability].toLowerCase()}`}{" "}
-              </Text>
-            ))}
-            {changeableCapabilities(workspace, member, ownEmail).map((capability) => (
-              <Button
-                key={capability}
-                type="button"
-                data-capability-action={capability}
-                onClick={() => void onCapability(member.humanId, capability)}
-                isDisabled={updating !== undefined}
-                label={`${member[capability] ? "Revoke" : "Grant"} ${capabilityLabels[capability]}`}
-                variant="secondary"
-              />
-            ))}{" "}
-            {!member.isOwner && workspace.isOwner && (
-              <Button
-                type="button"
-                onClick={() => void onAppoint(member.humanId)}
-                isDisabled={updating !== undefined}
-                label="Make owner"
-                variant="secondary"
-              />
-            )}{" "}
-            {mayRemove(workspace, member) && (
-              <Button
-                type="button"
-                data-action="remove-member"
-                onClick={() => void onRemove(member.humanId)}
-                isDisabled={updating !== undefined}
-                label="Remove member"
-                variant="destructive"
-              />
-            )}
+          <li key={member.humanId} data-member-id={member.humanId} className="row-item">
+            <Stack className="page-header-main">
+              <Stack direction="horizontal" className="row-item-main">
+                <Text type="inherit" color="inherit" className="row-item-title">
+                  {member.email}
+                </Text>
+                <span className="meta-pill">{member.isOwner ? "Owner" : "Member"}</span>
+              </Stack>
+              <Stack direction="horizontal" className="row-item-meta">
+                {workspaceCapabilities.map((capability) => (
+                  <Text
+                    type="supporting"
+                    key={capability}
+                    data-capability={capability}
+                    data-enabled={String(member[capability])}
+                  >
+                    {member[capability]
+                      ? `Can ${capabilityLabels[capability].toLowerCase()}`
+                      : `Cannot ${capabilityLabels[capability].toLowerCase()}`}
+                  </Text>
+                ))}
+              </Stack>
+            </Stack>
+            <Stack direction="horizontal" className="page-header-actions">
+              {changeableCapabilities(workspace, member, ownEmail).map((capability) => (
+                <Button
+                  key={capability}
+                  type="button"
+                  size="sm"
+                  data-capability-action={capability}
+                  onClick={() => void onCapability(member.humanId, capability)}
+                  isDisabled={updating !== undefined}
+                  label={`${member[capability] ? "Revoke" : "Grant"} ${capabilityLabels[capability]}`}
+                  variant="secondary"
+                />
+              ))}
+              {!member.isOwner && workspace.isOwner && (
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void onAppoint(member.humanId)}
+                  isDisabled={updating !== undefined}
+                  label="Make owner"
+                  variant="secondary"
+                />
+              )}
+              {mayRemove(workspace, member) && (
+                <Button
+                  type="button"
+                  size="sm"
+                  data-action="remove-member"
+                  onClick={() => void onRemove(member.humanId)}
+                  isDisabled={updating !== undefined}
+                  label="Remove member"
+                  variant="destructive"
+                />
+              )}
+            </Stack>
           </li>
         ))}
       </ul>
@@ -363,9 +545,6 @@ function WorkspaceMembers({
   );
 }
 
-// The invitation history, shown to owners and delegated inviters. Delivery is its own
-// fact, so a failed email never reads as a failed invitation; resend and revoke are the
-// lifecycle actions, and each keeps the previous row visible.
 function WorkspaceInvitations({ workspaceId }: { workspaceId: string }) {
   const { data: invitations } = useSuspenseQuery(workspaceInvitationsQuery(workspaceId));
   const queryClient = useQueryClient();
@@ -381,8 +560,6 @@ function WorkspaceInvitations({ workspaceId }: { workspaceId: string }) {
       setError(cause instanceof Error ? cause.message : "Could not change the invitation.");
     } finally {
       setBusyId(undefined);
-      // A failed delivery still created the new pending row; reload so it is visible
-      // beside its lifecycle status.
       await queryClient.invalidateQueries({
         queryKey: workspaceInvitationsQuery(workspaceId).queryKey,
       });
@@ -414,8 +591,6 @@ function InviteMemberForm({
 }) {
   const queryClient = useQueryClient();
   const { data: projects } = useSuspenseQuery(projectsQuery(workspaceId));
-  // A delegate may only offer a project they Manage; owners may offer any workspace
-  // project. The server rechecks this on create, resend, and acceptance.
   const selectable = workspace.isOwner
     ? projects
     : projects.filter((project) => project.accessLevel === "manage");
@@ -458,8 +633,6 @@ function InviteMemberForm({
       setError(cause instanceof Error ? cause.message : "Could not send the invitation.");
     } finally {
       setSubmitting(false);
-      // A failed delivery still created the pending row with a failed delivery; refresh
-      // so the history shows it beside the original error without a manual reload.
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: workspacesQuery.queryKey }),
         queryClient.invalidateQueries({
@@ -470,59 +643,55 @@ function InviteMemberForm({
   }
 
   return (
-    <Section className="page-section" padding={0}>
-      <Heading level={2} color="inherit">
-        Invite someone to {workspace.name}
-      </Heading>
-      <form onSubmit={(event) => void onSubmit(event)}>
-        <TextField
-          label="Email"
-          id="invite-email"
-          htmlName="email"
-          type="email"
-          value={email}
-          onChange={setEmail}
-          required
-          autoComplete="off"
-        />
-        {selectable.length > 0 && (
-          <fieldset>
-            <legend>Project access (optional)</legend>
-            {selectable.map((project) => (
-              <Stack key={project.id}>
-                <CheckboxInput
-                  label={project.name}
-                  value={project.id in offered}
-                  onChange={(checked) => toggleProject(project.id, checked)}
-                />{" "}
-                <Selector
-                  label="Level"
-                  id={`invite-level-${project.id}`}
-                  value={offered[project.id] ?? "read"}
-                  onChange={(value) => setLevel(project.id, ProjectAccessLevel.parse(value))}
-                  isDisabled={!(project.id in offered)}
-                  options={[
-                    { value: "read", label: "Read" },
-                    { value: "contribute", label: "Contribute" },
-                    { value: "manage", label: "Manage" },
-                  ]}
-                />
-              </Stack>
-            ))}
-          </fieldset>
-        )}
-        {error !== undefined && (
-          <Text as="p" display="block" type="inherit" color="inherit" role="alert">
-            {error}
-          </Text>
-        )}
-        {invited !== undefined && (
-          <Text as="p" display="block" type="inherit" color="inherit" role="status">
-            Invitation sent to {invited}.
-          </Text>
-        )}
-        <Button type="submit" isDisabled={submitting} label="Send invitation" variant="primary" />
-      </form>
-    </Section>
+    <form onSubmit={(event) => void onSubmit(event)}>
+      <TextField
+        label="Email"
+        id="invite-email"
+        htmlName="email"
+        type="email"
+        value={email}
+        onChange={setEmail}
+        required
+        autoComplete="off"
+        placeholder="teammate@example.com"
+      />
+      {selectable.length > 0 && (
+        <fieldset>
+          <legend>Project access (optional)</legend>
+          {selectable.map((project) => (
+            <Stack key={project.id}>
+              <CheckboxInput
+                label={project.name}
+                value={project.id in offered}
+                onChange={(checked) => toggleProject(project.id, checked)}
+              />
+              <Selector
+                label="Level"
+                id={`invite-level-${project.id}`}
+                value={offered[project.id] ?? "read"}
+                onChange={(value) => setLevel(project.id, ProjectAccessLevel.parse(value))}
+                isDisabled={!(project.id in offered)}
+                options={[
+                  { value: "read", label: "Read" },
+                  { value: "contribute", label: "Contribute" },
+                  { value: "manage", label: "Manage" },
+                ]}
+              />
+            </Stack>
+          ))}
+        </fieldset>
+      )}
+      {error !== undefined && (
+        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+          {error}
+        </Text>
+      )}
+      {invited !== undefined && (
+        <Text as="p" display="block" type="inherit" color="inherit" role="status">
+          Invitation sent to {invited}.
+        </Text>
+      )}
+      <Button type="submit" isDisabled={submitting} label="Send invitation" variant="primary" />
+    </form>
   );
 }

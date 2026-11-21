@@ -312,6 +312,7 @@ test("renders v1 activity blocks, JSON fallback and optional cost telemetry", as
 
     // The agents panel shows the same reported cost on the live-session row.
     await page.goto(`/workspaces/${workspaceId}`);
+    await page.getByRole("tab", { name: /Agents/ }).click();
     const reportedRow = page.locator(`[data-agent-session-id="${sessionId}"]`);
     await expect(reportedRow.locator("[data-telemetry-cost]")).toHaveText("cost: $0.0123");
 
@@ -322,6 +323,7 @@ test("renders v1 activity blocks, JSON fallback and optional cost telemetry", as
       page.locator("[data-session-inspector] [data-telemetry-input-tokens]"),
     ).toHaveCount(0);
     await page.goto(`/workspaces/${workspaceId}`);
+    await page.getByRole("tab", { name: /Agents/ }).click();
     const nullRow = page.locator(`[data-agent-session-id="${nullSessionId}"]`);
     await expect(nullRow.locator("[data-telemetry-cost]")).toHaveCount(0);
     await expect(nullRow.locator("[data-telemetry-input-tokens]")).toHaveCount(0);

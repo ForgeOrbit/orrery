@@ -517,18 +517,22 @@ test("installation invite form refreshes failed delivery history without a reloa
   await page.getByLabel("Password").fill(ADMIN_PASSWORD);
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByText(`Signed in as ${ADMIN_EMAIL}.`)).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Installation invitations" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Installation administration" })).toBeVisible();
 
   await api.put("/api/settings/smtp", {
     data: { ...SETTINGS, host: "127.0.0.1", port: 1 },
   });
   try {
+    await page.getByRole("button", { name: "Invite person" }).click();
     await page.getByLabel("Email").fill(FAILED_EMAIL);
     await page.getByRole("button", { name: "Send installation invitation" }).click();
 
     // The original delivery Problem stays visible, while the history refreshes on its
     // own to show the pending row, the separate failure, and the Resend action.
-    await expect(page.getByRole("alert")).toContainText("Could not reach the SMTP server");
+    await expect(page.getByRole("dialog").getByRole("alert")).toContainText(
+      "Could not reach the SMTP server",
+    );
+    await page.keyboard.press("Escape");
     const row = page.locator("li[data-invitation-id]").filter({ hasText: FAILED_EMAIL });
     await expect(row).toContainText("Pending");
     await expect(row).toContainText("This installation");

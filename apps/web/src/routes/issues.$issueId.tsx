@@ -11,6 +11,7 @@ import { Markdown } from "../lib/Markdown.tsx";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Link } from "../lib/Link.tsx";
+import { PageHeader } from "../lib/PageHeader.tsx";
 import { type Issue, type IssueDetail, IssueLinkKind } from "@orrery/contract";
 import type { FormEvent } from "react";
 import { useState } from "react";
@@ -147,26 +148,34 @@ function IssuePage() {
 
   return (
     <main className="issue-page">
-      <Text as="p" display="block" type="inherit" color="inherit">
-        <Link to="/projects/$projectId" params={{ projectId: issue.projectId }}>
-          Back to project
-        </Link>
-      </Text>
-      <Heading level={1} color="inherit">
-        {issue.title}
-      </Heading>
-      <Text as="p" display="block" type="inherit" color="inherit" data-issue-status={issue.status}>
-        <Text
-          type="inherit"
-          color="inherit"
-          className="issue-key"
-          data-issue-identifier={issue.identifier}
-        >
-          {issue.identifier}
-        </Text>{" "}
-        · <PriorityBadge priority={issue.priority} /> · {issueStatusLabels[issue.status]} · created
-        by {issue.createdBy.displayName} · last edited by {issue.updatedBy.displayName}
-      </Text>
+      <PageHeader
+        breadcrumbs={[
+          <Link key="project" to="/projects/$projectId" params={{ projectId: issue.projectId }}>
+            Back to project
+          </Link>,
+          <Text
+            key="identifier"
+            type="inherit"
+            color="inherit"
+            className="issue-key"
+            data-issue-identifier={issue.identifier}
+          >
+            {issue.identifier}
+          </Text>,
+        ]}
+        title={issue.title}
+        badge={
+          <Text type="inherit" color="inherit" data-issue-status={issue.status}>
+            {issueStatusLabels[issue.status]}
+          </Text>
+        }
+        subtitle={
+          <>
+            <PriorityBadge priority={issue.priority} /> · created by {issue.createdBy.displayName} ·
+            last edited by {issue.updatedBy.displayName}
+          </>
+        }
+      />
       {issue.labels.length > 0 && (
         <Stack direction="horizontal" className="issue-detail-labels">
           {issue.labels.map((label) => (
