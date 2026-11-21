@@ -69,7 +69,7 @@ export function Subtasks({
   const isSubtask = issue.parentIssueId !== null;
 
   return (
-    <Section className="page-section" padding={5} data-subtasks-section>
+    <Section className="page-section" padding={3} data-subtasks-section>
       {isSubtask && (
         <Heading level={2} color="inherit">
           Subtasks

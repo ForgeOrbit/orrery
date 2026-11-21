@@ -119,11 +119,7 @@ function RootLayout() {
             <BrandHome />
             <AppearancePicker forceDark />
           </header>
-          <Stack className="orbit-diagram" aria-hidden="true">
-            <span />
-            <span />
-            <span />
-          </Stack>
+          <OrbitDiagram />
           <Stack className="access-cover-copy">
             <Text as="p" display="block" type="inherit" color="inherit">
               Projects for humans and agents.
@@ -187,6 +183,62 @@ function RootLayout() {
         <Outlet />
       </Stack>
     </Stack>
+  );
+}
+
+function OrbitDiagram() {
+  return (
+    <div className="orbit-diagram" aria-hidden="true">
+      <svg className="orbit-diagram-svg" viewBox="0 0 400 400" fill="none">
+        <defs>
+          <path id="orrery-orbit-1" d="M 26 200 A 174 100 0 1 0 374 200 A 174 100 0 1 0 26 200" />
+          <path id="orrery-orbit-2" d="M 54 200 A 146 86 0 1 1 346 200 A 146 86 0 1 1 54 200" />
+          <path id="orrery-orbit-3" d="M 86 200 A 114 58 0 1 0 314 200 A 114 58 0 1 0 86 200" />
+        </defs>
+
+        {/* Crosshair axes */}
+        <line x1="200" y1="0" x2="200" y2="400" className="orbit-axis" />
+        <line x1="0" y1="200" x2="400" y2="200" className="orbit-axis" />
+
+        {/* Outer tilted orbit + primary orange planet */}
+        <g transform="rotate(-32 200 200)">
+          <use href="#orrery-orbit-1" className="orbit-ring" />
+          <g>
+            <circle r="11" className="orbit-planet-halo" />
+            <circle r="5" className="orbit-planet-primary" />
+            <animateMotion dur="24s" repeatCount="indefinite">
+              <mpath href="#orrery-orbit-1" />
+            </animateMotion>
+          </g>
+        </g>
+
+        {/* Middle tilted orbit + cream moon */}
+        <g transform="rotate(26 200 200)">
+          <use href="#orrery-orbit-2" className="orbit-ring orbit-ring-mid" />
+          <g>
+            <circle r="7.5" className="orbit-moon-halo" />
+            <circle r="3.2" className="orbit-moon" />
+            <animateMotion dur="34s" begin="-11s" repeatCount="indefinite">
+              <mpath href="#orrery-orbit-2" />
+            </animateMotion>
+          </g>
+        </g>
+
+        {/* Inner tilted orbit + fast satellite */}
+        <g transform="rotate(-68 200 200)">
+          <use href="#orrery-orbit-3" className="orbit-ring orbit-ring-inner" />
+          <circle r="2.4" className="orbit-satellite">
+            <animateMotion dur="17s" begin="-5s" repeatCount="indefinite">
+              <mpath href="#orrery-orbit-3" />
+            </animateMotion>
+          </circle>
+        </g>
+
+        {/* Central sun */}
+        <circle cx="200" cy="200" r="11" className="orbit-sun-halo" />
+        <circle cx="200" cy="200" r="5" className="orbit-sun" />
+      </svg>
+    </div>
   );
 }
 

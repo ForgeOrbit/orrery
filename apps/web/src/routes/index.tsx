@@ -246,7 +246,7 @@ function InstallationInvitations() {
   }
 
   return (
-    <Section className="page-section" padding={5}>
+    <Section className="page-section" padding={3}>
       <Stack direction="horizontal" className="section-toolbar">
         <Heading level={2} color="inherit">
           Installation administration

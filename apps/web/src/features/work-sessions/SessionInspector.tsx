@@ -164,7 +164,7 @@ export function SessionInspector({
   return (
     <Card
       className="session-inspector"
-      padding={4}
+      padding={3}
       data-session-inspector
       aria-label="Session inspector"
     >

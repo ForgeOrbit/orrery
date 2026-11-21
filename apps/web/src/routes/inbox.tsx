@@ -117,7 +117,7 @@ function QuestionCard({ question }: { question: Question }) {
 
   return (
     <li className="question-list-item" data-question-id={question.id}>
-      <Card className="question-card" data-pending={pending ? "true" : "false"} padding={4}>
+      <Card className="question-card" data-pending={pending ? "true" : "false"} padding={3}>
         <Stack direction="horizontal" className="question-context">
           <Link
             to="/issues/$issueId"

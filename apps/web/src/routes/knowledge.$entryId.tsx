@@ -70,7 +70,7 @@ function EditKnowledgeForm({ entry }: { entry: KnowledgeEntry }) {
   const toast = useToast();
 
   return (
-    <Section className="page-section" padding={5}>
+    <Section className="page-section" padding={3}>
       <Heading level={2} color="inherit">
         Edit knowledge
       </Heading>

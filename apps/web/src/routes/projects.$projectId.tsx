@@ -249,12 +249,17 @@ function ProjectPage() {
                     ))}
                   </Stack>
                   <Stack direction="horizontal" className="row-item-meta">
-                    <PriorityBadge priority={issue.priority} />
+                    {!canContribute && <PriorityBadge priority={issue.priority} />}
                     <span className="meta-pill" data-issue-status={issue.status}>
                       {issueStatusLabels[issue.status]}
                     </span>
                     {canContribute && (
-                      <IssuePriorityControls issue={issue} issues={issues} projectId={project.id} />
+                      <IssuePriorityControls
+                        issue={issue}
+                        issues={issues}
+                        projectId={project.id}
+                        compact
+                      />
                     )}
                   </Stack>
                 </li>
@@ -418,7 +423,7 @@ function ProjectSettings({ project }: { project: Project }) {
   }
 
   return (
-    <Section className="page-section" padding={5}>
+    <Section className="page-section" padding={3}>
       <Heading level={2} color="inherit">
         Project settings
       </Heading>
@@ -484,7 +489,7 @@ function ProjectAccess({ projectId }: { projectId: string }) {
   }
 
   return (
-    <Section className="page-section" padding={5}>
+    <Section className="page-section" padding={3}>
       <Heading level={2} color="inherit">
         Project access
       </Heading>

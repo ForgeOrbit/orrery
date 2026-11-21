@@ -5,6 +5,86 @@ import mermaid from "mermaid";
 import type { ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { Link } from "./Link.tsx";
+
+export interface IssueReference {
+  id: string;
+  number: number;
+  identifier: string;
+  title: string;
+}
+
+interface MdastNode {
+  type: string;
+  value?: string;
+  url?: string;
+  title?: string;
+  children?: MdastNode[];
+}
+
+const SKIP_REF_PARENTS = new Set(["link", "linkReference", "code", "inlineCode", "definition"]);
+
+// Auto-links GitHub-style #1 / #2 and project-key TP-1 / TP-2 references inside plain
+// Markdown text nodes, skipping code blocks, inline code, and existing links.
+function createIssueRefPlugin(issueRefs: readonly IssueReference[]) {
+  const byNumber = new Map<number, IssueReference>();
+  const byIdentifier = new Map<string, IssueReference>();
+  for (const ref of issueRefs) {
+    byNumber.set(ref.number, ref);
+    byIdentifier.set(ref.identifier.toUpperCase(), ref);
+  }
+  const pattern = /(?<![\w/])(?:#(\d+)|([A-Z][A-Z0-9]{1,9}-\d+))\b/g;
+
+  function transformChildren(parent: MdastNode) {
+    if (!Array.isArray(parent.children) || SKIP_REF_PARENTS.has(parent.type)) return;
+    const next: MdastNode[] = [];
+    for (const child of parent.children) {
+      if (child.type !== "text" || typeof child.value !== "string") {
+        transformChildren(child);
+        next.push(child);
+        continue;
+      }
+      const text = child.value;
+      pattern.lastIndex = 0;
+      let cursor = 0;
+      let matched = false;
+      for (const match of text.matchAll(pattern)) {
+        const start = match.index;
+        const raw = match[0];
+        const numGroup = match[1];
+        const keyGroup = match[2];
+        const ref =
+          numGroup !== undefined
+            ? byNumber.get(Number(numGroup))
+            : keyGroup !== undefined
+              ? byIdentifier.get(keyGroup.toUpperCase())
+              : undefined;
+        if (ref === undefined) continue;
+        matched = true;
+        if (start > cursor) {
+          next.push({ type: "text", value: text.slice(cursor, start) });
+        }
+        next.push({
+          type: "link",
+          url: `/issues/${ref.id}`,
+          title: `${ref.identifier}: ${ref.title}`,
+          children: [{ type: "text", value: raw }],
+        });
+        cursor = start + raw.length;
+      }
+      if (!matched) {
+        next.push(child);
+      } else if (cursor < text.length) {
+        next.push({ type: "text", value: text.slice(cursor) });
+      }
+    }
+    parent.children = next;
+  }
+
+  return () => (tree: MdastNode) => {
+    transformChildren(tree);
+  };
+}
 
 // Safe GFM renderer for user-authored content (issue descriptions and comments).
 //
@@ -121,7 +201,7 @@ const components: Components = {
       </code>
     );
   },
-  a({ href, children, node: _node, ...props }) {
+  a({ href, title, children, node: _node, ...props }) {
     // A blocked scheme becomes href="" upstream. Never render a clickable empty link:
     // show the label as inert secondary text instead.
     if (!href) {
@@ -131,8 +211,16 @@ const components: Components = {
         </Text>
       );
     }
+    const issueMatch = /^\/issues\/([0-9a-f-]+)$/i.exec(href);
+    if (issueMatch?.[1] !== undefined) {
+      return (
+        <Link to="/issues/$issueId" params={{ issueId: issueMatch[1] }} className="issue-ref-link">
+          <span title={title}>{children}</span>
+        </Link>
+      );
+    }
     return (
-      <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
+      <a href={href} title={title} target="_blank" rel="noopener noreferrer" {...props}>
         {children}
       </a>
     );
@@ -148,10 +236,20 @@ const components: Components = {
   },
 };
 
-export function Markdown({ children }: { children: string }) {
+export function Markdown({
+  children,
+  issueRefs,
+}: {
+  children: string;
+  issueRefs?: readonly IssueReference[];
+}) {
+  const plugins =
+    issueRefs !== undefined && issueRefs.length > 0
+      ? [remarkGfm, createIssueRefPlugin(issueRefs)]
+      : [remarkGfm];
   return (
     <Stack gap={0} className="markdown-body" data-markdown>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components} urlTransform={safeUrl}>
+      <ReactMarkdown remarkPlugins={plugins} components={components} urlTransform={safeUrl}>
         {children}
       </ReactMarkdown>
     </Stack>

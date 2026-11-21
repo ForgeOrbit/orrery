@@ -366,7 +366,7 @@ function IssuePage() {
               </Text>
             ) : (
               <div data-issue-body className="issue-description-body">
-                <Markdown>{issue.body}</Markdown>
+                <Markdown issueRefs={projectIssues}>{issue.body}</Markdown>
               </div>
             )}
           </section>
@@ -382,7 +382,7 @@ function IssuePage() {
             canContribute={canContribute}
           />
 
-          <Section className="page-section" padding={5}>
+          <Section className="page-section" padding={3}>
             <Heading level={2} color="inherit">
               Links
             </Heading>
@@ -424,7 +424,7 @@ function IssuePage() {
             )}
           </Section>
 
-          <Section className="page-section" padding={5}>
+          <Section className="page-section" padding={3}>
             <Heading level={2} color="inherit">
               Comments ({comments.length})
             </Heading>
@@ -441,7 +441,7 @@ function IssuePage() {
                       <time dateTime={comment.createdAt}>{formatTimestamp(comment.createdAt)}</time>
                     </div>
                     <div data-comment-body className="comment-body">
-                      <Markdown>{comment.body}</Markdown>
+                      <Markdown issueRefs={projectIssues}>{comment.body}</Markdown>
                     </div>
                   </li>
                 ))}
@@ -633,7 +633,7 @@ function Blockers({
   );
 
   return (
-    <Section className="page-section" padding={5}>
+    <Section className="page-section" padding={3}>
       <Heading level={2} color="inherit">
         Dependencies
       </Heading>
