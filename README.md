@@ -195,17 +195,35 @@ The same operations are available over REST.
 
 ## Connect Claude Code / Codex
 
-Create an Agent in Orrery, issue it a workspace-scoped API key, then point the harness at the static
-`/mcp` endpoint. The key identifies the Agent; the harness identifies the Run.
+Create an Agent in Orrery, issue it a workspace-scoped API key, and export your server URL and key
+in the shell environment your harness inherits:
+
+```sh
+export ORRERY_URL="https://orrery.example.com"
+export ORRERY_API_KEY="<API key>"
+```
+
+Install the official plugin from
+[`forge-orbit/orrery-integrations`](https://github.com/forge-orbit/orrery-integrations) to wire both
+the static `/mcp` endpoint and automatic run-lifecycle reporting hooks in one step:
+
+- **Claude Code:**
+  ```text
+  /plugin marketplace add forge-orbit/orrery-integrations
+  /plugin install orrery@orrery
+  ```
+- **Codex CLI:** add `forge-orbit/orrery-integrations` as a plugin marketplace (`.agents/plugins/marketplace.json`), install `orrery` from `/plugins`, and trust its hooks in `/hooks`.
+
+If you only want the static `/mcp` tools without run-reporting hooks:
 
 ```sh
 claude mcp add --transport http orrery https://orrery.example.com/mcp \
   --header "Authorization: Bearer <API key>"
 ```
 
-For run reporting — hook events, concurrent conversations, resumes, subagents, and the verified
-gates — follow the guides:
+For full setup details, manual script wiring, privacy guarantees, and the verified gates, see:
 
+- [Orrery Integrations (`forge-orbit/orrery-integrations`)](https://github.com/forge-orbit/orrery-integrations)
 - [Claude Code run reporting](docs/guides/claude-code-runs.md)
 - [Codex CLI run reporting](docs/guides/codex-run-reporting.md)
 
