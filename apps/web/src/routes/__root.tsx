@@ -102,6 +102,7 @@ function WorkspaceNavigation() {
         <Link to="/" activeOptions={{ exact: true }}>
           Workspaces
         </Link>
+        <Link to="/my-work">My work</Link>
         <Link to="/inbox">Inbox</Link>
       </nav>
       {workspaces.length > 0 && (
