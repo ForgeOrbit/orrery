@@ -115,9 +115,7 @@ function SmtpForm({ settings }: { settings: SmtpSettingsResponse }) {
       setStatus("SMTP settings saved.");
       toast({ body: "SMTP settings saved." });
     } catch (cause) {
-      const msg = cause instanceof Error ? cause.message : "Could not save the SMTP settings.";
-      setError(msg);
-      toast({ body: msg, type: "error" });
+      setError(cause instanceof Error ? cause.message : "Could not save the SMTP settings.");
     } finally {
       setSaving(false);
     }
@@ -264,9 +262,7 @@ function TestAndVerification({
       setToken("");
       toast({ body: "Email verified." });
     } catch (cause) {
-      const msg = cause instanceof Error ? cause.message : "Could not verify the email.";
-      setVerifyError(msg);
-      toast({ body: msg, type: "error" });
+      setVerifyError(cause instanceof Error ? cause.message : "Could not verify the email.");
     } finally {
       setVerifying(false);
     }

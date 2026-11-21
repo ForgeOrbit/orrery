@@ -47,9 +47,7 @@ export function AssigneeControl({
       ]);
       toast({ body: chosen ? `Assigned to ${chosen.label}.` : "Assignee cleared." });
     } catch (cause) {
-      const msg = cause instanceof Error ? cause.message : "Could not change the assignee.";
-      setError(msg);
-      toast({ body: msg, type: "error" });
+      setError(cause instanceof Error ? cause.message : "Could not change the assignee.");
     } finally {
       setSaving(false);
     }

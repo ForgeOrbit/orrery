@@ -170,12 +170,11 @@ function AnswerForm({ question }: { question: Question }) {
       setAnswer("");
       toast({ body: "Answer sent." });
     } catch (cause) {
-      const msg =
+      setError(
         cause instanceof ApiProblemError
           ? cause.message
-          : "Could not submit the answer. Please try again.";
-      setError(msg);
-      toast({ body: msg, type: "error" });
+          : "Could not submit the answer. Please try again.",
+      );
     } finally {
       setSubmitting(false);
     }

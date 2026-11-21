@@ -58,11 +58,7 @@ function AccountPage() {
         ]}
         title={session.displayName ?? "Account"}
         subtitle={session.email}
-        badge={
-          <span className="meta-pill">
-            {session.emailVerified ? "Email verified" : "Email unverified"}
-          </span>
-        }
+        badge={session.emailVerified ? "Email verified" : "Email unverified"}
       />
       <ProfileSection initialDisplayName={session.displayName} />
       <PasswordSection />
@@ -86,9 +82,6 @@ function ProfileSection({ initialDisplayName }: { initialDisplayName: string | n
       setSavedMessage("Profile saved.");
       toast({ body: "Profile saved." });
       await queryClient.invalidateQueries({ queryKey: sessionQuery.queryKey });
-    },
-    onError: (error) => {
-      toast({ body: error.message, type: "error" });
     },
   });
 
@@ -157,9 +150,6 @@ function PasswordSection() {
       const msg = "Password updated. Other browser sessions have been signed out.";
       setSavedMessage(msg);
       toast({ body: msg });
-    },
-    onError: (error) => {
-      toast({ body: error.message, type: "error" });
     },
   });
 
