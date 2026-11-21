@@ -27,9 +27,10 @@
   <a href="#contributing">Contributing</a>
 </p>
 
-> **Status: active MVP.** M0 and M1 are complete, and the core of M2–M4 is live and runnable today
-> with `docker compose up -d --build`. The [Shared vault (#6)](https://github.com/forge-orbit/orrery/issues/6)
-> and [Release polish (#7)](https://github.com/forge-orbit/orrery/issues/7) are next. See the
+> **Status: active MVP.** M0–M3 are complete and runnable today with `docker compose up -d --build`.
+> M4's backend (`GET /api/my-work`, board & inbox APIs) is live while the M4 UI pass is in progress,
+> with [Shared vault (#6)](https://github.com/forge-orbit/orrery/issues/6) and
+> [Release polish (#7)](https://github.com/forge-orbit/orrery/issues/7) next. See the
 > [roadmap](#roadmap).
 
 ---
@@ -225,22 +226,24 @@ gates — follow the guides:
 
 ## Roadmap
 
-Milestones are tracked as GitHub epics. The first three are live today.
+Milestones are tracked as GitHub epics. M0–M3 are complete and live today.
 
 - [x] [#1](https://github.com/forge-orbit/orrery/issues/1) **M0 — Foundation.** Docker Compose, CI,
   first-run bootstrap, encrypted SMTP settings.
 - [x] [#2](https://github.com/forge-orbit/orrery/issues/2) **M1 — Auth, workspaces & agent
   identities.** Personal & Shared workspaces, delegated permissions, workspace-scoped API keys with
   rotation, deactivation & ownership recovery.
-- [ ] [#3](https://github.com/forge-orbit/orrery/issues/3),
-  [#4](https://github.com/forge-orbit/orrery/issues/4),
-  [#5](https://github.com/forge-orbit/orrery/issues/5) **M2–M4 — Core product (in progress).**
-  Six-state workflow, `KEY-N` identifiers, priority & float board ordering, project-scoped labels,
-  one-level subtasks, acyclic `blocked_by` dependencies, structured PR/commit links, human-only
-  Trash with 30-day restore, cross-workspace My work API, five-minute atomic Claim leases, human
-  stop signal, ephemeral session activities + v1 structured blocks, cumulative token/cost telemetry,
-  Needs-input inbox with one-hour fallback policies, Kanban board and sidecar inspector. UI pass for
-  the new M2–M4 views is next.
+- [x] [#3](https://github.com/forge-orbit/orrery/issues/3) **M2 — Projects and issues.** Six-state
+  workflow, `KEY-N` identifiers, priority & float board ordering, project-scoped labels, one-level
+  subtasks, acyclic `blocked_by` dependencies, structured PR/commit links, comments, project
+  knowledge, and human-only Trash with 30-day restore.
+- [x] [#4](https://github.com/forge-orbit/orrery/issues/4) **M3 — Agent API and sessions.** MCP +
+  REST parity (39 tools), five-minute atomic Claim leases, resume/reacquire, human stop signal,
+  ephemeral session activities + v1 structured blocks, cumulative token/cost telemetry, and
+  Needs-input inbox with one-hour fallback policies.
+- [ ] [#5](https://github.com/forge-orbit/orrery/issues/5) **M4 — Board, agents panel & needs-input
+  inbox (in progress).** Cross-workspace My work API (`GET /api/my-work`) is live; UI pass for the
+  six-column board, labels/subtasks/trash, rich sidecar inspector, and My work view is underway.
 - [ ] [#6](https://github.com/forge-orbit/orrery/issues/6) **M5 — Shared vault.** Obsidian-like
   Markdown vault, `[[wikilinks]]`, backlinks, FTS.
 - [ ] [#7](https://github.com/forge-orbit/orrery/issues/7) **M6 — Release polish.** In-app
