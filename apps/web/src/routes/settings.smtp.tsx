@@ -29,6 +29,11 @@ import {
 // The query answers null for anyone else, so the page shows a plain refusal instead of a
 // repeated failed request; the server enforces the same boundary for direct clients.
 export const Route = createFileRoute("/settings/smtp")({
+  validateSearch: (search: Record<string, unknown>) => {
+    const parsed: { token?: string } = {};
+    if (typeof search.token === "string" && search.token.length > 0) parsed.token = search.token;
+    return parsed;
+  },
   loader: async ({ context }) => {
     await Promise.all([
       context.queryClient.ensureQueryData(sessionQuery),
@@ -45,6 +50,7 @@ const SECURITY_OPTIONS: { value: SmtpSecurity; label: string }[] = [
 ];
 
 function SmtpSettingsPage() {
+  const { token: initialToken } = Route.useSearch();
   const { data: session } = useSuspenseQuery(sessionQuery);
   const { data: settings } = useSuspenseQuery(smtpSettingsQuery);
   // A null settings response means "not an administrator", so this is only read on the
@@ -69,7 +75,12 @@ function SmtpSettingsPage() {
       ) : (
         <>
           <SmtpForm settings={settings} />
-          <TestAndVerification configured={settings.host !== null} emailVerified={emailVerified} />
+          <TestAndVerification
+            key={initialToken ?? ""}
+            configured={settings.host !== null}
+            emailVerified={emailVerified}
+            initialToken={initialToken ?? ""}
+          />
         </>
       )}
     </main>
@@ -215,16 +226,18 @@ function SmtpForm({ settings }: { settings: SmtpSettingsResponse }) {
 function TestAndVerification({
   configured,
   emailVerified,
+  initialToken,
 }: {
   configured: boolean;
   emailVerified: boolean;
+  initialToken: string;
 }) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const [sending, setSending] = useState(false);
   const [sendStatus, setSendStatus] = useState<string>();
   const [sendError, setSendError] = useState<string>();
-  const [token, setToken] = useState("");
+  const [token, setToken] = useState(initialToken);
   const [verifying, setVerifying] = useState(false);
   const [verifyError, setVerifyError] = useState<string>();
 

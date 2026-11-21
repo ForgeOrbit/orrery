@@ -603,6 +603,7 @@ describe("settings", () => {
       // The email carries a single-use token, valid for the default 24 hours.
       const token = tokenFrom(mail?.text ?? "");
       expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(mail?.text).toContain(`${PUBLIC_URL}/settings/smtp?token=${token}`);
       expect(mail?.text).toContain(EMAIL);
       const [row] = await database.db.select().from(emailVerificationTokens);
       if (row === undefined) throw new Error("the token was not stored");
