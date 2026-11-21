@@ -42,6 +42,7 @@ Want to write or change a page? See [Writing the docs](./writing-docs.md).
 - [Agent API and sessions](./design/agent-api-and-sessions.md)
 - [Board, agents panel, inbox, and My work](./design/board-and-inbox.md)
 - [Orrery web UI](./design/web-ui.md)
+- [Release polish (notifications, webhooks, docs)](./design/release-polish.md)
 - [Harness compatibility proof](./design/harness-compatibility-proof.md)
 - [Bootstrap and instance settings](./adr/0001-bootstrap-and-instance-settings.md)
 - [Personal and shared workspaces](./adr/0002-personal-and-shared-workspaces.md)
@@ -49,6 +50,7 @@ Want to write or change a page? See [Writing the docs](./writing-docs.md).
 - [Encrypt instance secrets at rest](./adr/0004-encrypt-instance-secrets-at-rest.md)
 - [Fixed six-state issue workflow with derived needs-input](./adr/0005-issue-workflow-and-derived-needs-input.md)
 - [Soft-delete issues with 30-day in-place tombstone scrubbing](./adr/0006-soft-delete-and-tombstone-scrubbing.md)
+- [Workspace-scoped outgoing webhooks with a transactional outbox and default-deny SSRF guard](./adr/0007-outgoing-webhooks-outbox-and-security.md)
 
 ## Help shape Orrery
 
