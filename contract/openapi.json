@@ -11170,16 +11170,6 @@
               }
             }
           },
-          "400": {
-            "description": "The request is invalid",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
           "401": {
             "description": "Not signed in as a human, or the account is deactivated",
             "content": {

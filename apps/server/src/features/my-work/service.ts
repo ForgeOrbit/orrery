@@ -235,7 +235,7 @@ export function createMyWorkService(deps: MyWorkDeps): MyWorkService {
                   inArray(issues.projectId, readable),
                 ),
               )
-              .orderBy(desc(workSessions.createdAt))
+              .orderBy(desc(workSessions.leaseExpiresAt))
               .limit(PAGE);
             activeAgentSessions.push(
               ...liveSessions.map((row) => ({
@@ -287,6 +287,10 @@ export function createMyWorkService(deps: MyWorkDeps): MyWorkService {
                   and(
                     eq(questions.workspaceId, scope.id),
                     inArray(questions.projectId, [...actionable]),
+                    inArray(questions.status, [
+                      QuestionStatus.enum.open,
+                      QuestionStatus.enum.paused,
+                    ]),
                     isNull(issues.deletedAt),
                     sql`${effectiveQuestionStatus} in ('open', 'paused')`,
                   ),

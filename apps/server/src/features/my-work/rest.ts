@@ -24,7 +24,6 @@ const myWork = createRoute({
       description: "The three sections of the human's cross-workspace work",
       content: { "application/json": { schema: MyWorkResponse } },
     },
-    400: problem("The request is invalid"),
     401: problem("Not signed in as a human, or the account is deactivated"),
   },
 });

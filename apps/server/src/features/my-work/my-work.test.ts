@@ -394,8 +394,13 @@ async function buildWorld() {
     assignee: alice,
   });
   const personalDone = await issue(personalProject, alice, {
-    title: "Terminal assignment",
+    title: "Done assignment",
     status: "done",
+    assignee: alice,
+  });
+  const personalCancelled = await issue(personalProject, alice, {
+    title: "Cancelled assignment",
+    status: "cancelled",
     assignee: alice,
   });
   const personalDeleted = await issue(personalProject, alice, {
@@ -550,6 +555,7 @@ async function buildWorld() {
     aliceRun,
     personalIssue,
     personalDone,
+    personalCancelled,
     personalDeleted,
     readIssue,
     contributeIssue,
@@ -600,6 +606,7 @@ describe("my-work service (real Postgres)", () => {
     expect(sharedIssue.workspaceName).toBe(w.shared.name);
 
     expect(result.assignedIssues.map((i) => i.id)).not.toContain(w.personalDone.id);
+    expect(result.assignedIssues.map((i) => i.id)).not.toContain(w.personalCancelled.id);
     expect(result.assignedIssues.map((i) => i.id)).not.toContain(w.personalDeleted.id);
     expect(result.assignedIssues.map((i) => i.id)).not.toContain(w.noAccessIssue.id);
 
@@ -696,21 +703,16 @@ describe("my-work service (real Postgres)", () => {
   });
 
   it("refuses a missing caller and a deactivated human in the read transaction", async () => {
-    await expect(service.get(null)).rejects.toMatchObject({
-      name: "MyWorkError",
-      kind: "not_signed_in",
-    });
+    await expect(service.get(null)).rejects.toBeInstanceOf(MyWorkError);
+    await expect(service.get(null)).rejects.toMatchObject({ kind: "not_signed_in" });
 
     const w = await buildWorld();
     await database.db
       .update(humans)
       .set({ deactivatedAt: new Date() })
       .where(eq(humans.id, w.alice.id));
-    await expect(service.get(actor(w.alice))).rejects.toMatchObject({
-      name: "MyWorkError",
-      kind: "human_deactivated",
-    });
-    expect(MyWorkError).toBeDefined();
+    await expect(service.get(actor(w.alice))).rejects.toBeInstanceOf(MyWorkError);
+    await expect(service.get(actor(w.alice))).rejects.toMatchObject({ kind: "human_deactivated" });
   });
 });
 
