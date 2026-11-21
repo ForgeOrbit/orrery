@@ -113,7 +113,7 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
   }
 
   return (
-    <Stack gap={4}>
+    <Stack className="section-stack">
       {secret !== undefined && (
         <Section className="page-section" padding={3}>
           <Stack role="status" data-agent-secret gap={2}>

@@ -32,7 +32,7 @@ const currency = new Intl.NumberFormat(undefined, {
 
 export function MyWorkSections({ work }: { work: MyWorkResponse }) {
   return (
-    <Stack gap={4}>
+    <Stack className="section-stack">
       <MyWorkSection title="Assigned to me" section="assigned-issues">
         {work.assignedIssues.length === 0 ? (
           <EmptyState
