@@ -26,6 +26,7 @@ import {
   issueBlockingQuery,
   issueCommentsQuery,
   IssueLabels,
+  IssueMentionTextArea,
   IssuePriorityControls,
   issueQuery,
   issuesQuery,
@@ -50,7 +51,7 @@ import {
   SessionStatus,
 } from "../features/work-sessions/index.ts";
 import { workspaceMembersQuery, workspaceQuery } from "../features/workspaces/index.ts";
-import { TextAreaField, TextField } from "../lib/fields.tsx";
+import { TextField } from "../lib/fields.tsx";
 import { Link } from "../lib/Link.tsx";
 import { Markdown } from "../lib/Markdown.tsx";
 import { PageHeader } from "../lib/PageHeader.tsx";
@@ -559,6 +560,7 @@ function IssuePage() {
                 fallbackError="Could not save the issue."
                 initialTitle={issue.title}
                 initialBody={issue.body}
+                mentionIssues={projectIssues}
                 onSubmit={async ({ title, body }) => {
                   const updated = await updateIssue(issue.id, { title, body });
                   queryClient.setQueryData<IssueDetail>(issueQuery(issue.id).queryKey, (old) =>
@@ -766,15 +768,6 @@ function Blockers({
   );
 }
 
-function findHashMention(text: string): { start: number; query: string } | null {
-  const match = /(?:^|[\s(])#([a-zA-Z0-9-]*)$/.exec(text);
-  if (match === null) return null;
-  const query = match[1] ?? "";
-  const hashIndex = text.lastIndexOf("#");
-  if (hashIndex < 0) return null;
-  return { start: hashIndex, query };
-}
-
 function CommentForm({
   issueId,
   projectId,
@@ -787,34 +780,8 @@ function CommentForm({
   const queryClient = useQueryClient();
   const toast = useToast();
   const [body, setBody] = useState("");
-  const [dismissedAt, setDismissedAt] = useState<number | null>(null);
-  const [selectedIndex, setSelectedIndex] = useState(0);
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
-
-  const mention = findHashMention(body);
-  const showMenu = mention !== null && dismissedAt !== mention.start;
-  const matches = showMenu
-    ? issues
-        .filter((candidate) => {
-          const q = mention.query.trim().toLowerCase();
-          if (q === "") return true;
-          return (
-            String(candidate.number).includes(q) ||
-            candidate.identifier.toLowerCase().includes(q) ||
-            candidate.title.toLowerCase().includes(q)
-          );
-        })
-        .slice(0, 6)
-    : [];
-  const activeIndex = matches.length === 0 ? 0 : Math.min(selectedIndex, matches.length - 1);
-
-  function insertMention(target: Issue) {
-    if (mention === null) return;
-    setBody(`${body.slice(0, mention.start)}#${target.number} `);
-    setDismissedAt(null);
-    setSelectedIndex(0);
-  }
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -827,7 +794,6 @@ function CommentForm({
         queryClient.invalidateQueries({ queryKey: projectActivityQuery(projectId).queryKey }),
       ]);
       setBody("");
-      setDismissedAt(null);
       toast({ body: "Comment added." });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not add the comment.");
@@ -838,66 +804,17 @@ function CommentForm({
 
   return (
     <form className="comment-composer" onSubmit={(event) => void onSubmit(event)}>
-      <div
-        className="mention-field-wrap"
-        onKeyDown={(event) => {
-          if (matches.length === 0) return;
-          if (event.key === "ArrowDown") {
-            event.preventDefault();
-            setSelectedIndex((prev) => (prev + 1) % matches.length);
-          } else if (event.key === "ArrowUp") {
-            event.preventDefault();
-            setSelectedIndex((prev) => (prev - 1 + matches.length) % matches.length);
-          } else if (event.key === "Enter" || event.key === "Tab") {
-            const chosen = matches[activeIndex];
-            if (chosen !== undefined) {
-              event.preventDefault();
-              insertMention(chosen);
-            }
-          } else if (event.key === "Escape" && mention !== null) {
-            event.preventDefault();
-            setDismissedAt(mention.start);
-          }
-        }}
-      >
-        <TextAreaField
-          label="Comment"
-          id="issue-comment"
-          htmlName="body"
-          placeholder="Write a comment… Type # to reference an issue"
-          value={body}
-          onChange={(value) => {
-            setBody(value);
-            setDismissedAt(null);
-            setSelectedIndex(0);
-          }}
-          rows={3}
-          required
-        />
-        {matches.length > 0 && (
-          <ul className="mention-popover" role="listbox" aria-label="Reference an issue">
-            {matches.map((candidate, index) => (
-              <li
-                key={candidate.id}
-                role="option"
-                aria-selected={index === activeIndex}
-                className={
-                  index === activeIndex ? "mention-option mention-option-active" : "mention-option"
-                }
-                onMouseEnter={() => setSelectedIndex(index)}
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  insertMention(candidate);
-                }}
-              >
-                <span className="issue-key">{candidate.identifier}</span>
-                <span className="mention-option-title">{candidate.title}</span>
-                <span className="meta-pill">{issueStatusLabels[candidate.status]}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      <IssueMentionTextArea
+        label="Comment"
+        id="issue-comment"
+        htmlName="body"
+        placeholder="Write a comment… Type # to reference an issue"
+        value={body}
+        onChange={setBody}
+        rows={3}
+        required
+        issues={issues}
+      />
       {error !== undefined && (
         <Text as="p" display="block" type="inherit" color="inherit" role="alert">
           {error}

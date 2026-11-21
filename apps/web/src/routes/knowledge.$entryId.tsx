@@ -3,13 +3,14 @@ import { Text } from "@astryxdesign/core/Text";
 import { useToast } from "@astryxdesign/core/Toast";
 import { Section } from "@astryxdesign/core/Section";
 import { Stack } from "@astryxdesign/core/Stack";
-import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { Link } from "../lib/Link.tsx";
 import { Markdown } from "../lib/Markdown.tsx";
 import { PageHeader } from "../lib/PageHeader.tsx";
-import type { KnowledgeEntry } from "@orrery/contract";
+import type { Issue, KnowledgeEntry } from "@orrery/contract";
 import {
+  issuesQuery,
   knowledgeEntriesQuery,
   knowledgeEntryQuery,
   projectActivityQuery,
@@ -35,6 +36,7 @@ function KnowledgePage() {
   const { entryId } = Route.useParams();
   const { data: entry } = useSuspenseQuery(knowledgeEntryQuery(entryId));
   const { data: project } = useSuspenseQuery(projectQuery(entry.projectId));
+  const { data: projectIssues = [] } = useQuery(issuesQuery(entry.projectId));
   const canContribute = project.accessLevel !== "read";
 
   return (
@@ -55,17 +57,19 @@ function KnowledgePage() {
         </Text>
       ) : (
         <Stack data-knowledge-body className="page-section">
-          <Markdown>{entry.body}</Markdown>
+          <Markdown issueRefs={projectIssues}>{entry.body}</Markdown>
         </Stack>
       )}
-      {canContribute && <EditKnowledgeForm key={entry.updatedAt} entry={entry} />}
+      {canContribute && (
+        <EditKnowledgeForm key={entry.updatedAt} entry={entry} issues={projectIssues} />
+      )}
     </main>
   );
 }
 
-// Keyed by updatedAt at the call site: a successful save remounts the form with the
+// Keyed by updatedAt at the call site: a successful save remounts it with the
 // server's values, so no effect is needed to synchronize it.
-function EditKnowledgeForm({ entry }: { entry: KnowledgeEntry }) {
+function EditKnowledgeForm({ entry, issues }: { entry: KnowledgeEntry; issues: Issue[] }) {
   const queryClient = useQueryClient();
   const toast = useToast();
 
@@ -83,6 +87,7 @@ function EditKnowledgeForm({ entry }: { entry: KnowledgeEntry }) {
         fallbackError="Could not save the entry."
         initialTitle={entry.title}
         initialBody={entry.body}
+        mentionIssues={issues}
         onSubmit={async ({ title, body }) => {
           const updated = await updateKnowledgeEntry(entry.id, { title, body });
           queryClient.setQueryData(knowledgeEntryQuery(entry.id).queryKey, updated);

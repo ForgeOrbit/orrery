@@ -25,6 +25,7 @@ export {
 export { AssigneeControl, type AssigneeCandidate } from "./AssigneeControl.tsx";
 export { CreateIssueForm } from "./CreateIssueForm.tsx";
 export { IssueLabels } from "./IssueLabels.tsx";
+export { IssueMentionTextArea } from "./IssueMentionTextArea.tsx";
 export { IssuePriorityControls, PriorityBadge } from "./IssuePriority.tsx";
 export { LabelPill } from "./LabelPill.tsx";
 export { ResourceLoadError } from "./LoadError.tsx";
