@@ -19,6 +19,7 @@ export function notificationsPageQuery(unreadOnly: boolean) {
     },
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    refetchInterval: 15_000,
   });
 }
 

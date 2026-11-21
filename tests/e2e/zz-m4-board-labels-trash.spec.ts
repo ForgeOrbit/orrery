@@ -127,6 +127,7 @@ test("board, badges, labels, subtasks, trash and restore work in the browser", a
 
   await expect(page.locator("[data-trash-button]")).toBeEnabled();
   await page.locator("[data-trash-button]").click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Move to Trash" }).click();
   await expect(page).toHaveURL(`/projects/${projectId}`);
   await expect(page.locator(`[data-issue-id="${parentId}"]`)).toHaveCount(0);
 

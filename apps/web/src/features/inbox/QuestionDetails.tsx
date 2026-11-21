@@ -1,18 +1,18 @@
-import { Text } from "@astryxdesign/core/Text";
 import { Stack } from "@astryxdesign/core/Stack";
+import { Text } from "@astryxdesign/core/Text";
+import { Token } from "@astryxdesign/core/Token";
 import type { Question } from "@orrery/contract";
+import { formatDateTime, formatFullDateTime, relativeCountdown } from "../../lib/time.ts";
 
-const statusLabels = {
-  open: "Needs input",
-  paused: "Paused",
-  answered: "answered",
-  fallback_used: "Fallback used",
-} satisfies Record<Question["status"], string>;
-
-const dateTime = new Intl.DateTimeFormat(undefined, {
-  dateStyle: "medium",
-  timeStyle: "short",
-});
+const statusMeta: Record<
+  Question["status"],
+  { label: string; color: "orange" | "green" | "gray" }
+> = {
+  open: { label: "Needs input", color: "orange" },
+  paused: { label: "Paused", color: "orange" },
+  answered: { label: "Answered", color: "green" },
+  fallback_used: { label: "Fallback used", color: "gray" },
+};
 
 export function isPendingQuestion(question: Question) {
   return question.status === "open" || question.status === "paused";
@@ -20,23 +20,30 @@ export function isPendingQuestion(question: Question) {
 
 export function QuestionDetails({ question }: { question: Question }) {
   const deadline = question.responseDeadlineAt;
+  const status = statusMeta[question.status];
 
   return (
-    <Stack className="question-details">
-      <Stack direction="horizontal" className="question-meta">
-        <Text type="inherit" color="inherit" data-question-status={question.status}>
-          {statusLabels[question.status]}
-        </Text>
-        <Text type="inherit" color="inherit">
+    <Stack className="question-details" gap={2}>
+      <Stack direction="horizontal" gap={1.5} vAlign="center" wrap="wrap" className="question-meta">
+        <Token
+          label={status.label}
+          color={status.color}
+          size="sm"
+          data-question-status={question.status}
+        />
+        <Text type="supporting" color="secondary">
           {question.status === "open" ? "Due" : "Deadline"}{" "}
-          <time dateTime={deadline}>{dateTime.format(new Date(deadline))}</time>
+          <time dateTime={deadline} title={formatFullDateTime(deadline)}>
+            {formatDateTime(deadline)}
+            {isPendingQuestion(question) ? ` (${relativeCountdown(deadline)})` : ""}
+          </time>
         </Text>
       </Stack>
       <Text
         as="p"
         display="block"
-        type="inherit"
-        color="inherit"
+        type="body"
+        color="primary"
         className="question-text"
         data-question-text
       >

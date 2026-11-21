@@ -1,14 +1,16 @@
+import { Badge } from "@astryxdesign/core/Badge";
+import { Banner } from "@astryxdesign/core/Banner";
+import { Button } from "@astryxdesign/core/Button";
+import { Card } from "@astryxdesign/core/Card";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Heading } from "@astryxdesign/core/Heading";
+import { Section } from "@astryxdesign/core/Section";
+import { Stack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
 import { useToast } from "@astryxdesign/core/Toast";
-import { Stack } from "@astryxdesign/core/Stack";
-import { Card } from "@astryxdesign/core/Card";
-import { Button } from "@astryxdesign/core/Button";
 import type { Question } from "@orrery/contract";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import { Link } from "../lib/Link.tsx";
-import { PageHeader } from "../lib/PageHeader.tsx";
 import { type FormEvent, useState } from "react";
 import { sessionQuery } from "../features/accounts/index.ts";
 import {
@@ -26,6 +28,8 @@ import {
 } from "../features/projects/index.ts";
 import { workspaceRunsQuery } from "../features/runs/index.ts";
 import { ApiProblemError } from "../lib/api.ts";
+import { Link } from "../lib/Link.tsx";
+import { PageHeader } from "../lib/PageHeader.tsx";
 
 export const Route = createFileRoute("/inbox")({
   validateSearch: (search: Record<string, unknown>): { issue?: string } =>
@@ -40,12 +44,14 @@ export const Route = createFileRoute("/inbox")({
   component: InboxPage,
   errorComponent: () => (
     <main>
-      <Heading level={1} color="inherit">
-        Inbox
-      </Heading>
-      <Text as="p" display="block" type="inherit" color="inherit" role="alert">
-        Could not load the inbox. Please try again.
-      </Text>
+      <PageHeader title="Inbox" />
+      <Banner
+        container="section"
+        status="error"
+        role="alert"
+        title="Could not load the inbox"
+        description="Check your connection and try reloading."
+      />
     </main>
   ),
 });
@@ -73,12 +79,29 @@ function InboxPage() {
         }
       />
       {issue !== undefined && (
-        <Text as="p" display="block" type="supporting">
-          Showing questions for one issue.
-        </Text>
+        <Banner
+          status="info"
+          title="Filtered to one issue"
+          description="Showing questions associated with the selected issue."
+          endContent={
+            <Link to="/inbox" search={{}} color="accent" hasUnderline>
+              Show all
+            </Link>
+          }
+        />
       )}
-      <QuestionList title="Needs an answer" questions={open} empty="No questions need an answer." />
-      <QuestionList title="Resolved" questions={resolved} empty="No resolved questions." />
+      <QuestionList
+        title="Needs an answer"
+        questions={open}
+        emptyTitle="No questions need an answer"
+        emptyDescription="When an agent asks for input on one of your projects, it appears here."
+      />
+      <QuestionList
+        title="Resolved"
+        questions={resolved}
+        emptyTitle="No resolved questions"
+        emptyDescription="Answered questions and fallback outcomes appear here for reference."
+      />
     </main>
   );
 }
@@ -86,28 +109,40 @@ function InboxPage() {
 function QuestionList({
   title,
   questions,
-  empty,
+  emptyTitle,
+  emptyDescription,
 }: {
   title: string;
   questions: Question[];
-  empty: string;
+  emptyTitle: string;
+  emptyDescription: string;
 }) {
   return (
     <section className="inbox-section">
-      <Heading level={2} color="inherit">
-        {title}
-      </Heading>
-      {questions.length === 0 ? (
-        <Text as="p" display="block" type="inherit" color="inherit" className="empty-state">
-          {empty}
-        </Text>
-      ) : (
-        <ul className="question-list">
-          {questions.map((question) => (
-            <QuestionCard key={question.id} question={question} />
-          ))}
-        </ul>
-      )}
+      <Stack gap={2}>
+        <Stack direction="horizontal" gap={1.5} vAlign="center">
+          <Heading level={2} color="inherit">
+            {title}
+          </Heading>
+          <Badge label={questions.length} />
+        </Stack>
+        {questions.length === 0 ? (
+          <Section className="page-section" padding={3}>
+            <EmptyState
+              title={emptyTitle}
+              description={emptyDescription}
+              isCompact
+              headingLevel={3}
+            />
+          </Section>
+        ) : (
+          <ul className="question-list">
+            {questions.map((question) => (
+              <QuestionCard key={question.id} question={question} />
+            ))}
+          </ul>
+        )}
+      </Stack>
     </section>
   );
 }
@@ -189,7 +224,7 @@ function AnswerForm({ question }: { question: Question }) {
     <form
       className="answer-form"
       onSubmit={(event) => void onSubmit(event)}
-      aria-label={`Answer question ${question.id}`}
+      aria-label="Answer agent question"
     >
       <IssueMentionTextArea
         label="Answer"
@@ -202,11 +237,7 @@ function AnswerForm({ question }: { question: Question }) {
         issues={projectIssues}
       />
       <Button type="submit" variant="primary" label="Answer question" isLoading={submitting} />
-      {error !== undefined && (
-        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
-          {error}
-        </Text>
-      )}
+      {error !== undefined && <Banner status="error" role="alert" title={error} />}
     </form>
   );
 }

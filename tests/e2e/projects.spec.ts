@@ -238,6 +238,7 @@ test("runs the complete cycle in the browser", async ({ page }) => {
   await expect(page.locator("[data-knowledge-body]")).toContainText("Notes");
   await expect(page.locator("[data-knowledge-body]")).toContainText("Created in the browser.");
 
+  await page.getByRole("button", { name: "Edit" }).click();
   await page.getByLabel("Title").fill("Browser knowledge edited");
   await page.getByLabel("Markdown").fill("## Edited\n\nStill **Markdown**.");
   await page.getByRole("button", { name: "Save knowledge" }).click();

@@ -34,7 +34,9 @@ function MyWorkPage() {
 
   if (work.isPending) return <MyWorkLoadingState />;
 
-  if (work.isError) return <MyWorkErrorState error={work.error} />;
+  if (work.isError) {
+    return <MyWorkErrorState error={work.error} onRetry={() => void work.refetch()} />;
+  }
 
   return (
     <main data-my-work-page>
