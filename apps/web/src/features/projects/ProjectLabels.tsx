@@ -98,7 +98,7 @@ export function ProjectLabels({
   }
 
   return (
-    <Section className="page-section" padding={0}>
+    <Section className="page-section" padding={5}>
       <Heading level={2} color="inherit">
         Labels
       </Heading>

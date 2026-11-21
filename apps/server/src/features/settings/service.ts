@@ -227,15 +227,19 @@ function deliveryFailureKind(error: unknown): SettingsErrorKind {
 }
 
 function verificationEmail(email: string, token: string, publicUrl: string): SmtpMail["text"] {
+  const verifyUrl = `${publicUrl}/settings/smtp?token=${encodeURIComponent(token)}`;
   return [
     `Confirm that ${email} belongs to you.`,
+    "",
+    "Open this link to verify your address (valid for 24 hours):",
+    "",
+    verifyUrl,
     "",
     "Single-use token, valid for 24 hours:",
     "",
     token,
     "",
-    `Sign in, then redeem it with a POST to ${publicUrl}/api/settings/email-verification to finish verification.`,
-    "Nothing completes this until that POST; the token is only used when you do.",
+    `Opening the link only pre-fills the form — nothing is verified until you click Verify email (or POST the token to ${publicUrl}/api/settings/email-verification).`,
     "",
     "If you did not expect this email, ignore it.",
   ].join("\n");

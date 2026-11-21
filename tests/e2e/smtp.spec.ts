@@ -154,6 +154,7 @@ test("sends the test email, and the catcher receives it with a fresh token", asy
   expect(text).not.toContain("verify-email?token=");
   const token = text.match(/Single-use token, valid for 24 hours:\r?\n\r?\n([A-Za-z0-9_-]+)/)?.[1];
   expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  expect(text).toContain(`/settings/smtp?token=${token}`);
   // A token the stack's logs must never contain.
   await recordSecret(token ?? "");
   verificationToken = token ?? "";

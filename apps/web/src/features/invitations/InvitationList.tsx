@@ -79,7 +79,7 @@ export function InvitationList({
     );
 
   return (
-    <Section className="page-section" padding={0}>
+    <Section className="page-section" padding={5}>
       <Heading level={3} color="inherit">
         Invitation history
       </Heading>
