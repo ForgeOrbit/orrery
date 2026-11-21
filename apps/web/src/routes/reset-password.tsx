@@ -1,12 +1,14 @@
-import { Heading } from "@astryxdesign/core/Heading";
-import { Text } from "@astryxdesign/core/Text";
-import { TextField } from "../lib/fields.tsx";
+import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
+import { Heading } from "@astryxdesign/core/Heading";
+import { Stack } from "@astryxdesign/core/Stack";
+import { Text } from "@astryxdesign/core/Text";
 import { createFileRoute } from "@tanstack/react-router";
-import { Link } from "../lib/Link.tsx";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { confirmPasswordReset } from "../features/recovery/index.ts";
+import { TextField } from "../lib/fields.tsx";
+import { Link } from "../lib/Link.tsx";
 
 export const Route = createFileRoute("/reset-password")({
   staticData: { accessPage: true },
@@ -44,10 +46,12 @@ function ResetPasswordPage() {
         <Heading level={1} color="inherit">
           Choose a new password
         </Heading>
-        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
-          This reset link is incomplete. Ask for a fresh reset link.
-        </Text>
-        <Text as="p" display="block" type="inherit" color="inherit">
+        <Banner
+          status="error"
+          role="alert"
+          title="This reset link is incomplete. Ask for a fresh reset link."
+        />
+        <Text as="p" display="block" type="supporting">
           <Link to="/forgot-password">Request a reset link</Link>
         </Text>
       </main>
@@ -60,38 +64,39 @@ function ResetPasswordPage() {
         Choose a new password
       </Heading>
       {message !== undefined ? (
-        <>
-          <Text as="p" display="block" type="inherit" color="inherit" role="status">
-            {message}
-          </Text>
-          <Text as="p" display="block" type="inherit" color="inherit">
+        <Stack gap={3}>
+          <Banner status="success" role="status" title={message} />
+          <Text as="p" display="block" type="supporting">
             <Link to="/signin">Sign in</Link>
           </Text>
-        </>
+        </Stack>
       ) : (
         <form onSubmit={(event) => void onSubmit(event)}>
-          <TextField
-            label="New password"
-            id="reset-password"
-            htmlName="password"
-            type="password"
-            value={password}
-            onChange={setPassword}
-            required
-            minLength={8}
-            autoComplete="new-password"
-          />
-          {error !== undefined && (
-            <Text as="p" display="block" type="inherit" color="inherit" role="alert">
-              {error}
-            </Text>
-          )}
-          <Button
-            type="submit"
-            isDisabled={submitting}
-            label="Set new password"
-            variant="primary"
-          />
+          <Stack gap={3}>
+            <TextField
+              label="New password"
+              description="At least 8 characters."
+              id="reset-password"
+              htmlName="password"
+              type="password"
+              value={password}
+              onChange={setPassword}
+              required
+              minLength={8}
+              autoComplete="new-password"
+              width="100%"
+            />
+            {error !== undefined && <Banner status="error" role="alert" title={error} />}
+            <Button
+              type="submit"
+              variant="primary"
+              size="lg"
+              width="100%"
+              isDisabled={submitting}
+              isLoading={submitting}
+              label="Set new password"
+            />
+          </Stack>
         </form>
       )}
     </main>

@@ -510,7 +510,7 @@ test("workspace invite form refreshes failed delivery history without a reload",
     );
     await page.keyboard.press("Escape");
     await expect(page.getByRole("heading", { name: "Invitation history" })).toBeVisible();
-    const row = page.locator("li[data-invitation-id]").filter({ hasText: FAILED_EMAIL });
+    const row = page.locator("[data-invitation-id]").filter({ hasText: FAILED_EMAIL });
     await expect(row).toContainText("Pending");
     await expect(row).toContainText("Email failed");
     await expect(row).toContainText("Created");
@@ -551,7 +551,7 @@ test("owner sees invitation history and delivery separately, and resends from th
   await page.goto(`/workspaces/${workspace.id}`);
   await page.getByRole("tab", { name: "Members" }).click();
   await expect(page.getByRole("heading", { name: "Invitation history" })).toBeVisible();
-  const row = page.locator("li[data-invitation-id]").filter({ hasText: HISTORY_EMAIL });
+  const row = page.locator("[data-invitation-id]").filter({ hasText: HISTORY_EMAIL });
   await expect(row).toContainText("Pending");
   await expect(row).toContainText("Email sent");
   await expect(row).toContainText(`Invited by ${ADMIN_EMAIL}`);
@@ -570,15 +570,16 @@ test("owner sees invitation history and delivery separately, and resends from th
   for (const token of await caughtTokens(api, HISTORY_EMAIL, "workspace", "History Team")) {
     await recordSecret(token);
   }
-  await expect(page.locator("li[data-invitation-id]")).toHaveCount(2);
-  await expect(page.locator('li[data-invitation-status="revoked"]')).toHaveCount(1);
-  const pending = page.locator('li[data-invitation-status="pending"]');
+  await expect(page.locator("[data-invitation-id]")).toHaveCount(2);
+  await expect(page.locator('[data-invitation-status="revoked"]')).toHaveCount(1);
+  const pending = page.locator('[data-invitation-status="pending"]');
   await expect(pending).toHaveCount(1);
   await expect(pending).toContainText("Email sent");
 
   await pending.getByRole("button", { name: "Revoke" }).click();
-  await expect(page.locator('li[data-invitation-status="revoked"]')).toHaveCount(2);
-  await expect(page.locator('li[data-invitation-status="pending"]')).toHaveCount(0);
+  await page.getByRole("alertdialog").getByRole("button", { name: "Revoke invitation" }).click();
+  await expect(page.locator('[data-invitation-status="revoked"]')).toHaveCount(2);
+  await expect(page.locator('[data-invitation-status="pending"]')).toHaveCount(0);
 
   for (const cookie of await page.context().cookies()) await recordSecret(cookie.value);
 });
@@ -638,9 +639,10 @@ test("accepts a workspace invitation through sign-in, then an owner appoints", a
     await adminPage.goto(`/workspaces/${invitationWorkspaceId}`);
     await adminPage.getByRole("tab", { name: "Members" }).click();
     await expect(adminPage.getByRole("heading", { name: "Members" })).toBeVisible();
-    const memberRow = adminPage.locator("li[data-member-id]").filter({ hasText: EXISTING_EMAIL });
+    const memberRow = adminPage.locator("[data-member-id]").filter({ hasText: EXISTING_EMAIL });
     await expect(memberRow).toContainText("Member");
     await memberRow.getByRole("button", { name: "Make owner" }).click();
+    await adminPage.getByRole("alertdialog").getByRole("button", { name: "Appoint owner" }).click();
     await expect(memberRow).toContainText("Owner");
     await expect(memberRow.getByRole("button", { name: "Make owner" })).toHaveCount(0);
 
@@ -1248,12 +1250,16 @@ test("a delegated member sees only the controls within their authority in the br
 
   await expect(page.getByRole("heading", { name: "Members" })).toBeVisible();
 
-  await expect(page.getByRole("button", { name: "Grant Create projects" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Grant Invite members" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Grant Remove members" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Grant Manage member permissions" })).toHaveCount(
-    0,
-  );
+  const initialPeerRow = page.locator("[data-member-id]").filter({ hasText: otherEmail });
+  await initialPeerRow.getByRole("button", { name: "Permissions" }).click();
+  const initialDialog = page.getByRole("dialog");
+  await expect(initialDialog.getByRole("checkbox", { name: "Create projects" })).toBeVisible();
+  await expect(initialDialog.getByRole("checkbox", { name: "Invite members" })).toHaveCount(0);
+  await expect(initialDialog.getByRole("checkbox", { name: "Remove members" })).toHaveCount(0);
+  await expect(
+    initialDialog.getByRole("checkbox", { name: "Manage member permissions" }),
+  ).toHaveCount(0);
+  await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "Make owner" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Remove member" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Invite member", exact: true })).toHaveCount(0);
@@ -1265,12 +1271,15 @@ test("a delegated member sees only the controls within their authority in the br
   });
   await page.reload();
   await page.getByRole("tab", { name: "Members" }).click();
-  await expect(page.getByRole("button", { name: "Grant Invite members" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Grant Remove members" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Invite member", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Invitation history" })).toBeVisible();
-  const peerRow = page.locator("li[data-member-id]").filter({ hasText: otherEmail });
+  const peerRow = page.locator("[data-member-id]").filter({ hasText: otherEmail });
   await expect(peerRow.getByRole("button", { name: "Remove member", exact: true })).toBeVisible();
+  await peerRow.getByRole("button", { name: "Permissions" }).click();
+  const updatedDialog = page.getByRole("dialog");
+  await expect(updatedDialog.getByRole("checkbox", { name: "Invite members" })).toBeVisible();
+  await expect(updatedDialog.getByRole("checkbox", { name: "Remove members" })).toBeVisible();
+  await page.keyboard.press("Escape");
 
   const adminBrowser = await browser.newContext();
   const adminPage = await adminBrowser.newPage();

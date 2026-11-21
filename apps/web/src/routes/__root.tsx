@@ -1,6 +1,6 @@
 import { Badge } from "@astryxdesign/core/Badge";
 import { Drawer, DrawerHeader } from "@astryxdesign/core/Drawer";
-import { Heading } from "@astryxdesign/core/Heading";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
 import { Link as AstryxLink } from "@astryxdesign/core/Link";
@@ -38,13 +38,18 @@ export const Route = createRootRouteWithContext<RouterContext>()({
   component: RootLayout,
   notFoundComponent: () => (
     <main>
-      <Heading level={1} color="inherit">
-        Page not found
-      </Heading>
-      <Text as="p" display="block" type="inherit" color="inherit">
-        Check the address or return to your workspaces.
-      </Text>
-      <Link to="/">Go to your workspaces</Link>
+      <Stack className="empty-panel">
+        <EmptyState
+          title="Page not found"
+          description="Check the address or return to your workspaces."
+          headingLevel={1}
+          actions={
+            <Link to="/" color="accent" hasUnderline>
+              Go to your workspaces
+            </Link>
+          }
+        />
+      </Stack>
     </main>
   ),
 });
@@ -207,9 +212,18 @@ function RootLayout() {
   );
 }
 
-function OrbitDiagram() {
+function prefersReducedMotion(): boolean {
   return (
-    <div className="orbit-diagram" aria-hidden="true">
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+}
+
+function OrbitDiagram() {
+  const reducedMotion = prefersReducedMotion();
+  return (
+    <Stack className="orbit-diagram" aria-hidden="true">
       <svg className="orbit-diagram-svg" viewBox="0 0 400 400" fill="none">
         <defs>
           <path id="orrery-orbit-1" d="M 26 200 A 174 100 0 1 0 374 200 A 174 100 0 1 0 26 200" />
@@ -222,39 +236,50 @@ function OrbitDiagram() {
 
         <g transform="rotate(-32 200 200)">
           <use href="#orrery-orbit-1" className="orbit-ring" />
-          <g>
+          <g transform={reducedMotion ? "translate(374 200)" : undefined}>
             <circle r="11" className="orbit-planet-halo" />
             <circle r="5" className="orbit-planet-primary" />
-            <animateMotion dur="24s" repeatCount="indefinite">
-              <mpath href="#orrery-orbit-1" />
-            </animateMotion>
+            {!reducedMotion && (
+              <animateMotion dur="24s" repeatCount="indefinite">
+                <mpath href="#orrery-orbit-1" />
+              </animateMotion>
+            )}
           </g>
         </g>
 
         <g transform="rotate(26 200 200)">
           <use href="#orrery-orbit-2" className="orbit-ring orbit-ring-mid" />
-          <g>
+          <g transform={reducedMotion ? "translate(54 200)" : undefined}>
             <circle r="7.5" className="orbit-moon-halo" />
             <circle r="3.2" className="orbit-moon" />
-            <animateMotion dur="34s" begin="-11s" repeatCount="indefinite">
-              <mpath href="#orrery-orbit-2" />
-            </animateMotion>
+            {!reducedMotion && (
+              <animateMotion dur="34s" begin="-11s" repeatCount="indefinite">
+                <mpath href="#orrery-orbit-2" />
+              </animateMotion>
+            )}
           </g>
         </g>
 
         <g transform="rotate(-68 200 200)">
           <use href="#orrery-orbit-3" className="orbit-ring orbit-ring-inner" />
-          <circle r="2.4" className="orbit-satellite">
-            <animateMotion dur="17s" begin="-5s" repeatCount="indefinite">
-              <mpath href="#orrery-orbit-3" />
-            </animateMotion>
+          <circle
+            r="2.4"
+            cx={reducedMotion ? 314 : undefined}
+            cy={reducedMotion ? 200 : undefined}
+            className="orbit-satellite"
+          >
+            {!reducedMotion && (
+              <animateMotion dur="17s" begin="-5s" repeatCount="indefinite">
+                <mpath href="#orrery-orbit-3" />
+              </animateMotion>
+            )}
           </circle>
         </g>
 
         <circle cx="200" cy="200" r="11" className="orbit-sun-halo" />
         <circle cx="200" cy="200" r="5" className="orbit-sun" />
       </svg>
-    </div>
+    </Stack>
   );
 }
 
@@ -324,7 +349,10 @@ function NavHistoryIcon() {
 
 function SidebarLinks({ onNavigate }: { onNavigate?: () => void }) {
   const { data: session } = useQuery(sessionQuery);
-  const { data: workspaces = [] } = useQuery(workspacesQuery);
+  const { data: workspaces = [] } = useQuery({
+    ...workspacesQuery,
+    enabled: session?.signedIn === true,
+  });
   const { data: adminInvitations } = useQuery({
     ...installationInvitationsQuery,
     enabled: session?.signedIn === true,
@@ -342,19 +370,19 @@ function SidebarLinks({ onNavigate }: { onNavigate?: () => void }) {
         <Link to="/" activeOptions={{ exact: true }} color="inherit" {...clickProp}>
           <span className="nav-item-inner">
             <NavWorkspacesIcon />
-            Workspaces
+            <span className="nav-item-label">Workspaces</span>
           </span>
         </Link>
         <Link to="/my-work" color="inherit" {...clickProp}>
           <span className="nav-item-inner">
             <NavMyWorkIcon />
-            My work
+            <span className="nav-item-label">My work</span>
           </span>
         </Link>
         <Link to="/inbox" color="inherit" {...clickProp}>
           <span className="nav-item-inner">
             <NavInboxIcon />
-            Inbox
+            <span className="nav-item-label">Inbox</span>
           </span>
         </Link>
         <Link
@@ -372,7 +400,7 @@ function SidebarLinks({ onNavigate }: { onNavigate?: () => void }) {
         >
           <span className="nav-item-inner">
             <NavNotificationsIcon />
-            Notifications
+            <span className="nav-item-label">Notifications</span>
             {unreadNotifications !== undefined && unreadNotifications > 0 && (
               <Badge
                 label={unreadNotifications > 99 ? "99+" : unreadNotifications}
@@ -399,7 +427,7 @@ function SidebarLinks({ onNavigate }: { onNavigate?: () => void }) {
                 <span className="workspace-nav-dot" aria-hidden="true">
                   {workspace.name.slice(0, 1).toUpperCase()}
                 </span>
-                {workspace.name}
+                <span className="nav-item-label">{workspace.name}</span>
               </span>
             </Link>
           ))}
@@ -413,13 +441,13 @@ function SidebarLinks({ onNavigate }: { onNavigate?: () => void }) {
           <Link to="/settings/smtp" color="inherit" {...clickProp}>
             <span className="nav-item-inner">
               <NavMailIcon />
-              SMTP settings
+              <span className="nav-item-label">SMTP settings</span>
             </span>
           </Link>
           <Link to="/history/installation" color="inherit" {...clickProp}>
             <span className="nav-item-inner">
               <NavHistoryIcon />
-              Installation history
+              <span className="nav-item-label">Installation history</span>
             </span>
           </Link>
         </nav>
@@ -456,7 +484,7 @@ function SidebarFooter({
   return (
     <footer className="sidebar-footer">
       {session?.signedIn && (
-        <div className="sidebar-account-row">
+        <Stack direction="horizontal" vAlign="center" gap={1} className="sidebar-account-row">
           <Link to="/account" color="inherit" className="sidebar-account-link" {...clickProp}>
             <span className="sidebar-account-text">
               <span className="sidebar-account-name">{session.displayName ?? session.email}</span>
@@ -474,7 +502,7 @@ function SidebarFooter({
             isDisabled={logout.isPending}
             onClick={() => logout.mutate()}
           />
-        </div>
+        </Stack>
       )}
       {showAppearance && <AppearancePicker />}
     </footer>

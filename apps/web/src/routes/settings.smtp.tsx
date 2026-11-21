@@ -1,20 +1,20 @@
+import { Banner } from "@astryxdesign/core/Banner";
+import { Button } from "@astryxdesign/core/Button";
 import { Heading } from "@astryxdesign/core/Heading";
+import { NumberInput } from "@astryxdesign/core/NumberInput";
+import { Section } from "@astryxdesign/core/Section";
+import { Selector } from "@astryxdesign/core/Selector";
+import { Stack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
 import { useToast } from "@astryxdesign/core/Toast";
-import { Section } from "@astryxdesign/core/Section";
-import { TextField } from "../lib/fields.tsx";
-import { Selector } from "@astryxdesign/core/Selector";
-import { Button } from "@astryxdesign/core/Button";
-import { NumberInput } from "@astryxdesign/core/NumberInput";
-import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute } from "@tanstack/react-router";
-import { Link } from "../lib/Link.tsx";
-import { PageHeader } from "../lib/PageHeader.tsx";
+import { Token } from "@astryxdesign/core/Token";
 import {
   SmtpSecurity,
   type SmtpSettings as SmtpSettingsInput,
   type SmtpSettingsResponse,
 } from "@orrery/contract";
+import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { createFileRoute } from "@tanstack/react-router";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { sessionQuery, type Session } from "../features/accounts/index.ts";
@@ -24,6 +24,9 @@ import {
   smtpSettingsQuery,
   verifyEmail,
 } from "../features/settings/index.ts";
+import { TextField } from "../lib/fields.tsx";
+import { Link } from "../lib/Link.tsx";
+import { PageHeader } from "../lib/PageHeader.tsx";
 
 export const Route = createFileRoute("/settings/smtp")({
   validateSearch: (search: Record<string, unknown>) => {
@@ -52,6 +55,7 @@ function SmtpSettingsPage() {
   const { data: settings } = useSuspenseQuery(smtpSettingsQuery);
 
   const emailVerified = session.signedIn && session.emailVerified;
+  const configured = settings !== null && settings.host !== null;
 
   return (
     <main>
@@ -63,17 +67,35 @@ function SmtpSettingsPage() {
         ]}
         title="SMTP settings"
         subtitle="Configure outgoing email delivery and verify administrator email."
+        statusToken={
+          settings !== null ? (
+            <Stack direction="horizontal" gap={1} wrap="wrap">
+              <Token
+                label={configured ? "Configured" : "Not configured"}
+                color={configured ? "green" : "gray"}
+                size="sm"
+              />
+              <Token
+                label={emailVerified ? "Email verified" : "Email unverified"}
+                color={emailVerified ? "green" : "yellow"}
+                size="sm"
+              />
+            </Stack>
+          ) : undefined
+        }
       />
       {settings === null ? (
-        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
-          SMTP settings are available to system administrators only.
-        </Text>
+        <Banner
+          status="error"
+          title="Administrator access required"
+          description="SMTP settings are available to system administrators only."
+        />
       ) : (
         <>
           <SmtpForm settings={settings} />
           <TestAndVerification
             key={initialToken ?? ""}
-            configured={settings.host !== null}
+            configured={configured}
             emailVerified={emailVerified}
             initialToken={initialToken ?? ""}
           />
@@ -130,91 +152,113 @@ function SmtpForm({ settings }: { settings: SmtpSettingsResponse }) {
 
   return (
     <Section className="page-section" padding={3}>
-      <Heading level={2} color="inherit">
-        SMTP configuration
-      </Heading>
-      <form onSubmit={(event) => void onSubmit(event)}>
-        <TextField
-          label="Host"
-          id="smtp-host"
-          htmlName="host"
-          value={host}
-          onChange={setHost}
-          required
-          maxLength={255}
-        />
-
-        <NumberInput
-          label="Port"
-          id="smtp-port"
-          htmlName="port"
-          value={port}
-          onChange={setPort}
-          onEntryErrorChange={(entry) => setInvalidPortEntry(entry !== null)}
-          isIntegerOnly
-          isRequired
-        />
-
-        <Selector
-          label="Security"
-          id="smtp-security"
-          htmlName="security"
-          value={security}
-          onChange={(value) => {
-            const parsed = SmtpSecurity.safeParse(value);
-            if (parsed.success) setSecurity(parsed.data);
-          }}
-          options={SECURITY_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
-        />
-
-        <TextField
-          label="From address"
-          id="smtp-from"
-          htmlName="from"
-          type="email"
-          value={from}
-          onChange={setFrom}
-          required
-        />
-
-        <TextField
-          label="Username (optional)"
-          id="smtp-username"
-          htmlName="username"
-          value={username}
-          onChange={setUsername}
-          maxLength={255}
-        />
-
-        <TextField
-          label="Password (optional)"
-          id="smtp-password"
-          htmlName="password"
-          type="password"
-          value={password}
-          onChange={setPassword}
-          maxLength={1024}
-          autoComplete="new-password"
-        />
-        {settings.hasPassword && (
-          <Text as="p" display="block" type="inherit" color="inherit">
-            A password is stored. Saving replaces the whole configuration, so re-enter it to keep
-            it; leaving this field empty removes it.
+      <Stack gap={3}>
+        <Stack gap={1}>
+          <Heading level={2} color="inherit">
+            SMTP configuration
+          </Heading>
+          <Text as="p" display="block" type="supporting">
+            Orrery uses this relay for invitations, password resets, and verification emails.
           </Text>
-        )}
+        </Stack>
+        <form onSubmit={(event) => void onSubmit(event)}>
+          <Stack gap={3} hAlign="start">
+            <TextField
+              label="Host"
+              id="smtp-host"
+              htmlName="host"
+              value={host}
+              onChange={setHost}
+              required
+              maxLength={255}
+              placeholder="smtp.example.com"
+            />
 
-        {status !== undefined && (
-          <Text as="p" display="block" type="inherit" color="inherit" role="status">
-            {status}
-          </Text>
-        )}
-        {error !== undefined && (
-          <Text as="p" display="block" type="inherit" color="inherit" role="alert">
-            {error}
-          </Text>
-        )}
-        <Button type="submit" isDisabled={saving} label="Save SMTP settings" variant="primary" />
-      </form>
+            <NumberInput
+              label="Port"
+              id="smtp-port"
+              htmlName="port"
+              value={port}
+              onChange={setPort}
+              onEntryErrorChange={(entry) => setInvalidPortEntry(entry !== null)}
+              isIntegerOnly
+              isRequired
+            />
+
+            <Selector
+              label="Security"
+              id="smtp-security"
+              htmlName="security"
+              value={security}
+              onChange={(value) => {
+                const parsed = SmtpSecurity.safeParse(value);
+                if (parsed.success) setSecurity(parsed.data);
+              }}
+              options={SECURITY_OPTIONS.map((option) => ({
+                value: option.value,
+                label: option.label,
+              }))}
+            />
+
+            <TextField
+              label="From address"
+              id="smtp-from"
+              htmlName="from"
+              type="email"
+              value={from}
+              onChange={setFrom}
+              required
+              placeholder="orrery@example.com"
+            />
+
+            <TextField
+              label="Username (optional)"
+              id="smtp-username"
+              htmlName="username"
+              value={username}
+              onChange={setUsername}
+              maxLength={255}
+            />
+
+            <TextField
+              label="Password (optional)"
+              id="smtp-password"
+              htmlName="password"
+              type="password"
+              value={password}
+              onChange={setPassword}
+              maxLength={1024}
+              autoComplete="new-password"
+            />
+            {settings.hasPassword && (
+              <Banner
+                status="warning"
+                title="A password is already stored"
+                description="Saving replaces the whole configuration, so re-enter the password to keep it; leaving this field empty removes it."
+              />
+            )}
+
+            {status !== undefined && (
+              <Banner
+                status="success"
+                title={status}
+                isDismissable
+                onDismiss={() => setStatus(undefined)}
+              />
+            )}
+            {error !== undefined && (
+              <Banner status="error" title="Could not save SMTP settings" description={error} />
+            )}
+            <Button
+              type="submit"
+              isDisabled={saving}
+              isLoading={saving}
+              label="Save SMTP settings"
+              variant="primary"
+            />
+          </Stack>
+        </form>
+      </Stack>
     </Section>
   );
 }
@@ -279,55 +323,80 @@ function TestAndVerification({
 
   return (
     <Section className="page-section" padding={3}>
-      <Heading level={2} color="inherit">
-        Test email and verification
-      </Heading>
-      <Text as="p" display="block" type="inherit" color="inherit">
-        {emailVerified
-          ? "Your email address is verified."
-          : "Your email address is not verified yet."}
-      </Text>
-      <Button
-        type="button"
-        onClick={() => void onSend()}
-        isDisabled={sending || !configured}
-        label="Send test email"
-        variant="secondary"
-      />
-      {!configured && (
-        <Text as="p" display="block" type="inherit" color="inherit">
-          Save your SMTP settings above before sending a test email.
-        </Text>
-      )}
-      {sendStatus !== undefined && (
-        <Text as="p" display="block" type="inherit" color="inherit" role="status">
-          {sendStatus}
-        </Text>
-      )}
-      {sendError !== undefined && (
-        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
-          {sendError}
-        </Text>
-      )}
-      {!emailVerified && (
-        <form onSubmit={(event) => void onVerify(event)}>
-          <TextField
-            label="Verification token from the test email"
-            id="verify-token"
-            htmlName="token"
-            value={token}
-            onChange={setToken}
-            required
-            autoComplete="off"
+      <Stack gap={3} hAlign="start">
+        <Stack gap={1}>
+          <Stack direction="horizontal" gap={2} vAlign="center" wrap="wrap">
+            <Heading level={2} color="inherit">
+              Test email and verification
+            </Heading>
+            <Token
+              label={emailVerified ? "Verified" : "Unverified"}
+              color={emailVerified ? "green" : "yellow"}
+              size="sm"
+            />
+          </Stack>
+          <Text as="p" display="block" type="supporting">
+            {emailVerified
+              ? "Your email address is verified."
+              : "Send a test email and paste the single-use token to verify your administrator email address."}
+          </Text>
+        </Stack>
+
+        <Button
+          type="button"
+          onClick={() => void onSend()}
+          isDisabled={sending || !configured}
+          isLoading={sending}
+          label="Send test email"
+          variant="secondary"
+        />
+
+        {!configured && (
+          <Banner
+            status="info"
+            title="Save SMTP settings first"
+            description="Save your SMTP configuration above before sending a test email."
           />
-          {verifyError !== undefined && (
-            <Text as="p" display="block" type="inherit" color="inherit" role="alert">
-              {verifyError}
-            </Text>
-          )}
-          <Button type="submit" isDisabled={verifying} label="Verify email" variant="primary" />
-        </form>
-      )}
+        )}
+        {sendStatus !== undefined && (
+          <Banner
+            status="success"
+            title="Test email sent"
+            description={sendStatus}
+            isDismissable
+            onDismiss={() => setSendStatus(undefined)}
+          />
+        )}
+        {sendError !== undefined && (
+          <Banner status="error" title="Could not send test email" description={sendError} />
+        )}
+
+        {!emailVerified && (
+          <form onSubmit={(event) => void onVerify(event)}>
+            <Stack gap={3} hAlign="start">
+              <TextField
+                label="Verification token from the test email"
+                id="verify-token"
+                htmlName="token"
+                value={token}
+                onChange={setToken}
+                required
+                autoComplete="off"
+              />
+              {verifyError !== undefined && (
+                <Banner status="error" title="Verification failed" description={verifyError} />
+              )}
+              <Button
+                type="submit"
+                isDisabled={verifying}
+                isLoading={verifying}
+                label="Verify email"
+                variant="primary"
+              />
+            </Stack>
+          </form>
+        )}
+      </Stack>
     </Section>
   );
 }

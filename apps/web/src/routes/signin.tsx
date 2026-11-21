@@ -1,13 +1,15 @@
-import { Heading } from "@astryxdesign/core/Heading";
-import { Text } from "@astryxdesign/core/Text";
-import { TextField } from "../lib/fields.tsx";
+import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
+import { Heading } from "@astryxdesign/core/Heading";
+import { Stack } from "@astryxdesign/core/Stack";
+import { Text } from "@astryxdesign/core/Text";
 import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
-import { Link } from "../lib/Link.tsx";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { sessionQuery, signIn } from "../features/accounts/index.ts";
+import { TextField } from "../lib/fields.tsx";
+import { Link } from "../lib/Link.tsx";
 
 const INVITATION_NEXT = /^\/workspace-invitation\?token=([A-Za-z0-9_-]+)$/;
 
@@ -70,35 +72,43 @@ function SignInPage() {
         Sign in
       </Heading>
       <form onSubmit={(event) => void onSubmit(event)}>
-        <TextField
-          label="Email"
-          id="signin-email"
-          htmlName="email"
-          type="email"
-          value={email}
-          onChange={setEmail}
-          required
-          autoComplete="username"
-        />
+        <Stack gap={3}>
+          <TextField
+            label="Email"
+            id="signin-email"
+            htmlName="email"
+            type="email"
+            value={email}
+            onChange={setEmail}
+            required
+            autoComplete="username"
+            width="100%"
+          />
 
-        <TextField
-          label="Password"
-          id="signin-password"
-          htmlName="password"
-          type="password"
-          value={password}
-          onChange={setPassword}
-          required
-          autoComplete="current-password"
-        />
-        {error !== undefined && (
-          <Text as="p" display="block" type="inherit" color="inherit" role="alert">
-            {error}
-          </Text>
-        )}
-        <Button type="submit" isDisabled={submitting} label="Sign in" variant="primary" />
+          <TextField
+            label="Password"
+            id="signin-password"
+            htmlName="password"
+            type="password"
+            value={password}
+            onChange={setPassword}
+            required
+            autoComplete="current-password"
+            width="100%"
+          />
+          {error !== undefined && <Banner status="error" role="alert" title={error} />}
+          <Button
+            type="submit"
+            variant="primary"
+            size="lg"
+            width="100%"
+            isDisabled={submitting}
+            isLoading={submitting}
+            label="Sign in"
+          />
+        </Stack>
       </form>
-      <Text as="p" display="block" type="inherit" color="inherit">
+      <Text as="p" display="block" type="supporting">
         <Link to="/forgot-password">Forgot your password?</Link>
       </Text>
     </main>

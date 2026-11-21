@@ -1,12 +1,14 @@
-import { Heading } from "@astryxdesign/core/Heading";
-import { Text } from "@astryxdesign/core/Text";
-import { TextField } from "../lib/fields.tsx";
+import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
+import { Heading } from "@astryxdesign/core/Heading";
+import { Stack } from "@astryxdesign/core/Stack";
+import { Text } from "@astryxdesign/core/Text";
 import { createFileRoute } from "@tanstack/react-router";
-import { Link } from "../lib/Link.tsx";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { requestPasswordReset } from "../features/recovery/index.ts";
+import { TextField } from "../lib/fields.tsx";
+import { Link } from "../lib/Link.tsx";
 
 export const Route = createFileRoute("/forgot-password")({
   staticData: { accessPage: true },
@@ -39,33 +41,36 @@ function ForgotPasswordPage() {
       <Heading level={1} color="inherit">
         Reset your password
       </Heading>
-      <Text as="p" display="block" type="inherit" color="inherit">
+      <Text as="p" display="block" type="supporting">
         Enter your email address. If it can be recovered, we will send a reset link.
       </Text>
       <form onSubmit={(event) => void onSubmit(event)}>
-        <TextField
-          label="Email"
-          id="forgot-email"
-          htmlName="email"
-          type="email"
-          value={email}
-          onChange={setEmail}
-          required
-          autoComplete="username"
-        />
-        {error !== undefined && (
-          <Text as="p" display="block" type="inherit" color="inherit" role="alert">
-            {error}
-          </Text>
-        )}
-        {message !== undefined && (
-          <Text as="p" display="block" type="inherit" color="inherit" role="status">
-            {message}
-          </Text>
-        )}
-        <Button type="submit" isDisabled={submitting} label="Send reset link" variant="primary" />
+        <Stack gap={3}>
+          <TextField
+            label="Email"
+            id="forgot-email"
+            htmlName="email"
+            type="email"
+            value={email}
+            onChange={setEmail}
+            required
+            autoComplete="username"
+            width="100%"
+          />
+          {error !== undefined && <Banner status="error" role="alert" title={error} />}
+          {message !== undefined && <Banner status="success" role="status" title={message} />}
+          <Button
+            type="submit"
+            variant="primary"
+            size="lg"
+            width="100%"
+            isDisabled={submitting}
+            isLoading={submitting}
+            label="Send reset link"
+          />
+        </Stack>
       </form>
-      <Text as="p" display="block" type="inherit" color="inherit">
+      <Text as="p" display="block" type="supporting">
         <Link to="/signin" className="back-link-inline">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <path

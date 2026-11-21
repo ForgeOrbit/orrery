@@ -431,7 +431,7 @@ test("administrator sees installation invitation history and resends from the pa
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByText(`Signed in as ${ADMIN_EMAIL}.`)).toBeVisible();
 
-  const row = page.locator("li[data-invitation-id]").filter({ hasText: uiEmail });
+  const row = page.locator("[data-invitation-id]").filter({ hasText: uiEmail });
   await expect(row).toContainText("Pending");
   await expect(row).toContainText("Email sent");
   await expect(row).toContainText(`Invited by ${ADMIN_EMAIL}`);
@@ -443,12 +443,12 @@ test("administrator sees installation invitation history and resends from the pa
     .poll(async () => (await caughtInvitationTokens(api, uiEmail)).length, { timeout: 15_000 })
     .toBeGreaterThan(before.length);
   for (const token of await caughtInvitationTokens(api, uiEmail)) await recordSecret(token);
-  await expect(page.locator(`li[data-invitation-id]`).filter({ hasText: uiEmail })).toHaveCount(2);
+  await expect(page.locator("[data-invitation-id]").filter({ hasText: uiEmail })).toHaveCount(2);
   await expect(
-    page.locator('li[data-invitation-status="revoked"]').filter({ hasText: uiEmail }),
+    page.locator('[data-invitation-status="revoked"]').filter({ hasText: uiEmail }),
   ).toHaveCount(1);
   await expect(
-    page.locator('li[data-invitation-status="pending"]').filter({ hasText: uiEmail }),
+    page.locator('[data-invitation-status="pending"]').filter({ hasText: uiEmail }),
   ).toHaveCount(1);
 
   for (const cookie of await page.context().cookies()) await recordSecret(cookie.value);
@@ -477,7 +477,7 @@ test("installation invite form refreshes failed delivery history without a reloa
       "Could not reach the SMTP server",
     );
     await page.keyboard.press("Escape");
-    const row = page.locator("li[data-invitation-id]").filter({ hasText: FAILED_EMAIL });
+    const row = page.locator("[data-invitation-id]").filter({ hasText: FAILED_EMAIL });
     await expect(row).toContainText("Pending");
     await expect(row).toContainText("This installation");
     await expect(row).toContainText("Email failed");

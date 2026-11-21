@@ -1,10 +1,11 @@
-import { Heading } from "@astryxdesign/core/Heading";
-import { Text } from "@astryxdesign/core/Text";
-import { TextField } from "../lib/fields.tsx";
+import { AlertDialog } from "@astryxdesign/core/AlertDialog";
+import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
+import { Heading } from "@astryxdesign/core/Heading";
+import { Stack } from "@astryxdesign/core/Stack";
+import { Text } from "@astryxdesign/core/Text";
 import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { Link } from "../lib/Link.tsx";
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { sessionQuery, signIn, type Session } from "../features/accounts/index.ts";
@@ -12,6 +13,8 @@ import {
   declineInstallationInvitation,
   registerThroughInvitation,
 } from "../features/invitations/index.ts";
+import { TextField } from "../lib/fields.tsx";
+import { Link } from "../lib/Link.tsx";
 
 export const Route = createFileRoute("/register")({
   staticData: { accessPage: true },
@@ -31,6 +34,7 @@ function RegisterPage() {
   const [createdEmail, setCreatedEmail] = useState<string>();
   const [declined, setDeclined] = useState(false);
   const [declining, setDeclining] = useState(false);
+  const [confirmDeclineOpen, setConfirmDeclineOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   async function onDecline() {
@@ -38,8 +42,10 @@ function RegisterPage() {
     setError(undefined);
     try {
       await declineInstallationInvitation({ token });
+      setConfirmDeclineOpen(false);
       setDeclined(true);
     } catch (cause) {
+      setConfirmDeclineOpen(false);
       setError(cause instanceof Error ? cause.message : "Could not decline the invitation.");
     } finally {
       setDeclining(false);
@@ -83,10 +89,12 @@ function RegisterPage() {
         <Heading level={1} color="inherit">
           Accept your invitation
         </Heading>
-        <Text as="p" display="block" type="inherit" color="inherit" role="status">
-          Your account was created for {createdEmail}.
-        </Text>
-        <Text as="p" display="block" type="inherit" color="inherit">
+        <Banner
+          status="success"
+          role="status"
+          title={`Your account was created for ${createdEmail}.`}
+        />
+        <Text as="p" display="block" type="supporting">
           <Link to="/signin">Sign in</Link> with the password you chose.
         </Text>
       </main>
@@ -99,10 +107,12 @@ function RegisterPage() {
         <Heading level={1} color="inherit">
           Accept your invitation
         </Heading>
-        <Text as="p" display="block" type="inherit" color="inherit" role="status">
-          You declined this invitation. The link no longer works.
-        </Text>
-        <Text as="p" display="block" type="inherit" color="inherit">
+        <Banner
+          status="info"
+          role="status"
+          title="You declined this invitation. The link no longer works."
+        />
+        <Text as="p" display="block" type="supporting">
           <Link to="/">Go to Orrery</Link>
         </Text>
       </main>
@@ -115,9 +125,11 @@ function RegisterPage() {
         <Heading level={1} color="inherit">
           Accept your invitation
         </Heading>
-        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
-          This invitation link is incomplete. Ask for a fresh invitation.
-        </Text>
+        <Banner
+          status="error"
+          role="alert"
+          title="This invitation link is incomplete. Ask for a fresh invitation."
+        />
       </main>
     );
   }
@@ -127,45 +139,57 @@ function RegisterPage() {
       <Heading level={1} color="inherit">
         Accept your invitation
       </Heading>
-      <Text as="p" display="block" type="inherit" color="inherit">
-        You have been invited to join this Orrery installation.
-      </Text>
-      <Text as="p" display="block" type="inherit" color="inherit">
-        Choose a password to create your account and personal workspace.
+      <Text as="p" display="block" type="supporting">
+        You have been invited to join this Orrery installation. Choose a password to create your
+        account and personal workspace.
       </Text>
       <form onSubmit={(event) => void onSubmit(event)}>
-        <TextField
-          label="Password"
-          id="register-password"
-          htmlName="password"
-          type="password"
-          value={password}
-          onChange={setPassword}
-          required
-          minLength={8}
-          autoComplete="new-password"
-        />
-        {error !== undefined && (
-          <Text as="p" display="block" type="inherit" color="inherit" role="alert">
-            {error}
-          </Text>
-        )}
-        <Button
-          type="submit"
-          isDisabled={submitting || declining}
-          label="Register"
-          variant="primary"
-        />
+        <Stack gap={3}>
+          <TextField
+            label="Password"
+            description="At least 8 characters."
+            id="register-password"
+            htmlName="password"
+            type="password"
+            value={password}
+            onChange={setPassword}
+            required
+            minLength={8}
+            autoComplete="new-password"
+            width="100%"
+          />
+          {error !== undefined && <Banner status="error" role="alert" title={error} />}
+          <Button
+            type="submit"
+            variant="primary"
+            size="lg"
+            width="100%"
+            isDisabled={submitting || declining}
+            isLoading={submitting}
+            label="Register"
+          />
+        </Stack>
       </form>
-      <Text as="p" display="block" type="inherit" color="inherit">
+      <Stack paddingBlockStart={2}>
         <Button
           type="button"
-          onClick={() => void onDecline()}
+          onClick={() => setConfirmDeclineOpen(true)}
           isDisabled={submitting || declining}
           label="Decline invitation"
           variant="secondary"
         />
-      </Text>
+      </Stack>
+
+      <AlertDialog
+        isOpen={confirmDeclineOpen}
+        onOpenChange={setConfirmDeclineOpen}
+        title="Decline this invitation?"
+        description="Declining permanently invalidates this invitation link. You will need a new invitation to join later."
+        actionLabel="Decline invitation"
+        actionVariant="destructive"
+        isActionLoading={declining}
+        onAction={() => void onDecline()}
+      />
     </main>
   );
 }

@@ -1,3 +1,4 @@
+import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { Drawer, DrawerHeader } from "@astryxdesign/core/Drawer";
 import { Heading } from "@astryxdesign/core/Heading";
@@ -6,6 +7,7 @@ import { Section } from "@astryxdesign/core/Section";
 import { Stack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
 import { useToast } from "@astryxdesign/core/Toast";
+import { Token } from "@astryxdesign/core/Token";
 import type { InvitationSummary } from "@orrery/contract";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
@@ -43,9 +45,11 @@ export const Route = createFileRoute("/")({
   component: Home,
   errorComponent: () => (
     <main>
-      <Text as="p" display="block" type="inherit" color="inherit">
-        Server: unreachable
-      </Text>
+      <Banner
+        status="error"
+        title="Server: unreachable"
+        description="Could not reach the Orrery server. Check your connection and try reloading."
+      />
     </main>
   ),
 });
@@ -91,13 +95,19 @@ function Home() {
                 >
                   {workspace.name}
                 </Link>
-                <span className="meta-pill">
-                  {workspace.kind === "personal"
-                    ? "Personal"
-                    : workspace.isOwner
-                      ? "Owner"
-                      : "Member"}
-                </span>
+                <Token
+                  label={
+                    workspace.kind === "personal"
+                      ? "Personal"
+                      : workspace.isOwner
+                        ? "Owner"
+                        : "Member"
+                  }
+                  color={
+                    workspace.kind === "personal" ? "gray" : workspace.isOwner ? "orange" : "blue"
+                  }
+                  size="sm"
+                />
               </Stack>
               <Stack direction="horizontal" className="entity-card-meta">
                 <Text type="supporting">
@@ -172,22 +182,27 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
 
   return (
     <form onSubmit={(event) => void onSubmit(event)}>
-      <TextField
-        label="Workspace name"
-        id="workspace-name"
-        htmlName="name"
-        value={name}
-        onChange={setName}
-        required
-        maxLength={120}
-        placeholder="e.g. Core Engineering"
-      />
-      {error !== undefined && (
-        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
-          {error}
-        </Text>
-      )}
-      <Button type="submit" isDisabled={submitting} label="Create workspace" variant="primary" />
+      <Stack gap={3} hAlign="start">
+        <TextField
+          label="Workspace name"
+          id="workspace-name"
+          htmlName="name"
+          value={name}
+          onChange={setName}
+          required
+          maxLength={120}
+          placeholder="e.g. Core Engineering"
+          width="100%"
+        />
+        {error !== undefined && <Banner status="error" role="alert" title={error} />}
+        <Button
+          type="submit"
+          isDisabled={submitting}
+          isLoading={submitting}
+          label="Create workspace"
+          variant="primary"
+        />
+      </Stack>
     </form>
   );
 }
@@ -243,32 +258,35 @@ function InstallationInvitations() {
 
   return (
     <Section className="page-section" padding={3}>
-      <Stack direction="horizontal" className="section-toolbar">
-        <Heading level={2} color="inherit">
-          Installation administration
-        </Heading>
-        <Stack direction="horizontal" className="page-header-actions">
-          <Button
-            type="button"
-            label="Invite person"
-            variant="secondary"
-            size="sm"
-            onClick={() => setInviteOpen(true)}
-          />
+      <Stack gap={3}>
+        <Stack direction="horizontal" className="section-toolbar">
+          <Heading level={2} color="inherit">
+            Installation administration
+          </Heading>
+          <Stack direction="horizontal" className="page-header-actions">
+            <Button
+              type="button"
+              label="Invite person"
+              variant="secondary"
+              size="sm"
+              onClick={() => setInviteOpen(true)}
+            />
+          </Stack>
         </Stack>
+        <InvitationList
+          embedded
+          invitations={invitations}
+          emptyMessage="No installation invitations yet."
+          {...(busyId === undefined ? {} : { busyId })}
+          {...(error === undefined ? {} : { error })}
+          onResend={(invitation) =>
+            run(invitation, () => resendInstallationInvitation(invitation.id))
+          }
+          onRevoke={(invitation) =>
+            run(invitation, () => revokeInstallationInvitation(invitation.id))
+          }
+        />
       </Stack>
-      <InvitationList
-        invitations={invitations}
-        emptyMessage="No installation invitations yet."
-        {...(busyId === undefined ? {} : { busyId })}
-        {...(error === undefined ? {} : { error })}
-        onResend={(invitation) =>
-          run(invitation, () => resendInstallationInvitation(invitation.id))
-        }
-        onRevoke={(invitation) =>
-          run(invitation, () => revokeInstallationInvitation(invitation.id))
-        }
-      />
 
       <Drawer
         isOpen={inviteOpen}
@@ -289,28 +307,30 @@ function InstallationInvitations() {
         >
           <LayoutContent>
             <form onSubmit={(event) => void onInvite(event)}>
-              <TextField
-                label="Email"
-                id="installation-invite-email"
-                htmlName="email"
-                type="email"
-                value={email}
-                onChange={setEmail}
-                required
-                autoComplete="off"
-                placeholder="teammate@example.com"
-              />
-              {inviteError !== undefined && (
-                <Text as="p" display="block" type="inherit" color="inherit" role="alert">
-                  {inviteError}
-                </Text>
-              )}
-              <Button
-                type="submit"
-                isDisabled={inviting}
-                label="Send installation invitation"
-                variant="primary"
-              />
+              <Stack gap={3} hAlign="start">
+                <TextField
+                  label="Email"
+                  id="installation-invite-email"
+                  htmlName="email"
+                  type="email"
+                  value={email}
+                  onChange={setEmail}
+                  required
+                  autoComplete="off"
+                  placeholder="teammate@example.com"
+                  width="100%"
+                />
+                {inviteError !== undefined && (
+                  <Banner status="error" role="alert" title={inviteError} />
+                )}
+                <Button
+                  type="submit"
+                  isDisabled={inviting}
+                  isLoading={inviting}
+                  label="Send installation invitation"
+                  variant="primary"
+                />
+              </Stack>
             </form>
           </LayoutContent>
         </Layout>
