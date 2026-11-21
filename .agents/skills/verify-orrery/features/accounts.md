@@ -1,102 +1,39 @@
-# Bootstrap and sign-in (accounts)
+# Bootstrap, sign-in, account profile, and password recovery
 
-The first system administrator is created through the browser at `/setup`, protected by
-the deployment's `BOOTSTRAP_SECRET`, and setup closes forever in the same transaction
-(issue #21). Sign-in at `/signin` sets an HttpOnly session cookie; `/api/auth/session`
-resolves it. Invited humans enter through `/register` (see [invitations](./invitations.md)).
+The first system administrator is created at `/setup` with `BOOTSTRAP_SECRET`, closing setup forever in one transaction. Sign-in at `/signin` sets the HttpOnly `orrery_session` cookie; `/api/auth/session` resolves `{email, displayName, emailVerified}`. Signed-in humans manage their profile (`displayName`), password (revoking other browser sessions), appearance, and sign-out at `/account`. Password recovery uses `/forgot-password` → Mailpit single-use token → `/reset-password`, plus `apps/server/src/recovery-cli.ts` for administrator local recovery without SMTP.
 
 ## Sub-features
 
-- `setup-status` `GET /api/setup/status` returns `{"setupComplete":false}` then `true`.
-- `setup-open` `/setup` renders the form while setup is open; home links `Set up Orrery`.
-- `setup-refuse` a wrong secret answers 401 `invalid_secret` and changes nothing.
-- `setup-create` the correct secret answers 201 and creates the administrator, their
-  personal workspace, and the setup row in one transaction; a second POST answers 409
-  `setup_complete`.
-- `setup-closed` after completion `/setup` redirects to `/signin`; the setup POST is
-  refused even with the correct secret.
-- `setup-unavailable` with no `BOOTSTRAP_SECRET`, the POST answers 403
-  `setup_unavailable`; `/setup` still renders and home still links it.
-- `signin` the `/signin` form posts to `/api/auth/login`; success sets the HttpOnly
-  `orrery_session` cookie and home shows `Signed in as <email>.`; wrong credentials
-  answer 401 `invalid_credentials`.
-- `session` `GET /api/auth/session` returns `{email,emailVerified}` or 401
-  `not_signed_in`.
+- `setup-lifecycle` `GET /api/setup/status` (`false` → `true`); wrong secret `401 invalid_secret`; valid POST `201`; repeat POST `409 setup_complete`; missing `BOOTSTRAP_SECRET` `403 setup_unavailable`; `/setup` redirects to `/signin` after completion.
+- `signin-and-session` `/signin` posts to `/api/auth/login` (`401 invalid_credentials` on wrong password); `GET /api/auth/session` returns `{email, displayName, emailVerified}` or `401 not_signed_in`; `POST /api/auth/logout` clears the session.
+- `account-profile` `/account` (`Profile`, `Password`, `Appearance`, `Session`): `PATCH /api/account/profile` (`Save profile`), `POST /api/account/password` (`Update password`), and `Sign out`.
+- `password-recovery` `/signin` links `Forgot your password?` → `/forgot-password` (`POST /api/auth/password-reset/request`, uniform response) → Mailpit reset link → `/reset-password` (`POST /api/auth/password-reset/confirm`, single-use, invalidates browser sessions while keeping agent keys live).
 
 ## Preconditions
 
-- A fresh instance started by this run **with a bootstrap secret** (at least 32
-  characters; the secret reaches the server through the environment):
-
-  ```bash
-  SECRET=verify-orrery-bootstrap-secret-0123456789
-  BOOTSTRAP_SECRET=$SECRET $SK/orrery-verify.sh up
-  ```
-
-- `scripts/orrery-verify.sh doctor $RUN_DIR` exits 0.
-- No accounts exist yet (setup must be open).
+- Fresh instance with `BOOTSTRAP_SECRET` (at least 32 chars); `doctor $RUN_DIR` exits 0.
+- For password recovery, Mailpit up and SMTP configured (see [settings](./settings.md)).
 
 ## Recipe
 
-- Status and refusal. `curl -sS $URL/api/setup/status` reports `{"setupComplete":false}`.
-  A wrong-secret POST answers 401 `invalid_secret`; a bare `GET /api/setup/admin` is not
-  an endpoint — with `WEB_DIST` the SPA fallback answers 200 HTML, not 405/400:
-
-  ```bash
-  curl -sS -X POST $URL/api/setup/admin -H 'content-type: application/json' \
-    -d '{"secret":"wrong","email":"admin@orrery.test","password":"browser-checked-admin-password"}'
-  curl -sS -o /dev/null -w '%{http_code} %{content_type}\n' $URL/api/setup/admin
-  ```
-
-- Setup page. `node $SK/browse.mjs $RUN_DIR /setup --slug setup-open --expect-role heading:"Set up Orrery"`.
-
-- The committed Playwright spec drives the real forms (wrong secret, creation, first
-  sign-in; its restart test skips without `ORRERY_RESTART_CMD`):
-
-  ```bash
-  ORRERY_URL=$URL ORRERY_SETUP_SECRET=$SECRET CHROMIUM_PATH=/usr/bin/chromium \
-    pnpm --filter @orrery/e2e exec playwright test bootstrap.spec.ts
-  ```
-
-  Expect 2 passed, 1 skipped. After it passes, `/api/setup/status` reports
-  `{"setupComplete":true}`, and a second POST answers 409 `setup_complete`.
-
-- Home states. After setup, a browser without the cookie sees
-  `node $SK/browse.mjs $RUN_DIR / --allow-http 401 --slug home-signed-out --expect-text "Sign in to continue."`.
-  Sign in through the form and see the account and workspace:
-
-  ```bash
-  node $SK/browse.mjs $RUN_DIR /signin --allow-http 401 --slug home-signed-in \
-    --fill "Email=admin@orrery.test" --fill "Password=browser-checked-admin-password" \
-    --click-button "Sign in" --expect-text "Signed in as admin@orrery.test." \
-    --expect-role "heading:Your workspaces" --expect-text "Personal"
-  ```
-
-  `/setup` now redirects to `/signin`:
-  `node $SK/browse.mjs $RUN_DIR /setup --allow-http 401 --slug setup-closed --expect-role "heading:Sign in"`.
-
-- Side effects in the database (one human, one personal workspace, one setup row):
-
-  ```bash
-  CONTAINER=$(sed -n 's/^CONTAINER=//p' $RUN_DIR/env)
-  docker exec $CONTAINER psql -U orrery -d orrery -c \
-    "select (select count(*) from humans) humans, (select count(*) from workspaces) workspaces, (select count(*) from instance_setup) setup"
-  ```
-
-- Logs never carry the secret, the password, or the session token: after driving the
-  flow, `! grep -qF "$SECRET" $RUN_DIR/server.log` and the same for the password both
-  succeed (no match).
+1. Verify `/api/setup/status` (`false`), wrong secret (`401`), bootstrap (`201`), repeat (`409`), and `/` signed-out redirect to `/signin`.
+2. Run the committed Playwright spec (`3 passed, 1 skipped` without `ORRERY_RESTART_CMD`):
+   ```bash
+   ORRERY_URL=$URL ORRERY_SETUP_SECRET=$SECRET CHROMIUM_PATH=/usr/bin/chromium \
+     pnpm --filter @orrery/e2e exec playwright test bootstrap.spec.ts
+   ```
+3. Sign in via `browse.mjs /signin` (`--fill "Email=..." --fill "Password=..." --click-button "Sign in" --expect-role "heading:Workspaces"`).
+4. Profile & password via REST (`admin.jar`):
+   ```bash
+   curl -fsS -b $RUN_DIR/admin.jar -X PATCH "$URL/api/account/profile" -H 'content-type: application/json' \
+     -d '{"displayName":"Admin User"}'
+   curl -fsS -b $RUN_DIR/admin.jar "$URL/api/auth/session"   # includes displayName
+   ```
+5. Recovery via REST + Mailpit: `POST /api/auth/password-reset/request` for a verified email, read the reset token from Mailpit, redeem via `POST /api/auth/password-reset/confirm`, and prove old session cookies return `401`.
+6. Verify `humans`, `workspaces`, and `instance_setup` rows in Postgres and confirm neither `$SECRET` nor any password appears in `$RUN_DIR/server.log`.
 
 ## Gotchas
 
-- The home page answers 401 for `/api/auth/session` and `/api/workspaces` when signed
-  out. `browse.mjs` treats those as problems unless you pass `--allow-http 401`.
-- Unset `BOOTSTRAP_SECRET` closes setup but does not hide it: `/setup` still renders and
-  home still links it; only the POST is refused (403 `setup_unavailable`).
-- The bootstrap spec needs `ORRERY_URL`, `ORRERY_SETUP_SECRET`, and `CHROMIUM_PATH`; it
-  drives the whole story (wrong secret, creation, first sign-in, second POST) in one
-  black-box spec, while `browse.mjs` covers the individual pages.
-- Restart persistence is not covered by this harness. The spec's restart test skips
-  without `ORRERY_RESTART_CMD`, which belongs to the compose stack; see `../SKILL.md`.
-- The session cookie is a secret: keep the cookie jar in `$RUN_DIR`, never in
-  `evidence/`.
+- `/` redirects signed-out users directly to `/setup` or `/signin`; it never renders `"Sign in to continue."`.
+- Restart persistence skips without `ORRERY_RESTART_CMD` (compose stack only).
+- Keep session cookie jars in `$RUN_DIR`, never in `$RUN_DIR/evidence/`.

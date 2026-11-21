@@ -1,95 +1,38 @@
-# Workspace-scoped agent API keys (agents)
+# Agents, API keys, rotation, and runs
 
-A human registers an agent and issues a bearer key bound to one workspace and selected
-projects (issue #30). The secret is shown once; only its hash is stored. The key's
-effective project level is capped by the human owner's *current* access, and a workspace
-owner can revoke any key scoped to their workspace without seeing its secret.
+Humans register agents (`POST/GET /api/agents`) and issue workspace- and project-scoped bearer keys (`orr_ak_…`, SHA-256 hashed, validity `7`/`14`/`30`/`60`/`90`/`never`, effective access capped by the human owner's live access). Keys expose a non-secret `keyHint` preview (`secret.slice(0, 19)…`), support overlapping rotation (`POST /api/agents/keys/{keyId}/rotate`), and can be self-revoked or workspace-owner-revoked without disclosing secrets. Agent runs check in via `POST /api/runs/hook` or MCP `orrery_run_checkin` and list under `GET /api/workspaces/{workspaceId}/runs`.
 
 ## Sub-features
 
-- `agents-register` `POST /api/agents` creates a human-owned agent; `GET /api/agents` lists it.
-- `agents-issue` `POST /api/agents/keys` issues a key for one workspace with 7/14/30/60/90
-  days or `never` (90 by default), returning the secret once. A project outside the
-  workspace or one the human cannot access answers 400 `invalid_key_grant`.
-- `agents-authenticate` `GET /api/agents/me` with `Authorization: Bearer <key>` resolves the
-  agent identity and effective access. `workspaceId`/`projectId` query parameters make a
-  cross-workspace or out-of-scope request answer 403.
-- `agents-refuse` a revoked, expired, or workspace-removed key answers 401 with a stable
-  code; `never` skips only the expiry check, not revocation, membership, or access checks.
-  Issuing above the human's current project level answers 400 `invalid_key_grant`.
-- `agents-self-revoke` `DELETE /api/agents/keys/:keyId` lets the human revoke their own key;
-  repeating it writes no second audit event and the key is refused on `/api/agents/me`.
-- `agents-owner-revoke` `GET`/`DELETE /api/workspaces/:id/agent-keys[/:keyId]` is owner-only,
-  secret-free, and scoped to that workspace; a key elsewhere answers 404 `key_not_found`.
-
-## Preconditions
-
-- A fresh instance started by this run **with a bootstrap secret**, plus a signed-in
-  session cookie (see [accounts](./accounts.md)). `doctor $RUN_DIR` exits 0.
-- A project in the workspace, created through `POST /api/workspaces/:id/projects`.
+- `agents-and-keys` `POST/GET /api/agents`, `POST/GET /api/agents/keys` (returns secret once + `key.keyHint`), `GET /api/agents/me` (bearer-only, `401` on invalid/revoked/expired/`human_deactivated`, `403` on wrong `workspaceId`/`projectId`).
+- `key-rotation` `POST /api/agents/keys/{keyId}/rotate` creates a replacement (`replacesKeyId`, `agent_key_rotated` event); both keys work during overlap and revoke independently; rotating a revoked/expired key returns `409`.
+- `key-revocation` `DELETE /api/agents/keys/{keyId}` (self) and `GET/DELETE /api/workspaces/{workspaceId}/agent-keys[/{keyId}]` (owner-only, secret-free).
+- `runs` `POST /api/runs/hook` (Bearer key) and `GET /api/workspaces/{workspaceId}/runs` (also rendered on the workspace `Runs` tab).
+- `agents-ui` on `/workspaces/$WS`, clicking the `Agents` tab shows `Registered agents`, `Active work sessions`, and `Keys in this workspace` with `[data-agent-key-hint]`, `Rotate`, and `Revoke`.
 
 ## Recipe
 
-Bootstrap and sign in first (accounts.md), keeping the cookie in `$RUN_DIR/agents.jar`:
-
 ```bash
-SECRET=verify-orrery-bootstrap-secret-0123456789
-curl -sS -c $RUN_DIR/agents.jar -X POST $URL/api/auth/login -H 'content-type: application/json' \
-  -d '{"email":"admin@orrery.test","password":"browser-checked-admin-password"}'
-WS=$(curl -sS -b $RUN_DIR/agents.jar $URL/api/workspaces | jq -r '.[] | select(.kind=="personal") | .id')
-PID=$(curl -sS -b $RUN_DIR/agents.jar -X POST $URL/api/workspaces/$WS/projects \
-  -H 'content-type: application/json' -d '{"name":"Agent proof"}' | jq -r .id)
-AGENT=$(curl -sS -b $RUN_DIR/agents.jar -X POST $URL/api/agents \
-  -H 'content-type: application/json' -d '{"name":"proof-bot"}' | jq -r .id)
+J='content-type: application/json'; A=$RUN_DIR/admin.jar
+AGENT=$(curl -fsS -b "$A" -X POST "$URL/api/agents" -H "$J" -d '{"name":"verify-bot"}' | jq -r .id)
+curl -fsS -b "$A" -X POST "$URL/api/agents/keys" -H "$J" \
+  -d "{\"agentId\":\"$AGENT\",\"workspaceId\":\"$WS\",\"projects\":[{\"projectId\":\"$PID\",\"level\":\"contribute\"}]}" > "$RUN_DIR/k1.json"
+K1=$(jq -r .secret "$RUN_DIR/k1.json"); K1_ID=$(jq -r .key.id "$RUN_DIR/k1.json")
+jq -r '.key.keyHint' "$RUN_DIR/k1.json"
+curl -fsS -b "$A" -X POST "$URL/api/agents/keys/$K1_ID/rotate" -H "$J" -d '{}' > "$RUN_DIR/k2.json"
+K2=$(jq -r .secret "$RUN_DIR/k2.json")
+test "$(jq -r .key.replacesKeyId "$RUN_DIR/k2.json")" = "$K1_ID"
+curl -fsS -b "$A" -X DELETE "$URL/api/workspaces/$WS/agent-keys/$K1_ID" -o /dev/null -w '%{http_code}\n'   # 204
+curl -sS -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $K1" "$URL/api/agents/me"              # 401
+curl -sS -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $K2" "$URL/api/agents/me"              # 200
+RUN_ID=$(curl -fsS -X POST "$URL/api/runs/hook" -H "Authorization: Bearer $K2" -H "$J" \
+  -d '{"schema":"orrery.run.hook.v1","event":"run_started","runKey":{"harness":"verify","nativeSessionId":"s-1"}}' | jq -r .runId)
+curl -fsS -b "$A" "$URL/api/workspaces/$WS/runs" | jq 'length'
 ```
 
-Issue a key (the JSON response is the only place the secret appears — redirect it to a
-file outside `evidence/`, and never print it into an evidence artifact):
-
-```bash
-curl -sS -b $RUN_DIR/agents.jar -X POST $URL/api/agents/keys \
-  -H 'content-type: application/json' \
-  -d "{\"agentId\":\"$AGENT\",\"workspaceId\":\"$WS\",\"projects\":[{\"projectId\":\"$PID\",\"level\":\"manage\"}]}" \
-  > $RUN_DIR/key.json
-KEY=$(jq -r .secret $RUN_DIR/key.json)
-jq -r '.key.validity' $RUN_DIR/key.json        # 90
-```
-
-Authenticate, prove the scope boundary, then revoke and prove the refusal:
-
-```bash
-curl -sS -H "Authorization: Bearer $KEY" $URL/api/agents/me
-curl -sS -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $KEY" \
-  "$URL/api/agents/me?workspaceId=some-other-workspace"   # 403 key_out_of_scope
-KID=$(jq -r '.key.id' $RUN_DIR/key.json)
-curl -sS -b $RUN_DIR/agents.jar -X DELETE $URL/api/workspaces/$WS/agent-keys/$KID -o /dev/null -w '%{http_code}\n'  # 204
-curl -sS -H "Authorization: Bearer $KEY" $URL/api/agents/me   # 401 key_revoked
-```
-
-Side effects: the key row stores a hash, not the secret, and the two events carry no
-secret. `token_hash` must differ from `$KEY`:
-
-```bash
-CONTAINER=$(sed -n 's/^CONTAINER=//p' $RUN_DIR/env)
-docker exec $CONTAINER psql -U orrery -d orrery -c \
-  "select type, actor_human_id, workspace_id from agent_key_events order by created_at"
-docker exec $CONTAINER psql -U orrery -d orrery -c \
-  "select validity, (token_hash = '$KEY') as secret_stored from agent_api_keys"
-```
-
-The signed-in workspace page also renders the Agents section: `node $SK/browse.mjs
-$RUN_DIR /workspaces/$WS --slug agents-page --expect-role "heading:Agents"`.
+Confirm in Postgres that `agent_key_events` recorded `agent_key_created`, `agent_key_rotated`, and `agent_key_revoked`, and `token_hash <> secret`.
 
 ## Gotchas
 
-- `GET /api/agents/me` has no session fallback: without a bearer header it answers 401
-  `invalid_key` even when a cookie is present.
-- An issued key's `projects` carry the requested levels and readable names; the identity
-  response reports the effective levels after the human-access ceiling. Issuance refuses a
-  level above the human's current one, and demotion after issuance caps the key immediately.
-- Removing the human from the key's workspace stops the key on the next request, even for a
-  Never key; the membership check is part of bearer authentication, not just the UI.
-- The web form caps each project's selectable level at the human's current level, and key
-  listings show agent/project names and a disabled Revoke control for revoked keys.
-- The compose e2e suite (`tests/e2e/zz-agents.spec.ts`) covers the two-human owner
-  revocation path and human self-revocation that this single-admin recipe cannot reach.
+- `/workspaces/$WS` defaults to the `Projects` tab; click the `Agents` tab before asserting `Registered agents` or `Keys in this workspace`.
+- Keep `$RUN_DIR/k1.json` and `$RUN_DIR/k2.json` outside `$RUN_DIR/evidence/` and never echo secrets into evidence files.

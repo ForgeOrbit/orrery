@@ -1,10 +1,10 @@
 // Drive the Orrery web app in headless Chromium and save proof.
-//   node browse.mjs <rundir> <path> [--expect-text "Server: ok"] [--expect-role heading:Orrery]
+//   node browse.mjs <rundir> <path> [--expect-text "Workspaces"] [--expect-role heading:Workspaces]
 //     [--click-link Orrery] [--fill "Email=admin@orrery.test"] [--click-button "Sign in"]
 //     [--allow-http 401] [--allow-console ZodError] [--slug home-fresh]
 // Writes <rundir>/evidence/<slug>.{png,aria.txt,json} and exits non-zero if an expectation fails
 // or the page logged console errors / failed requests. --allow-http is repeatable and marks a
-// status as expected (the signed-out home legitimately answers 401 for session and workspaces);
+// status as expected (e.g. 401 on signed-out session checks, 500/503 during a database-down check);
 // --allow-console is repeatable and ignores a console error whose text contains the value (the
 // database-down reload shows the designed "Server: unreachable" page and logs a ZodError).
 // --slug names the evidence files, so one page can be captured in several states. --fill is
@@ -12,6 +12,7 @@
 import { createRequire } from "node:module";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { execSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const [runDir, path = "/", ...rest] = process.argv.slice(2);
 if (!runDir) throw new Error("usage: browse.mjs <rundir> <path> [flags]");
@@ -23,11 +24,20 @@ const env = Object.fromEntries(
     .map((l) => l.split(/=(.*)/s).slice(0, 2)),
 );
 
-// Playwright comes from the machine's mise install (not a repo dependency). Override with PLAYWRIGHT_MODULE.
-const pwDir =
-  process.env.PLAYWRIGHT_MODULE ??
-  execSync('dirname "$(readlink -f "$(command -v playwright)")"').toString().trim() + "/..";
-const { chromium } = createRequire(pwDir + "/playwright/x.js")("playwright");
+// Prefer the repo's installed @playwright/test (tests/e2e), with PLAYWRIGHT_MODULE fallback.
+function loadChromium() {
+  if (process.env.PLAYWRIGHT_MODULE) {
+    return createRequire(`${process.env.PLAYWRIGHT_MODULE}/playwright/x.js`)("playwright").chromium;
+  }
+  const e2ePkg = fileURLToPath(new URL("../../../../tests/e2e/package.json", import.meta.url));
+  if (existsSync(e2ePkg)) {
+    return createRequire(e2ePkg)("@playwright/test").chromium;
+  }
+  const pwDir =
+    execSync('dirname "$(readlink -f "$(command -v playwright)")"').toString().trim() + "/..";
+  return createRequire(`${pwDir}/playwright/x.js`)("playwright").chromium;
+}
+const chromium = loadChromium();
 
 // The playwright-managed browser download can lag the library; prefer a system Chromium if present.
 const executablePath =
