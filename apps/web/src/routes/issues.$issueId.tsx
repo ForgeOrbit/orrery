@@ -261,11 +261,7 @@ function IssuePage() {
           </Text>,
         ]}
         title={issue.title}
-        badge={
-          <span className="issue-status-pill" data-issue-status={issue.status}>
-            {issueStatusLabels[issue.status]}
-          </span>
-        }
+        badge={<span data-issue-status={issue.status}>{issueStatusLabels[issue.status]}</span>}
         subtitle={
           <>
             <PriorityBadge priority={issue.priority} /> · Created by {issue.createdBy.displayName} ·

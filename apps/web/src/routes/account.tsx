@@ -58,11 +58,7 @@ function AccountPage() {
         ]}
         title={session.displayName ?? "Account"}
         subtitle={session.email}
-        badge={
-          <span className="meta-pill">
-            {session.emailVerified ? "Email verified" : "Email unverified"}
-          </span>
-        }
+        badge={session.emailVerified ? "Email verified" : "Email unverified"}
       />
       <ProfileSection initialDisplayName={session.displayName} />
       <PasswordSection />

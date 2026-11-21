@@ -1417,25 +1417,13 @@
   min-inline-size: 0;
 }
 
-.issue-status-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.2rem 0.6rem;
-  border: 1px solid var(--orrery-border);
-  border-radius: 999px;
-  background: var(--orrery-surface);
-  color: var(--orrery-text);
-  font-size: 0.75rem;
-  font-weight: 600;
-}
-
-.issue-status-pill[data-issue-status="done"] {
+.meta-pill:has([data-issue-status="done"]) {
   border-color: color-mix(in srgb, var(--orrery-success) 40%, var(--orrery-border));
   background: var(--orrery-success-fill);
   color: var(--orrery-success);
 }
 
-.issue-status-pill[data-issue-status="in_progress"] {
+.meta-pill:has([data-issue-status="in_progress"]) {
   border-color: color-mix(in srgb, var(--orrery-accent) 40%, var(--orrery-border));
   background: color-mix(in srgb, var(--orrery-accent) 12%, var(--orrery-surface));
   color: var(--orrery-accent);
