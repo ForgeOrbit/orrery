@@ -7,6 +7,7 @@ import { Button } from "@astryxdesign/core/Button";
 import { Selector } from "@astryxdesign/core/Selector";
 import { TextAreaField } from "../lib/fields.tsx";
 import { TextField } from "../lib/fields.tsx";
+import { Markdown } from "../lib/Markdown.tsx";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { Link } from "../lib/Link.tsx";
@@ -155,8 +156,8 @@ function IssuePage() {
               No description.
             </Text>
           ) : (
-            <Stack data-issue-body style={{ whiteSpace: "pre-wrap" }}>
-              {issue.body}
+            <Stack data-issue-body>
+              <Markdown>{issue.body}</Markdown>
             </Stack>
           )}
           <SessionStatus
@@ -244,7 +245,9 @@ function IssuePage() {
                       {comment.author.displayName} ·{" "}
                       <time dateTime={comment.createdAt}>{comment.createdAt}</time>
                     </Text>
-                    <Stack style={{ whiteSpace: "pre-wrap" }}>{comment.body}</Stack>
+                    <Stack data-comment-body>
+                      <Markdown>{comment.body}</Markdown>
+                    </Stack>
                   </li>
                 ))}
               </ul>
