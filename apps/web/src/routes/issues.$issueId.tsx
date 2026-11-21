@@ -8,7 +8,7 @@ import { Selector } from "@astryxdesign/core/Selector";
 import { TextAreaField } from "../lib/fields.tsx";
 import { TextField } from "../lib/fields.tsx";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Link } from "../lib/Link.tsx";
 import { type Issue, type IssueDetail, IssueLinkKind } from "@orrery/contract";
 import type { FormEvent } from "react";
@@ -18,24 +18,36 @@ import {
   addIssueLink,
   AssigneeControl,
   type AssigneeCandidate,
+  completedSubtaskCount,
   createIssueComment,
+  deleteIssue,
   issueBlockedByQuery,
   issueBlockingQuery,
   issueCommentsQuery,
+  IssueLabels,
   IssuePriorityControls,
   issueQuery,
   issuesQuery,
   issueStatusLabels,
+  LabelPill,
   projectActivityQuery,
+  projectLabelsQuery,
   projectQuery,
   PriorityBadge,
+  readyWorkQuery,
   removeBlockedBy,
   removeIssueLink,
   ResourceLoadError,
+  Subtasks,
+  subtasksOf,
   TitleBodyForm,
   updateIssue,
 } from "../features/projects/index.ts";
-import { SessionInspector, SessionStatus } from "../features/work-sessions/index.ts";
+import {
+  activeSessionsQuery,
+  SessionInspector,
+  SessionStatus,
+} from "../features/work-sessions/index.ts";
 import { workspaceMembersQuery, workspaceQuery } from "../features/workspaces/index.ts";
 import { agentKeysQuery, workspaceAgentKeysQuery } from "../features/agents/index.ts";
 
@@ -61,6 +73,8 @@ export const Route = createFileRoute("/issues/$issueId")({
       context.queryClient.ensureQueryData(issueBlockedByQuery(params.issueId)),
       context.queryClient.ensureQueryData(issueBlockingQuery(params.issueId)),
       context.queryClient.ensureQueryData(issuesQuery(issue.projectId)),
+      context.queryClient.ensureQueryData(projectLabelsQuery(issue.projectId)),
+      context.queryClient.ensureQueryData(activeSessionsQuery(project.workspaceId)),
     ]);
   },
   component: IssuePage,
@@ -120,7 +134,14 @@ function IssuePage() {
   const { data: blockedBy } = useSuspenseQuery(issueBlockedByQuery(issueId));
   const { data: blocking } = useSuspenseQuery(issueBlockingQuery(issueId));
   const { data: projectIssues } = useSuspenseQuery(issuesQuery(issue.projectId));
+  const { data: projectLabels } = useSuspenseQuery(projectLabelsQuery(issue.projectId));
+  const { data: sessions } = useSuspenseQuery(activeSessionsQuery(project.workspaceId));
   const canContribute = project.accessLevel !== "read";
+  const subtasks = subtasksOf(projectIssues, issue.id);
+  const openSubtaskCount = subtasks.length - completedSubtaskCount(subtasks);
+  const activeSession = sessions.find(
+    (session) => session.issueId === issue.id && session.status === "active",
+  );
 
   return (
     <main className="issue-page">
@@ -133,12 +154,24 @@ function IssuePage() {
         {issue.title}
       </Heading>
       <Text as="p" display="block" type="inherit" color="inherit" data-issue-status={issue.status}>
-        <Text type="inherit" color="inherit" className="issue-key">
-          {project.key}-{issue.number}
+        <Text
+          type="inherit"
+          color="inherit"
+          className="issue-key"
+          data-issue-identifier={issue.identifier}
+        >
+          {issue.identifier}
         </Text>{" "}
         · <PriorityBadge priority={issue.priority} /> · {issueStatusLabels[issue.status]} · created
         by {issue.createdBy.displayName} · last edited by {issue.updatedBy.displayName}
       </Text>
+      {issue.labels.length > 0 && (
+        <Text as="p" display="block" type="supporting" className="issue-detail-labels">
+          {issue.labels.map((label) => (
+            <LabelPill key={label.id} label={label} />
+          ))}
+        </Text>
+      )}
       <Stack className="issue-layout">
         <aside className="issue-inspector">
           <SessionInspector
@@ -167,6 +200,8 @@ function IssuePage() {
           {canContribute && (
             <AssigneeControl issue={issue} candidates={candidates} canContribute={canContribute} />
           )}
+          <IssueLabels issue={issue} labels={projectLabels} canContribute={canContribute} />
+          <Subtasks issue={issue} issues={projectIssues} canContribute={canContribute} />
           {canContribute && (
             <Section className="page-section" padding={0}>
               <Heading level={2} color="inherit">
@@ -190,7 +225,12 @@ function IssuePage() {
 
           {canContribute && (
             <>
-              <IssueStatusButton issue={issue} />
+              <IssueStatusButton issue={issue} openSubtaskCount={openSubtaskCount} />
+              <TrashButton
+                issue={issue}
+                canContribute={canContribute}
+                activeSession={activeSession}
+              />
               <EditIssueForm key={issue.updatedAt} issue={issue} />
             </>
           )}
@@ -414,14 +454,21 @@ function Blockers({
 // the server returned, not a local guess. #94's terminal states are done and cancelled;
 // every other status is "open work" for this simple control (the full six-state workflow
 // is available over REST and MCP).
-function IssueStatusButton({ issue }: { issue: Issue }) {
+function IssueStatusButton({
+  issue,
+  openSubtaskCount,
+}: {
+  issue: Issue;
+  openSubtaskCount: number;
+}) {
   const queryClient = useQueryClient();
   const [error, setError] = useState<string>();
+  const [warned, setWarned] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const isClosed = issue.status === "done" || issue.status === "cancelled";
   const next = isClosed ? "todo" : "done";
 
-  async function onToggle() {
+  async function performChange() {
     setSubmitting(true);
     setError(undefined);
     try {
@@ -430,12 +477,92 @@ function IssueStatusButton({ issue }: { issue: Issue }) {
       queryClient.setQueryData<IssueDetail>(issueQuery(issue.id).queryKey, (old) =>
         old === undefined ? old : { ...old, ...updated },
       );
+      setWarned(false);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: issuesQuery(issue.projectId).queryKey }),
         queryClient.invalidateQueries({ queryKey: projectActivityQuery(issue.projectId).queryKey }),
+        queryClient.invalidateQueries({ queryKey: readyWorkQuery(issue.projectId).queryKey }),
       ]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not change the issue.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function onToggle() {
+    // Non-blocking: the first close click only surfaces the warning; the human may keep
+    // working on the issue or confirm the close explicitly.
+    if (next === "done" && openSubtaskCount > 0 && !warned) {
+      setWarned(true);
+      return;
+    }
+    void performChange();
+  }
+
+  return (
+    <Section className="page-section" padding={0}>
+      {error !== undefined && (
+        <Text as="p" display="block" type="inherit" color="inherit" role="alert">
+          {error}
+        </Text>
+      )}
+      {warned && openSubtaskCount > 0 && (
+        <Stack direction="horizontal" role="status" data-open-subtask-warning>
+          <Text type="supporting">
+            This issue still has {openSubtaskCount} open{" "}
+            {openSubtaskCount === 1 ? "subtask" : "subtasks"}. Close it anyway?
+          </Text>
+          <Button
+            type="button"
+            label="Close anyway"
+            variant="secondary"
+            size="sm"
+            isDisabled={submitting}
+            onClick={() => void performChange()}
+          />
+        </Stack>
+      )}
+      <Button
+        type="button"
+        onClick={onToggle}
+        isDisabled={submitting}
+        label={next === "done" ? "Close issue" : "Reopen issue"}
+        variant="secondary"
+      />
+    </Section>
+  );
+}
+
+// #98: a human with Contribute or Manage may move an unclaimed issue to trash. An active
+// session is a claim, so the server refuses and the button explains why here instead.
+function TrashButton({
+  issue,
+  canContribute,
+  activeSession,
+}: {
+  issue: Issue;
+  canContribute: boolean;
+  activeSession: { id: string } | undefined;
+}) {
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const [error, setError] = useState<string>();
+  const [submitting, setSubmitting] = useState(false);
+
+  async function onDelete() {
+    setSubmitting(true);
+    setError(undefined);
+    try {
+      await deleteIssue(issue.id);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: issuesQuery(issue.projectId).queryKey }),
+        queryClient.invalidateQueries({ queryKey: readyWorkQuery(issue.projectId).queryKey }),
+        queryClient.invalidateQueries({ queryKey: projectActivityQuery(issue.projectId).queryKey }),
+      ]);
+      await navigate({ to: "/projects/$projectId", params: { projectId: issue.projectId } });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not move the issue to trash.");
     } finally {
       setSubmitting(false);
     }
@@ -450,11 +577,17 @@ function IssueStatusButton({ issue }: { issue: Issue }) {
       )}
       <Button
         type="button"
-        onClick={() => void onToggle()}
-        isDisabled={submitting}
-        label={next === "done" ? "Close issue" : "Reopen issue"}
-        variant="secondary"
+        label="Move to Trash"
+        variant="destructive"
+        isDisabled={!canContribute || activeSession !== undefined || submitting}
+        data-trash-button
+        onClick={() => void onDelete()}
       />
+      {activeSession !== undefined && (
+        <Text as="p" display="block" type="supporting" data-trash-blocked>
+          An active work session holds this issue. End the session before moving it to trash.
+        </Text>
+      )}
     </Section>
   );
 }

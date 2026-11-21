@@ -762,6 +762,34 @@
   white-space: nowrap;
 }
 
+/* A project label owns its color; the custom property is set per pill from the API. */
+.label-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.45rem;
+  border: 1px solid var(--label-color, var(--orrery-control-border));
+  border-radius: var(--orrery-radius);
+  background: color-mix(
+    in srgb,
+    var(--label-color, var(--orrery-recessed)) 14%,
+    var(--orrery-surface)
+  );
+  color: var(--orrery-text);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.board-card-labels,
+.issue-detail-labels {
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.board-card-subtasks {
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
 .board-card-meta,
 .board-card-actions {
   display: flex;

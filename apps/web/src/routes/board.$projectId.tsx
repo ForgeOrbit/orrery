@@ -8,21 +8,28 @@ import { Drawer, DrawerHeader } from "@astryxdesign/core/Drawer";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
+import { Selector } from "@astryxdesign/core/Selector";
 import { Stack } from "@astryxdesign/core/Stack";
 import { ToggleButton } from "@astryxdesign/core/ToggleButton";
-import { type ActiveWorkSession, type Issue, IssueStatus } from "@orrery/contract";
-import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
+import { type ActiveWorkSession, type Issue, IssuePriority, IssueStatus } from "@orrery/contract";
+import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import {
+  completedSubtaskCount,
   CreateIssueForm,
   issueBlockedByQuery,
   issuesQuery,
   issueStatusLabels,
+  LabelPill,
   PriorityBadge,
+  projectActivityQuery,
+  projectLabelsQuery,
   projectQuery,
   readyWorkQuery,
   ResourceLoadError,
+  subtasksOf,
+  updateIssue,
 } from "../features/projects/index.ts";
 import { workspaceQuery } from "../features/workspaces/index.ts";
 import { activeSessionsQuery, SessionInspectorDetails } from "../features/work-sessions/index.ts";
@@ -34,6 +41,7 @@ export const Route = createFileRoute("/board/$projectId")({
     await Promise.all([
       context.queryClient.ensureQueryData(workspaceQuery(project.workspaceId)),
       context.queryClient.ensureQueryData(issuesQuery(project.id)),
+      context.queryClient.ensureQueryData(projectLabelsQuery(project.id)),
       context.queryClient.ensureQueryData(readyWorkQuery(project.id)),
       context.queryClient.ensureQueryData(activeSessionsQuery(project.workspaceId)),
     ]);
@@ -43,19 +51,38 @@ export const Route = createFileRoute("/board/$projectId")({
 });
 
 type BoardFilter = "all" | "needs-input" | "ready";
+type AssigneeFilter = "all" | "unassigned" | "human" | "agent";
 type BoardPanel = { kind: "new-issue" } | { kind: "session"; issueId: string; sessionId: string };
 
+// The workflow order is part of the product contract (#94); never derive it from a
+// project's issues or from an unordered object.
+const BOARD_COLUMNS: IssueStatus[] = [
+  "backlog",
+  "todo",
+  "in_progress",
+  "review",
+  "done",
+  "cancelled",
+];
+
 function BoardPage() {
+  const queryClient = useQueryClient();
   const { projectId } = Route.useParams();
   const { data: project } = useSuspenseQuery(projectQuery(projectId));
   const { data: workspace } = useSuspenseQuery(workspaceQuery(project.workspaceId));
   const { data: issues } = useSuspenseQuery({ ...issuesQuery(projectId), refetchInterval: 4000 });
+  const { data: labels } = useSuspenseQuery(projectLabelsQuery(projectId));
   const { data: sessions } = useSuspenseQuery(activeSessionsQuery(project.workspaceId));
   const { data: ready } = useSuspenseQuery({ ...readyWorkQuery(projectId), refetchInterval: 4000 });
   const [filter, setFilter] = useState<BoardFilter>("all");
+  const [assigneeFilter, setAssigneeFilter] = useState<AssigneeFilter>("all");
+  const [priorityFilter, setPriorityFilter] = useState<IssuePriority | "all">("all");
+  const [labelFilter, setLabelFilter] = useState("all");
   const [panel, setPanel] = useState<BoardPanel>();
   const [panelOpen, setPanelOpen] = useState(false);
   const [createdIssue, setCreatedIssue] = useState<Issue>();
+  const [moveError, setMoveError] = useState<string>();
+  const [moving, setMoving] = useState(false);
 
   const canContribute = project.accessLevel !== "read";
   const readyIds = new Set(ready.map((issue) => issue.id));
@@ -70,10 +97,23 @@ function BoardPage() {
     { id: "needs-input", label: "Needs input", count: needsInputCount },
     { id: "ready", label: "Ready to claim", count: readyIds.size },
   ];
-  const visible = issues.filter(
-    (issue) =>
-      filter === "all" || (filter === "needs-input" ? issue.needsInput : readyIds.has(issue.id)),
-  );
+  const visible = issues.filter((issue) => {
+    if (filter === "needs-input" && !issue.needsInput) return false;
+    if (filter === "ready" && !readyIds.has(issue.id)) return false;
+    if (assigneeFilter === "unassigned" && issue.assignee !== null) return false;
+    if (
+      assigneeFilter === "human" &&
+      (issue.assignee === null || issue.assignee.agentId !== undefined)
+    ) {
+      return false;
+    }
+    if (assigneeFilter === "agent" && issue.assignee?.agentId === undefined) return false;
+    if (priorityFilter !== "all" && issue.priority !== priorityFilter) return false;
+    if (labelFilter !== "all" && !issue.labels.some((label) => label.id === labelFilter)) {
+      return false;
+    }
+    return true;
+  });
   const columns = Object.groupBy(visible, (issue) => issue.status);
   const inspected =
     panel?.kind === "session" ? issues.find((issue) => issue.id === panel.issueId) : undefined;
@@ -81,6 +121,24 @@ function BoardPage() {
   function showPanel(next: BoardPanel) {
     setPanel(next);
     setPanelOpen(true);
+  }
+
+  async function onMove(issue: Issue, status: IssueStatus) {
+    if (status === issue.status) return;
+    setMoving(true);
+    setMoveError(undefined);
+    try {
+      await updateIssue(issue.id, { status });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: issuesQuery(projectId).queryKey }),
+        queryClient.invalidateQueries({ queryKey: readyWorkQuery(projectId).queryKey }),
+        queryClient.invalidateQueries({ queryKey: projectActivityQuery(projectId).queryKey }),
+      ]);
+    } catch (cause) {
+      setMoveError(cause instanceof Error ? cause.message : "Could not move the issue.");
+    } finally {
+      setMoving(false);
+    }
   }
 
   return (
@@ -129,6 +187,60 @@ function BoardPage() {
               </ToggleButton>
             ))}
           </Stack>
+          <Stack
+            direction="horizontal"
+            className="board-filters"
+            role="group"
+            aria-label="Narrow issues"
+          >
+            <Selector
+              label="Assignee"
+              id="board-assignee-filter"
+              variant="secondary"
+              size="sm"
+              value={assigneeFilter}
+              onChange={(value) =>
+                setAssigneeFilter(
+                  value === "unassigned" || value === "human" || value === "agent" ? value : "all",
+                )
+              }
+              options={[
+                { value: "all", label: "Any assignee" },
+                { value: "unassigned", label: "Unassigned" },
+                { value: "human", label: "Human" },
+                { value: "agent", label: "Agent" },
+              ]}
+            />
+            <Selector
+              label="Priority"
+              id="board-priority-filter"
+              variant="secondary"
+              size="sm"
+              value={priorityFilter}
+              onChange={(value) =>
+                setPriorityFilter(value === "all" ? "all" : IssuePriority.parse(value))
+              }
+              options={[
+                { value: "all", label: "Any priority" },
+                ...IssuePriority.options.map((priority) => ({
+                  value: priority,
+                  label: priority === "none" ? "None" : priority,
+                })),
+              ]}
+            />
+            <Selector
+              label="Label"
+              id="board-label-filter"
+              variant="secondary"
+              size="sm"
+              value={labelFilter}
+              onChange={setLabelFilter}
+              options={[
+                { value: "all", label: "Any label" },
+                ...labels.map((label) => ({ value: label.id, label: label.name })),
+              ]}
+            />
+          </Stack>
           {sessionsByIssue.size > 0 && (
             <Text
               as="p"
@@ -155,8 +267,14 @@ function BoardPage() {
         >
           Created{" "}
           <Link to="/issues/$issueId" params={{ issueId: createdIssue.id }}>
-            {project.key}-{createdIssue.number}
+            {createdIssue.identifier}
           </Link>
+        </Text>
+      )}
+
+      {moveError !== undefined && (
+        <Text as="p" display="block" type="supporting" role="alert" data-board-move-error>
+          {moveError}
         </Text>
       )}
 
@@ -181,30 +299,37 @@ function BoardPage() {
           role="region"
           aria-label="Issue board"
         >
-          {IssueStatus.options.map((status) => {
+          {BOARD_COLUMNS.map((status) => {
             const lane = columns[status] ?? [];
             return (
               <section
                 key={status}
                 data-board-column={issueStatusLabels[status]}
+                data-board-status={status}
                 className="board-column"
               >
                 <Heading level={2} color="inherit">
                   {issueStatusLabels[status]} <Badge label={lane.length} />
                 </Heading>
                 <ul>
-                  {lane.map((issue) => (
-                    <BoardCard
-                      key={issue.id}
-                      issue={issue}
-                      projectKey={project.key}
-                      session={sessionsByIssue.get(issue.id)}
-                      ready={readyIds.has(issue.id)}
-                      onInspect={(sessionId) =>
-                        showPanel({ kind: "session", issueId: issue.id, sessionId })
-                      }
-                    />
-                  ))}
+                  {lane.map((issue) => {
+                    const subtasks = subtasksOf(issues, issue.id);
+                    return (
+                      <BoardCard
+                        key={issue.id}
+                        issue={issue}
+                        session={sessionsByIssue.get(issue.id)}
+                        ready={readyIds.has(issue.id)}
+                        subtaskCount={subtasks.length}
+                        completedSubtaskCount={completedSubtaskCount(subtasks)}
+                        canMove={canContribute && !moving}
+                        onMove={(next) => void onMove(issue, next)}
+                        onInspect={(sessionId) =>
+                          showPanel({ kind: "session", issueId: issue.id, sessionId })
+                        }
+                      />
+                    );
+                  })}
                 </ul>
               </section>
             );
@@ -281,15 +406,21 @@ function BoardPage() {
 
 function BoardCard({
   issue,
-  projectKey,
   session,
   ready,
+  subtaskCount,
+  completedSubtaskCount: doneCount,
+  canMove,
+  onMove,
   onInspect,
 }: {
   issue: Issue;
-  projectKey: string;
   session: ActiveWorkSession | undefined;
   ready: boolean;
+  subtaskCount: number;
+  completedSubtaskCount: number;
+  canMove: boolean;
+  onMove: (status: IssueStatus) => void;
   onInspect: (sessionId: string) => void;
 }) {
   const { data: blockers = [] } = useQuery({
@@ -306,16 +437,28 @@ function BoardCard({
     assignee === null ? "none" : assignee.agentId !== undefined ? "agent" : "human";
 
   return (
-    <li data-board-issue-id={issue.id} data-ready={String(ready)} data-assignee-type={assigneeType}>
+    <li
+      data-board-issue-id={issue.id}
+      data-ready={String(ready)}
+      data-assignee-type={assigneeType}
+      data-priority={issue.priority}
+    >
       <Card
         className="board-card"
         data-needs-input={issue.needsInput ? "true" : "false"}
+        data-subtask-count={subtaskCount}
+        data-completed-subtask-count={doneCount}
         padding={3}
       >
         <Link className="board-card-title" to="/issues/$issueId" params={{ issueId: issue.id }}>
           <Text type="inherit" color="inherit" className="board-card-heading">
-            <Text type="inherit" color="inherit" className="issue-key">
-              {projectKey}-{issue.number}
+            <Text
+              type="inherit"
+              color="inherit"
+              className="issue-key"
+              data-issue-identifier={issue.identifier}
+            >
+              {issue.identifier}
             </Text>
             {issue.title}
           </Text>
@@ -323,7 +466,8 @@ function BoardCard({
         {(issue.priority !== "none" ||
           assignee !== null ||
           state !== undefined ||
-          blockers.length > 0) && (
+          blockers.length > 0 ||
+          subtaskCount > 0) && (
           <Stack direction="horizontal" className="board-card-meta">
             {issue.priority !== "none" && <PriorityBadge priority={issue.priority} />}
             {state !== undefined && (
@@ -353,7 +497,34 @@ function BoardCard({
                 </Text>
               </Text>
             )}
+            {subtaskCount > 0 && (
+              <Text type="inherit" color="inherit" className="board-card-subtasks">
+                Subtasks {doneCount}/{subtaskCount}
+              </Text>
+            )}
           </Stack>
+        )}
+        {issue.labels.length > 0 && (
+          <Stack direction="horizontal" className="board-card-labels">
+            {issue.labels.map((label) => (
+              <LabelPill key={label.id} label={label} />
+            ))}
+          </Stack>
+        )}
+        {canMove && (
+          <Selector
+            label={`Move ${issue.identifier}`}
+            id={`board-move-${issue.id}`}
+            isLabelHidden
+            variant="ghost"
+            size="sm"
+            value={issue.status}
+            onChange={(value) => onMove(IssueStatus.parse(value))}
+            options={BOARD_COLUMNS.map((status) => ({
+              value: status,
+              label: issueStatusLabels[status],
+            }))}
+          />
         )}
         {(issue.needsInput || session !== undefined) && (
           <Stack direction="horizontal" className="board-card-actions">

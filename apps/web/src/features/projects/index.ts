@@ -3,22 +3,33 @@
 export {
   addBlockedBy,
   addIssueLink,
+  attachIssueLabel,
   createIssue,
   createIssueComment,
   createKnowledgeEntry,
   createProject,
+  createProjectLabel,
+  deleteIssue,
+  deleteProjectLabel,
+  detachIssueLabel,
   removeBlockedBy,
   removeIssueLink,
   removeProjectAccess,
+  restoreIssue,
   setProjectAccess,
   updateIssue,
   updateKnowledgeEntry,
   updateProject,
+  updateProjectLabel,
 } from "./commands.ts";
 export { AssigneeControl, type AssigneeCandidate } from "./AssigneeControl.tsx";
 export { CreateIssueForm } from "./CreateIssueForm.tsx";
+export { IssueLabels } from "./IssueLabels.tsx";
 export { IssuePriorityControls, PriorityBadge } from "./IssuePriority.tsx";
+export { LabelPill } from "./LabelPill.tsx";
 export { ResourceLoadError } from "./LoadError.tsx";
+export { ProjectLabels } from "./ProjectLabels.tsx";
+export { completedSubtaskCount, Subtasks, subtasksOf } from "./Subtasks.tsx";
 export { TitleBodyForm } from "./TitleBodyForm.tsx";
 export {
   issueBlockedByQuery,
@@ -30,7 +41,9 @@ export {
   knowledgeEntryQuery,
   projectAccessQuery,
   projectActivityQuery,
+  projectLabelsQuery,
   projectQuery,
+  projectTrashQuery,
   readyWorkQuery,
   projectsQuery,
 } from "./queries.ts";

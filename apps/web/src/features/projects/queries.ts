@@ -7,6 +7,7 @@ import {
   Project,
   ProjectAccessGrantsResponse,
   ProjectActivityResponse,
+  ProjectLabelsResponse,
   ProjectsResponse,
   ReadyWorkResponse,
   type ReadyWorkFilter,
@@ -40,6 +41,29 @@ export const projectAccessQuery = (projectId: string) =>
     queryFn: () =>
       getJson(`/api/projects/${encodeURIComponent(projectId)}/access`, (value) =>
         ProjectAccessGrantsResponse.parse(value),
+      ),
+  });
+
+// Project-scoped label metadata (#97). Read access is enough to list them; every mutation
+// is checked again by the server. The labels are also embedded in issues, but the board's
+// filter toolbar and the label editor need the project's full catalogue.
+export const projectLabelsQuery = (projectId: string) =>
+  queryOptions({
+    queryKey: ["projects", projectId, "labels"],
+    queryFn: () =>
+      getJson(`/api/projects/${encodeURIComponent(projectId)}/labels`, (value) =>
+        ProjectLabelsResponse.parse(value),
+      ),
+  });
+
+// The project's 30-day recoverable issues (#98). Manage only on the server; the UI hides
+// the view for lower levels and the loader never prefetches it for them.
+export const projectTrashQuery = (projectId: string) =>
+  queryOptions({
+    queryKey: ["projects", projectId, "trash"],
+    queryFn: () =>
+      getJson(`/api/projects/${encodeURIComponent(projectId)}/trash`, (value) =>
+        IssuesResponse.parse(value),
       ),
   });
 

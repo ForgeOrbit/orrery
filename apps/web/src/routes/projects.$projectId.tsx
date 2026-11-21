@@ -18,11 +18,14 @@ import {
   issueStatusLabels,
   knowledgeEntriesQuery,
   knowledgeEntryQuery,
+  LabelPill,
   projectAccessQuery,
   projectActivityQuery,
+  projectLabelsQuery,
   projectQuery,
   projectsQuery,
   PriorityBadge,
+  ProjectLabels,
   removeProjectAccess,
   ResourceLoadError,
   setProjectAccess,
@@ -39,6 +42,7 @@ export const Route = createFileRoute("/projects/$projectId")({
     const project = await context.queryClient.ensureQueryData(projectQuery(params.projectId));
     await Promise.all([
       context.queryClient.ensureQueryData(issuesQuery(project.id)),
+      context.queryClient.ensureQueryData(projectLabelsQuery(project.id)),
       context.queryClient.ensureQueryData(knowledgeEntriesQuery(project.id)),
       context.queryClient.ensureQueryData(projectActivityQuery(project.id)),
       ...(project.accessLevel === "manage" && project.workspaceKind === "shared"
@@ -87,6 +91,7 @@ function ProjectPage() {
   const { projectId } = Route.useParams();
   const { data: project } = useSuspenseQuery(projectQuery(projectId));
   const { data: issues } = useSuspenseQuery(issuesQuery(project.id));
+  const { data: labels } = useSuspenseQuery(projectLabelsQuery(project.id));
   const { data: knowledge } = useSuspenseQuery(knowledgeEntriesQuery(project.id));
   const canContribute = project.accessLevel !== "read";
   const canManage = project.accessLevel === "manage";
@@ -105,6 +110,14 @@ function ProjectPage() {
         <Link to="/board/$projectId" params={{ projectId: project.id }} data-board-link>
           Board
         </Link>
+        {canManage && (
+          <>
+            {" · "}
+            <Link to="/trash/$projectId" params={{ projectId: project.id }} data-trash-link>
+              Trash
+            </Link>
+          </>
+        )}
       </Text>
       <Heading level={1} color="inherit">
         {project.name}
@@ -132,12 +145,18 @@ function ProjectPage() {
             {issues.map((issue) => (
               <li key={issue.id} data-issue-id={issue.id}>
                 <Link to="/issues/$issueId" params={{ issueId: issue.id }}>
-                  #{issue.number} {issue.title}
+                  <Text as="span" className="issue-key" data-issue-identifier={issue.identifier}>
+                    {issue.identifier}
+                  </Text>{" "}
+                  {issue.title}
                 </Link>{" "}
                 <PriorityBadge priority={issue.priority} />{" "}
                 <Text type="inherit" color="inherit" data-issue-status={issue.status}>
                   {issueStatusLabels[issue.status]}
                 </Text>{" "}
+                {issue.labels.map((label) => (
+                  <LabelPill key={label.id} label={label} />
+                ))}{" "}
                 {canContribute && (
                   <IssuePriorityControls issue={issue} issues={issues} projectId={project.id} />
                 )}
@@ -147,6 +166,8 @@ function ProjectPage() {
         )}
         {canContribute && <CreateIssueForm projectId={project.id} />}
       </Section>
+
+      <ProjectLabels projectId={project.id} labels={labels} canContribute={canContribute} />
 
       <Section className="page-section" padding={0}>
         <Heading level={2} color="inherit">

@@ -90,3 +90,10 @@ export async function deleteRequest(path: string): Promise<void> {
   const res = await fetch(path, { method: "DELETE" });
   if (!res.ok) return failure(res);
 }
+
+// A DELETE that answers with the updated resource, such as detaching an issue label.
+export async function deleteJson<T>(path: string, parse: (value: unknown) => T): Promise<T> {
+  const res = await fetch(path, { method: "DELETE" });
+  if (!res.ok) return failure(res);
+  return parse(await res.json());
+}
