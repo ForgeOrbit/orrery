@@ -382,7 +382,7 @@ function IssuePage() {
             canContribute={canContribute}
           />
 
-          <Section className="page-section" padding={5}>
+          <Section className="page-section" padding={3}>
             <Heading level={2} color="inherit">
               Links
             </Heading>
@@ -424,7 +424,7 @@ function IssuePage() {
             )}
           </Section>
 
-          <Section className="page-section" padding={5}>
+          <Section className="page-section" padding={3}>
             <Heading level={2} color="inherit">
               Comments ({comments.length})
             </Heading>
@@ -633,7 +633,7 @@ function Blockers({
   );
 
   return (
-    <Section className="page-section" padding={5}>
+    <Section className="page-section" padding={3}>
       <Heading level={2} color="inherit">
         Dependencies
       </Heading>

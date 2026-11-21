@@ -153,7 +153,7 @@ function Invitation({ token }: { token: string }) {
 function InvitationScope({ preview }: { preview: WorkspaceInvitationPreview }) {
   const projects = preview.grants.filter((grant) => grant.kind === "project_access");
   return (
-    <Section className="page-section" padding={5}>
+    <Section className="page-section" padding={3}>
       <Text as="p" display="block" type="inherit" color="inherit">
         {preview.invitedByEmail} invited {preview.email} to <strong>{preview.workspaceName}</strong>
         .
@@ -345,7 +345,7 @@ function NewAccountForm({ token }: { token: string }) {
   }
 
   return (
-    <Section className="page-section" padding={5}>
+    <Section className="page-section" padding={3}>
       <Heading level={2} color="inherit">
         New to Orrery?
       </Heading>

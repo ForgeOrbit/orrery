@@ -92,7 +92,7 @@ export function RunsSection({ workspaceId }: { workspaceId: string }) {
     );
   }
   return (
-    <Section className="page-section" padding={5} data-runs-section>
+    <Section className="page-section" padding={3} data-runs-section>
       <Heading level={2} color="inherit">
         Runs
       </Heading>

@@ -705,8 +705,8 @@
 
 .app-content .page-section,
 .inbox-section {
-  margin-block: 1.25rem;
-  padding: clamp(1rem, 2vw, 1.4rem);
+  margin-block: 0 1rem;
+  padding: clamp(1rem, 2vw, 1.25rem);
   border: 1px solid var(--orrery-border);
   border-radius: var(--orrery-panel-radius);
   background: var(--orrery-surface);

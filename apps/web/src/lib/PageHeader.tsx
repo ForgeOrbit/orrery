@@ -39,7 +39,7 @@ export function PageHeader({ breadcrumbs, title, badge, subtitle, actions }: Pag
     <header className="page-header">
       {breadcrumbs !== undefined && breadcrumbs.length > 0 && (
         <nav className="page-breadcrumbs" aria-label="Breadcrumb">
-          <BackArrowIcon />
+          {breadcrumbs.length === 1 && <BackArrowIcon />}
           {breadcrumbs.map((crumb, index) => (
             // oxlint-disable-next-line react/no-array-index-key -- static ordered breadcrumb segments
             <Fragment key={index}>

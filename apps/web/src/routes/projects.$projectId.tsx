@@ -423,7 +423,7 @@ function ProjectSettings({ project }: { project: Project }) {
   }
 
   return (
-    <Section className="page-section" padding={5}>
+    <Section className="page-section" padding={3}>
       <Heading level={2} color="inherit">
         Project settings
       </Heading>
@@ -489,7 +489,7 @@ function ProjectAccess({ projectId }: { projectId: string }) {
   }
 
   return (
-    <Section className="page-section" padding={5}>
+    <Section className="page-section" padding={3}>
       <Heading level={2} color="inherit">
         Project access
       </Heading>
