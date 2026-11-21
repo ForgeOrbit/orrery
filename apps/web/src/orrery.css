@@ -689,7 +689,7 @@
 
 .empty-panel {
   padding: 2rem 1.25rem;
-  border: 1px dashed var(--orrery-border);
+  border: 1px solid var(--orrery-border);
   border-radius: var(--orrery-panel-radius);
   background: color-mix(in srgb, var(--orrery-surface) 55%, transparent);
 }
@@ -705,7 +705,7 @@
 
 .app-content .page-section,
 .inbox-section {
-  margin-block: 0 1rem;
+  margin-block: 0;
   padding: clamp(1rem, 2vw, 1.25rem);
   border: 1px solid var(--orrery-border);
   border-radius: var(--orrery-panel-radius);
@@ -713,7 +713,13 @@
   min-inline-size: 0;
 }
 
-.tab-panel > .page-section:first-child {
+.app-content
+  :is(section, .page-section, .inbox-section)
+  + :is(section, .page-section, .inbox-section) {
+  margin-block-start: 1rem;
+}
+
+.issue-primary > .page-section + .page-section {
   margin-block-start: 0;
 }
 
@@ -1216,7 +1222,7 @@
   gap: 0.625rem;
   min-inline-size: 0;
   border: 1px solid var(--orrery-border);
-  border-radius: var(--orrery-radius);
+  border-radius: var(--orrery-panel-radius);
   background: var(--orrery-surface);
   transition:
     border-color 140ms ease,
@@ -1632,7 +1638,7 @@
 .comment-card {
   padding: 0.85rem 1rem;
   border: 1px solid var(--orrery-border);
-  border-radius: var(--orrery-radius);
+  border-radius: var(--orrery-panel-radius);
   background: color-mix(in srgb, var(--orrery-recessed) 45%, var(--orrery-surface));
 }
 

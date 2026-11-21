@@ -97,7 +97,7 @@ function MyWorkSection({
   children: ReactNode;
 }) {
   return (
-    <Section data-my-work-section={section} padding={3}>
+    <Section className="page-section" data-my-work-section={section} padding={3}>
       <Heading level={2} color="inherit">
         {title}
       </Heading>
