@@ -762,6 +762,34 @@
   white-space: nowrap;
 }
 
+/* A project label owns its color; the custom property is set per pill from the API. */
+.label-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.45rem;
+  border: 1px solid var(--label-color, var(--orrery-control-border));
+  border-radius: var(--orrery-radius);
+  background: color-mix(
+    in srgb,
+    var(--label-color, var(--orrery-recessed)) 14%,
+    var(--orrery-surface)
+  );
+  color: var(--orrery-text);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.board-card-labels,
+.issue-detail-labels {
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.board-card-subtasks {
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
 .board-card-meta,
 .board-card-actions {
   display: flex;
@@ -1078,4 +1106,121 @@
   .inbox-section .question-card {
     padding-inline: 0.85rem;
   }
+}
+
+/* Safe GFM rendering (issue descriptions and comments). The host surfaces keep
+   pre-wrap for plain text, so the Markdown document restores normal flow here. */
+.markdown-body {
+  white-space: normal;
+}
+
+.markdown-body > :last-child {
+  margin-block-end: 0;
+}
+
+.markdown-body :where(table) {
+  inline-size: 100%;
+  border-collapse: collapse;
+  margin-block: 0.65rem;
+  font-size: 0.8125rem;
+}
+
+.markdown-body :where(th, td) {
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--orrery-border);
+  text-align: start;
+}
+
+.markdown-body :where(th) {
+  background: var(--orrery-recessed);
+  font-weight: 650;
+}
+
+.markdown-body :where(ul) {
+  padding-inline-start: 1.25rem;
+}
+
+.markdown-body :where(li > input[type="checkbox"]) {
+  margin-inline-end: 0.35rem;
+}
+
+.markdown-body :where(pre) {
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--orrery-radius);
+  background: var(--orrery-recessed);
+}
+
+.markdown-body :where(code) {
+  font-family: var(--orrery-mono);
+  font-size: 0.9em;
+}
+
+.markdown-body :where(del) {
+  color: var(--orrery-muted);
+}
+
+.markdown-body :where(.markdown-mermaid) {
+  inline-size: 100%;
+  max-inline-size: 100%;
+  margin-block: 0.75rem;
+  overflow: auto;
+}
+
+.markdown-body :where(.markdown-mermaid svg) {
+  display: block;
+  max-inline-size: 100%;
+  block-size: auto;
+}
+
+/* Structured v1 activity blocks and the JSON fallback in the session inspector. */
+.activity-block {
+  margin-block: 0.5rem;
+}
+
+.activity-key-value {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.25rem 0.6rem;
+  margin: 0;
+  font-size: 0.8125rem;
+}
+
+.activity-key-value dt {
+  color: var(--orrery-muted);
+  font-weight: 650;
+}
+
+.activity-key-value dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.activity-table {
+  margin-block: 0.25rem;
+  font-size: 0.8125rem;
+}
+
+.activity-checklist,
+.activity-test-results ul {
+  margin-block: 0.25rem;
+  padding-inline-start: 1.15rem;
+  font-size: 0.8125rem;
+}
+
+.activity-checklist li[data-checked="true"] {
+  color: var(--orrery-success);
+}
+
+.activity-test-results li[data-test-status="failed"] {
+  color: var(--orrery-error);
+}
+
+.activity-json {
+  margin-block: 0.5rem;
+  font-size: 0.8125rem;
+}
+
+.activity-json pre {
+  margin: 0;
+  font-size: 0.75rem;
 }

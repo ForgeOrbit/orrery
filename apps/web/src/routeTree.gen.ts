@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ForgotPasswordRouteImport } from './routes/forgot-password'
 import { Route as InboxRouteImport } from './routes/inbox'
+import { Route as MyWorkRouteImport } from './routes/my-work'
 import { Route as RegisterRouteImport } from './routes/register'
 import { Route as ResetPasswordRouteImport } from './routes/reset-password'
 import { Route as SetupRouteImport } from './routes/setup'
@@ -23,6 +24,7 @@ import { Route as IssuesIssueIdRouteImport } from './routes/issues.$issueId'
 import { Route as KnowledgeEntryIdRouteImport } from './routes/knowledge.$entryId'
 import { Route as ProjectsProjectIdRouteImport } from './routes/projects.$projectId'
 import { Route as SettingsSmtpRouteImport } from './routes/settings.smtp'
+import { Route as TrashProjectIdRouteImport } from './routes/trash.$projectId'
 import { Route as WorkspacesWorkspaceIdRouteImport } from './routes/workspaces.$workspaceId'
 import { Route as HistoryProjectProjectIdRouteImport } from './routes/history.project.$projectId'
 import { Route as HistoryWorkspaceWorkspaceIdRouteImport } from './routes/history.workspace.$workspaceId'
@@ -40,6 +42,11 @@ const ForgotPasswordRoute = ForgotPasswordRouteImport.update({
 const InboxRoute = InboxRouteImport.update({
   id: '/inbox',
   path: '/inbox',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MyWorkRoute = MyWorkRouteImport.update({
+  id: '/my-work',
+  path: '/my-work',
   getParentRoute: () => rootRouteImport,
 } as any)
 const RegisterRoute = RegisterRouteImport.update({
@@ -97,6 +104,11 @@ const SettingsSmtpRoute = SettingsSmtpRouteImport.update({
   path: '/settings/smtp',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TrashProjectIdRoute = TrashProjectIdRouteImport.update({
+  id: '/trash/$projectId',
+  path: '/trash/$projectId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const WorkspacesWorkspaceIdRoute = WorkspacesWorkspaceIdRouteImport.update({
   id: '/workspaces/$workspaceId',
   path: '/workspaces/$workspaceId',
@@ -118,6 +130,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/forgot-password': typeof ForgotPasswordRoute
   '/inbox': typeof InboxRoute
+  '/my-work': typeof MyWorkRoute
   '/register': typeof RegisterRoute
   '/reset-password': typeof ResetPasswordRoute
   '/setup': typeof SetupRoute
@@ -129,6 +142,7 @@ export interface FileRoutesByFullPath {
   '/knowledge/$entryId': typeof KnowledgeEntryIdRoute
   '/projects/$projectId': typeof ProjectsProjectIdRoute
   '/settings/smtp': typeof SettingsSmtpRoute
+  '/trash/$projectId': typeof TrashProjectIdRoute
   '/workspaces/$workspaceId': typeof WorkspacesWorkspaceIdRoute
   '/history/project/$projectId': typeof HistoryProjectProjectIdRoute
   '/history/workspace/$workspaceId': typeof HistoryWorkspaceWorkspaceIdRoute
@@ -137,6 +151,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/forgot-password': typeof ForgotPasswordRoute
   '/inbox': typeof InboxRoute
+  '/my-work': typeof MyWorkRoute
   '/register': typeof RegisterRoute
   '/reset-password': typeof ResetPasswordRoute
   '/setup': typeof SetupRoute
@@ -148,6 +163,7 @@ export interface FileRoutesByTo {
   '/knowledge/$entryId': typeof KnowledgeEntryIdRoute
   '/projects/$projectId': typeof ProjectsProjectIdRoute
   '/settings/smtp': typeof SettingsSmtpRoute
+  '/trash/$projectId': typeof TrashProjectIdRoute
   '/workspaces/$workspaceId': typeof WorkspacesWorkspaceIdRoute
   '/history/project/$projectId': typeof HistoryProjectProjectIdRoute
   '/history/workspace/$workspaceId': typeof HistoryWorkspaceWorkspaceIdRoute
@@ -157,6 +173,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/forgot-password': typeof ForgotPasswordRoute
   '/inbox': typeof InboxRoute
+  '/my-work': typeof MyWorkRoute
   '/register': typeof RegisterRoute
   '/reset-password': typeof ResetPasswordRoute
   '/setup': typeof SetupRoute
@@ -168,6 +185,7 @@ export interface FileRoutesById {
   '/knowledge/$entryId': typeof KnowledgeEntryIdRoute
   '/projects/$projectId': typeof ProjectsProjectIdRoute
   '/settings/smtp': typeof SettingsSmtpRoute
+  '/trash/$projectId': typeof TrashProjectIdRoute
   '/workspaces/$workspaceId': typeof WorkspacesWorkspaceIdRoute
   '/history/project/$projectId': typeof HistoryProjectProjectIdRoute
   '/history/workspace/$workspaceId': typeof HistoryWorkspaceWorkspaceIdRoute
@@ -178,6 +196,7 @@ export interface FileRouteTypes {
     | '/'
     | '/forgot-password'
     | '/inbox'
+    | '/my-work'
     | '/register'
     | '/reset-password'
     | '/setup'
@@ -189,6 +208,7 @@ export interface FileRouteTypes {
     | '/knowledge/$entryId'
     | '/projects/$projectId'
     | '/settings/smtp'
+    | '/trash/$projectId'
     | '/workspaces/$workspaceId'
     | '/history/project/$projectId'
     | '/history/workspace/$workspaceId'
@@ -197,6 +217,7 @@ export interface FileRouteTypes {
     | '/'
     | '/forgot-password'
     | '/inbox'
+    | '/my-work'
     | '/register'
     | '/reset-password'
     | '/setup'
@@ -208,6 +229,7 @@ export interface FileRouteTypes {
     | '/knowledge/$entryId'
     | '/projects/$projectId'
     | '/settings/smtp'
+    | '/trash/$projectId'
     | '/workspaces/$workspaceId'
     | '/history/project/$projectId'
     | '/history/workspace/$workspaceId'
@@ -216,6 +238,7 @@ export interface FileRouteTypes {
     | '/'
     | '/forgot-password'
     | '/inbox'
+    | '/my-work'
     | '/register'
     | '/reset-password'
     | '/setup'
@@ -227,6 +250,7 @@ export interface FileRouteTypes {
     | '/knowledge/$entryId'
     | '/projects/$projectId'
     | '/settings/smtp'
+    | '/trash/$projectId'
     | '/workspaces/$workspaceId'
     | '/history/project/$projectId'
     | '/history/workspace/$workspaceId'
@@ -236,6 +260,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ForgotPasswordRoute: typeof ForgotPasswordRoute
   InboxRoute: typeof InboxRoute
+  MyWorkRoute: typeof MyWorkRoute
   RegisterRoute: typeof RegisterRoute
   ResetPasswordRoute: typeof ResetPasswordRoute
   SetupRoute: typeof SetupRoute
@@ -247,6 +272,7 @@ export interface RootRouteChildren {
   KnowledgeEntryIdRoute: typeof KnowledgeEntryIdRoute
   ProjectsProjectIdRoute: typeof ProjectsProjectIdRoute
   SettingsSmtpRoute: typeof SettingsSmtpRoute
+  TrashProjectIdRoute: typeof TrashProjectIdRoute
   WorkspacesWorkspaceIdRoute: typeof WorkspacesWorkspaceIdRoute
   HistoryProjectProjectIdRoute: typeof HistoryProjectProjectIdRoute
   HistoryWorkspaceWorkspaceIdRoute: typeof HistoryWorkspaceWorkspaceIdRoute
@@ -273,6 +299,13 @@ declare module '@tanstack/react-router' {
       path: '/inbox'
       fullPath: '/inbox'
       preLoaderRoute: typeof InboxRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/my-work': {
+      id: '/my-work'
+      path: '/my-work'
+      fullPath: '/my-work'
+      preLoaderRoute: typeof MyWorkRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/register': {
@@ -352,6 +385,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsSmtpRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/trash/$projectId': {
+      id: '/trash/$projectId'
+      path: '/trash/$projectId'
+      fullPath: '/trash/$projectId'
+      preLoaderRoute: typeof TrashProjectIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/workspaces/$workspaceId': {
       id: '/workspaces/$workspaceId'
       path: '/workspaces/$workspaceId'
@@ -380,6 +420,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ForgotPasswordRoute: ForgotPasswordRoute,
   InboxRoute: InboxRoute,
+  MyWorkRoute: MyWorkRoute,
   RegisterRoute: RegisterRoute,
   ResetPasswordRoute: ResetPasswordRoute,
   SetupRoute: SetupRoute,
@@ -391,6 +432,7 @@ const rootRouteChildren: RootRouteChildren = {
   KnowledgeEntryIdRoute: KnowledgeEntryIdRoute,
   ProjectsProjectIdRoute: ProjectsProjectIdRoute,
   SettingsSmtpRoute: SettingsSmtpRoute,
+  TrashProjectIdRoute: TrashProjectIdRoute,
   WorkspacesWorkspaceIdRoute: WorkspacesWorkspaceIdRoute,
   HistoryProjectProjectIdRoute: HistoryProjectProjectIdRoute,
   HistoryWorkspaceWorkspaceIdRoute: HistoryWorkspaceWorkspaceIdRoute,

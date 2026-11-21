@@ -6,17 +6,20 @@ import {
   KnowledgeEntry,
   Project,
   ProjectAccessGrant,
+  ProjectLabel,
   type CreateIssueCommentRequest,
   type CreateIssueLinkRequest,
   type CreateIssueRequest,
   type CreateKnowledgeEntryRequest,
+  type CreateProjectLabelRequest,
   type CreateProjectRequest,
   type SetProjectAccessRequest,
   type UpdateIssueRequest,
   type UpdateKnowledgeEntryRequest,
+  type UpdateProjectLabelRequest,
   type UpdateProjectRequest,
 } from "@orrery/contract";
-import { deleteRequest, patchJson, postJson } from "../../lib/api.ts";
+import { deleteJson, deleteRequest, patchJson, postJson } from "../../lib/api.ts";
 
 // Mutations for this feature. Each goes through the app's one request helper, which
 // parses the response with the contract's schemas and turns a Problem (RFC 9457)
@@ -63,6 +66,60 @@ export function createIssue(projectId: string, input: CreateIssueRequest): Promi
 export function updateIssue(issueId: string, input: UpdateIssueRequest): Promise<Issue> {
   return patchJson(`/api/issues/${encodeURIComponent(issueId)}`, input, (value) =>
     Issue.parse(value),
+  );
+}
+
+// #98: a human with Contribute or Manage moves an unclaimed issue to the project's trash.
+// Agents have no route here, and the server refuses an issue with a live session.
+export function deleteIssue(issueId: string): Promise<void> {
+  return deleteRequest(`/api/issues/${encodeURIComponent(issueId)}`);
+}
+
+// Restore is Manage-only and limited to the 30-day window; the server owns both rules.
+export function restoreIssue(issueId: string): Promise<Issue> {
+  return postJson(`/api/issues/${encodeURIComponent(issueId)}/restore`, {}, (value) =>
+    Issue.parse(value),
+  );
+}
+
+// #97: project label metadata. Contribute may create, rename, recolor and delete; the
+// server enforces the level and the project's case-insensitive name uniqueness.
+export function createProjectLabel(
+  projectId: string,
+  input: CreateProjectLabelRequest,
+): Promise<ProjectLabel> {
+  return postJson(`/api/projects/${encodeURIComponent(projectId)}/labels`, input, (value) =>
+    ProjectLabel.parse(value),
+  );
+}
+
+export function updateProjectLabel(
+  labelId: string,
+  input: UpdateProjectLabelRequest,
+): Promise<ProjectLabel> {
+  return patchJson(`/api/labels/${encodeURIComponent(labelId)}`, input, (value) =>
+    ProjectLabel.parse(value),
+  );
+}
+
+export function deleteProjectLabel(labelId: string): Promise<void> {
+  return deleteRequest(`/api/labels/${encodeURIComponent(labelId)}`);
+}
+
+// Attaching and detaching return the issue so a page can replace its cache entry without
+// a second read; a repeated attach or detach is a server-side no-op.
+export function attachIssueLabel(issueId: string, labelId: string): Promise<Issue> {
+  return postJson(
+    `/api/issues/${encodeURIComponent(issueId)}/labels/${encodeURIComponent(labelId)}`,
+    {},
+    (value) => Issue.parse(value),
+  );
+}
+
+export function detachIssueLabel(issueId: string, labelId: string): Promise<Issue> {
+  return deleteJson(
+    `/api/issues/${encodeURIComponent(issueId)}/labels/${encodeURIComponent(labelId)}`,
+    (value) => Issue.parse(value),
   );
 }
 

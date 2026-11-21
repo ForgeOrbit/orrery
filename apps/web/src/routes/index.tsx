@@ -4,7 +4,7 @@ import { Section } from "@astryxdesign/core/Section";
 import { TextField } from "../lib/fields.tsx";
 import { Button } from "@astryxdesign/core/Button";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { Link } from "../lib/Link.tsx";
 import type { InvitationSummary } from "@orrery/contract";
 import type { FormEvent } from "react";
@@ -25,10 +25,15 @@ import { createWorkspace, workspaceQuery, workspacesQuery } from "../features/wo
 export const Route = createFileRoute("/")({
   // The loads start together before the component renders, so there is no request waterfall.
   loader: async ({ context }) => {
-    await Promise.all([
+    const [, session, setup] = await Promise.all([
       context.queryClient.ensureQueryData(readinessQuery),
       context.queryClient.ensureQueryData(sessionQuery),
       context.queryClient.ensureQueryData(setupStatusQuery),
+    ]);
+    if (!session.signedIn) {
+      throw redirect({ to: setup.setupComplete ? "/signin" : "/setup" });
+    }
+    await Promise.all([
       context.queryClient.ensureQueryData(workspacesQuery),
       context.queryClient.ensureQueryData(installationInvitationsQuery),
     ]);
