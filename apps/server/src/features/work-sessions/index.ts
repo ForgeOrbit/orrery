@@ -45,17 +45,27 @@ export function createSessionsFeature(deps: SessionsFeatureDeps): SessionsFeatur
     listIssues: deps.listIssues,
     questionLeaseDeadline: deps.questionLeaseDeadline,
     evaluateQuestionDeadline: deps.evaluateQuestionDeadline,
+    dueQuestionIssueIds: deps.dueQuestionIssueIds,
     notifyActivity: deps.notifyActivity,
+    log: deps.log,
   });
   return {
     name: "work-sessions",
     rest: createSessionsRest(service, deps.sessionReader, deps.authenticate),
     registerTools: createSessionsMcp(service, deps.authenticate),
     startBackgroundTasks: () => {
+      let sweeping = false;
       const timer = setInterval(() => {
-        void service.sweep().catch((error: unknown) => {
-          deps.log?.warn("expiry sweep failed", { error: String(error) });
-        });
+        if (sweeping) return;
+        sweeping = true;
+        void service
+          .sweep()
+          .catch((error: unknown) => {
+            deps.log?.warn("expiry sweep failed", { error: String(error) });
+          })
+          .finally(() => {
+            sweeping = false;
+          });
       }, 60 * 1000);
       timer.unref();
     },

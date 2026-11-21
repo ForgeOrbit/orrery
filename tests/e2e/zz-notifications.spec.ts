@@ -197,15 +197,24 @@ test("agent keys receive 403 on every notification endpoint", async () => {
   await recordSecret(secret);
   const headers = { Authorization: `Bearer ${secret}` };
 
-  const listed = await api.get("/api/notifications", { headers });
+  // agentApi has no human session cookie, proving the bearer key alone decides the answer.
+  const listed = await agentApi.get("/api/notifications", { headers });
   expect(listed.status()).toBe(403);
   expect(await listed.json()).toMatchObject({
     status: 403,
     code: "agents_cannot_use_notifications",
   });
 
-  const read = await api.post(`/api/notifications/${randomUUID()}/read`, { headers, data: {} });
+  const read = await agentApi.post(`/api/notifications/${randomUUID()}/read`, {
+    headers,
+    data: {},
+  });
   expect(read.status()).toBe(403);
-  const readAll = await api.post("/api/notifications/read-all", { headers, data: {} });
+  const readAll = await agentApi.post("/api/notifications/read-all", { headers, data: {} });
   expect(readAll.status()).toBe(403);
+
+  const invalid = await agentApi.get("/api/notifications", {
+    headers: { Authorization: "Bearer not-a-real-key" },
+  });
+  expect(invalid.status()).toBe(401);
 });

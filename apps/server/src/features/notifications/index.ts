@@ -1,5 +1,7 @@
 import type { Feature } from "../../platform/feature.ts";
+import type { Logger } from "../../platform/log.ts";
 import type { SessionReader } from "../accounts/index.ts";
+import type { AgentAuthenticator } from "../agents/index.ts";
 import { createNotificationsRest, routes } from "./rest.ts";
 import {
   type NotificationsDeps,
@@ -19,6 +21,8 @@ export type {
 
 export type NotificationsFeatureDeps = NotificationsDeps & {
   sessionReader: SessionReader;
+  authenticate: AgentAuthenticator;
+  log: Logger;
 };
 
 export interface NotificationsFeature extends Feature {
@@ -30,7 +34,7 @@ export function createNotificationsFeature(deps: NotificationsFeatureDeps): Noti
   const service = createNotificationsService(deps);
   return {
     name: "notifications",
-    rest: createNotificationsRest(service, deps.sessionReader),
+    rest: createNotificationsRest(service, deps.sessionReader, deps.authenticate),
     service,
     notifyActivity: service.createForActivity,
     startBackgroundTasks: () => {

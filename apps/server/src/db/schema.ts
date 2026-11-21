@@ -1184,9 +1184,9 @@ export const notifications = pgTable(
   (t) => [
     check("notifications_kind", sql`${t.kind} in (${sql.raw(sqlLiteralList(NotificationKind))})`),
     uniqueIndex("one_notification_per_human_and_activity").on(t.humanId, t.activityId),
-    index("notifications_human_created").on(t.humanId, t.createdAt),
+    index("notifications_human_created").on(t.humanId, t.createdAt.desc()),
     index("notifications_human_unread")
-      .on(t.humanId, t.createdAt)
+      .on(t.humanId, t.createdAt.desc())
       .where(sql`${t.readAt} is null`),
   ],
 );

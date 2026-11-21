@@ -20,7 +20,7 @@ export const NotificationIssue = z
   .object({
     id: z.string(),
     number: z.int(),
-    key: z.string(),
+    identifier: z.string(),
     title: z.string(),
   })
   .meta({ id: "NotificationIssue" });

@@ -24,6 +24,7 @@ export interface InboxFeature extends Feature {
 
   questionDeadline(tx: DbTransaction, issueId: string): Promise<Date | null>;
   evaluateDeadline(tx: DbTransaction, issueId: string): Promise<void>;
+  findDueQuestionIssueIds(): Promise<string[]>;
 }
 
 export function createInboxFeature(deps: InboxFeatureDeps): InboxFeature {
@@ -42,5 +43,6 @@ export function createInboxFeature(deps: InboxFeatureDeps): InboxFeature {
     service,
     questionDeadline: (tx, issueId) => service.questionDeadline(tx, issueId),
     evaluateDeadline: (tx, issueId) => service.evaluateDeadline(tx, issueId),
+    findDueQuestionIssueIds: () => service.findDueQuestionIssueIds(),
   };
 }

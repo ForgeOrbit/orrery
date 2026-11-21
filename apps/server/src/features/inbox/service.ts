@@ -98,6 +98,7 @@ export interface InboxService {
 
   questionDeadline(tx: DbTransaction, issueId: string): Promise<Date | null>;
   evaluateDeadline(tx: DbTransaction, issueId: string): Promise<void>;
+  findDueQuestionIssueIds(): Promise<string[]>;
 }
 
 type QuestionRow = typeof questions.$inferSelect;
@@ -791,5 +792,27 @@ export function createInboxService(deps: InboxDeps): InboxService {
 
     questionDeadline,
     evaluateDeadline: (tx, issueId) => evaluateDeadline(tx, issueId, deps.notifyActivity),
+
+    async findDueQuestionIssueIds() {
+      return db.transaction(
+        async (tx) => {
+          const due = await tx
+            .select({ issueId: questions.issueId })
+            .from(questions)
+            .innerJoin(issues, eq(questions.issueId, issues.id))
+            .where(
+              and(
+                eq(questions.status, QuestionStatus.enum.open),
+                lte(questions.responseDeadlineAt, sql`statement_timestamp()`),
+                isNull(issues.deletedAt),
+              ),
+            )
+            .orderBy(questions.issueId)
+            .limit(100);
+          return [...new Set(due.map((row) => row.issueId))];
+        },
+        { accessMode: "read only" },
+      );
+    },
   };
 }

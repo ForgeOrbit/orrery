@@ -2,18 +2,30 @@ import { randomUUID } from "node:crypto";
 import { NotificationKind, ProjectAccessLevel, type NotificationsResponse } from "@orrery/contract";
 import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { agents, humans, issues, notifications, projects } from "../../db/schema.ts";
+import { z } from "zod";
+import {
+  agents,
+  humans,
+  issues,
+  notifications,
+  projectAccessGrants,
+  projects,
+  workspaceMemberships,
+  workspaces,
+} from "../../db/schema.ts";
 import type { DbTransaction } from "../../platform/db.ts";
-import type { Logger } from "../../platform/log.ts";
+import type { WorkActor } from "../projects/index.ts";
 
 export type NotificationsErrorKind =
   | "not_signed_in"
   | "agents_cannot_use_notifications"
+  | "invalid_cursor"
   | "notification_not_found";
 
 const messages: Record<NotificationsErrorKind, string> = {
   not_signed_in: "Sign in as a human to read notifications.",
   agents_cannot_use_notifications: "Only humans may use notifications.",
+  invalid_cursor: "The pagination cursor is invalid.",
   notification_not_found: "No such notification is accessible to the caller.",
 };
 
@@ -38,7 +50,6 @@ export interface NotificationsDeps {
   db: PostgresJsDatabase;
   projectAccessCeiling: NotificationsProjectAccessCeiling;
   projectAccessAtLeast: (actual: ProjectAccessLevel, required: ProjectAccessLevel) => boolean;
-  log: Logger;
 }
 
 export interface ActivityNotificationInput {
@@ -65,26 +76,34 @@ export interface ListNotificationsInput {
 
 export interface NotificationsService {
   createForActivity: NotifyActivity;
-  list(humanId: string, input?: ListNotificationsInput): Promise<NotificationsResponse>;
-  markRead(humanId: string, notificationId: string): Promise<void>;
-  markAllRead(humanId: string): Promise<number>;
+  list(actor: WorkActor | null, input?: ListNotificationsInput): Promise<NotificationsResponse>;
+  markRead(actor: WorkActor | null, notificationId: string): Promise<void>;
+  markAllRead(actor: WorkActor | null): Promise<number>;
   prune(): Promise<number>;
 }
 
-type AccessibleRow = {
-  id: string;
-  kind: string;
-  summary: string;
-  readAt: Date | null;
-  createdAt: Date;
-  projectId: string;
-  projectKey: string;
-  projectName: string;
-  workspaceId: string;
-  issueId: string;
-  issueNumber: number;
-  issueTitle: string;
-};
+const Cursor = z.object({ createdAt: z.iso.datetime(), id: z.string().min(1) });
+type Cursor = z.infer<typeof Cursor>;
+
+const encodeCursor = (row: { createdAt: Date; id: string }): string =>
+  Buffer.from(
+    JSON.stringify({ createdAt: row.createdAt.toISOString(), id: row.id }),
+    "utf8",
+  ).toString("base64url");
+
+function decodeCursor(value: string): Cursor {
+  try {
+    return Cursor.parse(JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as unknown);
+  } catch {
+    throw new NotificationsError("invalid_cursor");
+  }
+}
+
+function requireHumanId(actor: WorkActor | null): string {
+  if (actor === null) throw new NotificationsError("not_signed_in");
+  if (actor.kind === "agent") throw new NotificationsError("agents_cannot_use_notifications");
+  return actor.account.humanId;
+}
 
 async function callerIsActive(tx: DbTransaction, humanId: string): Promise<boolean> {
   const [caller] = await tx
@@ -94,6 +113,36 @@ async function callerIsActive(tx: DbTransaction, humanId: string): Promise<boole
     .limit(1);
   return caller !== undefined;
 }
+
+/**
+ * Live Read access resolved in SQL through the notification's current project and workspace:
+ * a personal-workspace owner, or an active (non-suspended) shared-workspace owner/member with
+ * a project grant. Project transfers are reflected immediately because the join uses the
+ * project's current workspace_id; there is no denormalized workspace id to go stale.
+ */
+const readableAccess = (humanId: string) =>
+  sql`exists (
+    select 1 from ${workspaces}
+    where ${workspaces.id} = ${projects.workspaceId}
+      and (
+        ${workspaces.personalOwnerHumanId} = ${humanId}
+        or exists (
+          select 1 from ${workspaceMemberships}
+          where ${workspaceMemberships.workspaceId} = ${workspaces.id}
+            and ${workspaceMemberships.humanId} = ${humanId}
+            and ${workspaceMemberships.suspendedAt} is null
+            and (
+              ${workspaceMemberships.isOwner} = true
+              or exists (
+                select 1 from ${projectAccessGrants}
+                where ${projectAccessGrants.projectId} = ${projects.id}
+                  and ${projectAccessGrants.humanId} = ${humanId}
+                  and ${projectAccessGrants.level} in ('read', 'contribute', 'manage')
+              )
+            )
+        )
+      )
+  )`;
 
 export function createNotificationsService(deps: NotificationsDeps): NotificationsService {
   const { db } = deps;
@@ -175,73 +224,71 @@ export function createNotificationsService(deps: NotificationsDeps): Notificatio
     }
   };
 
-  const accessibleRows = async (tx: DbTransaction, humanId: string): Promise<AccessibleRow[]> => {
-    if (!(await callerIsActive(tx, humanId))) return [];
-    const rows = await tx
-      .select({
-        id: notifications.id,
-        kind: notifications.kind,
-        summary: notifications.summary,
-        readAt: notifications.readAt,
-        createdAt: notifications.createdAt,
-        projectId: projects.id,
-        projectKey: projects.key,
-        projectName: projects.name,
-        workspaceId: projects.workspaceId,
-        issueId: issues.id,
-        issueNumber: issues.number,
-        issueTitle: issues.title,
-      })
-      .from(notifications)
-      .innerJoin(issues, eq(issues.id, notifications.issueId))
-      .innerJoin(projects, eq(projects.id, notifications.projectId))
-      .where(and(eq(notifications.humanId, humanId), isNull(issues.deletedAt)))
-      .orderBy(desc(notifications.createdAt), desc(notifications.id));
-
-    const byWorkspace = new Map<string, AccessibleRow[]>();
-    for (const row of rows) {
-      const bucket = byWorkspace.get(row.workspaceId) ?? [];
-      bucket.push(row);
-      byWorkspace.set(row.workspaceId, bucket);
-    }
-    const accessible: AccessibleRow[] = [];
-    for (const [workspaceId, bucket] of byWorkspace) {
-      const projectIds = [...new Set(bucket.map((row) => row.projectId))];
-      const ceiling = await deps.projectAccessCeiling(tx, workspaceId, humanId, projectIds);
-      for (const row of bucket) {
-        const level = ceiling.get(row.projectId) ?? null;
-        if (level !== null && deps.projectAccessAtLeast(level, ProjectAccessLevel.enum.read)) {
-          accessible.push(row);
-        }
-      }
-    }
-    accessible.sort(
-      (a, b) =>
-        b.createdAt.getTime() - a.createdAt.getTime() || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
-    );
-    return accessible;
+  const notificationColumns = {
+    id: notifications.id,
+    kind: notifications.kind,
+    summary: notifications.summary,
+    readAt: notifications.readAt,
+    createdAt: notifications.createdAt,
+    projectId: projects.id,
+    projectKey: projects.key,
+    projectName: projects.name,
+    workspaceId: projects.workspaceId,
+    issueId: issues.id,
+    issueNumber: issues.number,
+    issueTitle: issues.title,
   };
 
   return {
     createForActivity,
 
-    async list(humanId, input = {}) {
+    async list(actor, input = {}) {
+      const humanId = requireHumanId(actor);
       const limit = input.limit ?? 50;
+      const cursor =
+        input.cursor === null || input.cursor === undefined || input.cursor === ""
+          ? null
+          : decodeCursor(input.cursor);
       return db.transaction(
         async (tx) => {
-          const accessible = await accessibleRows(tx, humanId);
-          const unreadCount = accessible.filter((row) => row.readAt === null).length;
-          const visible =
-            input.unreadOnly === true
-              ? accessible.filter((row) => row.readAt === null)
-              : accessible;
-          let start = 0;
-          if (input.cursor !== null && input.cursor !== undefined && input.cursor !== "") {
-            const index = visible.findIndex((row) => row.id === input.cursor);
-            start = index === -1 ? 0 : index + 1;
+          if (!(await callerIsActive(tx, humanId))) {
+            return { items: [], unreadCount: 0, nextCursor: null };
           }
-          const page = visible.slice(start, start + limit);
-          const nextCursor = start + limit < visible.length ? (page.at(-1)?.id ?? null) : null;
+          const conditions = [
+            eq(notifications.humanId, humanId),
+            isNull(issues.deletedAt),
+            readableAccess(humanId),
+          ];
+          if (input.unreadOnly === true) conditions.push(isNull(notifications.readAt));
+          if (cursor !== null) {
+            const at = sql`${cursor.createdAt}::timestamptz`;
+            conditions.push(
+              sql`(${notifications.createdAt} < ${at} or (${notifications.createdAt} = ${at} and ${notifications.id} < ${cursor.id}))`,
+            );
+          }
+          const rows = await tx
+            .select(notificationColumns)
+            .from(notifications)
+            .innerJoin(issues, eq(issues.id, notifications.issueId))
+            .innerJoin(projects, eq(projects.id, notifications.projectId))
+            .where(and(...conditions))
+            .orderBy(desc(notifications.createdAt), desc(notifications.id))
+            .limit(limit + 1);
+          const [count] = await tx
+            .select({ value: sql<number>`count(*)::int` })
+            .from(notifications)
+            .innerJoin(issues, eq(issues.id, notifications.issueId))
+            .innerJoin(projects, eq(projects.id, notifications.projectId))
+            .where(
+              and(
+                eq(notifications.humanId, humanId),
+                isNull(notifications.readAt),
+                isNull(issues.deletedAt),
+                readableAccess(humanId),
+              ),
+            );
+          const page = rows.slice(0, limit);
+          const last = page.at(-1);
           return {
             items: page.map((row) => ({
               id: row.id,
@@ -258,26 +305,26 @@ export function createNotificationsService(deps: NotificationsDeps): Notificatio
               issue: {
                 id: row.issueId,
                 number: row.issueNumber,
-                key: `${row.projectKey}-${row.issueNumber}`,
+                identifier: `${row.projectKey}-${row.issueNumber}`,
                 title: row.issueTitle,
               },
             })),
-            unreadCount,
-            nextCursor,
+            unreadCount: count?.value ?? 0,
+            nextCursor: rows.length > limit && last !== undefined ? encodeCursor(last) : null,
           };
         },
         { accessMode: "read only" },
       );
     },
 
-    async markRead(humanId, notificationId) {
+    async markRead(actor, notificationId) {
+      const humanId = requireHumanId(actor);
       await db.transaction(async (tx) => {
+        if (!(await callerIsActive(tx, humanId))) {
+          throw new NotificationsError("notification_not_found");
+        }
         const [row] = await tx
-          .select({
-            id: notifications.id,
-            projectId: notifications.projectId,
-            workspaceId: projects.workspaceId,
-          })
+          .select({ id: notifications.id })
           .from(notifications)
           .innerJoin(issues, eq(issues.id, notifications.issueId))
           .innerJoin(projects, eq(projects.id, notifications.projectId))
@@ -286,15 +333,11 @@ export function createNotificationsService(deps: NotificationsDeps): Notificatio
               eq(notifications.id, notificationId),
               eq(notifications.humanId, humanId),
               isNull(issues.deletedAt),
+              readableAccess(humanId),
             ),
           )
           .limit(1);
-        if (row === undefined || !(await callerIsActive(tx, humanId))) {
-          throw new NotificationsError("notification_not_found");
-        }
-        if (!(await hasReadAccess(tx, humanId, row.workspaceId, row.projectId))) {
-          throw new NotificationsError("notification_not_found");
-        }
+        if (row === undefined) throw new NotificationsError("notification_not_found");
         await tx
           .update(notifications)
           .set({ readAt: sql`coalesce(${notifications.readAt}, statement_timestamp())` })
@@ -302,15 +345,33 @@ export function createNotificationsService(deps: NotificationsDeps): Notificatio
       });
     },
 
-    async markAllRead(humanId) {
+    async markAllRead(actor) {
+      const humanId = requireHumanId(actor);
       return db.transaction(async (tx) => {
-        const accessible = await accessibleRows(tx, humanId);
-        const ids = accessible.filter((row) => row.readAt === null).map((row) => row.id);
-        if (ids.length === 0) return 0;
+        if (!(await callerIsActive(tx, humanId))) return 0;
+        const accessible = tx
+          .select({ id: notifications.id })
+          .from(notifications)
+          .innerJoin(issues, eq(issues.id, notifications.issueId))
+          .innerJoin(projects, eq(projects.id, notifications.projectId))
+          .where(
+            and(
+              eq(notifications.humanId, humanId),
+              isNull(notifications.readAt),
+              isNull(issues.deletedAt),
+              readableAccess(humanId),
+            ),
+          );
         const updated = await tx
           .update(notifications)
           .set({ readAt: sql`statement_timestamp()` })
-          .where(and(inArray(notifications.id, ids), isNull(notifications.readAt)))
+          .where(
+            and(
+              eq(notifications.humanId, humanId),
+              isNull(notifications.readAt),
+              inArray(notifications.id, accessible),
+            ),
+          )
           .returning({ id: notifications.id });
         return updated.length;
       });

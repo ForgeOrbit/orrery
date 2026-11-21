@@ -36,6 +36,7 @@ import {
 import { alias, type PgInsertValue } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { DbTransaction } from "../../platform/db.ts";
+import type { Logger } from "../../platform/log.ts";
 import {
   agents,
   humans,
@@ -43,7 +44,6 @@ import {
   issues,
   projectActivity,
   projects,
-  questions,
   runs,
   workSessionActivities,
   workSessions,
@@ -125,7 +125,10 @@ export interface SessionsDeps {
     | ((tx: DbTransaction, issueId: string) => Promise<Date | null>)
     | undefined;
   evaluateQuestionDeadline?: ((tx: DbTransaction, issueId: string) => Promise<void>) | undefined;
+  /** Due-question discovery stays in the inbox feature; work-sessions never queries questions. */
+  dueQuestionIssueIds?: (() => Promise<string[]>) | undefined;
   notifyActivity?: NotifyActivity | undefined;
+  log?: Logger | undefined;
 }
 
 export type AgentActor = { kind: "agent"; identity: AgentIdentity };
@@ -746,10 +749,13 @@ export function createSessionsService({
   listIssues,
   questionLeaseDeadline,
   evaluateQuestionDeadline,
+  dueQuestionIssueIds: dueQuestionIssueIdsDep,
   notifyActivity: notifyActivityDep,
+  log,
 }: SessionsDeps): SessionsService {
   const leaseDeadline = questionLeaseDeadline ?? (async () => null);
   const checkDeadline = evaluateQuestionDeadline ?? (async () => {});
+  const dueQuestionIssueIds = dueQuestionIssueIdsDep ?? (async () => []);
   const notifyActivity: NotifyActivity = notifyActivityDep ?? (async () => {});
 
   const expireCommitted = (issueId: string) =>
@@ -1467,53 +1473,47 @@ export function createSessionsService({
     },
 
     async sweep() {
-      await db.transaction(async (tx) => {
-        const stale = await tx
-          .select({ issueId: workSessions.issueId })
-          .from(workSessions)
-          .innerJoin(issues, eq(workSessions.issueId, issues.id))
-          .where(
-            and(
-              eq(workSessions.status, WorkSessionStatus.enum.active),
-              lte(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
-              isNull(issues.deletedAt),
-            ),
-          );
-        const staleIds = [...new Set(stale.map((row) => row.issueId))].toSorted();
-        if (staleIds.length > 0) {
-          await tx
-            .select({ id: issues.id })
-            .from(issues)
-            .where(inArray(issues.id, staleIds))
-            .orderBy(issues.id)
-            .for("update");
-          for (const issueId of staleIds) await expireStale(tx, issueId, notifyActivity);
-        }
-
-        if (evaluateQuestionDeadline !== undefined) {
-          const due = await tx
-            .select({ issueId: questions.issueId })
-            .from(questions)
-            .innerJoin(issues, eq(questions.issueId, issues.id))
+      // Discovery is read-only and bounded; each issue is then settled in its own small
+      // transaction so one bad issue cannot roll back the whole sweep. Issues are visited
+      // in ascending id order, matching the global projects->issues lock order, and the
+      // issue row is locked before either transition runs.
+      const stale = await db.transaction(
+        async (tx) => {
+          const rows = await tx
+            .select({ issueId: workSessions.issueId })
+            .from(workSessions)
+            .innerJoin(issues, eq(workSessions.issueId, issues.id))
             .where(
               and(
-                eq(questions.status, "open"),
-                lte(questions.responseDeadlineAt, sql`statement_timestamp()`),
+                eq(workSessions.status, WorkSessionStatus.enum.active),
+                lte(workSessions.leaseExpiresAt, sql`statement_timestamp()`),
                 isNull(issues.deletedAt),
               ),
-            );
-          const dueIds = [...new Set(due.map((row) => row.issueId))].toSorted();
-          if (dueIds.length > 0) {
-            await tx
-              .select({ id: issues.id })
-              .from(issues)
-              .where(inArray(issues.id, dueIds))
-              .orderBy(issues.id)
-              .for("update");
-            for (const issueId of dueIds) await checkDeadline(tx, issueId);
-          }
+            )
+            .orderBy(workSessions.issueId)
+            .limit(100);
+          return [...new Set(rows.map((row) => row.issueId))];
+        },
+        { accessMode: "read only" },
+      );
+      const due = await dueQuestionIssueIds();
+      const issueIds = [...new Set([...stale, ...due])].toSorted();
+      for (const issueId of issueIds) {
+        try {
+          await db.transaction(async (tx) => {
+            await lockIssue(tx, issueId);
+            // A 1-hour require_human question pause releases the claim itself; running the
+            // deadline first avoids a spurious issue_session_expired for that clean pause.
+            await checkDeadline(tx, issueId);
+            await expireStale(tx, issueId, notifyActivity);
+          });
+        } catch (error) {
+          log?.warn("expiry sweep skipped an issue", {
+            issueId,
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
-      });
+      }
     },
 
     async agentHoldsSession(tx, agentId, workspaceId, issueId) {

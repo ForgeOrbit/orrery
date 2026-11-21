@@ -11,6 +11,8 @@ import {
   validationHook,
 } from "../../platform/problem.ts";
 import type { SessionReader } from "../accounts/index.ts";
+import { isAgentError, type AgentAuthenticator } from "../agents/index.ts";
+import type { WorkActor } from "../projects/index.ts";
 import {
   NotificationsError,
   type NotificationsErrorKind,
@@ -31,8 +33,8 @@ const listNotifications = createRoute({
       description: "A page of notifications and the caller's total unread count",
       content: { "application/json": { schema: NotificationsResponse } },
     },
-    400: problem("The query is invalid"),
-    401: problem("Not signed in"),
+    400: problem("The query or the pagination cursor is invalid"),
+    401: problem("Not signed in, or the agent key is invalid or revoked"),
     403: problem("Agent keys cannot read notifications"),
   },
 });
@@ -47,7 +49,7 @@ const markNotificationRead = createRoute({
   responses: {
     204: { description: "The notification is read" },
     400: problem("The notification id is invalid"),
-    401: problem("Not signed in"),
+    401: problem("Not signed in, or the agent key is invalid or revoked"),
     403: problem("Agent keys cannot read notifications"),
     404: problem("No such notification is accessible to the caller"),
   },
@@ -64,7 +66,7 @@ const markAllNotificationsRead = createRoute({
       description: "The number of notifications marked read",
       content: { "application/json": { schema: MarkAllReadResponse } },
     },
-    401: problem("Not signed in"),
+    401: problem("Not signed in, or the agent key is invalid or revoked"),
     403: problem("Agent keys cannot read notifications"),
   },
 });
@@ -74,6 +76,7 @@ export const routes = [listNotifications, markNotificationRead, markAllNotificat
 const statusFor = {
   not_signed_in: 401,
   agents_cannot_use_notifications: 403,
+  invalid_cursor: 400,
   notification_not_found: 404,
 } as const satisfies Record<NotificationsErrorKind, number>;
 
@@ -89,6 +92,9 @@ function failure<K extends readonly NotificationsErrorKind[]>(
   error: unknown,
   kinds: K,
 ) {
+  if (isAgentError(error)) {
+    return problemResponse(c, { status: 401, code: error.kind, title: error.message });
+  }
   if (error instanceof NotificationsError && isKind(error, kinds)) {
     return problemResponse(c, {
       status: statusFor[error.kind],
@@ -99,7 +105,7 @@ function failure<K extends readonly NotificationsErrorKind[]>(
   throw error;
 }
 
-const listKinds = ["not_signed_in", "agents_cannot_use_notifications"] as const;
+const listKinds = ["not_signed_in", "agents_cannot_use_notifications", "invalid_cursor"] as const;
 const readKinds = [
   "not_signed_in",
   "agents_cannot_use_notifications",
@@ -107,28 +113,25 @@ const readKinds = [
 ] as const;
 const readAllKinds = ["not_signed_in", "agents_cannot_use_notifications"] as const;
 
-async function humanIdOf(c: Context, sessionReader: SessionReader): Promise<string> {
-  // Notification endpoints are human-only; a bearer agent key never reaches the service.
-  if (/^Bearer\s+/i.test(c.req.header("authorization") ?? "")) {
-    throw new NotificationsError("agents_cannot_use_notifications");
-  }
-  const account = await sessionReader(c);
-  if (account === null) throw new NotificationsError("not_signed_in");
-  return account.humanId;
-}
-
 export function createNotificationsRest(
   service: NotificationsService,
   sessionReader: SessionReader,
+  authenticate: AgentAuthenticator,
 ) {
   const app = new OpenAPIHono({ defaultHook: validationHook });
 
+  const workActor = async (c: Context): Promise<WorkActor | null> => {
+    const identity = await authenticate(c.req.raw);
+    if (identity !== null) return { kind: "agent", identity };
+    const account = await sessionReader(c);
+    return account === null ? null : { kind: "human", account };
+  };
+
   app.openapi(listNotifications, async (c) => {
     try {
-      const humanId = await humanIdOf(c, sessionReader);
       const query = c.req.valid("query");
       return c.json(
-        await service.list(humanId, {
+        await service.list(await workActor(c), {
           unreadOnly: query.unreadOnly === "true",
           limit: query.limit,
           cursor: query.cursor ?? null,
@@ -142,8 +145,7 @@ export function createNotificationsRest(
 
   app.openapi(markNotificationRead, async (c) => {
     try {
-      const humanId = await humanIdOf(c, sessionReader);
-      await service.markRead(humanId, c.req.valid("param").notificationId);
+      await service.markRead(await workActor(c), c.req.valid("param").notificationId);
       return c.body(null, 204);
     } catch (error) {
       return failure(c, error, readKinds);
@@ -152,8 +154,7 @@ export function createNotificationsRest(
 
   app.openapi(markAllNotificationsRead, async (c) => {
     try {
-      const humanId = await humanIdOf(c, sessionReader);
-      return c.json({ markedCount: await service.markAllRead(humanId) }, 200);
+      return c.json({ markedCount: await service.markAllRead(await workActor(c)) }, 200);
     } catch (error) {
       return failure(c, error, readAllKinds);
     }

@@ -3700,7 +3700,7 @@
           "number": {
             "type": "integer"
           },
-          "key": {
+          "identifier": {
             "type": "string"
           },
           "title": {
@@ -3710,7 +3710,7 @@
         "required": [
           "id",
           "number",
-          "key",
+          "identifier",
           "title"
         ]
       },
@@ -11520,7 +11520,7 @@
             }
           },
           "400": {
-            "description": "The query is invalid",
+            "description": "The query or the pagination cursor is invalid",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -11530,7 +11530,7 @@
             }
           },
           "401": {
-            "description": "Not signed in",
+            "description": "Not signed in, or the agent key is invalid or revoked",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -11583,7 +11583,7 @@
             }
           },
           "401": {
-            "description": "Not signed in",
+            "description": "Not signed in, or the agent key is invalid or revoked",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -11631,7 +11631,7 @@
             }
           },
           "401": {
-            "description": "Not signed in",
+            "description": "Not signed in, or the agent key is invalid or revoked",
             "content": {
               "application/problem+json": {
                 "schema": {
