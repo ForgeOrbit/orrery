@@ -3523,6 +3523,265 @@
           "answer"
         ]
       },
+      "MyWorkResponse": {
+        "type": "object",
+        "properties": {
+          "assignedIssues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MyWorkAssignedIssue"
+            }
+          },
+          "activeAgentSessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MyWorkActiveSession"
+            }
+          },
+          "needsInputQuestions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MyWorkQuestion"
+            }
+          }
+        },
+        "required": [
+          "assignedIssues",
+          "activeAgentSessions",
+          "needsInputQuestions"
+        ]
+      },
+      "MyWorkAssignedIssue": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "projectName": {
+            "type": "string"
+          },
+          "projectKey": {
+            "type": "string"
+          },
+          "workspaceId": {
+            "type": "string"
+          },
+          "workspaceName": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "identifier": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/IssueStatus"
+          },
+          "priority": {
+            "$ref": "#/components/schemas/IssuePriority"
+          },
+          "needsInput": {
+            "type": "boolean"
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "id",
+          "projectId",
+          "projectName",
+          "projectKey",
+          "workspaceId",
+          "workspaceName",
+          "number",
+          "identifier",
+          "title",
+          "status",
+          "priority",
+          "needsInput",
+          "updatedAt"
+        ]
+      },
+      "MyWorkActiveSession": {
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "agentName": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "harness": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "issueId": {
+            "type": "string"
+          },
+          "issueIdentifier": {
+            "type": "string"
+          },
+          "issueTitle": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "projectName": {
+            "type": "string"
+          },
+          "workspaceId": {
+            "type": "string"
+          },
+          "workspaceName": {
+            "type": "string"
+          },
+          "leaseExpiresAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "progress": {
+            "type": "string"
+          },
+          "stopRequestedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "stopReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "inputTokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "outputTokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "costUsdMicros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          }
+        },
+        "required": [
+          "sessionId",
+          "agentId",
+          "agentName",
+          "runId",
+          "harness",
+          "model",
+          "issueId",
+          "issueIdentifier",
+          "issueTitle",
+          "projectId",
+          "projectName",
+          "workspaceId",
+          "workspaceName",
+          "leaseExpiresAt",
+          "progress",
+          "stopRequestedAt",
+          "stopReason",
+          "inputTokens",
+          "outputTokens",
+          "costUsdMicros"
+        ]
+      },
+      "MyWorkQuestion": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "issueId": {
+            "type": "string"
+          },
+          "issueIdentifier": {
+            "type": "string"
+          },
+          "issueTitle": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "projectName": {
+            "type": "string"
+          },
+          "workspaceId": {
+            "type": "string"
+          },
+          "workspaceName": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "agentName": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/QuestionStatus"
+          },
+          "responseDeadlineAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "id",
+          "issueId",
+          "issueIdentifier",
+          "issueTitle",
+          "projectId",
+          "projectName",
+          "workspaceId",
+          "workspaceName",
+          "agentId",
+          "agentName",
+          "question",
+          "status",
+          "responseDeadlineAt",
+          "createdAt"
+        ]
+      },
       "TransferPreview": {
         "type": "object",
         "properties": {
@@ -10885,6 +11144,44 @@
           },
           "404": {
             "description": "No such issue is in scope for the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/my-work": {
+      "get": {
+        "summary": "My work across workspaces",
+        "description": "The signed-in human's open assigned issues, live sessions under their own agents, and open or paused needs-input questions. Every section is scoped by the caller's current effective workspace membership and project access: revoked grants and suspended or removed memberships exclude data immediately. Agent keys are not accepted; sign in as a human.",
+        "responses": {
+          "200": {
+            "description": "The three sections of the human's cross-workspace work",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MyWorkResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in as a human, or the account is deactivated",
             "content": {
               "application/problem+json": {
                 "schema": {

@@ -12,6 +12,7 @@ import type { IssueSessionGate, WorkSessionGate } from "./projects/index.ts";
 import { createHistoryFeature, historyRoutes } from "./history/index.ts";
 import { createInboxFeature, inboxRoutes } from "./inbox/index.ts";
 import { createInvitationsFeature, invitationsRoutes } from "./invitations/index.ts";
+import { createMyWorkFeature, myWorkRoutes } from "./my-work/index.ts";
 import { createOwnershipFeature, ownershipRoutes } from "./ownership/index.ts";
 import { createProjectsFeature, projectAccessAtLeast, projectsRoutes } from "./projects/index.ts";
 import { createRecoveryFeature, recoveryRoutes } from "./recovery/index.ts";
@@ -205,6 +206,15 @@ export function createFeatures(database: Database, config: Config, log: Logger):
     }),
     sessions,
     inbox,
+    // My work is one human-only read over the same access resolver projects lends every
+    // feature. It never authenticates an agent key and writes nothing.
+    createMyWorkFeature({
+      db: database.db,
+      sessionReader: accounts.sessionReader,
+      projectAccessCeiling: (tx, workspaceId, humanId, projectIds) =>
+        projects.projectAccessCeiling(tx, workspaceId, humanId, projectIds),
+      projectAccessAtLeast,
+    }),
     // Transfer rechecks source and destination authority in one transaction. It borrows
     // only the human session reader; no agent key or MCP tool performs an ownership move.
     createTransfersFeature({
@@ -230,5 +240,6 @@ export const routes = [
   ...runsRoutes,
   ...sessionsRoutes,
   ...inboxRoutes,
+  ...myWorkRoutes,
   ...transfersRoutes,
 ];
