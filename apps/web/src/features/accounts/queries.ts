@@ -12,7 +12,7 @@ export const setupStatusQuery = queryOptions({
 
 export type Session =
   | { signedIn: false }
-  | { signedIn: true; email: string; emailVerified: boolean };
+  | { signedIn: true; email: string; displayName: string | null; emailVerified: boolean };
 
 export const sessionQuery = queryOptions({
   queryKey: ["session"],
@@ -22,6 +22,11 @@ export const sessionQuery = queryOptions({
     if (res.status === 401) return { signedIn: false };
     if (!res.ok) throw new Error(`Session check failed (${res.status}).`);
     const account = SessionResponse.parse(await res.json());
-    return { signedIn: true, email: account.email, emailVerified: account.emailVerified };
+    return {
+      signedIn: true,
+      email: account.email,
+      displayName: account.displayName ?? null,
+      emailVerified: account.emailVerified,
+    };
   },
 });

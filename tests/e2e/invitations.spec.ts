@@ -154,7 +154,11 @@ test("the link's GET is inert; the POST registers; reuse fails", async () => {
     });
     expect(login.status()).toBe(200);
     const session = await newcomer.get("/api/auth/session");
-    expect(await session.json()).toEqual({ email: INVITEE_EMAIL, emailVerified: true });
+    expect(await session.json()).toEqual({
+      email: INVITEE_EMAIL,
+      displayName: null,
+      emailVerified: true,
+    });
   } finally {
     await newcomer.dispose();
   }

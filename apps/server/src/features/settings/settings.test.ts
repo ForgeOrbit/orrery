@@ -823,7 +823,11 @@ describe("settings", () => {
 
       // Bootstrap created the administrator unverified (ADR-0001), and the session says so.
       const before = await getJson(app, "/api/auth/session", cookie);
-      expect(await before.json()).toEqual({ email: EMAIL, emailVerified: false });
+      expect(await before.json()).toEqual({
+        email: EMAIL,
+        displayName: null,
+        emailVerified: false,
+      });
 
       const res = await postJson(app, "/api/settings/email-verification", { token }, cookie);
       expect(res.status).toBe(200);
@@ -835,7 +839,11 @@ describe("settings", () => {
       expect(row?.usedAt).not.toBeNull();
 
       const after = await getJson(app, "/api/auth/session", cookie);
-      expect(await after.json()).toEqual({ email: EMAIL, emailVerified: true });
+      expect(await after.json()).toEqual({
+        email: EMAIL,
+        displayName: null,
+        emailVerified: true,
+      });
 
       // Single-use: the same token is worthless once redeemed.
       const again = await postJson(app, "/api/settings/email-verification", { token }, cookie);

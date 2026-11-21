@@ -165,11 +165,31 @@
         "minLength": 1,
         "maxLength": 1024
       },
+      "LogoutResponse": {
+        "type": "object",
+        "properties": {
+          "signedOut": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          }
+        },
+        "required": [
+          "signedOut"
+        ]
+      },
       "SessionResponse": {
         "type": "object",
         "properties": {
           "email": {
             "$ref": "#/components/schemas/Email"
+          },
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "emailVerified": {
             "type": "boolean"
@@ -178,6 +198,54 @@
         "required": [
           "email",
           "emailVerified"
+        ]
+      },
+      "UpdateProfileRequest": {
+        "type": "object",
+        "properties": {
+          "displayName": {
+            "$ref": "#/components/schemas/DisplayName"
+          }
+        },
+        "required": [
+          "displayName"
+        ]
+      },
+      "DisplayName": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "minLength": 1,
+        "maxLength": 120
+      },
+      "ChangePasswordResponse": {
+        "type": "object",
+        "properties": {
+          "changed": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          }
+        },
+        "required": [
+          "changed"
+        ]
+      },
+      "ChangePasswordRequest": {
+        "type": "object",
+        "properties": {
+          "currentPassword": {
+            "$ref": "#/components/schemas/LoginPassword"
+          },
+          "newPassword": {
+            "$ref": "#/components/schemas/NewPassword"
+          }
+        },
+        "required": [
+          "currentPassword",
+          "newPassword"
         ]
       },
       "AccountStatus": {
@@ -4207,6 +4275,23 @@
         }
       }
     },
+    "/api/auth/logout": {
+      "post": {
+        "summary": "Sign out and revoke the current browser session",
+        "responses": {
+          "200": {
+            "description": "Signed out; the session cookie is cleared",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogoutResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/auth/session": {
       "get": {
         "summary": "The account behind the browser's session cookie",
@@ -4223,6 +4308,101 @@
           },
           "401": {
             "description": "No valid session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/account/profile": {
+      "patch": {
+        "summary": "Update the signed-in account's profile",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateProfileRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated account profile",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid profile fields",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/account/password": {
+      "post": {
+        "summary": "Change the signed-in account's password",
+        "description": "Verifies the current password, updates the password hash, and revokes all other browser sessions while keeping the current session active.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Password changed; other browser sessions revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChangePasswordResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid password input",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or current password is incorrect",
             "content": {
               "application/problem+json": {
                 "schema": {

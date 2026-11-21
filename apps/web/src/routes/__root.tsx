@@ -5,13 +5,17 @@ import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
 import { Link as AstryxLink } from "@astryxdesign/core/Link";
 import { Stack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
-import { Theme } from "@astryxdesign/core/theme";
-import { type QueryClient, useQuery } from "@tanstack/react-query";
-import { Outlet, createRootRouteWithContext, useMatches } from "@tanstack/react-router";
+import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  Outlet,
+  createRootRouteWithContext,
+  useMatches,
+  useNavigate,
+} from "@tanstack/react-router";
 import { useState } from "react";
-import mark from "../../../../assets/orrery-mark-dark.svg";
-import { defaultThemeSlug, themes } from "../astryx-themes.ts";
-import { sessionQuery } from "../features/accounts/index.ts";
+import markDark from "../../../../assets/orrery-mark-dark.svg";
+import markLight from "../../../../assets/orrery-mark.svg";
+import { sessionQuery, signOut } from "../features/accounts/index.ts";
 import { installationInvitationsQuery } from "../features/invitations/index.ts";
 import { workspacesQuery } from "../features/workspaces/index.ts";
 import { AppearancePicker } from "../lib/appearance.tsx";
@@ -112,7 +116,7 @@ function RootLayout() {
         <aside className="access-cover">
           <header className="access-toolbar">
             <BrandHome />
-            <AppearancePicker />
+            <AppearancePicker forceDark />
           </header>
           <Stack className="orbit-diagram" aria-hidden="true">
             <span />
@@ -141,19 +145,17 @@ function RootLayout() {
         Skip to content
       </AstryxLink>
       <header className="mobile-topbar">
-        <Theme theme={themes[defaultThemeSlug]} mode="dark">
-          <Stack direction="horizontal" className="mobile-topbar-left">
-            <IconButton
-              type="button"
-              variant="ghost"
-              size="sm"
-              label="Open navigation"
-              icon={<MenuIcon />}
-              onClick={() => setMobileNavOpen(true)}
-            />
-            <BrandHome />
-          </Stack>
-        </Theme>
+        <Stack direction="horizontal" className="mobile-topbar-left">
+          <IconButton
+            type="button"
+            variant="ghost"
+            size="sm"
+            label="Open navigation"
+            icon={<MenuIcon />}
+            onClick={() => setMobileNavOpen(true)}
+          />
+          <BrandHome />
+        </Stack>
         <AppearancePicker />
       </header>
       <aside className="app-sidebar">
@@ -175,6 +177,7 @@ function RootLayout() {
           <LayoutContent>
             <Stack className="mobile-drawer-nav">
               <SidebarLinks onNavigate={() => setMobileNavOpen(false)} />
+              <SidebarFooter onNavigate={() => setMobileNavOpen(false)} showAppearance={false} />
             </Stack>
           </LayoutContent>
         </Layout>
@@ -190,10 +193,25 @@ function BrandHome() {
   return (
     <Link to="/" className="brand-home" color="inherit">
       <Text type="inherit" color="inherit" className="brand-lockup">
-        <img src={mark} width="22" height="20" alt="" />
+        <img src={markLight} width="22" height="20" alt="" className="brand-mark-light" />
+        <img src={markDark} width="22" height="20" alt="" className="brand-mark-dark" />
         Orrery
       </Text>
     </Link>
+  );
+}
+
+function SignOutIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M6.5 2.75H3.8a1.05 1.05 0 0 0-1.05 1.05v8.4c0 .58.47 1.05 1.05 1.05h2.7M10.5 11.25 13.75 8 10.5 4.75M13.5 8H6.5"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }
 
@@ -313,16 +331,48 @@ function SidebarLinks({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
-function SidebarFooter() {
+function SidebarFooter({
+  onNavigate,
+  showAppearance = true,
+}: {
+  onNavigate?: () => void;
+  showAppearance?: boolean;
+}) {
   const { data: session } = useQuery(sessionQuery);
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const logout = useMutation({
+    mutationFn: signOut,
+    onSuccess: async () => {
+      queryClient.clear();
+      onNavigate?.();
+      await navigate({ to: "/signin", replace: true });
+    },
+  });
+  const clickProp = onNavigate === undefined ? {} : { onClick: onNavigate };
+
   return (
     <footer className="sidebar-footer">
       {session?.signedIn && (
-        <Text as="p" display="block" type="supporting" className="sidebar-account">
-          {session.email}
-        </Text>
+        <div className="sidebar-account-row">
+          <Link to="/account" color="inherit" className="sidebar-account-link" {...clickProp}>
+            <span className="sidebar-account-name">{session.displayName ?? session.email}</span>
+            {session.displayName !== null && (
+              <span className="sidebar-account-email">{session.email}</span>
+            )}
+          </Link>
+          <IconButton
+            type="button"
+            variant="ghost"
+            size="sm"
+            label="Sign out"
+            icon={<SignOutIcon />}
+            isDisabled={logout.isPending}
+            onClick={() => logout.mutate()}
+          />
+        </div>
       )}
-      <AppearancePicker />
+      {showAppearance && <AppearancePicker />}
     </footer>
   );
 }

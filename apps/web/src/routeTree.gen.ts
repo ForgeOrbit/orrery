@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AccountRouteImport } from './routes/account'
 import { Route as ForgotPasswordRouteImport } from './routes/forgot-password'
 import { Route as InboxRouteImport } from './routes/inbox'
 import { Route as MyWorkRouteImport } from './routes/my-work'
@@ -32,6 +33,11 @@ import { Route as HistoryWorkspaceWorkspaceIdRouteImport } from './routes/histor
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AccountRoute = AccountRouteImport.update({
+  id: '/account',
+  path: '/account',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ForgotPasswordRoute = ForgotPasswordRouteImport.update({
@@ -128,6 +134,7 @@ const HistoryWorkspaceWorkspaceIdRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/account': typeof AccountRoute
   '/forgot-password': typeof ForgotPasswordRoute
   '/inbox': typeof InboxRoute
   '/my-work': typeof MyWorkRoute
@@ -149,6 +156,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/account': typeof AccountRoute
   '/forgot-password': typeof ForgotPasswordRoute
   '/inbox': typeof InboxRoute
   '/my-work': typeof MyWorkRoute
@@ -171,6 +179,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/account': typeof AccountRoute
   '/forgot-password': typeof ForgotPasswordRoute
   '/inbox': typeof InboxRoute
   '/my-work': typeof MyWorkRoute
@@ -194,6 +203,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/account'
     | '/forgot-password'
     | '/inbox'
     | '/my-work'
@@ -215,6 +225,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/account'
     | '/forgot-password'
     | '/inbox'
     | '/my-work'
@@ -236,6 +247,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/account'
     | '/forgot-password'
     | '/inbox'
     | '/my-work'
@@ -258,6 +270,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AccountRoute: typeof AccountRoute
   ForgotPasswordRoute: typeof ForgotPasswordRoute
   InboxRoute: typeof InboxRoute
   MyWorkRoute: typeof MyWorkRoute
@@ -285,6 +298,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/account': {
+      id: '/account'
+      path: '/account'
+      fullPath: '/account'
+      preLoaderRoute: typeof AccountRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/forgot-password': {
@@ -418,6 +438,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AccountRoute: AccountRoute,
   ForgotPasswordRoute: ForgotPasswordRoute,
   InboxRoute: InboxRoute,
   MyWorkRoute: MyWorkRoute,

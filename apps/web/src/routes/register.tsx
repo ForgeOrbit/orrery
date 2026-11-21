@@ -73,6 +73,7 @@ function RegisterPage() {
       const session: Session = {
         signedIn: true,
         email: account.email,
+        displayName: null,
         emailVerified: account.emailVerified,
       };
       queryClient.setQueryData(sessionQuery.queryKey, session);
