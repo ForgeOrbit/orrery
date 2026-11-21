@@ -5,6 +5,7 @@ import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
 import { Section } from "@astryxdesign/core/Section";
 import { Stack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
+import { useToast } from "@astryxdesign/core/Toast";
 import type { InvitationSummary } from "@orrery/contract";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
@@ -144,6 +145,7 @@ function Home() {
 function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const toast = useToast();
   const [name, setName] = useState("");
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
@@ -158,12 +160,15 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
       await queryClient.invalidateQueries({ queryKey: workspacesQuery.queryKey });
       setName("");
       onCreated();
+      toast({ body: `Created workspace "${workspace.name}".` });
       await navigate({
         to: "/workspaces/$workspaceId",
         params: { workspaceId: workspace.id },
       });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not create the workspace.");
+      const msg = cause instanceof Error ? cause.message : "Could not create the workspace.";
+      setError(msg);
+      toast({ body: msg, type: "error" });
     } finally {
       setSubmitting(false);
     }
@@ -203,6 +208,7 @@ function InstallationInvitations() {
   const [inviting, setInviting] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
 
+  const toast = useToast();
   if (invitations === null) return null;
 
   const reload = () =>
@@ -216,8 +222,11 @@ function InstallationInvitations() {
       await inviteInstallation({ email });
       setEmail("");
       setInviteOpen(false);
+      toast({ body: `Invitation sent to ${email}.` });
     } catch (cause) {
-      setInviteError(cause instanceof Error ? cause.message : "Could not send the invitation.");
+      const msg = cause instanceof Error ? cause.message : "Could not send the invitation.";
+      setInviteError(msg);
+      toast({ body: msg, type: "error" });
     } finally {
       setInviting(false);
       await reload();
@@ -229,8 +238,11 @@ function InstallationInvitations() {
     setError(undefined);
     try {
       await action();
+      toast({ body: "Invitation updated." });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not change the invitation.");
+      const msg = cause instanceof Error ? cause.message : "Could not change the invitation.";
+      setError(msg);
+      toast({ body: msg, type: "error" });
     } finally {
       setBusyId(undefined);
       await reload();

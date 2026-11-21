@@ -1,8 +1,8 @@
 import { Button } from "@astryxdesign/core/Button";
 import { Heading } from "@astryxdesign/core/Heading";
-import { Section } from "@astryxdesign/core/Section";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Text } from "@astryxdesign/core/Text";
+import { useToast } from "@astryxdesign/core/Toast";
 import { type Issue, type IssueDetail, type ProjectLabel } from "@orrery/contract";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -22,6 +22,7 @@ export function IssueLabels({
   canContribute: boolean;
 }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [selected, setSelected] = useState("");
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
@@ -49,8 +50,11 @@ export function IssueLabels({
       const updated = await attachIssueLabel(issue.id, selected);
       setSelected("");
       await refresh(updated);
+      toast({ body: "Label attached." });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not attach the label.");
+      const msg = cause instanceof Error ? cause.message : "Could not attach the label.";
+      setError(msg);
+      toast({ body: msg, type: "error" });
     } finally {
       setSaving(false);
     }
@@ -61,26 +65,29 @@ export function IssueLabels({
     setError(undefined);
     try {
       await refresh(await detachIssueLabel(issue.id, labelId));
+      toast({ body: "Label removed." });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not detach the label.");
+      const msg = cause instanceof Error ? cause.message : "Could not detach the label.";
+      setError(msg);
+      toast({ body: msg, type: "error" });
     } finally {
       setSaving(false);
     }
   }
 
   return (
-    <Section className="page-section" padding={0}>
-      <Heading level={2} color="inherit">
+    <div className="issue-labels-block">
+      <Heading level={3} color="inherit" className="issue-prop-label">
         Labels
       </Heading>
       {issue.labels.length === 0 ? (
         <Text as="p" display="block" type="supporting">
-          No labels attached.
+          No labels
         </Text>
       ) : (
-        <ul>
+        <ul className="issue-label-chips">
           {issue.labels.map((label) => (
-            <li key={label.id} data-issue-label-id={label.id}>
+            <li key={label.id} className="issue-label-chip-item" data-issue-label-id={label.id}>
               <LabelPill label={label} />
               {canContribute && (
                 <Button
@@ -97,10 +104,11 @@ export function IssueLabels({
         </ul>
       )}
       {canContribute && available.length > 0 && (
-        <>
+        <div className="issue-label-attach">
           <Selector
             label="Attach label"
             id="issue-attach-label"
+            size="sm"
             value={selected}
             onChange={setSelected}
             placeholder="Choose a label…"
@@ -110,16 +118,17 @@ export function IssueLabels({
             type="button"
             label="Attach label"
             variant="secondary"
+            size="sm"
             isDisabled={saving || selected === ""}
             onClick={() => void onAttach()}
           />
-        </>
+        </div>
       )}
       {error !== undefined && (
         <Text as="p" display="block" type="supporting" role="alert">
           {error}
         </Text>
       )}
-    </Section>
+    </div>
   );
 }

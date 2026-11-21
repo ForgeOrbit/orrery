@@ -1,3 +1,4 @@
+import { useToast } from "@astryxdesign/core/Toast";
 import type { Issue, IssueDetail } from "@orrery/contract";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
@@ -14,6 +15,7 @@ export function CreateIssueForm({
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const toast = useToast();
 
   return (
     <TitleBodyForm
@@ -36,6 +38,7 @@ export function CreateIssueForm({
           queryClient.invalidateQueries({ queryKey: projectActivityQuery(projectId).queryKey }),
           queryClient.invalidateQueries({ queryKey: readyWorkQuery(projectId).queryKey }),
         ]);
+        toast({ body: `Created ${issue.identifier}.` });
         if (onCreated) onCreated(issue);
         else await navigate({ to: "/issues/$issueId", params: { issueId: issue.id } });
       }}

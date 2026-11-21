@@ -1,5 +1,6 @@
 import { Heading } from "@astryxdesign/core/Heading";
 import { Text } from "@astryxdesign/core/Text";
+import { useToast } from "@astryxdesign/core/Toast";
 import { Stack } from "@astryxdesign/core/Stack";
 import { Card } from "@astryxdesign/core/Card";
 import { TextAreaField } from "../lib/fields.tsx";
@@ -147,6 +148,7 @@ function QuestionCard({ question }: { question: Question }) {
 
 function AnswerForm({ question }: { question: Question }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [answer, setAnswer] = useState("");
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
@@ -166,12 +168,14 @@ function AnswerForm({ question }: { question: Question }) {
         queryClient.invalidateQueries({ queryKey: issueQuestionsQuery(question.issueId).queryKey }),
       ]);
       setAnswer("");
+      toast({ body: "Answer sent." });
     } catch (cause) {
-      setError(
+      const msg =
         cause instanceof ApiProblemError
           ? cause.message
-          : "Could not submit the answer. Please try again.",
-      );
+          : "Could not submit the answer. Please try again.";
+      setError(msg);
+      toast({ body: msg, type: "error" });
     } finally {
       setSubmitting(false);
     }

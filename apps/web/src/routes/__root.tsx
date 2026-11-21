@@ -5,6 +5,7 @@ import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
 import { Link as AstryxLink } from "@astryxdesign/core/Link";
 import { Stack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
+import { useToast } from "@astryxdesign/core/Toast";
 import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Outlet,
@@ -341,12 +342,17 @@ function SidebarFooter({
   const { data: session } = useQuery(sessionQuery);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const toast = useToast();
   const logout = useMutation({
     mutationFn: signOut,
     onSuccess: async () => {
       queryClient.clear();
       onNavigate?.();
+      toast({ body: "Signed out." });
       await navigate({ to: "/signin", replace: true });
+    },
+    onError: (error) => {
+      toast({ body: error.message, type: "error" });
     },
   });
   const clickProp = onNavigate === undefined ? {} : { onClick: onNavigate };

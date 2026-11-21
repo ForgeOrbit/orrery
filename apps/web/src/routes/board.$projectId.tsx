@@ -11,6 +11,7 @@ import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Stack } from "@astryxdesign/core/Stack";
 import { ToggleButton } from "@astryxdesign/core/ToggleButton";
+import { useToast } from "@astryxdesign/core/Toast";
 import { type ActiveWorkSession, type Issue, IssuePriority, IssueStatus } from "@orrery/contract";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
@@ -68,6 +69,7 @@ const BOARD_COLUMNS: IssueStatus[] = [
 
 function BoardPage() {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const { projectId } = Route.useParams();
   const { data: project } = useSuspenseQuery(projectQuery(projectId));
   const { data: workspace } = useSuspenseQuery(workspaceQuery(project.workspaceId));
@@ -138,8 +140,11 @@ function BoardPage() {
         queryClient.invalidateQueries({ queryKey: readyWorkQuery(projectId).queryKey }),
         queryClient.invalidateQueries({ queryKey: projectActivityQuery(projectId).queryKey }),
       ]);
+      toast({ body: `Moved ${issue.identifier} to ${issueStatusLabels[status]}.` });
     } catch (cause) {
-      setMoveError(cause instanceof Error ? cause.message : "Could not move the issue.");
+      const msg = cause instanceof Error ? cause.message : "Could not move the issue.";
+      setMoveError(msg);
+      toast({ body: msg, type: "error" });
     } finally {
       setMoving(false);
     }

@@ -2,6 +2,7 @@ import { Button } from "@astryxdesign/core/Button";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Stack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
+import { useToast } from "@astryxdesign/core/Toast";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
@@ -32,6 +33,7 @@ export const Route = createFileRoute("/trash/$projectId")({
 function ProjectTrashPage() {
   const { projectId } = Route.useParams();
   const queryClient = useQueryClient();
+  const toast = useToast();
   const { data: project } = useSuspenseQuery(projectQuery(projectId));
   const canManage = project.accessLevel === "manage";
   const { data: trashed } = useQuery({ ...projectTrashQuery(projectId), enabled: canManage });
@@ -50,8 +52,11 @@ function ProjectTrashPage() {
         queryClient.invalidateQueries({ queryKey: readyWorkQuery(projectId).queryKey }),
         queryClient.invalidateQueries({ queryKey: projectActivityQuery(projectId).queryKey }),
       ]);
+      toast({ body: "Issue restored." });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not restore the issue.");
+      const msg = cause instanceof Error ? cause.message : "Could not restore the issue.";
+      setError(msg);
+      toast({ body: msg, type: "error" });
     } finally {
       setRestoring(false);
     }

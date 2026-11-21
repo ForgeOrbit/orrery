@@ -2,6 +2,7 @@ import { Button } from "@astryxdesign/core/Button";
 import { Heading } from "@astryxdesign/core/Heading";
 import { Section } from "@astryxdesign/core/Section";
 import { Text } from "@astryxdesign/core/Text";
+import { useToast } from "@astryxdesign/core/Toast";
 import { type Issue, type IssueDetail } from "@orrery/contract";
 import { useQueryClient } from "@tanstack/react-query";
 import type { FormEvent } from "react";
@@ -33,6 +34,7 @@ export function Subtasks({
   canContribute: boolean;
 }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [title, setTitle] = useState("");
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
@@ -56,8 +58,11 @@ export function Subtasks({
           queryKey: projectActivityQuery(issue.projectId).queryKey,
         }),
       ]);
+      toast({ body: "Subtask created." });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not create the subtask.");
+      const msg = cause instanceof Error ? cause.message : "Could not create the subtask.";
+      setError(msg);
+      toast({ body: msg, type: "error" });
     } finally {
       setSaving(false);
     }
@@ -67,9 +72,11 @@ export function Subtasks({
 
   return (
     <Section className="page-section" padding={0} data-subtasks-section>
-      <Heading level={2} color="inherit">
-        Subtasks
-      </Heading>
+      {isSubtask && (
+        <Heading level={2} color="inherit">
+          Subtasks
+        </Heading>
+      )}
       {isSubtask ? (
         parent !== undefined ? (
           <Text as="p" display="block" type="supporting">
@@ -85,37 +92,48 @@ export function Subtasks({
         )
       ) : (
         <>
-          <Text
-            as="p"
-            display="block"
-            type="supporting"
-            data-subtask-count={subtasks.length}
-            data-completed-subtask-count={completed}
-          >
-            {completed} of {subtasks.length} complete
-          </Text>
+          <div className="section-toolbar">
+            <Heading level={2} color="inherit">
+              Subtasks
+            </Heading>
+            <span
+              className="meta-pill"
+              data-subtask-count={subtasks.length}
+              data-completed-subtask-count={completed}
+            >
+              {completed} of {subtasks.length} complete
+            </span>
+          </div>
           {subtasks.length === 0 ? (
             <Text as="p" display="block" type="supporting">
               No subtasks yet.
             </Text>
           ) : (
-            <ul>
+            <ul className="row-list">
               {subtasks.map((subtask) => (
                 <li
                   key={subtask.id}
+                  className="row-item"
                   data-subtask-id={subtask.id}
                   data-subtask-status={subtask.status}
                 >
-                  <Link to="/issues/$issueId" params={{ issueId: subtask.id }}>
-                    {subtask.identifier} {subtask.title}
-                  </Link>{" "}
-                  · {issueStatusLabels[subtask.status]}
+                  <div className="row-item-main">
+                    <span className="issue-key">{subtask.identifier}</span>
+                    <Link
+                      to="/issues/$issueId"
+                      params={{ issueId: subtask.id }}
+                      className="row-item-title"
+                    >
+                      {subtask.title}
+                    </Link>
+                  </div>
+                  <span className="meta-pill">{issueStatusLabels[subtask.status]}</span>
                 </li>
               ))}
             </ul>
           )}
           {canContribute && (
-            <form onSubmit={(event) => void onCreate(event)}>
+            <form className="issue-inline-form" onSubmit={(event) => void onCreate(event)}>
               <TextField
                 label="Subtask name"
                 id="new-subtask-title"
@@ -123,10 +141,16 @@ export function Subtasks({
                 value={title}
                 onChange={setTitle}
                 maxLength={200}
-                placeholder="What needs to happen?"
+                placeholder="Add a subtask…"
                 required
               />
-              <Button type="submit" label="Create subtask" variant="primary" isDisabled={saving} />
+              <Button
+                type="submit"
+                size="sm"
+                label="Create subtask"
+                variant="secondary"
+                isDisabled={saving}
+              />
             </form>
           )}
           {error !== undefined && (

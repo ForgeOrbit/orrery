@@ -1,6 +1,7 @@
-import { Text } from "@astryxdesign/core/Text";
-import { Selector } from "@astryxdesign/core/Selector";
 import { Button } from "@astryxdesign/core/Button";
+import { Selector } from "@astryxdesign/core/Selector";
+import { Text } from "@astryxdesign/core/Text";
+import { useToast } from "@astryxdesign/core/Toast";
 import { useQueryClient } from "@tanstack/react-query";
 import type { Assignee, Issue } from "@orrery/contract";
 import type { FormEvent } from "react";
@@ -25,6 +26,7 @@ export function AssigneeControl({
   canContribute: boolean;
 }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [value, setValue] = useState(currentValue(issue));
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
@@ -43,8 +45,11 @@ export function AssigneeControl({
           queryKey: projectActivityQuery(issue.projectId).queryKey,
         }),
       ]);
+      toast({ body: chosen ? `Assigned to ${chosen.label}.` : "Assignee cleared." });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not change the assignee.");
+      const msg = cause instanceof Error ? cause.message : "Could not change the assignee.";
+      setError(msg);
+      toast({ body: msg, type: "error" });
     } finally {
       setSaving(false);
     }
