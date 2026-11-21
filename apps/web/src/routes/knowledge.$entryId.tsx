@@ -1,5 +1,6 @@
 import { Heading } from "@astryxdesign/core/Heading";
 import { Text } from "@astryxdesign/core/Text";
+import { useToast } from "@astryxdesign/core/Toast";
 import { Section } from "@astryxdesign/core/Section";
 import { Stack } from "@astryxdesign/core/Stack";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
@@ -66,6 +67,7 @@ function KnowledgePage() {
 // server's values, so no effect is needed to synchronize it.
 function EditKnowledgeForm({ entry }: { entry: KnowledgeEntry }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
 
   return (
     <Section className="page-section" padding={0}>
@@ -92,6 +94,7 @@ function EditKnowledgeForm({ entry }: { entry: KnowledgeEntry }) {
               queryKey: projectActivityQuery(entry.projectId).queryKey,
             }),
           ]);
+          toast({ body: "Knowledge document saved." });
         }}
       />
     </Section>

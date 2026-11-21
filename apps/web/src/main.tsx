@@ -1,3 +1,4 @@
+import { ToastViewport } from "@astryxdesign/core/Toast";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
@@ -12,7 +13,9 @@ createRoot(root).render(
   <StrictMode>
     <AppearanceProvider>
       <QueryClientProvider client={queryClient}>
-        <RouterProvider router={router} />
+        <ToastViewport position="bottomEnd" maxVisible={3}>
+          <RouterProvider router={router} />
+        </ToastViewport>
       </QueryClientProvider>
     </AppearanceProvider>
   </StrictMode>,

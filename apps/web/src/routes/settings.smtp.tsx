@@ -1,5 +1,6 @@
 import { Heading } from "@astryxdesign/core/Heading";
 import { Text } from "@astryxdesign/core/Text";
+import { useToast } from "@astryxdesign/core/Toast";
 import { Section } from "@astryxdesign/core/Section";
 import { TextField } from "../lib/fields.tsx";
 import { Selector } from "@astryxdesign/core/Selector";
@@ -77,6 +78,7 @@ function SmtpSettingsPage() {
 
 function SmtpForm({ settings }: { settings: SmtpSettingsResponse }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [host, setHost] = useState(settings.host ?? "");
   const [port, setPort] = useState(settings.port);
   const [invalidPortEntry, setInvalidPortEntry] = useState(false);
@@ -111,8 +113,11 @@ function SmtpForm({ settings }: { settings: SmtpSettingsResponse }) {
       queryClient.setQueryData(smtpSettingsQuery.queryKey, saved);
       setPassword("");
       setStatus("SMTP settings saved.");
+      toast({ body: "SMTP settings saved." });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not save the SMTP settings.");
+      const msg = cause instanceof Error ? cause.message : "Could not save the SMTP settings.";
+      setError(msg);
+      toast({ body: msg, type: "error" });
     } finally {
       setSaving(false);
     }
@@ -217,6 +222,7 @@ function TestAndVerification({
   emailVerified: boolean;
 }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [sending, setSending] = useState(false);
   const [sendStatus, setSendStatus] = useState<string>();
   const [sendError, setSendError] = useState<string>();
@@ -231,8 +237,11 @@ function TestAndVerification({
     try {
       const result = await sendTestEmail();
       setSendStatus(`${result.message} Check ${result.sentTo} for the single-use token.`);
+      toast({ body: `Test email sent to ${result.sentTo}.` });
     } catch (cause) {
-      setSendError(cause instanceof Error ? cause.message : "Could not send the test email.");
+      const msg = cause instanceof Error ? cause.message : "Could not send the test email.";
+      setSendError(msg);
+      toast({ body: msg, type: "error" });
     } finally {
       setSending(false);
     }
@@ -253,8 +262,11 @@ function TestAndVerification({
       };
       queryClient.setQueryData(sessionQuery.queryKey, session);
       setToken("");
+      toast({ body: "Email verified." });
     } catch (cause) {
-      setVerifyError(cause instanceof Error ? cause.message : "Could not verify the email.");
+      const msg = cause instanceof Error ? cause.message : "Could not verify the email.";
+      setVerifyError(msg);
+      toast({ body: msg, type: "error" });
     } finally {
       setVerifying(false);
     }

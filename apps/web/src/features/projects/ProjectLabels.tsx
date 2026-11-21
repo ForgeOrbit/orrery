@@ -2,6 +2,7 @@ import { Button } from "@astryxdesign/core/Button";
 import { Heading } from "@astryxdesign/core/Heading";
 import { Section } from "@astryxdesign/core/Section";
 import { Text } from "@astryxdesign/core/Text";
+import { useToast } from "@astryxdesign/core/Toast";
 import type { ProjectLabel } from "@orrery/contract";
 import { useQueryClient } from "@tanstack/react-query";
 import type { FormEvent } from "react";
@@ -26,6 +27,7 @@ export function ProjectLabels({
   canContribute: boolean;
 }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [name, setName] = useState("");
   const [color, setColor] = useState("");
   const [editingId, setEditingId] = useState<string>();
@@ -52,8 +54,11 @@ export function ProjectLabels({
       setName("");
       setColor("");
       await refresh();
+      toast({ body: "Label created." });
     } catch (cause) {
-      setError(messageOf(cause, "Could not create the label."));
+      const msg = messageOf(cause, "Could not create the label.");
+      setError(msg);
+      toast({ body: msg, type: "error" });
     } finally {
       setSaving(false);
     }
@@ -67,8 +72,11 @@ export function ProjectLabels({
       await updateProjectLabel(label.id, { name: editName, color: editColor });
       setEditingId(undefined);
       await refresh();
+      toast({ body: "Label updated." });
     } catch (cause) {
-      setError(messageOf(cause, "Could not save the label."));
+      const msg = messageOf(cause, "Could not save the label.");
+      setError(msg);
+      toast({ body: msg, type: "error" });
     } finally {
       setSaving(false);
     }
@@ -81,8 +89,11 @@ export function ProjectLabels({
       await deleteProjectLabel(label.id);
       if (editingId === label.id) setEditingId(undefined);
       await refresh();
+      toast({ body: `Deleted label "${label.name}".` });
     } catch (cause) {
-      setError(messageOf(cause, "Could not delete the label."));
+      const msg = messageOf(cause, "Could not delete the label.");
+      setError(msg);
+      toast({ body: msg, type: "error" });
     } finally {
       setSaving(false);
     }

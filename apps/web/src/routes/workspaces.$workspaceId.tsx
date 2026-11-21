@@ -11,6 +11,7 @@ import { Selector } from "@astryxdesign/core/Selector";
 import { Stack } from "@astryxdesign/core/Stack";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Text } from "@astryxdesign/core/Text";
+import { useToast } from "@astryxdesign/core/Toast";
 import {
   ProjectAccessLevel,
   workspaceCapabilities,
@@ -365,6 +366,7 @@ function CreateProjectForm({
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const toast = useToast();
   const [name, setName] = useState("");
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
@@ -379,9 +381,12 @@ function CreateProjectForm({
       await queryClient.invalidateQueries({ queryKey: projectsQuery(workspaceId).queryKey });
       setName("");
       onCreated();
+      toast({ body: `Created project "${project.name}".` });
       await navigate({ to: "/projects/$projectId", params: { projectId: project.id } });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not create the project.");
+      const msg = cause instanceof Error ? cause.message : "Could not create the project.";
+      setError(msg);
+      toast({ body: msg, type: "error" });
     } finally {
       setSubmitting(false);
     }
@@ -423,6 +428,8 @@ function WorkspaceMembers({
   const [error, setError] = useState<string>();
   const [updating, setUpdating] = useState<string>();
 
+  const toast = useToast();
+
   async function refresh() {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: workspaceMembersQuery(workspaceId).queryKey }),
@@ -437,8 +444,11 @@ function WorkspaceMembers({
     try {
       await appointWorkspaceOwner(workspaceId, humanId);
       await refresh();
+      toast({ body: "Workspace owner appointed." });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not appoint the owner.");
+      const msg = cause instanceof Error ? cause.message : "Could not appoint the owner.";
+      setError(msg);
+      toast({ body: msg, type: "error" });
     } finally {
       setUpdating(undefined);
     }
@@ -452,8 +462,11 @@ function WorkspaceMembers({
     try {
       await updateWorkspaceMember(workspaceId, humanId, { [capability]: !member[capability] });
       await refresh();
+      toast({ body: "Member permissions updated." });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not change the capability.");
+      const msg = cause instanceof Error ? cause.message : "Could not change the capability.";
+      setError(msg);
+      toast({ body: msg, type: "error" });
     } finally {
       setUpdating(undefined);
     }
@@ -465,8 +478,11 @@ function WorkspaceMembers({
     try {
       await removeWorkspaceMember(workspaceId, humanId);
       await refresh();
+      toast({ body: "Member removed from workspace." });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not remove the member.");
+      const msg = cause instanceof Error ? cause.message : "Could not remove the member.";
+      setError(msg);
+      toast({ body: msg, type: "error" });
     } finally {
       setUpdating(undefined);
     }

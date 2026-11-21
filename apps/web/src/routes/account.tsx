@@ -3,6 +3,7 @@ import { Heading } from "@astryxdesign/core/Heading";
 import { Stack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
+import { useToast } from "@astryxdesign/core/Toast";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { type FormEvent, useState } from "react";
@@ -73,6 +74,7 @@ function AccountPage() {
 
 function ProfileSection({ initialDisplayName }: { initialDisplayName: string | null }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [draftDisplayName, setDraftDisplayName] = useState<string | null>(null);
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
   const displayName = draftDisplayName ?? initialDisplayName ?? "";
@@ -82,7 +84,11 @@ function ProfileSection({ initialDisplayName }: { initialDisplayName: string | n
     onSuccess: async () => {
       setDraftDisplayName(null);
       setSavedMessage("Profile saved.");
+      toast({ body: "Profile saved." });
       await queryClient.invalidateQueries({ queryKey: sessionQuery.queryKey });
+    },
+    onError: (error) => {
+      toast({ body: error.message, type: "error" });
     },
   });
 
@@ -134,6 +140,7 @@ function ProfileSection({ initialDisplayName }: { initialDisplayName: string | n
 }
 
 function PasswordSection() {
+  const toast = useToast();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -147,7 +154,12 @@ function PasswordSection() {
       setNewPassword("");
       setConfirmPassword("");
       setClientError(null);
-      setSavedMessage("Password updated. Other browser sessions have been signed out.");
+      const msg = "Password updated. Other browser sessions have been signed out.";
+      setSavedMessage(msg);
+      toast({ body: msg });
+    },
+    onError: (error) => {
+      toast({ body: error.message, type: "error" });
     },
   });
 
@@ -239,12 +251,17 @@ function PreferencesSection() {
 function SessionSection() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const toast = useToast();
 
   const logout = useMutation({
     mutationFn: signOut,
     onSuccess: async () => {
       queryClient.clear();
+      toast({ body: "Signed out." });
       await navigate({ to: "/signin", replace: true });
+    },
+    onError: (error) => {
+      toast({ body: error.message, type: "error" });
     },
   });
 

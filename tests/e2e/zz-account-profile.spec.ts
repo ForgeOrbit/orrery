@@ -18,17 +18,20 @@ test("updates display name from /account, switches light mode sidebar, and signs
   await expect(page).toHaveURL(/\/account$/);
   await expect(page.getByRole("heading", { level: 1, name: "Account" })).toBeVisible();
 
-  // Save a display name and verify both the heading and sidebar reflect it.
+  // Save a display name and verify both the heading, sidebar, and toast reflect it.
   await page.getByLabel("Display name").fill("Admin Operator");
   await page.getByRole("button", { name: "Save profile" }).click();
-  await expect(page.getByText("Profile saved.")).toBeVisible();
+  await expect(page.locator("#content").getByText("Profile saved.")).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Notifications" }).getByText("Profile saved."),
+  ).toBeVisible();
   await expect(page.getByRole("heading", { level: 1, name: "Admin Operator" })).toBeVisible();
   await expect(page.locator(".app-sidebar .sidebar-account-name")).toHaveText("Admin Operator");
 
   // Clear display name back to null so the account header reverts to "Account".
   await page.getByLabel("Display name").fill("");
   await page.getByRole("button", { name: "Save profile" }).click();
-  await expect(page.getByText("Profile saved.")).toBeVisible();
+  await expect(page.locator("#content").getByText("Profile saved.")).toBeVisible();
   await expect(page.getByRole("heading", { level: 1, name: "Account" })).toBeVisible();
 
   // Light mode must switch the sidebar background away from dark charcoal.
