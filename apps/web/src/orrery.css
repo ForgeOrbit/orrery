@@ -550,11 +550,26 @@
   border: 1px solid var(--orrery-border);
   border-radius: var(--orrery-panel-radius);
   background: var(--orrery-surface);
-  transition: border-color 120ms ease;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 120ms ease;
 }
 
-.entity-card:hover {
-  border-color: color-mix(in srgb, var(--orrery-accent) 45%, var(--orrery-border));
+.entity-card:hover,
+.entity-card:focus-within {
+  border-color: color-mix(in srgb, var(--orrery-accent) 60%, var(--orrery-border));
+  background: color-mix(in srgb, var(--orrery-accent) 3%, var(--orrery-surface));
+  box-shadow:
+    0 6px 18px -6px color-mix(in srgb, var(--orrery-accent) 18%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--orrery-accent) 22%, transparent);
+}
+
+.entity-card:active {
+  border-color: var(--orrery-accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--orrery-accent) 45%, transparent);
+  transform: translateY(1px);
 }
 
 .entity-card-top {
@@ -1153,11 +1168,23 @@
   border: 1px solid var(--orrery-border);
   border-radius: var(--orrery-radius);
   background: var(--orrery-surface);
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 120ms ease;
 }
 
 .board-card:focus-within,
 .board-card:hover {
-  border-color: var(--orrery-control-border);
+  border-color: color-mix(in srgb, var(--orrery-accent) 55%, var(--orrery-border));
+  box-shadow:
+    0 4px 12px -4px color-mix(in srgb, var(--orrery-accent) 16%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--orrery-accent) 18%, transparent);
+}
+
+.board-card:active {
+  border-color: var(--orrery-accent);
+  transform: translateY(1px);
 }
 
 .board-card[data-needs-input="true"] {
