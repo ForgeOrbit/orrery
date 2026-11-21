@@ -59,7 +59,7 @@ plugin from [`forge-orbit/orrery-integrations`](https://github.com/forge-orbit/o
 
    ```text
    /plugin marketplace add forge-orbit/orrery-integrations
-   /plugin install orrery@orrery
+   /plugin install orrery@forge-orbit
    ```
 
 ### Manual setup (from this checkout)
