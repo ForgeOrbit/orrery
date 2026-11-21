@@ -137,7 +137,7 @@ sequenceDiagram
 
 ## MCP Tools
 
-All 33 tools are defined in [`contract/mcp-tools.json`](contract/mcp-tools.json) (generated from
+All 39 tools are defined in [`contract/mcp-tools.json`](contract/mcp-tools.json) (generated from
 [`packages/contract/src/mcp-tools.ts`](packages/contract/src/mcp-tools.ts)) and served at `/mcp`.
 The same operations are available over REST.
 
@@ -153,8 +153,10 @@ The same operations are available over REST.
 
 | Tool | What it does |
 | --- | --- |
-| `list_issues` / `get_issue` | List issues; read one with its structured PR / commit / doc links |
-| `create_issue` / `update_issue` | Create and edit issues, status, priority, float `sortOrder`, assignee |
+| `list_issues` / `get_issue` | List issues (with label/parent filters); read one with labels, subtasks and PR/commit/doc links |
+| `create_issue` / `update_issue` | Create and edit issues, one-level subtasks (`parentIssueId`), status, priority, float `sortOrder`, assignee |
+| `list_labels` / `create_label` / `update_label` / `delete_label` | Manage project-scoped labels |
+| `attach_issue_label` / `detach_issue_label` | Attach or detach labels on an issue |
 | `add_blocked_by` / `remove_blocked_by` | Add or remove acyclic `blocked_by` edges |
 | `list_blocked_by` / `list_blocking` | Read an issue's prerequisites and dependants |
 | `list_comments` / `create_comment` | Read and write issue comments |
@@ -233,11 +235,12 @@ Milestones are tracked as GitHub epics. The first three are live today.
 - [ ] [#3](https://github.com/forge-orbit/orrery/issues/3),
   [#4](https://github.com/forge-orbit/orrery/issues/4),
   [#5](https://github.com/forge-orbit/orrery/issues/5) **M2–M4 — Core product (in progress).**
-  Six-state workflow, `KEY-N` identifiers, priority & float board ordering, acyclic `blocked_by`
-  dependencies, structured PR/commit links, five-minute atomic Claim leases, human stop signal,
-  ephemeral session activities + v1 structured blocks, cumulative token/cost telemetry, Needs-input
-  inbox with one-hour fallback policies, Kanban board and sidecar inspector. Labels, Subtasks, Trash
-  and My work are landing next.
+  Six-state workflow, `KEY-N` identifiers, priority & float board ordering, project-scoped labels,
+  one-level subtasks, acyclic `blocked_by` dependencies, structured PR/commit links, human-only
+  Trash with 30-day restore, cross-workspace My work API, five-minute atomic Claim leases, human
+  stop signal, ephemeral session activities + v1 structured blocks, cumulative token/cost telemetry,
+  Needs-input inbox with one-hour fallback policies, Kanban board and sidecar inspector. UI pass for
+  the new M2–M4 views is next.
 - [ ] [#6](https://github.com/forge-orbit/orrery/issues/6) **M5 — Shared vault.** Obsidian-like
   Markdown vault, `[[wikilinks]]`, backlinks, FTS.
 - [ ] [#7](https://github.com/forge-orbit/orrery/issues/7) **M6 — Release polish.** In-app
