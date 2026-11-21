@@ -60,9 +60,14 @@ plugin from [`forge-orbit/orrery-integrations`](https://github.com/forge-orbit/o
    # or: export ORRERY_API_KEY_FILE=/path/to/secret-file
    ```
 
-2. Add `forge-orbit/orrery-integrations` as a Codex plugin marketplace
-   (`.agents/plugins/marketplace.json`), install `orrery` from `/plugins`, and open `/hooks` to
-   review and trust its lifecycle hooks.
+2. Add the marketplace and install the plugin.
+
+   ```sh
+   codex plugin marketplace add forge-orbit/orrery-integrations
+   codex plugin add orrery@forge-orbit
+   ```
+
+3. Open `/hooks` to review and trust the lifecycle hooks.
 
 ### Manual setup (from this checkout)
 

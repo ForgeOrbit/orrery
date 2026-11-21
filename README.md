@@ -222,9 +222,14 @@ the static `/mcp` endpoint and automatic run-lifecycle reporting hooks in one st
 - **Claude Code:**
   ```text
   /plugin marketplace add forge-orbit/orrery-integrations
-  /plugin install orrery@orrery
+  /plugin install orrery@forge-orbit
   ```
-- **Codex CLI:** add `forge-orbit/orrery-integrations` as a plugin marketplace (`.agents/plugins/marketplace.json`), install `orrery` from `/plugins`, and trust its hooks in `/hooks`.
+- **Codex CLI:**
+  ```sh
+  codex plugin marketplace add forge-orbit/orrery-integrations
+  codex plugin add orrery@forge-orbit
+  ```
+  Review and trust the plugin hooks in `/hooks`.
 
 If you only want the static `/mcp` tools without run-reporting hooks:
 
