@@ -728,7 +728,7 @@ function ProjectAccess({ projectId }: { projectId: string }) {
                         data-access-level={grant.level}
                       />
                       <Selector
-                        label={`Change access level for ${grant.email}`}
+                        label={`Permission for ${grant.email}`}
                         isLabelHidden
                         id={`access-level-${grant.humanId}`}
                         size="sm"

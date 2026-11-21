@@ -235,7 +235,7 @@ export function ProjectLabels({
                             <ColorSwatches
                               value={editColor}
                               onSelect={setEditColor}
-                              groupLabel="Edit label color presets"
+                              groupLabel="Edit color swatches"
                             />
                             <LabelPreview name={editName} color={editColor} />
                             <Stack direction="horizontal" gap={1}>
@@ -335,11 +335,7 @@ export function ProjectLabels({
                     required
                   />
                 </Stack>
-                <ColorSwatches
-                  value={color}
-                  onSelect={setColor}
-                  groupLabel="New label color presets"
-                />
+                <ColorSwatches value={color} onSelect={setColor} groupLabel="Color swatches" />
                 <LabelPreview name={name} color={color} />
                 <Button
                   type="submit"
