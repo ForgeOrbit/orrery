@@ -154,6 +154,12 @@ test("renders GFM Markdown and Mermaid safely in issue bodies and comments", asy
     "",
     "[safe link](https://example.com) and [unsafe](javascript:window.orreryXssMarker='link')",
     "",
+    "[control char](java&#9;script:window.orreryXssMarker='tab')",
+    "",
+    "[entity](&#1;javascript:window.orreryXssMarker='entity')",
+    "",
+    "[data link](data:text/html;base64,PHNjcmlwdD4=)",
+    "",
     '<script>window.orreryXssMarker = "script";</script>',
     "",
     `<img src=x onerror="window.orreryXssMarker = 'img';">`,
@@ -161,9 +167,10 @@ test("renders GFM Markdown and Mermaid safely in issue bodies and comments", asy
     `Raw marker ${marker}.`,
   ].join("\n");
   const issueId = await newIssue(projectId, body);
-  await api.post(`/api/issues/${issueId}/comments`, {
+  const commentPosted = await api.post(`/api/issues/${issueId}/comments`, {
     data: { body: "## Comment\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n~~gone~~" },
   });
+  expect(commentPosted.ok()).toBe(true);
 
   const { context, page } = await signIn(browser);
   try {
@@ -186,6 +193,8 @@ test("renders GFM Markdown and Mermaid safely in issue bodies and comments", asy
     // Raw HTML is inert: no script/img from the source reaches the DOM and no handler ran.
     await expect(bodyRoot.locator("script")).toHaveCount(0);
     await expect(bodyRoot.locator("img[onerror]")).toHaveCount(0);
+    // Entity-decoded control characters and data: URLs cannot become link targets.
+    await expect(bodyRoot.locator('a[href^="javascript:"], a[href^="data:"]')).toHaveCount(0);
     await expect(bodyRoot).toContainText(`Raw marker ${marker}.`);
     expect(await page.evaluate(() => Reflect.get(globalThis, "orreryXssMarker"))).toBeUndefined();
 
@@ -208,14 +217,16 @@ test("renders v1 activity blocks, JSON fallback and optional cost telemetry", as
 
   const issueId = await newIssue(projectId, "Inspector rich content");
   const { sessionId } = await claim(agent, issueId);
-  await agent.post(`/api/issues/${issueId}/work-sessions/renew`, {
+  const renewed = await agent.post(`/api/issues/${issueId}/work-sessions/renew`, {
     inputTokens: 100,
     outputTokens: 20,
   });
-  await agent.post(`/api/issues/${issueId}/work-sessions/progress`, {
+  expect(renewed.ok).toBe(true);
+  const progressed = await agent.post(`/api/issues/${issueId}/work-sessions/progress`, {
     summary: "Cost reported",
     costUsdMicros: 12_300,
   });
+  expect(progressed.ok).toBe(true);
 
   const blocks = [
     {

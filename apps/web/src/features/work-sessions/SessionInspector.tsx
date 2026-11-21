@@ -14,7 +14,7 @@ import {
   TableHeaderCell,
   TableRow,
 } from "@astryxdesign/core/Table";
-import type { ActivityDetailBlockV1, SessionActivityDetail } from "@orrery/contract";
+import { ActivityDetailBlockV1, type SessionActivityDetail } from "@orrery/contract";
 import { useQuery } from "@tanstack/react-query";
 import { Fragment, useId, useState, type ReactNode } from "react";
 import { TelemetryFacts } from "../../lib/telemetry.tsx";
@@ -33,12 +33,15 @@ type BlockRenderer = (block: ActivityDetailBlockV1) => ReactNode;
 
 // Every renderer takes the whole union and narrows on `type`. That keeps the registry
 // indexable by a runtime discriminator without an unsafe function-widening assertion.
+// Telemetry arrays can repeat values, so keys intentionally include the array position;
+// the detail is an immutable snapshot that is never reordered or filtered.
+/* eslint-disable react/no-array-index-key -- position disambiguates repeated telemetry values */
 const blockRenderers: Record<BlockType, BlockRenderer> = {
   key_value: (block) =>
     block.type === "key_value" ? (
       <dl className="activity-key-value" data-activity-block-kind="key_value">
-        {block.items.map((item) => (
-          <Fragment key={item.key}>
+        {block.items.map((item, index) => (
+          <Fragment key={`${item.key}-${index}`}>
             <dt>{item.key}</dt>
             <dd>{item.value}</dd>
           </Fragment>
@@ -50,16 +53,16 @@ const blockRenderers: Record<BlockType, BlockRenderer> = {
       <Table className="activity-table" data-activity-block-kind="table">
         <TableHeader>
           <TableRow>
-            {block.columns.map((column) => (
-              <TableHeaderCell key={column}>{column}</TableHeaderCell>
+            {block.columns.map((column, index) => (
+              <TableHeaderCell key={`${column}-${index}`}>{column}</TableHeaderCell>
             ))}
           </TableRow>
         </TableHeader>
         <TableBody>
-          {block.rows.map((row) => (
-            <TableRow key={row.join("|")}>
-              {row.map((cell) => (
-                <TableCell key={cell}>{cell}</TableCell>
+          {block.rows.map((row, rowIndex) => (
+            <TableRow key={`${row.join("|")}-${rowIndex}`}>
+              {row.map((cell, cellIndex) => (
+                <TableCell key={`${cell}-${cellIndex}`}>{cell}</TableCell>
               ))}
             </TableRow>
           ))}
@@ -69,8 +72,8 @@ const blockRenderers: Record<BlockType, BlockRenderer> = {
   checklist: (block) =>
     block.type === "checklist" ? (
       <ul className="activity-checklist" data-activity-block-kind="checklist">
-        {block.items.map((item) => (
-          <li key={item.label} data-checked={String(item.checked)}>
+        {block.items.map((item, index) => (
+          <li key={`${item.label}-${index}`} data-checked={String(item.checked)}>
             <Text type="inherit" color="inherit">
               {item.checked ? "✓" : "○"} {item.label}
             </Text>
@@ -93,8 +96,8 @@ const blockRenderers: Record<BlockType, BlockRenderer> = {
         </Stack>
         {block.cases !== undefined && block.cases.length > 0 && (
           <ul>
-            {block.cases.map((testCase) => (
-              <li key={testCase.name} data-test-status={testCase.status}>
+            {block.cases.map((testCase, index) => (
+              <li key={`${testCase.name}-${index}`} data-test-status={testCase.status}>
                 <Text type="inherit" color="inherit">
                   {testCase.name} — {testCase.status}
                 </Text>
@@ -110,18 +113,7 @@ const blockRenderers: Record<BlockType, BlockRenderer> = {
       </Stack>
     ) : null,
 };
-
-function isV1Block(value: unknown): value is ActivityDetailBlockV1 {
-  if (typeof value !== "object" || value === null) return false;
-  const candidate = value as { version?: unknown; type?: unknown };
-  return (
-    candidate.version === 1 &&
-    (candidate.type === "key_value" ||
-      candidate.type === "table" ||
-      candidate.type === "checklist" ||
-      candidate.type === "test_results")
-  );
-}
+/* eslint-enable react/no-array-index-key */
 
 function JsonFallback({ detail }: { detail: unknown }) {
   return (
@@ -141,8 +133,11 @@ function JsonFallback({ detail }: { detail: unknown }) {
 }
 
 function renderDetail(detail: SessionActivityDetail | null): ReactNode {
-  const block: unknown = detail?.block;
-  if (isV1Block(block)) {
+  // The contract owns the v1 shape. safeParse keeps a malformed or unversioned block
+  // from reaching a renderer that assumes a valid shape; those fall back to inert JSON.
+  const parsed = ActivityDetailBlockV1.safeParse(detail?.block);
+  if (parsed.success) {
+    const block = parsed.data;
     return (
       <Stack data-activity-block={block.type} className="activity-block">
         {blockRenderers[block.type](block)}

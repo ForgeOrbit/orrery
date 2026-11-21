@@ -20,10 +20,20 @@ import remarkGfm from "remark-gfm";
 
 /** Only well-known, non-executable URL schemes survive; relative links are left alone. */
 function safeUrl(url: string): string {
-  const value = url.trim();
-  // Anything with a scheme must be on the short allowlist. This rejects javascript:,
-  // data:, vbscript: and look-alike protocols before they can become a link target.
-  if (/^[a-z][a-z0-9+.-]*:/i.test(value)) {
+  // CommonMark decodes numeric character references before urlTransform runs, so a link
+  // like [x](java&#9;script:alert(1)) arrives with a tab in the scheme. Strip ASCII
+  // controls first so no obfuscation can hide a scheme from the check below.
+  // eslint-disable-next-line no-control-regex -- intentional: strip control characters from untrusted URLs.
+  const value = url.replace(/[\u0000-\u001f\u007f]+/g, "").trim();
+  const colon = value.indexOf(":");
+  const boundaries = [value.indexOf("/"), value.indexOf("?"), value.indexOf("#")].filter(
+    (index) => index >= 0,
+  );
+  const firstBoundary =
+    boundaries.length === 0 ? Number.POSITIVE_INFINITY : Math.min(...boundaries);
+  // A colon before the first path/query/fragment boundary is a scheme. Only the short
+  // allowlist survives; javascript:, data:, vbscript: and look-alikes are rejected.
+  if (colon >= 0 && colon < firstBoundary) {
     return /^(https?|mailto|tel):/i.test(value) ? value : "";
   }
   return value;
@@ -90,7 +100,7 @@ const components: Components = {
   pre({ children }: { children?: ReactNode }) {
     return <>{children}</>;
   },
-  code({ className, children, ...props }) {
+  code({ className, children, node: _node, ...props }) {
     const language = /language-([\w-]+)/.exec(className ?? "")?.[1];
     const text = typeof children === "string" ? children : "";
     if (language === "mermaid") {
@@ -111,7 +121,16 @@ const components: Components = {
       </code>
     );
   },
-  a({ href, children, ...props }) {
+  a({ href, children, node: _node, ...props }) {
+    // A blocked scheme becomes href="" upstream. Never render a clickable empty link:
+    // show the label as inert secondary text instead.
+    if (!href) {
+      return (
+        <Text as="span" type="inherit" color="secondary">
+          {children}
+        </Text>
+      );
+    }
     return (
       <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
         {children}
