@@ -4,6 +4,7 @@ import { Section } from "@astryxdesign/core/Section";
 import { Stack } from "@astryxdesign/core/Stack";
 import { Button } from "@astryxdesign/core/Button";
 import { TextField } from "../../lib/fields.tsx";
+import { TelemetryInline } from "../../lib/telemetry.tsx";
 import { Selector } from "@astryxdesign/core/Selector";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
@@ -275,6 +276,11 @@ function ActiveSessions({
             <Text type="inherit" color="inherit" data-last-heartbeat={session.updatedAt}>
               last check-in {session.updatedAt}
             </Text>{" "}
+            <TelemetryInline
+              inputTokens={session.inputTokens}
+              outputTokens={session.outputTokens}
+              costUsdMicros={session.costUsdMicros}
+            />{" "}
             <SessionStatus
               issueId={session.issueId}
               projectId={session.projectId}

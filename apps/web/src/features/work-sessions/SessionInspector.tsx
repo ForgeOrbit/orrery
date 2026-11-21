@@ -4,20 +4,148 @@ import { Card } from "@astryxdesign/core/Card";
 import { Stack } from "@astryxdesign/core/Stack";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Button } from "@astryxdesign/core/Button";
+import { Badge } from "@astryxdesign/core/Badge";
+import { Collapsible } from "@astryxdesign/core/Collapsible";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHeader,
+  TableHeaderCell,
+  TableRow,
+} from "@astryxdesign/core/Table";
+import { ActivityDetailBlockV1, type SessionActivityDetail } from "@orrery/contract";
 import { useQuery } from "@tanstack/react-query";
+import { Fragment, useId, useState, type ReactNode } from "react";
+import { TelemetryFacts } from "../../lib/telemetry.tsx";
 import { Link } from "../../lib/Link.tsx";
-import { useId, useState } from "react";
 import { isPendingQuestion, issueQuestionsQuery, QuestionDetails } from "../inbox/index.ts";
 import { workspaceRunsQuery } from "../runs/index.ts";
 import { sessionActivitiesQuery, sessionsQuery } from "./queries.ts";
 
 const dateTime = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
-const number = new Intl.NumberFormat();
-const currency = new Intl.NumberFormat(undefined, {
-  style: "currency",
-  currency: "USD",
-  maximumFractionDigits: 6,
-});
+
+// #96: the four v1 structured activity blocks have a closed discriminated union in the
+// contract. A renderer registry keeps each shape's presentation in one place; anything
+// unversioned or unrecognized falls back to a collapsible, inert JSON viewer below.
+type BlockType = ActivityDetailBlockV1["type"];
+type BlockRenderer = (block: ActivityDetailBlockV1) => ReactNode;
+
+// Every renderer takes the whole union and narrows on `type`. That keeps the registry
+// indexable by a runtime discriminator without an unsafe function-widening assertion.
+// Telemetry arrays can repeat values, so keys intentionally include the array position;
+// the detail is an immutable snapshot that is never reordered or filtered.
+/* eslint-disable react/no-array-index-key -- position disambiguates repeated telemetry values */
+const blockRenderers: Record<BlockType, BlockRenderer> = {
+  key_value: (block) =>
+    block.type === "key_value" ? (
+      <dl className="activity-key-value" data-activity-block-kind="key_value">
+        {block.items.map((item, index) => (
+          <Fragment key={`${item.key}-${index}`}>
+            <dt>{item.key}</dt>
+            <dd>{item.value}</dd>
+          </Fragment>
+        ))}
+      </dl>
+    ) : null,
+  table: (block) =>
+    block.type === "table" ? (
+      <Table className="activity-table" data-activity-block-kind="table">
+        <TableHeader>
+          <TableRow>
+            {block.columns.map((column, index) => (
+              <TableHeaderCell key={`${column}-${index}`}>{column}</TableHeaderCell>
+            ))}
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {block.rows.map((row, rowIndex) => (
+            <TableRow key={`${row.join("|")}-${rowIndex}`}>
+              {row.map((cell, cellIndex) => (
+                <TableCell key={`${cell}-${cellIndex}`}>{cell}</TableCell>
+              ))}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    ) : null,
+  checklist: (block) =>
+    block.type === "checklist" ? (
+      <ul className="activity-checklist" data-activity-block-kind="checklist">
+        {block.items.map((item, index) => (
+          <li key={`${item.label}-${index}`} data-checked={String(item.checked)}>
+            <Text type="inherit" color="inherit">
+              {item.checked ? "✓" : "○"} {item.label}
+            </Text>
+          </li>
+        ))}
+      </ul>
+    ) : null,
+  test_results: (block) =>
+    block.type === "test_results" ? (
+      <Stack gap={1} className="activity-test-results" data-activity-block-kind="test_results">
+        <Stack direction="horizontal" gap={1} wrap="wrap">
+          <Badge variant="success" label={`${block.passed} passed`} />
+          <Badge
+            variant={block.failed > 0 ? "error" : "neutral"}
+            label={`${block.failed} failed`}
+          />
+          {block.skipped !== undefined && (
+            <Badge variant="neutral" label={`${block.skipped} skipped`} />
+          )}
+        </Stack>
+        {block.cases !== undefined && block.cases.length > 0 && (
+          <ul>
+            {block.cases.map((testCase, index) => (
+              <li key={`${testCase.name}-${index}`} data-test-status={testCase.status}>
+                <Text type="inherit" color="inherit">
+                  {testCase.name} — {testCase.status}
+                </Text>
+                {testCase.message !== undefined && (
+                  <Text type="supporting" color="secondary">
+                    {testCase.message}
+                  </Text>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Stack>
+    ) : null,
+};
+/* eslint-enable react/no-array-index-key */
+
+function JsonFallback({ detail }: { detail: unknown }) {
+  return (
+    <Stack data-activity-block="json" className="activity-json">
+      <Collapsible
+        defaultIsOpen={false}
+        trigger={
+          <Text type="body" weight="semibold">
+            Raw activity detail (JSON)
+          </Text>
+        }
+      >
+        <pre data-activity-detail>{JSON.stringify(detail, null, 2)}</pre>
+      </Collapsible>
+    </Stack>
+  );
+}
+
+function renderDetail(detail: SessionActivityDetail | null): ReactNode {
+  // The contract owns the v1 shape. safeParse keeps a malformed or unversioned block
+  // from reaching a renderer that assumes a valid shape; those fall back to inert JSON.
+  const parsed = ActivityDetailBlockV1.safeParse(detail?.block);
+  if (parsed.success) {
+    const block = parsed.data;
+    return (
+      <Stack data-activity-block={block.type} className="activity-block">
+        {blockRenderers[block.type](block)}
+      </Stack>
+    );
+  }
+  return <JsonFallback detail={detail} />;
+}
 
 export function SessionInspector({
   issueId,
@@ -165,24 +293,11 @@ export function SessionInspectorDetails({
             <dd>
               <code>{selected.id}</code>
             </dd>
-            {selected.inputTokens !== null && (
-              <>
-                <dt>Input tokens</dt>
-                <dd>{number.format(selected.inputTokens)}</dd>
-              </>
-            )}
-            {selected.outputTokens !== null && (
-              <>
-                <dt>Output tokens</dt>
-                <dd>{number.format(selected.outputTokens)}</dd>
-              </>
-            )}
-            {selected.costUsdMicros !== null && (
-              <>
-                <dt>Reported cost</dt>
-                <dd>{currency.format(selected.costUsdMicros / 1_000_000)}</dd>
-              </>
-            )}
+            <TelemetryFacts
+              inputTokens={selected.inputTokens}
+              outputTokens={selected.outputTokens}
+              costUsdMicros={selected.costUsdMicros}
+            />
           </dl>
           <Heading level={3} color="inherit">
             Session activity
@@ -210,9 +325,7 @@ export function SessionInspectorDetails({
                 </time>
                 <strong>{activity.kind}</strong>
                 <Stack data-activity-summary>{activity.summary}</Stack>
-                {activity.detail !== null && (
-                  <pre data-activity-detail>{JSON.stringify(activity.detail, null, 2)}</pre>
-                )}
+                {activity.detail !== null && renderDetail(activity.detail)}
               </li>
             ))}
           </ol>
