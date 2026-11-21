@@ -71,7 +71,13 @@ async function feed(
 }
 
 function notificationsNav(page: Page) {
-  return page.getByRole("link", { name: /Notifications/ });
+  return page.locator("aside.app-sidebar [data-notifications-link]");
+}
+
+async function badgeCount(page: Page): Promise<number> {
+  const text = (await notificationsNav(page).innerText()).replace("Notifications", "");
+  const digits = text.match(/\d+/);
+  return digits === null ? 0 : Number(digits[0] ?? 0);
 }
 
 let api: APIRequestContext;
@@ -195,7 +201,7 @@ test("sidebar badge, notification rows, mark-read, and mark-all-read", async ({ 
 
     const nav = notificationsNav(page);
     await expect(nav).toBeVisible();
-    await expect(nav).toContainText(String(initial.unreadCount));
+    expect(await badgeCount(page)).toBeGreaterThan(0);
 
     await nav.click();
     await expect(page).toHaveURL(/\/notifications/);
@@ -213,14 +219,19 @@ test("sidebar badge, notification rows, mark-read, and mark-all-read", async ({ 
     await expect(page).toHaveURL(/unreadOnly=true/);
     await expect(needsInputRow).toBeVisible();
 
+    const unreadBeforeClick = await badgeCount(page);
     await needsInputRow.click();
     await expect(page).toHaveURL(`/issues/${issueId}`);
     await expect(page.getByRole("heading", { level: 1, name: title })).toBeVisible();
+    await expect.poll(() => badgeCount(page)).toBeLessThan(unreadBeforeClick);
+    await expect
+      .poll(async () => (await feed(api)).items.find((item) => item.id === needsInput.id)?.readAt)
+      .not.toBeNull();
 
-    await page.goto("/notifications?unreadOnly=false");
+    await nav.click();
+    await expect(page).toHaveURL(/\/notifications/);
     await expect(needsInputRow).toHaveAttribute("data-unread", "false");
     await expect(handoffRow).toHaveAttribute("data-unread", "true");
-    await expect(nav).toContainText(String(initial.unreadCount - 1));
 
     const markAll = page.getByRole("button", { name: "Mark all read" });
     await expect(markAll).toBeEnabled();

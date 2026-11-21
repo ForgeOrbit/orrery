@@ -360,6 +360,12 @@ function SidebarLinks({ onNavigate }: { onNavigate?: () => void }) {
         <Link
           to="/notifications"
           search={{ unreadOnly: false }}
+          activeOptions={{ includeSearch: false }}
+          aria-label={
+            unreadNotifications !== undefined && unreadNotifications > 0
+              ? `Notifications, ${unreadNotifications} unread`
+              : "Notifications"
+          }
           color="inherit"
           data-notifications-link
           {...clickProp}
@@ -368,7 +374,10 @@ function SidebarLinks({ onNavigate }: { onNavigate?: () => void }) {
             <NavNotificationsIcon />
             Notifications
             {unreadNotifications !== undefined && unreadNotifications > 0 && (
-              <Badge label={unreadNotifications} variant="orange" />
+              <Badge
+                label={unreadNotifications > 99 ? "99+" : unreadNotifications}
+                variant="orange"
+              />
             )}
           </span>
         </Link>
