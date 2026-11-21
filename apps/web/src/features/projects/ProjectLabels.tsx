@@ -75,22 +75,15 @@ function ColorSwatches({
 
 function LabelPreview({ name, color }: { name: string; color: string }) {
   const validHex = VALID_HEX.test(color) ? color : "#64748b";
+  const style: CSSProperties & { "--label-color": string } = { "--label-color": validHex };
   return (
     <Stack direction="horizontal" gap={2} vAlign="center">
       <Text type="supporting" color="secondary">
         Preview:
       </Text>
-      <LabelPill
-        label={{
-          id: "preview",
-          projectId: "preview",
-          name: name.trim() === "" ? "Label name" : name.trim(),
-          color: validHex,
-          createdAt: "",
-          updatedAt: "",
-          createdBy: { displayName: "" },
-        }}
-      />
+      <Text as="span" type="supporting" className="label-pill" style={style} data-label-preview>
+        {name.trim() === "" ? "Label name" : name.trim()}
+      </Text>
     </Stack>
   );
 }
