@@ -76,7 +76,7 @@ function Home() {
         }
       />
 
-      <Section padding={0}>
+      <Section variant="transparent" padding={0}>
         <Stack direction="horizontal" className="section-toolbar">
           <Heading level={2} color="inherit">
             Your workspaces
@@ -246,7 +246,7 @@ function InstallationInvitations() {
   }
 
   return (
-    <Section className="page-section" padding={0}>
+    <Section className="page-section" padding={5}>
       <Stack direction="horizontal" className="section-toolbar">
         <Heading level={2} color="inherit">
           Installation administration

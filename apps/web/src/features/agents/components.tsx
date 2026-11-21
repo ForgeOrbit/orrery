@@ -115,7 +115,7 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
   return (
     <Stack gap={4}>
       {secret !== undefined && (
-        <Section className="page-section" padding={0}>
+        <Section className="page-section" padding={5}>
           <Stack role="status" data-agent-secret gap={2}>
             <Text as="p" display="block" type="inherit" color="inherit">
               Copy this key now. It is shown once and cannot be recovered later.
@@ -139,7 +139,7 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
         </Text>
       )}
 
-      <Section className="page-section" padding={0}>
+      <Section className="page-section" padding={5}>
         <Stack direction="horizontal" className="section-toolbar">
           <Heading level={2} color="inherit">
             Registered agents
@@ -169,7 +169,7 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
         )}
       </Section>
 
-      <Section className="page-section" padding={0}>
+      <Section className="page-section" padding={5}>
         <Stack direction="horizontal" className="section-toolbar">
           <Heading level={2} color="inherit">
             Active work sessions
@@ -178,7 +178,7 @@ export function AgentsSection({ workspaceId, isOwner }: { workspaceId: string; i
         <ActiveSessions workspaceId={workspaceId} projects={projects} runs={runs} />
       </Section>
 
-      <Section className="page-section" padding={0}>
+      <Section className="page-section" padding={5}>
         <Stack direction="horizontal" className="section-toolbar">
           <Heading level={2} color="inherit">
             Keys in this workspace

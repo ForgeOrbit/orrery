@@ -133,7 +133,7 @@ function SmtpForm({ settings }: { settings: SmtpSettingsResponse }) {
   }
 
   return (
-    <Section className="page-section" padding={0}>
+    <Section className="page-section" padding={5}>
       <Heading level={2} color="inherit">
         SMTP configuration
       </Heading>
@@ -282,7 +282,7 @@ function TestAndVerification({
   }
 
   return (
-    <Section className="page-section" padding={0}>
+    <Section className="page-section" padding={5}>
       <Heading level={2} color="inherit">
         Test email and verification
       </Heading>

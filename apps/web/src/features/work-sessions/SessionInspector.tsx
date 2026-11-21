@@ -162,7 +162,12 @@ export function SessionInspector({
   const [open, setOpen] = useState(initialOpen);
 
   return (
-    <Card className="session-inspector" data-session-inspector aria-label="Session inspector">
+    <Card
+      className="session-inspector"
+      padding={4}
+      data-session-inspector
+      aria-label="Session inspector"
+    >
       <Stack className="inspector-heading" direction="horizontal" gap={2} wrap="wrap">
         <Heading level={2} color="inherit">
           Session inspector
