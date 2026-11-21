@@ -9,6 +9,7 @@ export interface PageHeaderProps {
   breadcrumbs?: ReactNode[];
   title: ReactNode;
   badge?: ReactNode;
+  statusToken?: ReactNode;
   subtitle?: ReactNode;
   actions?: ReactNode;
 }
@@ -34,7 +35,14 @@ function BackArrowIcon() {
   );
 }
 
-export function PageHeader({ breadcrumbs, title, badge, subtitle, actions }: PageHeaderProps) {
+export function PageHeader({
+  breadcrumbs,
+  title,
+  badge,
+  statusToken,
+  subtitle,
+  actions,
+}: PageHeaderProps) {
   return (
     <header className="page-header">
       {breadcrumbs !== undefined && breadcrumbs.length > 0 && (
@@ -56,6 +64,7 @@ export function PageHeader({ breadcrumbs, title, badge, subtitle, actions }: Pag
               {title}
             </Heading>
             {badge !== undefined && <span className="meta-pill">{badge}</span>}
+            {statusToken}
           </Stack>
           {subtitle !== undefined && (
             <Text as="p" display="block" type="supporting" className="page-header-subtitle">

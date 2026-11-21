@@ -264,6 +264,14 @@
   color: var(--orrery-text);
 }
 
+.sidebar-account-link .astryx-text,
+.app-nav a .astryx-text {
+  display: block;
+  min-inline-size: 0;
+  inline-size: 100%;
+  overflow: hidden;
+}
+
 .sidebar-account-text {
   display: grid;
   gap: 0.1rem;
@@ -307,6 +315,7 @@
 
 .app-nav a {
   display: block;
+  min-inline-size: 0;
   padding: 0.45rem 0.6rem;
   border-radius: var(--orrery-radius);
   color: var(--orrery-text);
@@ -317,10 +326,19 @@
 }
 
 .nav-item-inner {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 0.55rem;
+  inline-size: 100%;
   min-inline-size: 0;
+}
+
+.nav-item-label {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .nav-item-inner svg {
@@ -383,10 +401,16 @@
   color: var(--orrery-text);
 }
 
-.mobile-drawer-nav .app-nav a:hover,
-.mobile-drawer-nav .app-nav a[data-status="active"] {
-  background: var(--orrery-surface-strong, color-mix(in srgb, var(--orrery-text) 8%, transparent));
+.mobile-drawer-nav .app-nav a:hover {
+  background: color-mix(in srgb, var(--orrery-text) 7%, transparent);
   color: var(--orrery-text);
+}
+
+.mobile-drawer-nav .app-nav a[data-status="active"] {
+  background: color-mix(in srgb, var(--orrery-accent) 12%, var(--orrery-surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--orrery-accent) 28%, transparent);
+  color: var(--orrery-text);
+  font-weight: 600;
 }
 
 .mobile-drawer-nav .workspace-nav-dot {

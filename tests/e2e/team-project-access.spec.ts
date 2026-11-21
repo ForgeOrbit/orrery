@@ -274,12 +274,15 @@ test("grants access in the browser and shows Read without mutation controls", as
 
   await page.goto(`/workspaces/${workspaceId}`);
   await page.getByRole("tab", { name: "Members" }).click();
-  const memberRow = page.locator(`li[data-member-id="${memberHumanId}"]`);
-  await expect(memberRow).toContainText("Can create projects");
-  await memberRow.getByRole("button", { name: "Revoke Create projects" }).click();
-  await expect(memberRow).toContainText("Cannot create projects");
-  await memberRow.getByRole("button", { name: "Grant Create projects" }).click();
-  await expect(memberRow).toContainText("Can create projects");
+  const memberRow = page.locator(`[data-member-id="${memberHumanId}"]`);
+  await expect(memberRow.locator('[data-capability="canCreateProjects"]')).toBeVisible();
+  await memberRow.getByRole("button", { name: "Permissions" }).click();
+  const permissionsDialog = page.getByRole("dialog");
+  await permissionsDialog.getByRole("checkbox", { name: "Create projects" }).uncheck();
+  await expect(memberRow.locator('[data-capability="canCreateProjects"]')).toHaveCount(0);
+  await permissionsDialog.getByRole("checkbox", { name: "Create projects" }).check();
+  await expect(memberRow.locator('[data-capability="canCreateProjects"]')).toBeVisible();
+  await page.keyboard.press("Escape");
 
   const colleagueContext = await browser.newContext();
   const colleaguePage = await colleagueContext.newPage();

@@ -7,20 +7,38 @@ type TextFieldProps = TextInputProps &
 
 export function TextField({
   required,
+  isRequired,
   minLength,
   maxLength,
   width = "min(100%, 40rem)",
   ...props
 }: TextFieldProps) {
-  const constraints = { required, minLength, maxLength };
-  return <TextInput {...props} {...constraints} width={width} />;
+  const effectiveRequired = required ?? isRequired;
+  const constraints = { required: effectiveRequired, minLength, maxLength };
+  return (
+    <TextInput
+      {...props}
+      {...constraints}
+      {...(effectiveRequired === undefined ? {} : { isRequired: effectiveRequired })}
+      width={width}
+    />
+  );
 }
 
 export function TextAreaField({
   required,
+  isRequired,
   width = "min(100%, 40rem)",
   ...props
 }: TextAreaProps & Pick<ComponentProps<"textarea">, "required">) {
-  const constraints = { required };
-  return <TextArea {...props} {...constraints} width={width} />;
+  const effectiveRequired = required ?? isRequired;
+  const constraints = { required: effectiveRequired };
+  return (
+    <TextArea
+      {...props}
+      {...constraints}
+      {...(effectiveRequired === undefined ? {} : { isRequired: effectiveRequired })}
+      width={width}
+    />
+  );
 }
