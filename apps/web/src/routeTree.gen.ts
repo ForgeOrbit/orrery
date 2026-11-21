@@ -14,6 +14,7 @@ import { Route as AccountRouteImport } from './routes/account'
 import { Route as ForgotPasswordRouteImport } from './routes/forgot-password'
 import { Route as InboxRouteImport } from './routes/inbox'
 import { Route as MyWorkRouteImport } from './routes/my-work'
+import { Route as NotificationsRouteImport } from './routes/notifications'
 import { Route as RegisterRouteImport } from './routes/register'
 import { Route as ResetPasswordRouteImport } from './routes/reset-password'
 import { Route as SetupRouteImport } from './routes/setup'
@@ -53,6 +54,11 @@ const InboxRoute = InboxRouteImport.update({
 const MyWorkRoute = MyWorkRouteImport.update({
   id: '/my-work',
   path: '/my-work',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const NotificationsRoute = NotificationsRouteImport.update({
+  id: '/notifications',
+  path: '/notifications',
   getParentRoute: () => rootRouteImport,
 } as any)
 const RegisterRoute = RegisterRouteImport.update({
@@ -138,6 +144,7 @@ export interface FileRoutesByFullPath {
   '/forgot-password': typeof ForgotPasswordRoute
   '/inbox': typeof InboxRoute
   '/my-work': typeof MyWorkRoute
+  '/notifications': typeof NotificationsRoute
   '/register': typeof RegisterRoute
   '/reset-password': typeof ResetPasswordRoute
   '/setup': typeof SetupRoute
@@ -160,6 +167,7 @@ export interface FileRoutesByTo {
   '/forgot-password': typeof ForgotPasswordRoute
   '/inbox': typeof InboxRoute
   '/my-work': typeof MyWorkRoute
+  '/notifications': typeof NotificationsRoute
   '/register': typeof RegisterRoute
   '/reset-password': typeof ResetPasswordRoute
   '/setup': typeof SetupRoute
@@ -183,6 +191,7 @@ export interface FileRoutesById {
   '/forgot-password': typeof ForgotPasswordRoute
   '/inbox': typeof InboxRoute
   '/my-work': typeof MyWorkRoute
+  '/notifications': typeof NotificationsRoute
   '/register': typeof RegisterRoute
   '/reset-password': typeof ResetPasswordRoute
   '/setup': typeof SetupRoute
@@ -207,6 +216,7 @@ export interface FileRouteTypes {
     | '/forgot-password'
     | '/inbox'
     | '/my-work'
+    | '/notifications'
     | '/register'
     | '/reset-password'
     | '/setup'
@@ -229,6 +239,7 @@ export interface FileRouteTypes {
     | '/forgot-password'
     | '/inbox'
     | '/my-work'
+    | '/notifications'
     | '/register'
     | '/reset-password'
     | '/setup'
@@ -251,6 +262,7 @@ export interface FileRouteTypes {
     | '/forgot-password'
     | '/inbox'
     | '/my-work'
+    | '/notifications'
     | '/register'
     | '/reset-password'
     | '/setup'
@@ -274,6 +286,7 @@ export interface RootRouteChildren {
   ForgotPasswordRoute: typeof ForgotPasswordRoute
   InboxRoute: typeof InboxRoute
   MyWorkRoute: typeof MyWorkRoute
+  NotificationsRoute: typeof NotificationsRoute
   RegisterRoute: typeof RegisterRoute
   ResetPasswordRoute: typeof ResetPasswordRoute
   SetupRoute: typeof SetupRoute
@@ -326,6 +339,13 @@ declare module '@tanstack/react-router' {
       path: '/my-work'
       fullPath: '/my-work'
       preLoaderRoute: typeof MyWorkRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/notifications': {
+      id: '/notifications'
+      path: '/notifications'
+      fullPath: '/notifications'
+      preLoaderRoute: typeof NotificationsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/register': {
@@ -442,6 +462,7 @@ const rootRouteChildren: RootRouteChildren = {
   ForgotPasswordRoute: ForgotPasswordRoute,
   InboxRoute: InboxRoute,
   MyWorkRoute: MyWorkRoute,
+  NotificationsRoute: NotificationsRoute,
   RegisterRoute: RegisterRoute,
   ResetPasswordRoute: ResetPasswordRoute,
   SetupRoute: SetupRoute,
