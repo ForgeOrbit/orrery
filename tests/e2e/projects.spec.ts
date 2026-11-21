@@ -237,6 +237,7 @@ test("runs the complete cycle in the browser", async ({ page }) => {
   await page.getByLabel("Title").fill("Browser issue edited");
   await page.getByLabel("Body").fill("Edited in the browser.");
   await page.getByRole("button", { name: "Save issue" }).click();
+  await expect(page.getByRole("dialog", { name: "Edit issue" })).toBeHidden();
   await expect(page.getByRole("heading", { name: "Browser issue edited" })).toBeVisible();
   await expect(page.locator("[data-issue-body]")).toHaveText("Edited in the browser.");
 

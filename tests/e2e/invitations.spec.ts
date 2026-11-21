@@ -533,7 +533,7 @@ test("installation invite form refreshes failed delivery history without a reloa
 
     // The original delivery Problem stays visible, while the history refreshes on its
     // own to show the pending row, the separate failure, and the Resend action.
-    await expect(page.getByRole("dialog").getByRole("alert")).toContainText(
+    await expect(page.getByRole("dialog").getByRole("alert").first()).toContainText(
       "Could not reach the SMTP server",
     );
     await page.keyboard.press("Escape");
