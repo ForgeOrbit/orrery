@@ -9,10 +9,10 @@ Exhaustive finite-state model checking for Orrery's highest-stakes concurrency, 
 
 ## Sync Commit & Coverage Record
 
-- **Last verified commit:** `3244454` (#94 branch; M18/M20/M27 updated for the six-state workflow and M30 added and verified)
+- **Last verified commit:** `c634002` (all 31 models M1–M30 re-anchored on live TypeScript/SQL declarations after #122 comment stripping; fail-loud `slice_between` enabled)
 - **Check whether a change touches verified code:**
   ```bash
-  git diff --name-only 3244454 -- \
+  git diff --name-only c634002 -- \
     apps/server/src/features/inbox/service.ts \
     apps/server/src/features/inbox/rest.ts \
     apps/server/src/features/inbox/mcp.ts \
@@ -36,6 +36,7 @@ Exhaustive finite-state model checking for Orrery's highest-stakes concurrency, 
     apps/server/src/features/runs/rest.ts \
     apps/server/src/features/runs/index.ts \
     apps/server/src/features/work-sessions/service.ts \
+    apps/server/src/features/work-sessions/state-machine.ts \
     apps/server/src/features/work-sessions/rest.ts \
     apps/server/src/features/work-sessions/mcp.ts \
     apps/server/src/features/work-sessions/index.ts \
@@ -60,9 +61,6 @@ Exhaustive finite-state model checking for Orrery's highest-stakes concurrency, 
     db/migrations/0017_rapid_talon.sql \
     db/migrations/0018_agent_key_project_scope.sql \
     db/migrations/0019_perpetual_wallop.sql \
-    db/migrations/0020_flippant_iceman.sql \
-    db/migrations/0021_demonic_warstar.sql
-    db/migrations/0019_perpetual_wallop.sql
     db/migrations/0020_flippant_iceman.sql \
     db/migrations/0021_demonic_warstar.sql \
     db/migrations/0022_spooky_barracuda.sql \
