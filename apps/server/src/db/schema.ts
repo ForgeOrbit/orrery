@@ -1254,6 +1254,9 @@ const webhookDeliveryStatuses = ["pending", "delivering", "delivered", "failed"]
 const webhookDeliveryStatusesSql = sql.raw(
   webhookDeliveryStatuses.map((status) => `'${status}'`).join(", "),
 );
+const webhookEventsSql = sql.raw(
+  [...ProjectActivityType.options, "webhook.test"].map((event) => `'${event}'`).join(", "),
+);
 
 export const webhookDeliveries = pgTable(
   "webhook_deliveries",
@@ -1276,9 +1279,36 @@ export const webhookDeliveries = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    check("webhook_deliveries_event", sql`${t.event} in (${webhookEventsSql})`),
+    check(
+      "webhook_deliveries_test_activity",
+      sql`(${t.event} = 'webhook.test' and ${t.activityId} is null)
+        or (${t.event} <> 'webhook.test' and ${t.activityId} is not null)`,
+    ),
     check("webhook_deliveries_status", sql`${t.status} in (${webhookDeliveryStatusesSql})`),
     check("webhook_deliveries_attempt_count_nonnegative", sql`${t.attemptCount} >= 0`),
-    index("webhook_deliveries_due").on(t.status, t.nextAttemptAt),
+    check(
+      "webhook_deliveries_last_duration_nonnegative",
+      sql`${t.lastDurationMs} is null or ${t.lastDurationMs} >= 0`,
+    ),
+    check(
+      "webhook_deliveries_delivering_lock",
+      sql`${t.status} <> 'delivering' or ${t.lockedUntil} is not null`,
+    ),
+    check(
+      "webhook_deliveries_delivered_at",
+      sql`${t.status} <> 'delivered' or ${t.deliveredAt} is not null`,
+    ),
+    uniqueIndex("webhook_deliveries_webhook_activity")
+      .on(t.webhookId, t.activityId)
+      .where(sql`${t.activityId} is not null`),
+    index("webhook_deliveries_pending_due")
+      .on(t.nextAttemptAt)
+      .where(sql`${t.status} = 'pending'`),
+    index("webhook_deliveries_delivering_lock_due")
+      .on(t.lockedUntil)
+      .where(sql`${t.status} = 'delivering'`),
     index("webhook_deliveries_webhook_created").on(t.webhookId, t.createdAt.desc()),
+    index("webhook_deliveries_created").on(t.createdAt),
   ],
 );

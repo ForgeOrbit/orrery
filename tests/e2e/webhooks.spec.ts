@@ -50,7 +50,9 @@ test.afterAll(async () => {
   if (webhookId !== undefined && workspaceId !== undefined) {
     await api.delete(`/api/workspaces/${workspaceId}/webhooks/${webhookId}`);
   }
-  await new Promise<void>((resolve) => receiver.close(() => resolve()));
+  if (receiver !== undefined) {
+    await new Promise<void>((resolve) => receiver.close(() => resolve()));
+  }
   await api?.dispose();
 });
 
@@ -79,9 +81,10 @@ test("delivers a signed metadata-only envelope and never echoes the signing secr
   if (address === null || typeof address === "string") throw new Error("no receiver address");
   const port = address.port;
 
+  const receiverHost = process.env.ORRERY_WEBHOOK_E2E_HOST ?? "host.docker.internal";
   const created = await api.post(`/api/workspaces/${workspaceId}/webhooks`, {
     data: {
-      url: `http://host.docker.internal:${port}/hook`,
+      url: `http://${receiverHost}:${port}/hook`,
       description: "e2e receiver",
       allProjects: true,
       allEvents: true,

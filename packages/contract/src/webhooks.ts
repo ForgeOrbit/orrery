@@ -6,9 +6,21 @@ import { ProjectActivityType } from "./projects.ts";
  * deliberately opt in to private delivery with ORRERY_WEBHOOK_ALLOW_PRIVATE_URLS=true. */
 export const WebhookUrl = z
   .url()
+  .max(2048)
   .refine(
-    (value) => value.startsWith("https://") || value.startsWith("http://"),
-    { message: "The webhook URL must use http or https." },
+    (value) => {
+      try {
+        const parsed = new URL(value);
+        return (
+          (parsed.protocol === "https:" || parsed.protocol === "http:") &&
+          parsed.username === "" &&
+          parsed.password === ""
+        );
+      } catch {
+        return false;
+      }
+    },
+    { message: "The webhook URL must use http or https without embedded credentials." },
   )
   .meta({ id: "WebhookUrl" });
 export type WebhookUrl = z.infer<typeof WebhookUrl>;

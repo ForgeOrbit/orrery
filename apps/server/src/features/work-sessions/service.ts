@@ -447,6 +447,7 @@ async function expireStale(
   tx: DbTransaction,
   issueId: string,
   notify: NotifyActivity,
+  onActivity: EnqueueWebhookActivity,
 ): Promise<void> {
   const [issue] = await tx
     .select({ projectId: issues.projectId })
@@ -469,6 +470,7 @@ async function expireStale(
     )
     .returning({ id: workSessions.id, agentId: workSessions.agentId });
 
+  if (expired.length > 0) await revertIssueToTodo(tx, issueId);
   if (expired.length > 0 && issue !== undefined) {
     const activityId = randomUUID();
     const summary = "Work session expired: the five-minute claim lease lapsed";
@@ -481,6 +483,7 @@ async function expireStale(
       summary,
       createdAt: sql`statement_timestamp()`,
     });
+    await onActivity(tx, activityId);
     await notify(tx, {
       activityId,
       projectId: issue.projectId,
@@ -490,7 +493,6 @@ async function expireStale(
       actorAgentId: expired[0]!.agentId,
     });
   }
-  if (expired.length > 0) await revertIssueToTodo(tx, issueId);
 }
 
 const fiveMinutes = sql`statement_timestamp() + interval '5 minutes'`;
@@ -568,6 +570,7 @@ async function insertFreshSession(
   issueId: string,
   values: PgInsertValue<typeof workSessions>,
   notify: NotifyActivity,
+  onActivity: EnqueueWebhookActivity,
 ): Promise<SessionView | undefined> {
   for (let attempt = 0; attempt < 2; attempt++) {
     const [created] = await tx
@@ -576,7 +579,7 @@ async function insertFreshSession(
       .onConflictDoNothing()
       .returning(sessionColumns);
     if (created !== undefined) return created;
-    await expireStale(tx, issueId, notify);
+    await expireStale(tx, issueId, notify, onActivity);
   }
   return undefined;
 }
@@ -759,15 +762,10 @@ export function createSessionsService({
   const leaseDeadline = questionLeaseDeadline ?? (async () => null);
   const checkDeadline = evaluateQuestionDeadline ?? (async () => {});
   const dueQuestionIssueIds = dueQuestionIssueIdsDep ?? (async () => []);
-  // Notifications are written only for a subset of activities, but every activity that
-  // reaches notify() is also an outbox event: enqueue in the same transaction.
-  const notifyActivity: NotifyActivity = async (tx, input) => {
-    if (notifyActivityDep !== undefined) await notifyActivityDep(tx, input);
-    await onActivity(tx, input.activityId);
-  };
+  const notifyActivity: NotifyActivity = notifyActivityDep ?? (async () => {});
 
   const expireCommitted = (issueId: string) =>
-    db.transaction((tx) => expireStale(tx, issueId, notifyActivity));
+    db.transaction((tx) => expireStale(tx, issueId, notifyActivity, onActivity));
 
   const deadlineCommitted = async (issueId: string) => {
     if (evaluateQuestionDeadline === undefined) return;
@@ -809,7 +807,7 @@ export function createSessionsService({
         .orderBy(issues.id)
         .for("update");
 
-      for (const issueId of issueIds) await expireStale(tx, issueId, notifyActivity);
+      for (const issueId of issueIds) await expireStale(tx, issueId, notifyActivity, onActivity);
     });
   };
 
@@ -830,7 +828,7 @@ export function createSessionsService({
       await lockAgentWorkspaceAccess(tx, identity);
       const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
       const issue = await lockIssue(tx, issueId);
-      await expireStale(tx, issue.id, notifyActivity);
+      await expireStale(tx, issue.id, notifyActivity, onActivity);
 
       await checkDeadline(tx, issue.id);
       await requireAccess(
@@ -871,7 +869,7 @@ export function createSessionsService({
         await lockAgentWorkspaceAccess(tx, identity);
         const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
         const issue = await lockIssue(tx, input.issueId);
-        await expireStale(tx, issue.id, notifyActivity);
+        await expireStale(tx, issue.id, notifyActivity, onActivity);
         await checkDeadline(tx, issue.id);
 
         const [fresh] = await tx
@@ -915,6 +913,7 @@ export function createSessionsService({
             updatedAt: sql`statement_timestamp()`,
           },
           notifyActivity,
+          onActivity,
         );
         if (created !== undefined) {
           await tx
@@ -1073,7 +1072,7 @@ export function createSessionsService({
           humanId,
           issueId,
         );
-        await expireStale(tx, issue.id, notifyActivity);
+        await expireStale(tx, issue.id, notifyActivity, onActivity);
 
         const [session] = await tx
           .select(sessionColumns)
@@ -1249,7 +1248,7 @@ export function createSessionsService({
         await lockAgentWorkspaceAccess(tx, identity);
         const requireAccess = requireAccessArgs(tx, projectAccessCeiling, projectAccessAtLeast);
         const issue = await lockIssue(tx, input.issueId);
-        await expireStale(tx, issue.id, notifyActivity);
+        await expireStale(tx, issue.id, notifyActivity, onActivity);
         await checkDeadline(tx, issue.id);
 
         const [fresh] = await tx
@@ -1313,6 +1312,7 @@ export function createSessionsService({
             updatedAt: sql`statement_timestamp()`,
           },
           notifyActivity,
+          onActivity,
         );
         if (created !== undefined) {
           await tx
@@ -1516,7 +1516,7 @@ export function createSessionsService({
             // A 1-hour require_human question pause releases the claim itself; running the
             // deadline first avoids a spurious issue_session_expired for that clean pause.
             await checkDeadline(tx, issueId);
-            await expireStale(tx, issueId, notifyActivity);
+            await expireStale(tx, issueId, notifyActivity, onActivity);
           });
         } catch (error) {
           log?.warn("expiry sweep skipped an issue", {
@@ -1545,7 +1545,7 @@ export function createSessionsService({
     },
 
     async issueHasLiveSession(tx, issueId) {
-      await expireStale(tx, issueId, notifyActivity);
+      await expireStale(tx, issueId, notifyActivity, onActivity);
       return (await findActive(tx, issueId)) !== undefined;
     },
   };

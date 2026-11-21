@@ -22,10 +22,14 @@ import { WebhooksError, type WebhooksErrorKind, type WebhooksService } from "./s
 const workspaceParams = z.object({ workspaceId: z.string().min(1).max(200) });
 const webhookParams = workspaceParams.extend({ webhookId: z.string().min(1).max(200) });
 
-const commonErrors = {
+const baseErrors = {
+  400: problem("The request parameters or payload are invalid"),
   401: problem("Not signed in, or the agent key is invalid or revoked"),
   403: problem("Only a workspace owner may manage webhooks"),
   404: problem("No such workspace or webhook is accessible to the caller"),
+};
+
+const conflictError = {
   409: problem("The webhook limit was reached or no encryption key is configured"),
 };
 
@@ -40,7 +44,7 @@ const listWebhooks = createRoute({
       description: "The workspace's webhooks",
       content: { "application/json": { schema: WebhooksResponse } },
     },
-    ...commonErrors,
+    ...baseErrors,
   },
 });
 
@@ -59,8 +63,8 @@ const createWebhook = createRoute({
       description: "The created webhook and its one-time signing secret",
       content: { "application/json": { schema: WebhookWithSecret } },
     },
-    400: problem("The webhook scope is invalid"),
-    ...commonErrors,
+    ...baseErrors,
+    ...conflictError,
   },
 });
 
@@ -79,8 +83,7 @@ const updateWebhook = createRoute({
       description: "The updated webhook",
       content: { "application/json": { schema: Webhook } },
     },
-    400: problem("The webhook scope is invalid"),
-    ...commonErrors,
+    ...baseErrors,
   },
 });
 
@@ -95,7 +98,8 @@ const rotateWebhookSecret = createRoute({
       description: "The webhook and its new one-time signing secret",
       content: { "application/json": { schema: WebhookWithSecret } },
     },
-    ...commonErrors,
+    ...baseErrors,
+    ...conflictError,
   },
 });
 
@@ -106,7 +110,7 @@ const deleteWebhook = createRoute({
   request: { params: webhookParams },
   responses: {
     204: { description: "The webhook and its deliveries are deleted" },
-    ...commonErrors,
+    ...baseErrors,
   },
 });
 
@@ -121,7 +125,7 @@ const testWebhook = createRoute({
       description: "The enqueued test delivery",
       content: { "application/json": { schema: WebhookDelivery } },
     },
-    ...commonErrors,
+    ...baseErrors,
   },
 });
 
@@ -135,7 +139,7 @@ const listWebhookDeliveries = createRoute({
       description: "The latest deliveries, newest first",
       content: { "application/json": { schema: WebhookDeliveriesResponse } },
     },
-    ...commonErrors,
+    ...baseErrors,
   },
 });
 
@@ -160,25 +164,21 @@ const statusFor = {
   invalid_webhook_scope: 400,
 } as const satisfies Record<WebhooksErrorKind, number>;
 
-const kindsWithScope = [
+const kindsBase = [
   "not_signed_in",
   "agents_cannot_manage_webhooks",
   "not_workspace_member",
   "not_workspace_owner",
   "webhook_not_found",
+] as const;
+const kindsCreate = [
+  ...kindsBase,
   "webhook_limit_reached",
   "encryption_key_missing",
   "invalid_webhook_scope",
 ] as const;
-const kindsNoScope = [
-  "not_signed_in",
-  "agents_cannot_manage_webhooks",
-  "not_workspace_member",
-  "not_workspace_owner",
-  "webhook_not_found",
-  "webhook_limit_reached",
-  "encryption_key_missing",
-] as const;
+const kindsUpdate = [...kindsBase, "invalid_webhook_scope"] as const;
+const kindsRotate = [...kindsBase, "encryption_key_missing"] as const;
 
 function isKind<K extends readonly WebhooksErrorKind[]>(
   error: WebhooksError,
@@ -219,7 +219,7 @@ export function createWebhooksRest(
     try {
       return c.json(await service.list(await workActor(c), c.req.valid("param").workspaceId), 200);
     } catch (error) {
-      return failure(c, error, kindsNoScope);
+      return failure(c, error, kindsBase);
     }
   });
 
@@ -234,7 +234,7 @@ export function createWebhooksRest(
         201,
       );
     } catch (error) {
-      return failure(c, error, kindsWithScope);
+      return failure(c, error, kindsCreate);
     }
   });
 
@@ -251,7 +251,7 @@ export function createWebhooksRest(
         200,
       );
     } catch (error) {
-      return failure(c, error, kindsWithScope);
+      return failure(c, error, kindsUpdate);
     }
   });
 
@@ -263,7 +263,7 @@ export function createWebhooksRest(
         200,
       );
     } catch (error) {
-      return failure(c, error, kindsNoScope);
+      return failure(c, error, kindsRotate);
     }
   });
 
@@ -273,7 +273,7 @@ export function createWebhooksRest(
       await service.remove(await workActor(c), params.workspaceId, params.webhookId);
       return c.body(null, 204);
     } catch (error) {
-      return failure(c, error, kindsNoScope);
+      return failure(c, error, kindsBase);
     }
   });
 
@@ -285,7 +285,7 @@ export function createWebhooksRest(
         201,
       );
     } catch (error) {
-      return failure(c, error, kindsNoScope);
+      return failure(c, error, kindsBase);
     }
   });
 
@@ -297,7 +297,7 @@ export function createWebhooksRest(
         200,
       );
     } catch (error) {
-      return failure(c, error, kindsNoScope);
+      return failure(c, error, kindsBase);
     }
   });
 

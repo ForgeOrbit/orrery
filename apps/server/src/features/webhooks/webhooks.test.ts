@@ -1,19 +1,23 @@
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import type { Server } from "node:http";
 import { createServer } from "node:http";
+import { createServer as createNetServer } from "node:net";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import type { WorkActor } from "../projects/index.ts";
 import { WebhookPayload } from "@orrery/contract";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  agents,
   humans,
   issues,
   projectActivity,
   projects,
+  runs,
   webhookDeliveries,
   webhookProjects,
   webhooks,
+  workSessions,
   workspaceMemberships,
   workspaces,
 } from "../../db/schema.ts";
@@ -22,9 +26,12 @@ import { createLogger, type Logger } from "../../platform/log.ts";
 import { migrate } from "../../platform/migrate.ts";
 import { tokenHash } from "../../platform/tokens.ts";
 import { createAccountsFeature } from "../accounts/index.ts";
+import { AgentsError } from "../agents/index.ts";
 import { createProjectsFeature } from "../projects/index.ts";
 import { createTransfersFeature } from "../transfers/index.ts";
-import { createWebhooksService, type WebhooksService } from "./service.ts";
+import { createSessionsFeature } from "../work-sessions/index.ts";
+import { createWebhooksRest } from "./rest.ts";
+import { createWebhooksService, isBlockedAddress, type WebhooksService } from "./service.ts";
 
 const SETUP_SECRET = "correct horse battery staple webhooks test";
 const PUBLIC_URL = "http://orrery.test";
@@ -123,6 +130,9 @@ afterEach(async () => {
     await tx.execute(sql`delete from webhook_projects`);
     await tx.execute(sql`delete from webhooks`);
     await tx.execute(sql`delete from project_activity`);
+    await tx.execute(sql`delete from work_sessions`);
+    await tx.execute(sql`delete from runs`);
+    await tx.execute(sql`delete from agents`);
     await tx.execute(sql`delete from issues`);
     await tx.execute(sql`delete from project_access_grants`);
     await tx.execute(sql`delete from project_access_events`);
@@ -479,6 +489,7 @@ describe("transactional outbox and envelope", () => {
     const source = await personalWorkspace(owner.id);
     const destination = await sharedWorkspace("transfer-dest", owner.id, true);
     const project = await insertProject(source.id, "TRN1", owner.id);
+    const sibling = await insertProject(source.id, "TRN2", owner.id);
     const hook = await createHook(humanActor(owner.id), source.id, {
       allProjects: false,
       projectIds: [project.id],
@@ -499,7 +510,9 @@ describe("transactional outbox and envelope", () => {
     expect(await database.db.select().from(webhookProjects)).toHaveLength(0);
     const [after] = await database.db.select().from(webhooks).where(eq(webhooks.id, hook.id));
     expect(after?.allProjects).toBe(false);
+    // Neither the transferred project nor a sibling remaining in the source workspace matches.
     await insertActivity(project.id, owner.id);
+    await insertActivity(sibling.id, owner.id);
     expect(await database.db.select().from(webhookDeliveries)).toHaveLength(0);
   });
 });
@@ -764,5 +777,292 @@ describe("retry, circuit breaker, test events, and maintenance", () => {
     const remaining = await database.db.select().from(webhookDeliveries);
     expect(remaining).toHaveLength(1);
     expect(remaining[0]?.id).toBe(keep.id);
+  });
+
+  it("stops delivering queued non-test deliveries after a webhook is disabled", async () => {
+    const owner = await insertHuman();
+    const ws = await personalWorkspace(owner.id);
+    const project = await insertProject(ws.id, "DIS1", owner.id);
+    const receiver = await startReceiver();
+    try {
+      const hook = await createHook(humanActor(owner.id), ws.id, { url: receiver.url });
+      await insertActivity(project.id, owner.id);
+      await service.update(humanActor(owner.id), ws.id, hook.id, { enabled: false });
+      await service.drain();
+      expect(receiver.received).toHaveLength(0);
+      const [row] = await database.db.select().from(webhookDeliveries);
+      expect(row?.status).toBe("failed");
+      expect(row?.lastError).toBe("webhook_disabled");
+      const [after] = await database.db.select().from(webhooks).where(eq(webhooks.id, hook.id));
+      expect(after?.consecutiveFailures).toBe(0);
+    } finally {
+      await receiver.close();
+    }
+  });
+
+  it("preserves consecutive_failures reason when updating an already auto-disabled hook with enabled=false", async () => {
+    const owner = await insertHuman();
+    const ws = await personalWorkspace(owner.id);
+    const hook = await createHook(humanActor(owner.id), ws.id);
+    await database.db
+      .update(webhooks)
+      .set({
+        enabled: false,
+        disabledAt: sql`statement_timestamp()`,
+        disabledReason: "consecutive_failures",
+        consecutiveFailures: 10,
+      })
+      .where(eq(webhooks.id, hook.id));
+    const updated = await service.update(humanActor(owner.id), ws.id, hook.id, {
+      description: "edited while disabled",
+      enabled: false,
+    });
+    expect(updated.disabledReason).toBe("consecutive_failures");
+    expect(updated.enabled).toBe(false);
+  });
+});
+
+describe("hardening: DNS pinning, IPv6 SSRF, truncated responses, scope validation, work-sessions, and REST", () => {
+  it("blocks raw DNS dotted-quad IPv4-mapped IPv6 and special-use ranges without over-blocking public IPs", () => {
+    const blockedCases = [
+      "::ffff:127.0.0.1",
+      "::ffff:169.254.169.254",
+      "::ffff:10.0.0.1",
+      "0:0:0:0:0:ffff:127.0.0.1",
+      "::127.0.0.1",
+      "64:ff9b::127.0.0.1",
+      "fe80::1%eth0",
+      "fc00::1",
+      "2001:db8::1",
+      "2002:7f00:0001::1",
+      "192.0.2.1",
+      "198.51.100.1",
+      "203.0.113.1",
+    ];
+    expect(blockedCases.map((addr) => [addr, isBlockedAddress(addr)])).toEqual(
+      blockedCases.map((addr) => [addr, true]),
+    );
+    const publicCases = ["192.0.78.24", "1.1.1.1", "2606:4700:4700::1111", "::ffff:1.1.1.1"];
+    expect(publicCases.map((addr) => [addr, isBlockedAddress(addr)])).toEqual(
+      publicCases.map((addr) => [addr, false]),
+    );
+  });
+
+  it("delivers to a hostname via DNS-pinned lookup on Node 26 (autoSelectFamily)", async () => {
+    const owner = await insertHuman();
+    const ws = await personalWorkspace(owner.id);
+    const receiver = await startReceiver();
+    try {
+      const localhostUrl = receiver.url.replace("127.0.0.1", "localhost");
+      const hook = await createHook(humanActor(owner.id), ws.id, { url: localhostUrl });
+      await service.test(humanActor(owner.id), ws.id, hook.id);
+      await service.drain();
+      expect(receiver.received).toHaveLength(1);
+      const [row] = await database.db.select().from(webhookDeliveries);
+      expect(row?.status).toBe("delivered");
+      expect(row?.lastStatusCode).toBe(200);
+    } finally {
+      await receiver.close();
+    }
+  });
+
+  it("settles cleanly without hanging when a receiver truncates the TCP response mid-body", async () => {
+    const owner = await insertHuman();
+    const ws = await personalWorkspace(owner.id);
+    const tcpServer = createNetServer((socket) => {
+      socket.once("data", () => {
+        socket.write("HTTP/1.1 200 OK\r\nContent-Length: 500\r\n\r\npartial");
+        socket.destroy();
+      });
+    });
+    await new Promise<void>((resolve) => tcpServer.listen(0, "127.0.0.1", resolve));
+    const addr = tcpServer.address();
+    if (addr === null || typeof addr === "string") throw new Error("no tcp address");
+    try {
+      const hook = await createHook(humanActor(owner.id), ws.id, {
+        url: `http://127.0.0.1:${addr.port}/hook`,
+      });
+      await service.test(humanActor(owner.id), ws.id, hook.id);
+      await service.drain();
+      const [row] = await database.db.select().from(webhookDeliveries);
+      expect(row?.status).toBe("pending");
+      expect(["aborted", "response_truncated"]).toContain(row?.lastError);
+    } finally {
+      await new Promise<void>((resolve) => tcpServer.close(() => resolve()));
+    }
+  });
+
+  it("deduplicates duplicate projectIds, rejects foreign projectIds, and checks 404 before 409 on rotateSecret", async () => {
+    const owner = await insertHuman();
+    const ws = await personalWorkspace(owner.id);
+    const otherWs = await sharedWorkspace("foreign", owner.id);
+    const project = await insertProject(ws.id, "DUP1", owner.id);
+    const foreignProject = await insertProject(otherWs.id, "FOR1", owner.id);
+
+    const created = await createHook(humanActor(owner.id), ws.id, {
+      allProjects: false,
+      projectIds: [project.id, project.id],
+      allEvents: false,
+      events: ["issue_edited", "issue_edited"],
+    });
+    expect(created.projectIds).toEqual([project.id]);
+    expect(created.events).toEqual(["issue_edited"]);
+
+    const updated = await service.update(humanActor(owner.id), ws.id, created.id, {
+      allProjects: false,
+      projectIds: [project.id, project.id],
+    });
+    expect(updated.projectIds).toEqual([project.id]);
+
+    await expect(
+      createHook(humanActor(owner.id), ws.id, {
+        allProjects: false,
+        projectIds: [foreignProject.id],
+      }),
+    ).rejects.toMatchObject({ kind: "invalid_webhook_scope" });
+
+    await expect(
+      noKeyService.rotateSecret(humanActor(owner.id), ws.id, "missing-webhook"),
+    ).rejects.toMatchObject({ kind: "webhook_not_found" });
+  });
+
+  it("enqueues exactly one delivery per review handoff and snapshots todo status on session expiry", async () => {
+    const owner = await insertHuman();
+    const ws = await personalWorkspace(owner.id);
+    const project = await insertProject(ws.id, "WSN1", owner.id);
+    const issueA = await insertIssue(project.id, 1, owner.id);
+    const issueB = await insertIssue(project.id, 2, owner.id);
+    const hook = await createHook(humanActor(owner.id), ws.id);
+
+    const agentId = randomUUID();
+    await database.db.insert(agents).values({
+      id: agentId,
+      humanId: owner.id,
+      name: "worker-agent",
+    });
+    const runId = randomUUID();
+    await database.db.insert(runs).values({
+      id: runId,
+      workspaceId: ws.id,
+      agentId,
+      harness: "test",
+      nativeSessionId: randomUUID(),
+      status: "active",
+    });
+
+    const sessions = createSessionsFeature({
+      db: database.db,
+      sessionReader: async () => null,
+      authenticate: async () => null,
+      projectAccessCeiling: async (_tx, _wsId, _hId, ids) =>
+        new Map(ids.map((id) => [id, "manage" as const])),
+      projectAccessAtLeast: () => true,
+      listIssues: async () => [],
+      notifyActivity: async () => {},
+      onActivity: service.enqueueForActivity,
+    }).service;
+    const agentIdentity: WorkActor = {
+      kind: "agent",
+      identity: {
+        agentId,
+        name: "worker-agent",
+        humanId: owner.id,
+        keyId: randomUUID(),
+        workspaceId: ws.id,
+        validity: "never",
+        projects: [{ projectId: project.id, projectName: project.name, level: "contribute" }],
+      },
+    };
+
+    await sessions.claim(agentIdentity, { issueId: issueA.id, runId });
+    await sessions.stop(agentIdentity, issueA.id, "review");
+
+    const handoffDeliveries = await database.db
+      .select()
+      .from(webhookDeliveries)
+      .where(eq(webhookDeliveries.webhookId, hook.id));
+    expect(handoffDeliveries).toHaveLength(1);
+    expect(handoffDeliveries[0]?.event).toBe("issue_review_handoff");
+
+    await sessions.claim(agentIdentity, { issueId: issueB.id, runId });
+    await database.db
+      .update(workSessions)
+      .set({ leaseExpiresAt: sql`statement_timestamp() - interval '1 minute'` })
+      .where(eq(workSessions.issueId, issueB.id));
+    await sessions.sweep();
+
+    const allDeliveries = await database.db
+      .select()
+      .from(webhookDeliveries)
+      .where(eq(webhookDeliveries.webhookId, hook.id));
+    const expired = allDeliveries.find((d) => d.event === "issue_session_expired");
+    expect(expired).toBeDefined();
+    const expiredPayload = WebhookPayload.parse(expired?.payload);
+    expect(expiredPayload.issue?.status).toBe("todo");
+  });
+
+  it("maps REST auth errors, Problem Details, and embedded-credential URLs accurately", async () => {
+    const owner = await insertHuman();
+    const ws = await personalWorkspace(owner.id);
+    let currentAccount: Extract<WorkActor, { kind: "human" }>["account"] | null = null;
+    let authMode: "none" | "revoked" | "agent" = "none";
+    const app = createWebhooksRest(
+      service,
+      async () => currentAccount,
+      async () => {
+        if (authMode === "revoked") throw new AgentsError("key_revoked");
+        if (authMode === "agent") return agentActor.kind === "agent" ? agentActor.identity : null;
+        return null;
+      },
+    );
+
+    const unauth = await app.request(`/api/workspaces/${ws.id}/webhooks`);
+    expect(unauth.status).toBe(401);
+    expect(unauth.headers.get("content-type")).toContain("application/problem+json");
+    expect(await unauth.json()).toMatchObject({ code: "not_signed_in" });
+
+    authMode = "revoked";
+    const revoked = await app.request(`/api/workspaces/${ws.id}/webhooks`);
+    expect(revoked.status).toBe(401);
+    expect(await revoked.json()).toMatchObject({ code: "key_revoked" });
+
+    authMode = "agent";
+    const asAgent = await app.request(`/api/workspaces/${ws.id}/webhooks`);
+    expect(asAgent.status).toBe(403);
+    expect(await asAgent.json()).toMatchObject({ code: "agents_cannot_manage_webhooks" });
+
+    authMode = "none";
+    currentAccount = {
+      humanId: owner.id,
+      email: owner.email,
+      isSystemAdministrator: false,
+      emailVerifiedAt: new Date(),
+    };
+    const withCreds = await app.request(`/api/workspaces/${ws.id}/webhooks`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        url: "https://user:pass@example.com/hook",
+        allProjects: true,
+        allEvents: true,
+      }),
+    });
+    expect(withCreds.status).toBe(400);
+    expect(withCreds.headers.get("content-type")).toContain("application/problem+json");
+
+    const ok = await app.request(`/api/workspaces/${ws.id}/webhooks`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        url: "https://example.com/hook",
+        description: "rest hook",
+        allProjects: true,
+        allEvents: true,
+      }),
+    });
+    expect(ok.status).toBe(201);
+    expect(await ok.json()).toMatchObject({
+      signingSecret: expect.stringMatching(/^whsec_/),
+    });
   });
 });

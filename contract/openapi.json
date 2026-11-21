@@ -4436,6 +4436,7 @@
       },
       "WebhookUrl": {
         "type": "string",
+        "maxLength": 2048,
         "format": "uri"
       },
       "UpdateWebhookRequest": {
@@ -12434,6 +12435,16 @@
               }
             }
           },
+          "400": {
+            "description": "The request parameters or payload are invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "401": {
             "description": "Not signed in, or the agent key is invalid or revoked",
             "content": {
@@ -12456,16 +12467,6 @@
           },
           "404": {
             "description": "No such workspace or webhook is accessible to the caller",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "The webhook limit was reached or no encryption key is configured",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -12513,7 +12514,7 @@
             }
           },
           "400": {
-            "description": "The webhook scope is invalid",
+            "description": "The request parameters or payload are invalid",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -12613,7 +12614,7 @@
             }
           },
           "400": {
-            "description": "The webhook scope is invalid",
+            "description": "The request parameters or payload are invalid",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -12644,16 +12645,6 @@
           },
           "404": {
             "description": "No such workspace or webhook is accessible to the caller",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "The webhook limit was reached or no encryption key is configured",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -12692,6 +12683,16 @@
           "204": {
             "description": "The webhook and its deliveries are deleted"
           },
+          "400": {
+            "description": "The request parameters or payload are invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "401": {
             "description": "Not signed in, or the agent key is invalid or revoked",
             "content": {
@@ -12714,16 +12715,6 @@
           },
           "404": {
             "description": "No such workspace or webhook is accessible to the caller",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "The webhook limit was reached or no encryption key is configured",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -12768,6 +12759,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/WebhookWithSecret"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request parameters or payload are invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -12852,6 +12853,16 @@
               }
             }
           },
+          "400": {
+            "description": "The request parameters or payload are invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "401": {
             "description": "Not signed in, or the agent key is invalid or revoked",
             "content": {
@@ -12874,16 +12885,6 @@
           },
           "404": {
             "description": "No such workspace or webhook is accessible to the caller",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "The webhook limit was reached or no encryption key is configured",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -12931,6 +12932,16 @@
               }
             }
           },
+          "400": {
+            "description": "The request parameters or payload are invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "401": {
             "description": "Not signed in, or the agent key is invalid or revoked",
             "content": {
@@ -12953,16 +12964,6 @@
           },
           "404": {
             "description": "No such workspace or webhook is accessible to the caller",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "The webhook limit was reached or no encryption key is configured",
             "content": {
               "application/problem+json": {
                 "schema": {
