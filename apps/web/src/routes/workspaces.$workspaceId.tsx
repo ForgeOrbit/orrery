@@ -136,7 +136,11 @@ function WorkspacePage() {
         actions={
           <>
             {(workspace.isOwner || workspace.canManageMemberPermissions) && (
-              <Link to="/history/workspace/$workspaceId" params={{ workspaceId: workspace.id }}>
+              <Link
+                to="/history/workspace/$workspaceId"
+                params={{ workspaceId: workspace.id }}
+                color="inherit"
+              >
                 Access history
               </Link>
             )}

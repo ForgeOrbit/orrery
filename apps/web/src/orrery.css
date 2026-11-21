@@ -383,6 +383,42 @@
   gap: 0.5rem;
 }
 
+.page-header-actions a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-block-size: 2rem;
+  padding-inline: 0.7rem;
+  border: 1px solid var(--orrery-border);
+  border-radius: var(--orrery-radius);
+  color: var(--orrery-text);
+  background: transparent;
+  font-size: 0.8125rem;
+  font-weight: 560;
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+}
+
+.page-header-actions a:hover {
+  background: var(--orrery-surface);
+  border-color: color-mix(in srgb, var(--orrery-text) 28%, var(--orrery-border));
+  color: var(--orrery-text);
+}
+
+.page-header-actions a svg {
+  flex-shrink: 0;
+  color: var(--orrery-muted);
+}
+
+.page-header-actions a:hover svg {
+  color: var(--orrery-text);
+}
+
 .meta-pill {
   display: inline-flex;
   align-items: center;
