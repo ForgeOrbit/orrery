@@ -28,9 +28,10 @@
   <a href="#contributing">Contributing</a>
 </p>
 
-> **Status: active MVP.** M0–M4 are complete and runnable today with `docker compose up -d`, and the
-> M6 operator/agent guides and GHCR GitHub Releases are live. In-app notifications and outgoing
-> webhooks ([M6, #7](https://github.com/forge-orbit/orrery/issues/7)) and the
+> **Status: active MVP.** M0–M4 are complete and runnable today from the published image with
+> `docker compose pull && docker compose up -d`, and the M6 operator/agent guides and GHCR GitHub
+> Releases are live. In-app notifications and outgoing webhooks
+> ([M6, #7](https://github.com/forge-orbit/orrery/issues/7)) and the
 > [Shared vault (M5, #6)](https://github.com/forge-orbit/orrery/issues/6) are still planned. See the
 > [roadmap](#roadmap) and the [install guide](docs/guides/install.md).
 
@@ -81,16 +82,19 @@ In `.env`, set:
 
 ```sh
 openssl rand -base64 32
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
+
+Use `docker compose up -d --build` instead of `pull` + `up` if you want to build from this checkout.
 
 Open <http://localhost:8080/setup>, create the first administrator with the bootstrap secret, then
 remove `BOOTSTRAP_SECRET` from `.env` — setup stays closed forever. The app is then at
 <http://localhost:8080>.
 
 For HTTPS on a public domain, set `ORRERY_DOMAIN` and `PUBLIC_URL` in `.env` and add `--profile tls`
-(`docker compose --profile tls up -d --build`). Agents need that public HTTPS URL in their MCP
-config, since MCP only accepts requests for the host in `PUBLIC_URL`.
+(`docker compose --profile tls pull && docker compose --profile tls up -d`). Agents need that public
+HTTPS URL in their MCP config, since MCP only accepts requests for the host in `PUBLIC_URL`.
 
 The full [install and upgrade guide](docs/guides/install.md) covers the environment variables,
 Caddy HTTPS, image tags and upgrades. Take a backup before upgrading using

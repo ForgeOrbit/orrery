@@ -145,15 +145,22 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
           VERSION="${TAG#v}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; leaving it unchanged."
+            exit 0
+          fi
           gh release create "$TAG" \
             --verify-tag \
             --generate-notes \
             --title "$TAG" \
-            --notes "**Pull the image**
+            --notes-file - <<EOF
+          **Pull the image**
 
           \`\`\`sh
           docker pull ghcr.io/forge-orbit/orrery:${VERSION}
-          \`\`\`"
+          \`\`\`
+          EOF

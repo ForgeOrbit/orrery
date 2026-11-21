@@ -41,16 +41,17 @@ writes race the restore; Postgres itself stays up.
 
 ```sh
 docker compose stop orrery
-docker compose exec -T postgres psql -U orrery -d postgres -c 'DROP DATABASE IF EXISTS orrery;'
+docker compose exec -T postgres psql -U orrery -d postgres -c 'DROP DATABASE IF EXISTS orrery WITH (FORCE);'
 docker compose exec -T postgres psql -U orrery -d postgres -c 'CREATE DATABASE orrery;'
 docker compose exec -T postgres pg_restore -U orrery -d orrery --no-owner --no-privileges < orrery-backup.dump
 docker compose start orrery
 ```
 
-`--no-owner --no-privileges` makes the restore work when the original role OIDs differ from the new
-ones; ownership and grants come from the fresh database. The Postgres volume is kept — only the
-`orrery` database inside it is recreated. Do **not** run `docker compose down -v` as part of a
-restore: `-v` deletes the volume that holds the database.
+`WITH (FORCE)` (Postgres 13+) disconnects any stray sessions still attached to the database so the
+drop cannot fail on a live connection. `--no-owner --no-privileges` makes the restore work when the
+original role OIDs differ from the new ones; ownership and grants come from the fresh database. The
+Postgres volume is kept — only the `orrery` database inside it is recreated. Do **not** run
+`docker compose down -v` as part of a restore: `-v` deletes the volume that holds the database.
 
 ## Verify the restore
 
@@ -83,6 +84,11 @@ Use this around any image upgrade (`ORRERY_VERSION`) as well as a restore:
 - [ ] Pin the new tag, then `docker compose pull orrery` and `docker compose up -d orrery`.
       Migrations are applied from `db/migrations/` at startup; the data volume is preserved.
 - [ ] Verify `/healthz` and `/readyz`, sign in, and spot-check a project and issue.
-- [ ] If the upgrade fails: restore the dump with the **restore** commands above, set
-      `ORRERY_VERSION` back to the recorded tag, `docker compose pull orrery`,
-      `docker compose up -d orrery`, then repeat the verification steps.
+- [ ] If the upgrade fails, roll back in this order so the new image never runs against the
+      restored database:
+      1. `docker compose stop orrery` and keep it stopped until the downgrade is in place.
+      2. Restore the dump with the drop / create / `pg_restore` commands from the
+         **restore** section above — but omit its final `docker compose start orrery`.
+      3. Set `ORRERY_VERSION` back to the recorded tag.
+      4. `docker compose pull orrery && docker compose up -d orrery`.
+      5. Repeat the verification steps.

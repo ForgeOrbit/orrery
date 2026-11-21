@@ -63,7 +63,6 @@ your project (or the equivalent in your Cursor MCP settings):
 {
   "mcpServers": {
     "orrery": {
-      "type": "streamable-http",
       "url": "https://orrery.example.com/mcp",
       "headers": {
         "Authorization": "Bearer <API key>"
@@ -73,8 +72,9 @@ your project (or the equivalent in your Cursor MCP settings):
 }
 ```
 
-Replace the URL with your installation's `/mcp` URL. Keep the key in your environment or secret
-manager rather than committing this file with a real value.
+Replace the URL with your installation's `/mcp` URL. Cursor infers Streamable HTTP from the `url`,
+so no `type` field is needed (and strict schema parsers reject one). Keep the key in your environment
+or secret manager rather than committing this file with a real value.
 
 > **Automatic run-lifecycle hooks are Claude Code and Codex only.** Cursor uses the static `/mcp`
 > tools shown above, but it does not report run start/heartbeat/end events automatically. The

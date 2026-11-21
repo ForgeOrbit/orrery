@@ -2,7 +2,7 @@
 
 Orrery is one self-hosted server backed by Postgres. The supplied `compose.yaml` runs the app on
 port 8080 and the database on a private volume. You need Docker Engine with the Compose plugin, a
-host with ports 8080 free (plus 80 and 443 if you enable HTTPS), and, for a public installation, a
+host with port 8080 free (plus 80 and 443 if you enable HTTPS), and, for a public installation, a
 domain name you control.
 
 ## 1. Get the files
@@ -15,9 +15,17 @@ cd orrery
 cp .env.example .env
 ```
 
-The app image comes from `ghcr.io/forge-orbit/orrery`; Compose pulls it automatically. The
-`build: .` entry in `compose.yaml` is only used when you start the stack with `--build` (for example
-when developing from source). GHCR is the only published registry.
+The published image is `ghcr.io/forge-orbit/orrery`; GHCR is the only published registry. Note that
+`compose.yaml` declares both `image:` and `build: .` without a `pull_policy`, so on a fresh host
+`docker compose up -d` builds from the checked-out source rather than pulling the published image.
+Pull first to run the released image:
+
+```sh
+docker compose pull
+docker compose up -d
+```
+
+If you want a source build instead, skip the `pull` and run `docker compose up -d --build`.
 
 ## 2. Configure `.env`
 
@@ -46,6 +54,7 @@ Optional but common:
 ## 3. Start the stack
 
 ```sh
+docker compose pull      # fetch the published GHCR image
 docker compose up -d
 ```
 
@@ -73,6 +82,7 @@ Agents on teammates' machines need Orrery over HTTPS. Set `ORRERY_DOMAIN=orrery.
 ports 80 and 443 are reachable, then start the optional Caddy profile:
 
 ```sh
+docker compose --profile tls pull
 docker compose --profile tls up -d
 ```
 
