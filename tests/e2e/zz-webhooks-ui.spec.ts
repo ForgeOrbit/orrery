@@ -162,21 +162,20 @@ test("owner manages webhooks and inspects deliveries while non-owners do not see
   // Invite a regular (non-owner) member so we can verify the Webhooks tab stays hidden for them.
   const memberEmail = `webhooks-member-${randomUUID().slice(0, 8)}@orrery.test`;
   const inviteRes = await admin.post(`/api/workspaces/${workspaceId}/invitations`, {
-    data: { email: memberEmail, projects: [] },
+    data: { email: memberEmail, projectGrants: [] },
   });
   expect(inviteRes.status()).toBe(201);
   const inviteToken = await liveInvitationToken(memberEmail, workspaceName);
   await recordSecret(inviteToken);
   const memberApi = await request.newContext({ baseURL: baseUrl });
   try {
-    const reg = await memberApi.post("/api/workspace-invitations/register", {
+    const reg = await memberApi.post("/api/workspace-invitations/registration", {
       data: {
         token: inviteToken,
         password: MEMBER_PASSWORD,
-        displayName: "Webhook Non-Owner",
       },
     });
-    expect(reg.status()).toBe(201);
+    expect(reg.status()).toBe(200);
   } finally {
     await memberApi.dispose();
   }
