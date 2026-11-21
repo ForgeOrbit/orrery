@@ -13,11 +13,33 @@ export interface PageHeaderProps {
   actions?: ReactNode;
 }
 
+function BackArrowIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden="true"
+      className="back-arrow-icon"
+    >
+      <path
+        d="M12.5 8h-9M7 4.5 3.5 8 7 11.5"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 export function PageHeader({ breadcrumbs, title, badge, subtitle, actions }: PageHeaderProps) {
   return (
     <header className="page-header">
       {breadcrumbs !== undefined && breadcrumbs.length > 0 && (
         <nav className="page-breadcrumbs" aria-label="Breadcrumb">
+          <BackArrowIcon />
           {breadcrumbs.map((crumb, index) => (
             // oxlint-disable-next-line react/no-array-index-key -- static ordered breadcrumb segments
             <Fragment key={index}>

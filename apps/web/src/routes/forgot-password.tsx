@@ -69,7 +69,18 @@ function ForgotPasswordPage() {
         <Button type="submit" isDisabled={submitting} label="Send reset link" variant="primary" />
       </form>
       <Text as="p" display="block" type="inherit" color="inherit">
-        <Link to="/signin">Back to sign in</Link>
+        <Link to="/signin" className="back-link-inline">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path
+              d="M12.5 8h-9M7 4.5 3.5 8 7 11.5"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+          Back to sign in
+        </Link>
       </Text>
     </main>
   );

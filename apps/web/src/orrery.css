@@ -434,6 +434,17 @@
   text-decoration: underline;
 }
 
+.back-arrow-icon {
+  flex-shrink: 0;
+  color: var(--orrery-muted);
+}
+
+.back-link-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
 .page-header-row {
   display: flex;
   flex-wrap: wrap;
